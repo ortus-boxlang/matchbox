@@ -1,0 +1,20 @@
+// A simple BoxLang test file
+x = 10
+y = 20
+z = x + y
+
+println("The value of z is: ", z)
+
+function add(a, b) {
+    println("Adding", a, "and", b)
+    a + b // expression return isn't fully handled yet, wait, we might need a return statement
+}
+
+result = add(5, 7)
+println("Result from function:", result)
+
+if (z > 15) {
+    println("z is greater than 15")
+} else {
+    println("z is not greater than 15")
+}

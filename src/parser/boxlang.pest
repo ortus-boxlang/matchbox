@@ -1,0 +1,57 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ ("//" ~ (!"\n" ~ ANY)*) | ("/*" ~ (!"*/" ~ ANY)* ~ "*/") }
+
+program = { SOI ~ statement* ~ EOI }
+
+statement = {
+    ( function_decl
+    | for_loop
+    | if_statement
+    | expression_stmt
+    )
+}
+
+function_decl = { "function" ~ identifier ~ "(" ~ params? ~ ")" ~ "{" ~ statement* ~ "}" }
+params = { identifier ~ ("," ~ identifier)* }
+
+for_loop = { "for" ~ "(" ~ identifier ~ "in" ~ expression ~ ")" ~ "{" ~ statement* ~ "}" }
+
+if_statement = { "if" ~ "(" ~ expression ~ ")" ~ block ~ ("else" ~ block)? }
+block = { "{" ~ statement* ~ "}" }
+
+expression_stmt = { expression ~ ";"? }
+
+expression = {
+    assignment
+    | binary_expr
+}
+
+assignment = { identifier ~ "=" ~ expression }
+
+binary_expr = { primary ~ (operator ~ primary)* }
+
+operator = { "+" | "-" | "*" | "/" | "==" | "!=" | "<=" | ">=" | "<" | ">" }
+
+primary = {
+    function_call
+    | literal
+    | identifier
+    | "(" ~ expression ~ ")"
+}
+
+function_call = { identifier ~ "(" ~ args? ~ ")" }
+args = { expression ~ ("," ~ expression)* }
+
+literal = { string | number | boolean | null_lit }
+
+string = ${ "\"" ~ inner_str ~ "\"" | "'" ~ inner_str_single ~ "'" }
+inner_str = @{ (!"\"" ~ ANY)* }
+inner_str_single = @{ (!"'" ~ ANY)* }
+
+number = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+
+boolean = { "true" | "false" }
+
+null_lit = { "null" }
+
+identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
