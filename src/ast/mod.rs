@@ -36,8 +36,12 @@ pub enum Expression {
         right: Box<Expression>,
     },
     FunctionCall {
-        name: String,
+        base: Box<Expression>,
         args: Vec<Expression>,
+    },
+    ArrayAccess {
+        base: Box<Expression>,
+        index: Box<Expression>,
     },
     Identifier(String),
     Literal(Literal),
@@ -49,4 +53,5 @@ pub enum Literal {
     Number(f64),
     Boolean(bool),
     Null,
+    Array(Vec<Expression>),
 }

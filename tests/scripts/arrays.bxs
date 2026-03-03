@@ -1,0 +1,19 @@
+// Test array definition and printing
+arr1 = [1, 2, 3, 4, 5]
+println("arr1:", arr1)
+
+arr2 = ["hello", "world", true, 42.5, null]
+println("arr2:", arr2)
+
+// Mixed and nested arrays
+arr3 = [1, [2, 3], 4]
+println("arr3:", arr3)
+
+// Array access (1-indexed)
+println("arr1[1]:", arr1[1])
+println("arr1[3]:", arr1[3])
+println("arr1[5]:", arr1[5])
+
+// Nested access
+println("arr3[2][1]:", arr3[2][1])
+println("arr3[2][2]:", arr3[2][2])

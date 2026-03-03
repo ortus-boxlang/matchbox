@@ -102,12 +102,19 @@ impl Evaluator {
 
     pub fn eval_expression(&mut self, expr: &Expression) -> Result<BxValue> {
         match expr {
-            Expression::Literal(lit) => Ok(match lit {
-                Literal::String(s) => BxValue::String(s.clone()),
-                Literal::Number(n) => BxValue::Number(*n),
-                Literal::Boolean(b) => BxValue::Boolean(*b),
-                Literal::Null => BxValue::Null,
-            }),
+            Expression::Literal(lit) => match lit {
+                Literal::String(s) => Ok(BxValue::String(s.clone())),
+                Literal::Number(n) => Ok(BxValue::Number(*n)),
+                Literal::Boolean(b) => Ok(BxValue::Boolean(*b)),
+                Literal::Null => Ok(BxValue::Null),
+                Literal::Array(items) => {
+                    let mut eval_items = Vec::new();
+                    for item in items {
+                        eval_items.push(self.eval_expression(item)?);
+                    }
+                    Ok(BxValue::Array(eval_items))
+                }
+            },
             Expression::Identifier(name) => {
                 if let Some(val) = self.env.borrow().get(name) {
                     Ok(val)
@@ -128,22 +135,24 @@ impl Evaluator {
                 let right_val = self.eval_expression(right)?;
                 self.eval_binary(&left_val, operator, &right_val)
             }
-            Expression::FunctionCall { name, args } => {
+            Expression::FunctionCall { base, args } => {
                 let mut evaluated_args = Vec::new();
                 for arg in args {
                     evaluated_args.push(self.eval_expression(arg)?);
                 }
 
                 // Check for BIFs directly in this POC
-                if name.to_lowercase() == "println" || name.to_lowercase() == "echo" {
-                    let out = evaluated_args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" ");
-                    println!("{}", out);
-                    return Ok(BxValue::Null);
+                if let Expression::Identifier(name) = base.as_ref() {
+                    if name.to_lowercase() == "println" || name.to_lowercase() == "echo" {
+                        let out = evaluated_args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" ");
+                        println!("{}", out);
+                        return Ok(BxValue::Null);
+                    }
                 }
 
-                let func_val = self.env.borrow().get(name);
+                let func_val = self.eval_expression(base)?;
                 match func_val {
-                    Some(BxValue::Function(func)) => {
+                    BxValue::Function(func) => {
                         let call_env = Environment::new_with_parent(Rc::clone(&self.env));
                         for (i, param) in func.params.iter().enumerate() {
                             if i < evaluated_args.len() {
@@ -155,7 +164,22 @@ impl Evaluator {
                         let mut call_eval = Evaluator::with_env(call_env);
                         call_eval.eval_block(&func.body)
                     }
-                    _ => bail!("Function not found or not callable: {}", name),
+                    _ => bail!("Value is not callable"),
+                }
+            }
+            Expression::ArrayAccess { base, index } => {
+                let base_val = self.eval_expression(base)?;
+                let index_val = self.eval_expression(index)?;
+                
+                match (base_val, index_val) {
+                    (BxValue::Array(arr), BxValue::Number(n)) => {
+                        let idx = n as usize;
+                        if idx < 1 || idx > arr.len() {
+                            bail!("Array index out of bounds: {}", idx);
+                        }
+                        Ok(arr[idx - 1].clone())
+                    }
+                    _ => bail!("Invalid array access: base must be array and index must be number"),
                 }
             }
         }

@@ -142,19 +142,40 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
 }
 
 fn parse_primary(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
+    let mut inner = pair.into_inner();
+    let atom_pair = inner.next().unwrap();
+    let mut expr = parse_atom(atom_pair)?;
+
+    for postfix in inner {
+        match postfix.as_rule() {
+            Rule::function_call_args => {
+                let mut args = Vec::new();
+                if let Some(args_rule) = postfix.into_inner().next() {
+                    for arg in args_rule.into_inner() {
+                        args.push(parse_expression(arg)?);
+                    }
+                }
+                expr = Expression::FunctionCall {
+                    base: Box::new(expr),
+                    args,
+                };
+            }
+            Rule::array_access => {
+                let index_expr = parse_expression(postfix.into_inner().next().unwrap())?;
+                expr = Expression::ArrayAccess {
+                    base: Box::new(expr),
+                    index: Box::new(index_expr),
+                };
+            }
+            _ => bail!("Unexpected postfix rule: {:?}", postfix.as_rule()),
+        }
+    }
+    Ok(expr)
+}
+
+fn parse_atom(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
-        Rule::function_call => {
-            let mut rules = inner.into_inner();
-            let name = rules.next().unwrap().as_str().to_string();
-            let mut args = Vec::new();
-            if let Some(args_rule) = rules.next() {
-                for arg in args_rule.into_inner() {
-                    args.push(parse_expression(arg)?);
-                }
-            }
-            Ok(Expression::FunctionCall { name, args })
-        }
         Rule::literal => {
             let lit = inner.into_inner().next().unwrap();
             match lit.as_rule() {
@@ -173,6 +194,13 @@ fn parse_primary(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
                 Rule::null_lit => {
                     Ok(Expression::Literal(Literal::Null))
                 }
+                Rule::array_literal => {
+                    let mut items = Vec::new();
+                    for expr in lit.into_inner() {
+                        items.push(parse_expression(expr)?);
+                    }
+                    Ok(Expression::Literal(Literal::Array(items)))
+                }
                 _ => bail!("Unexpected literal rule: {:?}", lit.as_rule()),
             }
         }
@@ -180,6 +208,6 @@ fn parse_primary(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
             Ok(Expression::Identifier(inner.as_str().to_string()))
         }
         Rule::expression => parse_expression(inner),
-        _ => bail!("Unexpected primary rule: {:?}", inner.as_rule()),
+        _ => bail!("Unexpected atom rule: {:?}", inner.as_rule()),
     }
 }

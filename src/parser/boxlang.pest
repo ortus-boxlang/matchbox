@@ -37,17 +37,23 @@ binary_expr = { primary ~ (operator ~ primary)* }
 
 operator = { "+" | "-" | "*" | "/" | "==" | "!=" | "<=" | ">=" | "<" | ">" }
 
-primary = {
-    function_call
-    | literal
+primary = { atom ~ (function_call_args | array_access)* }
+
+atom = {
+    literal
     | identifier
     | "(" ~ expression ~ ")"
 }
 
-function_call = { identifier ~ "(" ~ args? ~ ")" }
+function_call_args = { "(" ~ args? ~ ")" }
+array_access = { "[" ~ expression ~ "]" }
+
+function_call = _{ identifier ~ function_call_args }
 args = { expression ~ ("," ~ expression)* }
 
-literal = { string | number | boolean | null_lit }
+literal = { string | number | boolean | null_lit | array_literal }
+
+array_literal = { "[" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ "]" }
 
 string = ${ "\"" ~ inner_str ~ "\"" | "'" ~ inner_str_single ~ "'" }
 inner_str = @{ (!"\"" ~ ANY)* }

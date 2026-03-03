@@ -6,9 +6,8 @@ pub enum BxValue {
     Number(f64),
     Boolean(bool),
     Null,
+    Array(Vec<BxValue>),
     Function(BxFunction),
-    // Array(Vec<BxValue>),
-    // Struct(HashMap<String, BxValue>),
 }
 
 impl fmt::Display for BxValue {
@@ -18,6 +17,10 @@ impl fmt::Display for BxValue {
             BxValue::Number(n) => write!(f, "{}", n),
             BxValue::Boolean(b) => write!(f, "{}", b),
             BxValue::Null => write!(f, "null"),
+            BxValue::Array(arr) => {
+                let items: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
+                write!(f, "[{}]", items.join(", "))
+            }
             BxValue::Function(func) => write!(f, "<function {}>", func.name),
         }
     }
