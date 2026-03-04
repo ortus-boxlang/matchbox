@@ -1336,6 +1336,45 @@ impl VM {
         bail!("VM Runtime Error: {} (at {} line {})", val, filename, line);
     }
 
+    pub fn call_function(&mut self, name: &str, args: Vec<BxValue>) -> Result<BxValue> {
+        let func = self.globals.get(name).cloned()
+            .ok_or_else(|| anyhow::anyhow!("Function {} not found", name))?;
+        
+        match func {
+            BxValue::CompiledFunction(f) => {
+                if args.len() != f.arity {
+                    anyhow::bail!("Expected {} arguments but got {}", f.arity, args.len());
+                }
+                
+                let future_id = self.heap.alloc(GcObject::Future(crate::types::BxFuture {
+                    value: BxValue::Null,
+                    status: crate::types::FutureStatus::Pending,
+                }));
+
+                let fiber = BxFiber {
+                    stack: args,
+                    frames: vec![CallFrame {
+                        function: f,
+                        ip: 0,
+                        stack_base: 0,
+                        receiver: None,
+                        handlers: Vec::new(),
+                    }],
+                    future_id,
+                    wait_until: None,
+                    yield_requested: false,
+                };
+                self.fibers.push(fiber);
+                let fiber_idx = self.fibers.len() - 1;
+                match self.run_fiber(fiber_idx, 1000000)? {
+                    Some(val) => Ok(val),
+                    None => Ok(BxValue::Null),
+                }
+            }
+            _ => anyhow::bail!("{} is not a callable function", name),
+        }
+    }
+
     fn is_truthy(&self, val: &BxValue) -> bool {
         match val {
             BxValue::Boolean(b) => *b,
@@ -1361,7 +1400,7 @@ impl VM {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn bx_to_js(&self, val: &BxValue) -> JsValue {
+    pub fn bx_to_js(&self, val: &BxValue) -> JsValue {
         match val {
             BxValue::String(s) => JsValue::from_str(s),
             BxValue::Number(n) => JsValue::from_f64(*n),
@@ -1392,7 +1431,7 @@ impl VM {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn js_to_bx(&mut self, val: JsValue) -> BxValue {
+    pub fn js_to_bx(&mut self, val: JsValue) -> BxValue {
         if val.is_string() {
             BxValue::String(val.as_string().unwrap())
         } else if let Some(n) = val.as_f64() {

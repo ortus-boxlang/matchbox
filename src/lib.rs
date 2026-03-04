@@ -57,6 +57,47 @@ pub fn run_boxlang(source: &str) -> String {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub struct BoxLangVM {
+    vm: vm::VM,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+impl BoxLangVM {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> BoxLangVM {
+        let mut vm = vm::VM::new();
+        for (name, val) in bifs::register_all() {
+            vm.globals.insert(name, val);
+        }
+        BoxLangVM { vm }
+    }
+
+    pub fn load_bytecode(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let res = (|| -> Result<()> {
+            let chunk: Chunk = bincode::deserialize(bytes)?;
+            self.vm.interpret(chunk)?;
+            Ok(())
+        })();
+
+        res.map_err(|e| format!("Error: {}", e))
+    }
+
+    pub fn call(&mut self, name: &str, args: js_sys::Array) -> Result<JsValue, String> {
+        let mut bx_args = Vec::new();
+        for i in 0..args.length() {
+            bx_args.push(self.vm.js_to_bx(args.get(i)));
+        }
+
+        match self.vm.call_function(name, bx_args) {
+            Ok(val) => Ok(self.vm.bx_to_js(&val)),
+            Err(e) => Err(format!("Error: {}", e)),
+        }
+    }
+}
+
 pub fn run() -> Result<()> {
     // 1. Check for WASM custom section first
     #[cfg(target_arch = "wasm32")]
