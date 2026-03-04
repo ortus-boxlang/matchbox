@@ -38,11 +38,20 @@ pub fn register_all() -> HashMap<String, BxValue> {
 
     // Core BIFs
     bifs.insert("createobject".to_string(), BxValue::NativeFunction(create_object));
+    bifs.insert("ucase".to_string(), BxValue::NativeFunction(ucase));
 
     bifs
 }
 
 // --- Implementation ---
+
+fn ucase(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 1 { return Err("ucase() expects exactly 1 argument".to_string()); }
+    match &args[0] {
+        BxValue::String(s) => Ok(BxValue::String(s.to_uppercase())),
+        _ => Err("ucase() expects a string".to_string()),
+    }
+}
 
 fn abs(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 { return Err("abs() expects exactly 1 argument".to_string()); }

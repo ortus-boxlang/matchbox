@@ -127,6 +127,33 @@ impl VM {
         }
     }
 
+    fn resolve_member_method(&self, receiver: &BxValue, method_name: &str) -> Option<String> {
+        match receiver {
+            BxValue::String(_) => match method_name {
+                "len" => Some("len".to_string()),
+                "ucase" => Some("ucase".to_string()),
+                _ => None,
+            },
+            BxValue::Array(_) => match method_name {
+                "len" => Some("len".to_string()),
+                "append" => Some("arrayappend".to_string()),
+                _ => None,
+            },
+            BxValue::Struct(_) => match method_name {
+                "len" => Some("len".to_string()),
+                "exists" => Some("structkeyexists".to_string()),
+                "count" => Some("structcount".to_string()),
+                _ => None,
+            },
+            BxValue::Number(_) => match method_name {
+                "abs" => Some("abs".to_string()),
+                "round" => Some("round".to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub fn interpret(&mut self, chunk: Chunk) -> Result<BxValue> {
         let function = Rc::new(BxCompiledFunction {
             name: "script".to_string(),
@@ -896,6 +923,32 @@ impl VM {
                                     };
                                     self.fibers[fiber_idx].frames.push(frame);
                                 }
+                            } else if let Some(bif_name) = self.resolve_member_method(&receiver_val, &name) {
+                                if let Some(BxValue::NativeFunction(bif)) = self.globals.get(&bif_name).cloned() {
+                                    let mut args = Vec::with_capacity(arg_count + 1);
+                                    for _ in 0..arg_count {
+                                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                                    }
+                                    args.reverse();
+                                    self.fibers[fiber_idx].stack.pop(); // Pop the receiver
+                                    
+                                    let mut final_args = vec![receiver_val];
+                                    final_args.extend(args);
+                                    
+                                    match bif(self, &final_args) {
+                                        Ok(res) => {
+                                            self.fibers[fiber_idx].stack.push(res);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            self.throw_error(fiber_idx, &e)?;
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    self.throw_error(fiber_idx, &format!("Member {} not found or not callable.", name))?;
+                                    continue;
+                                }
                             } else {
                                 self.throw_error(fiber_idx, &format!("Member {} not found or not callable.", name))?;
                                 continue;
@@ -953,7 +1006,35 @@ impl VM {
                                 }
                             }
                         }
-                        _ => { self.throw_error(fiber_idx, "Can only invoke methods on instances, structs, JS objects, and native objects.")?; continue; }
+                        _ => {
+                            if let Some(bif_name) = self.resolve_member_method(&receiver_val, &name) {
+                                if let Some(BxValue::NativeFunction(bif)) = self.globals.get(&bif_name).cloned() {
+                                    let mut args = Vec::with_capacity(arg_count + 1);
+                                    for _ in 0..arg_count {
+                                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                                    }
+                                    args.reverse();
+                                    self.fibers[fiber_idx].stack.pop(); // Pop the receiver
+                                    
+                                    // Inject receiver as first argument
+                                    let mut final_args = vec![receiver_val];
+                                    final_args.extend(args);
+                                    
+                                    match bif(self, &final_args) {
+                                        Ok(res) => {
+                                            self.fibers[fiber_idx].stack.push(res);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            self.throw_error(fiber_idx, &e)?;
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                            self.throw_error(fiber_idx, "Can only invoke methods on instances, structs, JS objects, and native objects.")?;
+                            continue;
+                        }
                     }
                 }
                 OpCode::OpCall(arg_count) => {
