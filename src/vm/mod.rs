@@ -6,6 +6,12 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use anyhow::{Result, bail};
 use crate::types::{BxValue, BxCompiledFunction, BxInstance, BxFuture, FutureStatus, BxVM};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{JsValue, JsCast};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::Closure;
+#[cfg(target_arch = "wasm32")]
+use js_sys::{Reflect, Function, Array};
 use self::chunk::Chunk;
 use self::opcode::OpCode;
 
@@ -54,9 +60,18 @@ impl BxVM for VM {
 
 impl VM {
     pub fn new() -> Self {
+        #[allow(unused_mut)]
+        let mut globals = HashMap::new();
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(window) = web_sys::window() {
+                globals.insert("js".to_string(), BxValue::JsValue(window.into()));
+            }
+        }
+
         VM {
             fibers: Vec::new(),
-            globals: HashMap::new(),
+            globals,
             current_fiber_idx: None,
         }
     }
@@ -441,7 +456,18 @@ impl VM {
                             };
                             self.fibers[fiber_idx].stack.push(val.unwrap_or(BxValue::Null));
                         }
-                        _ => { self.throw_error(fiber_idx, "Member access only supported on structs and instances")?; continue; }
+                        #[cfg(target_arch = "wasm32")]
+                        BxValue::JsValue(js) => {
+                            let prop = JsValue::from_str(&name);
+                            match Reflect::get(&js, &prop) {
+                                Ok(val) => {
+                                    let bx_val = self.js_to_bx(val);
+                                    self.fibers[fiber_idx].stack.push(bx_val);
+                                }
+                                Err(_) => self.fibers[fiber_idx].stack.push(BxValue::Null),
+                            }
+                        }
+                        _ => { self.throw_error(fiber_idx, "Member access only supported on structs, instances, and JS objects")?; continue; }
                     }
                 }
                 OpCode::OpSetMember(idx) => {
@@ -458,7 +484,14 @@ impl VM {
                             inst.borrow().this.borrow_mut().insert(name, val.clone());
                             self.fibers[fiber_idx].stack.push(val);
                         }
-                        _ => { self.throw_error(fiber_idx, "Member assignment only supported on structs and instances")?; continue; }
+                        #[cfg(target_arch = "wasm32")]
+                        BxValue::JsValue(js) => {
+                            let prop = JsValue::from_str(&name);
+                            let js_val = self.bx_to_js(&val);
+                            Reflect::set(&js, &prop, &js_val).ok();
+                            self.fibers[fiber_idx].stack.push(val);
+                        }
+                        _ => { self.throw_error(fiber_idx, "Member assignment only supported on structs, instances, and JS objects")?; continue; }
                     }
                 }
                 OpCode::OpInvoke(idx, arg_count) => {
@@ -515,6 +548,7 @@ impl VM {
                                     self.throw_error(fiber_idx, &format!("Expected {} arguments but got {}.", func.arity, arg_count))?;
                                     continue;
                                 } else {
+                                    // Pop args and receiver, then push args back for the new frame
                                     let mut args = Vec::with_capacity(arg_count);
                                     for _ in 0..arg_count {
                                         args.push(self.fibers[fiber_idx].stack.pop().unwrap());
@@ -565,7 +599,41 @@ impl VM {
                                 continue;
                             }
                         }
-                        _ => { self.throw_error(fiber_idx, "Can only invoke methods on instances and structs.")?; continue; }
+                        #[cfg(target_arch = "wasm32")]
+                        BxValue::JsValue(js) => {
+                            let prop = JsValue::from_str(&name);
+                            match Reflect::get(&js, &prop) {
+                                Ok(val) => {
+                                    if let Ok(func) = val.clone().dyn_into::<Function>() {
+                                        let js_args = Array::new();
+                                        for _ in 0..arg_count {
+                                            let arg_val = self.fibers[fiber_idx].stack.pop().unwrap();
+                                            js_args.unshift(&self.bx_to_js(&arg_val));
+                                        }
+                                        self.fibers[fiber_idx].stack.pop(); // Pop the receiver
+                                        match Reflect::apply(&func, &js, &js_args) {
+                                            Ok(res) => {
+                                                let bx_res = self.js_to_bx(res);
+                                                self.fibers[fiber_idx].stack.push(bx_res);
+                                                continue;
+                                            }
+                                            Err(e) => {
+                                                self.throw_error(fiber_idx, &format!("JS Error: {:?}", e))?;
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        self.throw_error(fiber_idx, &format!("Member {} is not a function", name))?;
+                                        continue;
+                                    }
+                                }
+                                Err(e) => {
+                                    self.throw_error(fiber_idx, &format!("JS Error: {:?}", e))?;
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => { self.throw_error(fiber_idx, "Can only invoke methods on instances, structs, and JS objects.")?; continue; }
                     }
                 }
                 OpCode::OpCall(arg_count) => {
@@ -600,6 +668,30 @@ impl VM {
                                     self.throw_error(fiber_idx, &e)?;
                                     continue;
                                 }
+                            }
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        BxValue::JsValue(js) => {
+                            if let Ok(func) = js.clone().dyn_into::<Function>() {
+                                let js_args = Array::new();
+                                for _ in 0..arg_count {
+                                    let arg_val = self.fibers[fiber_idx].stack.pop().unwrap();
+                                    js_args.unshift(&self.bx_to_js(&arg_val));
+                                }
+                                self.fibers[fiber_idx].stack.pop(); // Pop the function
+                                match Reflect::apply(&func, &JsValue::UNDEFINED, &js_args) {
+                                    Ok(val) => {
+                                        let bx_val = self.js_to_bx(val);
+                                        self.fibers[fiber_idx].stack.push(bx_val);
+                                    }
+                                    Err(e) => {
+                                        self.throw_error(fiber_idx, &format!("JS Error: {:?}", e))?;
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                self.throw_error(fiber_idx, "Can only call JS functions.")?;
+                                continue;
                             }
                         }
                         _ => { self.throw_error(fiber_idx, "Can only call functions.")?; continue; }
@@ -842,6 +934,79 @@ impl VM {
         match &frame.function.chunk.constants[idx] {
             BxValue::String(s) => s.clone(),
             _ => panic!("Constant at index {} is not a string", idx),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn bx_to_js(&self, val: &BxValue) -> JsValue {
+        match val {
+            BxValue::String(s) => JsValue::from_str(s),
+            BxValue::Number(n) => JsValue::from_f64(*n),
+            BxValue::Boolean(b) => JsValue::from_bool(*b),
+            BxValue::Null => JsValue::NULL,
+            BxValue::Array(arr) => {
+                let js_arr = Array::new();
+                for item in arr.borrow().iter() {
+                    js_arr.push(&self.bx_to_js(item));
+                }
+                js_arr.into()
+            }
+            BxValue::Struct(s) => {
+                let js_obj = js_sys::Object::new();
+                for (k, v) in s.borrow().iter() {
+                    Reflect::set(&js_obj, &JsValue::from_str(k), &self.bx_to_js(v)).ok();
+                }
+                js_obj.into()
+            }
+            BxValue::JsValue(js) => js.clone(),
+            _ => JsValue::UNDEFINED,
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn js_to_bx(&self, val: JsValue) -> BxValue {
+        if val.is_string() {
+            BxValue::String(val.as_string().unwrap())
+        } else if let Some(n) = val.as_f64() {
+            BxValue::Number(n)
+        } else if let Some(b) = val.as_bool() {
+            BxValue::Boolean(b)
+        } else if val.is_null() {
+            BxValue::Null
+        } else if Array::is_array(&val) {
+            let js_arr: Array = val.into();
+            let mut bx_arr = Vec::new();
+            for i in 0..js_arr.length() {
+                bx_arr.push(self.js_to_bx(js_arr.get(i)));
+            }
+            BxValue::Array(Rc::new(RefCell::new(bx_arr)))
+        } else if val.is_instance_of::<js_sys::Promise>() {
+            let promise: js_sys::Promise = val.into();
+            let future = Rc::new(RefCell::new(BxFuture {
+                value: BxValue::Null,
+                status: FutureStatus::Pending,
+            }));
+            
+            let f_clone = Rc::clone(&future);
+            let on_success = Closure::wrap(Box::new(move |val: JsValue| {
+                let mut f = f_clone.borrow_mut();
+                f.value = BxValue::JsValue(val);
+                f.status = FutureStatus::Completed;
+            }) as Box<dyn FnMut(JsValue)>);
+
+            let f_clone_err = Rc::clone(&future);
+            let on_error = Closure::wrap(Box::new(move |err: JsValue| {
+                let mut f = f_clone_err.borrow_mut();
+                f.status = FutureStatus::Failed(format!("{:?}", err));
+            }) as Box<dyn FnMut(JsValue)>);
+
+            let _ = promise.then2(&on_success, &on_error);
+            on_success.forget();
+            on_error.forget();
+
+            BxValue::Future(future)
+        } else {
+            BxValue::JsValue(val)
         }
     }
 }

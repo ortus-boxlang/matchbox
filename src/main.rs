@@ -12,7 +12,31 @@ use std::io::{self, Write};
 use anyhow::{Result, bail, Context};
 use crate::vm::chunk::Chunk;
 
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+
 const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn run_boxlang(source: &str) -> String {
+    let res = (|| -> Result<String> {
+        let ast = parser::parse(source)?;
+        let mut compiler = compiler::Compiler::new("wasm_input");
+        let chunk = compiler.compile(&ast)?;
+        let mut vm = vm::VM::new();
+        for (name, val) in bifs::register_all() {
+            vm.globals.insert(name, val);
+        }
+        let val = vm.interpret(chunk)?;
+        Ok(val.to_string())
+    })();
+
+    match res {
+        Ok(s) => s,
+        Err(e) => format!("Error: {}", e),
+    }
+}
 
 fn main() -> Result<()> {
     // 1. Check for WASM custom section first

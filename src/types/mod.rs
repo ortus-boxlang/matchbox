@@ -18,6 +18,9 @@ pub enum BxValue {
     Class(Rc<RefCell<BxClass>>),
     Instance(Rc<RefCell<BxInstance>>),
     Future(Rc<RefCell<BxFuture>>),
+    #[cfg(target_arch = "wasm32")]
+    #[serde(skip)]
+    JsValue(wasm_bindgen::JsValue),
 }
 
 pub trait BxVM {
@@ -55,6 +58,8 @@ impl fmt::Display for BxValue {
             BxValue::Class(class) => write!(f, "<class {}>", class.borrow().name),
             BxValue::Instance(inst) => write!(f, "<instance of {}>", inst.borrow().class.borrow().name),
             BxValue::Future(_) => write!(f, "<future>"),
+            #[cfg(target_arch = "wasm32")]
+            BxValue::JsValue(js) => write!(f, "<js value {:?}>", js),
         }
     }
 }

@@ -9,9 +9,23 @@ bincode = "1.3.3"
 pest = "2.8.6"
 pest_derive = "2.8.6"
 rand = "0.10.0"
+getrandom = { version = "0.4.2", features = ["wasm_js"] }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 wasm-encoder = "0.245.1"
 wasmparser = "0.245.1"
+wasm-bindgen = "0.2.100"
+js-sys = "0.3.77"
+
+[dependencies.web-sys]
+version = "0.3.77"
+features = [
+  "Window",
+  "Document",
+  "Element",
+  "HtmlElement",
+  "Node",
+  "EventTarget"
+]
 
 [profile.release]
 opt-level = "z"     # Optimize for size
