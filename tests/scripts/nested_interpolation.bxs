@@ -1,0 +1,10 @@
+// Nested string in interpolation
+s = "outer # 'inner' # outer"
+println(s)
+
+// Array and struct in interpolation
+arr = [1, 2, 3]
+println("The array is: #arr#")
+
+person = { name: "Luis" }
+println("The person is: #person#")

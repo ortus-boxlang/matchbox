@@ -194,8 +194,23 @@ fn parse_atom(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
             let lit = inner.into_inner().next().unwrap();
             match lit.as_rule() {
                 Rule::string => {
-                    let s = lit.into_inner().next().unwrap().as_str().to_string();
-                    Ok(Expression::Literal(Literal::String(s)))
+                    let mut parts = Vec::new();
+                    for part in lit.into_inner() {
+                        match part.as_rule() {
+                            Rule::string_text_double | Rule::string_text_single => {
+                                parts.push(crate::ast::StringPart::Text(part.as_str().to_string()));
+                            }
+                            Rule::escaped_hash => {
+                                parts.push(crate::ast::StringPart::Text("#".to_string()));
+                            }
+                            Rule::interpolation => {
+                                let expr = parse_expression(part.into_inner().next().unwrap())?;
+                                parts.push(crate::ast::StringPart::Expression(expr));
+                            }
+                            _ => bail!("Unexpected string part rule: {:?}", part.as_rule()),
+                        }
+                    }
+                    Ok(Expression::Literal(Literal::String(parts)))
                 }
                 Rule::number => {
                     let n = lit.as_str().parse::<f64>()?;
@@ -222,14 +237,7 @@ fn parse_atom(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
                         let key_pair = member_inner.next().unwrap().into_inner().next().unwrap();
                         let key_expr = match key_pair.as_rule() {
                             Rule::identifier => Expression::Identifier(key_pair.as_str().to_string()),
-                            Rule::string => {
-                                let s = key_pair.into_inner().next().unwrap().as_str().to_string();
-                                Expression::Literal(Literal::String(s))
-                            }
-                            Rule::number => {
-                                let n = key_pair.as_str().parse::<f64>()?;
-                                Expression::Literal(Literal::Number(n))
-                            }
+                            Rule::string | Rule::number => parse_atom(key_pair)?,
                             _ => bail!("Invalid struct key: {:?}", key_pair.as_rule()),
                         };
                         let val_expr = parse_expression(member_inner.next().unwrap())?;

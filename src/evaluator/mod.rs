@@ -119,7 +119,19 @@ impl Evaluator {
     pub fn eval_expression(&mut self, expr: &Expression) -> Result<BxValue> {
         match expr {
             Expression::Literal(lit) => match lit {
-                Literal::String(s) => Ok(BxValue::String(s.clone())),
+                Literal::String(parts) => {
+                    let mut result = String::new();
+                    for part in parts {
+                        match part {
+                            crate::ast::StringPart::Text(t) => result.push_str(t),
+                            crate::ast::StringPart::Expression(expr) => {
+                                let val = self.eval_expression(expr)?;
+                                result.push_str(&val.to_string());
+                            }
+                        }
+                    }
+                    Ok(BxValue::String(result))
+                }
                 Literal::Number(n) => Ok(BxValue::Number(*n)),
                 Literal::Boolean(b) => Ok(BxValue::Boolean(*b)),
                 Literal::Null => Ok(BxValue::Null),

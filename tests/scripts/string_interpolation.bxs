@@ -1,0 +1,23 @@
+// Test string interpolation
+name = "BoxLang"
+ver = 1.0
+message = "Welcome to #name# version #ver#"
+println(message)
+
+// Escaped hashes
+escaped = "This is a literal ##hash mark"
+println(escaped)
+
+// Expressions in interpolation
+println("The result of 10 + 20 is #10 + 20#")
+
+// Nested interpolation? (Usually works)
+person = {
+    firstName: "Luis",
+    lastName: "Majano"
+}
+println("CEO: #person.firstName# #person.lastName#")
+
+// Interpolation in single quotes
+single = 'Hello #name#'
+println(single)

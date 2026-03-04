@@ -35,8 +35,9 @@ To create a high-performance, standalone implementation of BoxLang that focuses 
 - To add a BIF, add its name (lowercase) to the match arms and implement the logic using Rust functions.
 
 ## Future Roadmap
+- [x] Implement `&` for string concatenation (converts operands to strings).
 - [ ] Implement `return` statement and proper function return values.
-- [ ] Add support for `Array` and `Struct` (HashMap) types.
-- [ ] Implement the `for(item in collection)` loop for arrays and structs.
+- [x] Add support for `Array` and `Struct` (HashMap) types.
+- [x] Implement the `for(item in collection)` loop for arrays and structs.
 - [ ] Expand the library of BIFs (Math, String manipulation).
 - [ ] Add a REPL mode.

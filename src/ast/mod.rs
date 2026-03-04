@@ -54,10 +54,16 @@ pub enum Expression {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
-    String(String),
+    String(Vec<StringPart>),
     Number(f64),
     Boolean(bool),
     Null,
     Array(Vec<Expression>),
     Struct(Vec<(Expression, Expression)>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StringPart {
+    Text(String),
+    Expression(Expression),
 }

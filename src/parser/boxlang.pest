@@ -60,9 +60,17 @@ struct_literal = { "{" ~ (struct_member ~ ("," ~ struct_member)* ~ ","?)? ~ "}" 
 struct_member = { struct_key ~ (":" | "=") ~ expression }
 struct_key = { identifier | string | number }
 
-string = ${ "\"" ~ inner_str ~ "\"" | "'" ~ inner_str_single ~ "'" }
-inner_str = @{ (!"\"" ~ ANY)* }
-inner_str_single = @{ (!"'" ~ ANY)* }
+string = ${
+    "\"" ~ string_content_double ~ "\"" |
+    "'" ~ string_content_single ~ "'"
+}
+string_content_double = _{ (interpolation | escaped_hash | string_text_double)* }
+string_content_single = _{ (interpolation | escaped_hash | string_text_single)* }
+
+interpolation = !{ "#" ~ expression ~ "#" }
+escaped_hash = @{ "##" }
+string_text_double = @{ (!("\"" | "#") ~ ANY)+ }
+string_text_single = @{ (!("'" | "#") ~ ANY)+ }
 
 number = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 
