@@ -35,19 +35,20 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
             let mut inner_rules = inner.into_inner();
             let name = inner_rules.next().unwrap().as_str().to_string();
             let mut params = Vec::new();
-            let mut body_stmts = Vec::new();
             
-            for rule in inner_rules {
-                match rule.as_rule() {
-                    Rule::params => {
-                        params = parse_params(rule);
-                    }
-                    Rule::statement => {
-                        body_stmts.push(parse_statement(rule)?);
-                    }
-                    _ => {}
+            let mut next = inner_rules.next().unwrap();
+            if next.as_rule() == Rule::params {
+                params = parse_params(next);
+                next = inner_rules.next().unwrap();
+            }
+            
+            let mut body_stmts = Vec::new();
+            if next.as_rule() == Rule::block {
+                for stmt_pair in next.into_inner() {
+                    body_stmts.push(parse_statement(stmt_pair)?);
                 }
             }
+            
             Ok(Statement::FunctionDecl { 
                 name, 
                 params, 
@@ -116,6 +117,15 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
             }
             
             Ok(Statement::If { condition, then_branch, else_branch })
+        }
+        Rule::return_stmt => {
+            let mut inner_rules = inner.into_inner();
+            let expr = if let Some(pair) = inner_rules.next() {
+                Some(parse_expression(pair)?)
+            } else {
+                None
+            };
+            Ok(Statement::Return(expr))
         }
         Rule::expression_stmt => {
             let expr = parse_expression(inner.into_inner().next().unwrap())?;

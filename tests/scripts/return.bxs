@@ -1,0 +1,31 @@
+// Test return statement
+function add(a, b) {
+    return a + b
+    println("This should NOT print!")
+}
+println("Sum:", add(10, 20))
+
+// Early return from loop
+function findNumber(arr, target) {
+    for (item, i in arr) {
+        if (item == target) {
+            return "Found at index " & i
+        }
+    }
+    return "Not found"
+}
+nums = [10, 20, 30, 40, 50]
+println(findNumber(nums, 30))
+println(findNumber(nums, 100))
+
+// Return from arrow function (already works but let's be sure)
+square = (x) => {
+    return x * x
+}
+println("Square of 4:", square(4))
+
+// Return with no value (null)
+function doNothing() {
+    return;
+}
+println("Result from doNothing:", doNothing())

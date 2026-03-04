@@ -7,11 +7,14 @@ statement = {
     ( function_decl
     | for_loop
     | if_statement
+    | return_stmt
     | expression_stmt
     )
 }
 
-function_decl = { "function" ~ identifier ~ "(" ~ params? ~ ")" ~ "{" ~ statement* ~ "}" }
+function_decl = { "function" ~ identifier ~ "(" ~ params? ~ ")" ~ block }
+
+return_stmt = { "return" ~ expression? ~ ";"? }
 params = { identifier ~ ("," ~ identifier)* }
 
 for_loop = { "for" ~ "(" ~ (for_in | for_classic) ~ ")" ~ block }

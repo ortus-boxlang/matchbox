@@ -1,0 +1,3 @@
+println("Step 1")
+return "Finished early"
+println("Step 2 - should NOT print")

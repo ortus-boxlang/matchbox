@@ -36,7 +36,8 @@ To create a high-performance, standalone implementation of BoxLang that focuses 
 
 ## Future Roadmap
 - [x] Implement `&` for string concatenation (converts operands to strings).
-- [ ] Implement `return` statement and proper function return values.
+- [x] Implement anonymous functions, closures, and arrow (lambda) syntax.
+- [x] Implement `return` statement and proper function return values.
 - [x] Add support for `Array` and `Struct` (HashMap) types.
 - [x] Implement the `for(item in collection)` loop for arrays and structs.
 - [ ] Expand the library of BIFs (Math, String manipulation).

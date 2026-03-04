@@ -25,12 +25,23 @@ impl Evaluator {
         let mut result = BxValue::Null;
         for stmt in statements {
             result = self.eval_statement(stmt)?;
+            if let BxValue::Return(val) = result {
+                return Ok(*val);
+            }
         }
         Ok(result)
     }
 
     pub fn eval_statement(&mut self, stmt: &Statement) -> Result<BxValue> {
         match stmt {
+            Statement::Return(expr) => {
+                let val = if let Some(e) = expr {
+                    self.eval_expression(e)?
+                } else {
+                    BxValue::Null
+                };
+                Ok(BxValue::Return(Box::new(val)))
+            }
             Statement::Expression(expr) => self.eval_expression(expr),
             Statement::FunctionDecl { name, params, body } => {
                 let func = BxValue::Function(BxFunction {
@@ -61,7 +72,10 @@ impl Evaluator {
                     if !is_truthy(&cond_val) {
                         break;
                     }
-                    self.eval_block(body)?;
+                    let res = self.eval_block(body)?;
+                    if let BxValue::Return(_) = res {
+                        return Ok(res);
+                    }
                     if let Some(update_expr) = update {
                         self.eval_expression(update_expr)?;
                     }
@@ -72,7 +86,10 @@ impl Evaluator {
                 // BoxLang/Java allows for(;;).
                 if condition.is_none() {
                     loop {
-                        self.eval_block(body)?;
+                        let res = self.eval_block(body)?;
+                        if let BxValue::Return(_) = res {
+                            return Ok(res);
+                        }
                         if let Some(update_expr) = update {
                             self.eval_expression(update_expr)?;
                         }
@@ -98,7 +115,10 @@ impl Evaluator {
                             }
                             
                             let mut loop_evaluator = Evaluator::with_env(loop_env);
-                            loop_evaluator.eval_block(body)?;
+                            let res = loop_evaluator.eval_block(body)?;
+                            if let BxValue::Return(_) = res {
+                                return Ok(res);
+                            }
                         }
                     }
                     _ => bail!("Iteration only supported for arrays currently"),
@@ -112,6 +132,9 @@ impl Evaluator {
         let mut result = BxValue::Null;
         for stmt in statements {
             result = self.eval_statement(stmt)?;
+            if let BxValue::Return(_) = result {
+                return Ok(result);
+            }
         }
         Ok(result)
     }
@@ -214,9 +237,15 @@ impl Evaluator {
                             }
                         }
                         let mut call_eval = Evaluator::with_env(call_env);
-                        match func.body {
-                            crate::ast::FunctionBody::Block(ref stmts) => call_eval.eval_block(stmts),
-                            crate::ast::FunctionBody::Expression(ref expr) => call_eval.eval_expression(expr),
+                        let result = match func.body {
+                            crate::ast::FunctionBody::Block(ref stmts) => call_eval.eval_block(stmts)?,
+                            crate::ast::FunctionBody::Expression(ref expr) => call_eval.eval_expression(expr)?,
+                        };
+
+                        if let BxValue::Return(val) = result {
+                            Ok(*val)
+                        } else {
+                            Ok(result)
                         }
                     }
                     _ => bail!("Value is not callable"),

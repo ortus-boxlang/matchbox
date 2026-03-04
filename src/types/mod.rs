@@ -11,6 +11,7 @@ pub enum BxValue {
     Array(Vec<BxValue>),
     Struct(HashMap<String, BxValue>),
     Function(BxFunction),
+    Return(Box<BxValue>),
 }
 
 impl fmt::Display for BxValue {
@@ -29,6 +30,7 @@ impl fmt::Display for BxValue {
                 write!(f, "{{{}}}", items.join(", "))
             }
             BxValue::Function(func) => write!(f, "<function {}>", func.name),
+            BxValue::Return(val) => write!(f, "{}", val),
         }
     }
 }
