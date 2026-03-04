@@ -96,7 +96,7 @@ impl Compiler {
                 
                 let class = BxClass {
                     name: name.clone(),
-                    constructor: constructor_compiler.chunk,
+                    constructor: Rc::new(RefCell::new(constructor_compiler.chunk)),
                     methods,
                 };
                 
@@ -662,7 +662,7 @@ impl Compiler {
         Ok(BxCompiledFunction {
             name: name.to_string(),
             arity: params.len(),
-            chunk: sub_compiler.chunk,
+            chunk: Rc::new(RefCell::new(sub_compiler.chunk)),
         })
     }
 
@@ -709,11 +709,9 @@ impl Compiler {
         let source = fs::read_to_string(path)?;
         let ast = crate::parser::parse(&source).map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", class_path, e))?;
         
-        // We need to compile the file and find the resulting class in its constants
         let mut sub_compiler = Compiler::new(&rel_path);
         sub_compiler.imports = self.imports.clone();
-        sub_compiler.is_class = true; // Use class mode if we expect a class? 
-        // Actually, the ClassDecl statement itself will set is_class for its constructor/methods.
+        sub_compiler.is_class = true; 
         sub_compiler.current_line = self.current_line;
         
         let chunk = sub_compiler.compile(&ast)?;

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::types::{BxValue, BxVM};
+use crate::types::{BxValue, BxVM, BxStruct};
 use std::time::{SystemTime, UNIX_EPOCH};
 use rand::RngExt;
 use std::rc::Rc;
@@ -91,7 +91,7 @@ fn len(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     match &args[0] {
         BxValue::String(s) => Ok(BxValue::Number(s.len() as f64)),
         BxValue::Array(a) => Ok(BxValue::Number(a.borrow().len() as f64)),
-        BxValue::Struct(s) => Ok(BxValue::Number(s.borrow().len() as f64)),
+        BxValue::Struct(s) => Ok(BxValue::Number(s.borrow().properties.len() as f64)),
         _ => Err("len() expects a string, array, or struct".to_string()),
     }
 }
@@ -111,11 +111,12 @@ fn array_new(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     Ok(BxValue::Array(Rc::new(RefCell::new(Vec::new()))))
 }
 
-fn struct_key_exists(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+fn struct_key_exists(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 2 { return Err("structKeyExists() expects exactly 2 arguments".to_string()); }
     match (&args[0], &args[1]) {
         (BxValue::Struct(s), BxValue::String(k)) => {
-            Ok(BxValue::Boolean(s.borrow().contains_key(&k.to_lowercase())))
+            let s_borrow = s.borrow();
+            Ok(BxValue::Boolean(vm.get_shape_index(s_borrow.shape_id, &k.to_lowercase()).is_some()))
         }
         _ => Err("structKeyExists() expects a struct and a string key".to_string()),
     }
@@ -124,13 +125,16 @@ fn struct_key_exists(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
 fn struct_count(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 { return Err("structCount() expects exactly 1 argument".to_string()); }
     match &args[0] {
-        BxValue::Struct(s) => Ok(BxValue::Number(s.borrow().len() as f64)),
+        BxValue::Struct(s) => Ok(BxValue::Number(s.borrow().properties.len() as f64)),
         _ => Err("structCount() expects a struct".to_string()),
     }
 }
 
-fn struct_new(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
-    Ok(BxValue::Struct(Rc::new(RefCell::new(HashMap::new()))))
+fn struct_new(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    Ok(BxValue::Struct(Rc::new(RefCell::new(BxStruct {
+        shape_id: vm.get_root_shape(),
+        properties: Vec::new(),
+    }))))
 }
 
 fn now(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {

@@ -11,7 +11,7 @@ pub enum BxValue {
     Boolean(bool),
     Null,
     Array(Rc<RefCell<Vec<BxValue>>>),
-    Struct(Rc<RefCell<HashMap<String, BxValue>>>),
+    Struct(Rc<RefCell<BxStruct>>),
     CompiledFunction(Rc<BxCompiledFunction>),
     #[serde(skip)]
     NativeFunction(BxNativeFunction),
@@ -32,6 +32,8 @@ pub trait BxVM {
     fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>) -> BxValue;
     fn yield_fiber(&mut self);
     fn sleep(&mut self, ms: u64);
+    fn get_root_shape(&self) -> usize;
+    fn get_shape_index(&self, shape_id: usize, field_name: &str) -> Option<usize>;
 }
 
 pub type BxNativeFunction = fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, String>;
@@ -61,20 +63,12 @@ impl fmt::Display for BxValue {
                 write!(f, "[{}]", items.join(", "))
             }
             BxValue::Struct(s) => {
-                let items: Vec<String> = s.borrow().iter().map(|(k, v)| {
-                    if let BxValue::Struct(inner_s) = v {
-                        if Rc::ptr_eq(s, inner_s) {
-                            return format!("{}: <recursive struct>", k);
-                        }
-                    }
-                    format!("{}: {}", k, v)
-                }).collect();
-                write!(f, "{{{}}}", items.join(", "))
+                write!(f, "<struct shape:{}>", s.borrow().shape_id)
             }
             BxValue::CompiledFunction(func) => write!(f, "<compiled function {}>", func.name),
             BxValue::NativeFunction(_) => write!(f, "<native function>"),
             BxValue::Class(class) => write!(f, "<class {}>", class.borrow().name),
-            BxValue::Instance(inst) => write!(f, "<instance of {}>", inst.borrow().class.borrow().name),
+            BxValue::Instance(inst) => write!(f, "<instance of {} shape:{}>", inst.borrow().class.borrow().name, inst.borrow().shape_id),
             BxValue::Future(_) => write!(f, "<future>"),
             #[cfg(target_arch = "wasm32")]
             BxValue::JsValue(js) => write!(f, "<js value {:?}>", js),
@@ -89,21 +83,28 @@ impl fmt::Display for BxValue {
 pub struct BxCompiledFunction {
     pub name: String,
     pub arity: usize,
-    pub chunk: crate::vm::chunk::Chunk,
+    pub chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BxClass {
     pub name: String,
-    pub constructor: crate::vm::chunk::Chunk,
+    pub constructor: Rc<RefCell<crate::vm::chunk::Chunk>>,
     pub methods: HashMap<String, Rc<BxCompiledFunction>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BxStruct {
+    pub shape_id: usize,
+    pub properties: Vec<BxValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BxInstance {
     pub class: Rc<RefCell<BxClass>>,
-    pub this: Rc<RefCell<HashMap<String, BxValue>>>,
-    pub variables: Rc<RefCell<HashMap<String, BxValue>>>,
+    pub shape_id: usize,
+    pub properties: Vec<BxValue>,
+    pub variables: Rc<RefCell<HashMap<String, BxValue>>>, 
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

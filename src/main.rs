@@ -238,9 +238,6 @@ fn load_embedded_bytecode() -> Result<Chunk> {
 
 #[cfg(target_arch = "wasm32")]
 fn load_wasm_custom_section() -> Result<Chunk> {
-    // In WASI, we usually need the module bytes. 
-    // This is hard to get without external help. 
-    // For this POC, we assume the host provides the bytecode in a specific way or we bail.
     bail!("Custom section loading requires host support in this POC")
 }
 
@@ -288,29 +285,6 @@ fn produce_wasm_binary(chunk: &Chunk, source_path: &Path) -> Result<()> {
     let wasm_bytes = fs::read(wasm_runner_path)?;
     let chunk_bytes = bincode::serialize(chunk)?;
     
-    // Use wasm-encoder to add a custom section
-    let mut module = wasm_encoder::Module::new();
-    
-    // Copy existing sections
-    use wasmparser::Parser;
-    for payload in Parser::new(0).parse_all(&wasm_bytes) {
-        let payload = payload?;
-        match payload {
-            wasmparser::Payload::CustomSection(c) => {
-                module.section(&wasm_encoder::CustomSection {
-                    name: c.name().into(),
-                    data: c.data().into(),
-                });
-            }
-            // For a robust implementation, we'd copy ALL sections (Type, Import, Function, etc.)
-            // But wasm-encoder doesn't have a "raw section" copy for all types easily.
-            // Simplified: We'll just append our custom section to the end of the file.
-            // WASM format actually allows this!
-            _ => {}
-        }
-    }
-    
-    // Actually, appending a custom section to the end of a valid WASM file IS valid.
     let mut out_bytes = wasm_bytes;
     use wasm_encoder::Encode;
     let custom_section = wasm_encoder::CustomSection {
