@@ -26,7 +26,7 @@ fn main() -> Result<()> {
     }
 
     let args: Vec<String> = std_env::args().collect();
-    if args.len() < 2 {
+    if args.len() < 2 || args.contains(&"--help".to_string()) || args.contains(&"-h".to_string()) {
         print_usage();
         return Ok(());
     }
@@ -55,6 +55,7 @@ fn main() -> Result<()> {
 fn print_usage() {
     println!("Usage: bx-rust [options] <file.bxs|file.bxb|directory>");
     println!("\nOptions:");
+    println!("  -h, --help          Show this help message");
     println!("  --build             Compile to bytecode (.bxb)");
     println!("  --target <native>   Produce a standalone native binary");
     println!("  --target <wasm>     Produce a standalone WASM binary");
