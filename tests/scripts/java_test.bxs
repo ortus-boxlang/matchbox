@@ -1,0 +1,23 @@
+// BoxLang script demonstrating JRE interaction
+try {
+    println("Attempting to interact with the JRE...");
+
+    // Create a Java ArrayList
+    list = createObject("java", "java.util.ArrayList");
+    
+    println("ArrayList created successfully.");
+
+    // Call Java methods
+    list.add("Hello from BoxLang!");
+    list.add("This is running in a Rust VM, calling into a JRE.");
+    
+    println("List size via Java: " & list.size());
+    
+    // Accessing static fields/methods
+    System = createObject("java", "java.lang.System");
+    millis = System.currentTimeMillis();
+    println("Current time from Java: " & millis);
+
+} catch (e) {
+    println("Java Interop Error: " & e);
+}

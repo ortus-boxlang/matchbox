@@ -648,7 +648,7 @@ impl VM {
                             }
                             args.reverse();
                             self.fibers[fiber_idx].stack.pop(); // receiver
-                            match obj.borrow().call_method(self, &name, &args) {
+                            match obj.borrow_mut().call_method(self, &name, &args) {
                                 Ok(res) => {
                                     self.fibers[fiber_idx].stack.push(res);
                                     continue;
@@ -659,7 +659,12 @@ impl VM {
                                 }
                             }
                         }
-                        _ => { self.throw_error(fiber_idx, "Can only invoke methods on instances, structs, JS objects, and native objects.")?; continue; }
+                        #[cfg(feature = "jvm")]
+                        BxValue::JavaObject(_) => {
+                            self.throw_error(fiber_idx, "Java method invocation not yet implemented in this POC")?;
+                            continue;
+                        }
+                        _ => { self.throw_error(fiber_idx, "Can only invoke methods on instances, structs, JS objects, native objects, and Java objects.")?; continue; }
                     }
                 }
                 OpCode::OpCall(arg_count) => {

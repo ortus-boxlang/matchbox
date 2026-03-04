@@ -39,7 +39,7 @@ pub type BxNativeFunction = fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, Str
 pub trait BxNativeObject: fmt::Debug {
     fn get_property(&self, name: &str) -> BxValue;
     fn set_property(&mut self, name: &str, value: BxValue);
-    fn call_method(&self, vm: &mut dyn BxVM, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
+    fn call_method(&mut self, vm: &mut dyn BxVM, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
 }
 
 // Implement PartialEq for NativeObject manually since dyn trait can't derive it
