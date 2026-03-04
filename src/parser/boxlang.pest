@@ -35,7 +35,7 @@ assignment = { identifier ~ "=" ~ expression }
 
 binary_expr = { primary ~ (operator ~ primary)* }
 
-operator = { "+" | "-" | "*" | "/" | "==" | "!=" | "<=" | ">=" | "<" | ">" }
+operator = { "+" | "-" | "*" | "/" | "==" | "!=" | "<=" | ">=" | "<" | ">" | "&" }
 
 primary = { atom ~ (function_call_args | array_access | member_access)* }
 

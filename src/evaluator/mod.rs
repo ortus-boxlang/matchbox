@@ -282,6 +282,9 @@ impl Evaluator {
                 (BxValue::Number(l), BxValue::Number(r)) => Ok(BxValue::Boolean(l >= r)),
                 _ => bail!("Unsupported operands for >="),
             },
+            "&" => {
+                Ok(BxValue::String(format!("{}{}", left.to_string(), right.to_string())))
+            }
             _ => bail!("Unsupported operator: {}", operator),
         }
     }

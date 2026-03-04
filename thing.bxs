@@ -1,0 +1,7 @@
+
+
+a = {
+    "something": "else"
+}
+
+println( a.something & "sefseesf" )

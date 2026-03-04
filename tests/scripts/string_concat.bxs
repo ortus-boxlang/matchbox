@@ -1,0 +1,16 @@
+// Test string concatenation operator &
+s1 = "Hello "
+s2 = "World"
+println(s1 & s2)
+
+// Non-string operands
+name = "BoxLang"
+ver = 1.0
+println("Welcome to " & name & " version " & ver)
+
+// Concatenating bools and nulls
+println("Boolean: " & true & " Null: " & null)
+
+// Concatenating nested expressions
+s3 = "Result: " & (10 + 20)
+println(s3)
