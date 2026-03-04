@@ -1,4 +1,4 @@
-# BoxLang Rust Implementation (bx-rust)
+# MatchBox (BoxLang Rust Implementation)
 
 This project is a native Rust implementation of the [BoxLang](https://github.com/ortus-boxlang/BoxLang) programming language. It aims to provide a fast, JVM-independent runtime for BoxLang scripts (`.bxs`).
 

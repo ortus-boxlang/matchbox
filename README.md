@@ -1,4 +1,4 @@
-# bx-rust
+# MatchBox
 
 A high-performance, native Rust implementation of the BoxLang programming language. This project features a stack-based Bytecode Virtual Machine (VM) and a multi-stage compiler, providing a standalone runtime independent of the JVM.
 
@@ -13,39 +13,39 @@ A high-performance, native Rust implementation of the BoxLang programming langua
 
 ## Usage Guide
 
-The `bx-rust` binary is a versatile tool that can interpret source code, compile to portable bytecode, or bundle applications into standalone executables.
+The `matchbox` binary is a versatile tool that can interpret source code, compile to portable bytecode, or bundle applications into standalone executables.
 
 ### 1. Running Source Code (Interpreter Mode)
 Run a BoxLang script (`.bxs`) directly from source.
 
 ```bash
-bx-rust my_script.bxs
+matchbox my_script.bxs
 ```
 
 ### 2. Interactive REPL
 Start the BoxLang REPL by running the binary without arguments:
 
 ```bash
-bx-rust
+matchbox
 ```
 
 ### 3. Compiling to Bytecode
 Compile source code into a compact, portable binary format (`.bxb`).
 
 ```bash
-bx-rust --build my_script.bxs
+matchbox --build my_script.bxs
 ```
 
 ### 4. Producing Standalone Native Binaries
 Create a single executable file that contains both the BoxLang VM engine and your compiled code.
 
 ```bash
-bx-rust --target native my_script.bxs
+matchbox --target native my_script.bxs
 ```
 
 ## WebAssembly & Browser Support
 
-`bx-rust` supports running BoxLang directly in the browser via WebAssembly.
+`MatchBox` supports running BoxLang directly in the browser via WebAssembly.
 
 ### 1. Runtime Integration (JIT-like)
 You can include the BoxLang engine in your page and run source code dynamically.
@@ -53,12 +53,12 @@ You can include the BoxLang engine in your page and run source code dynamically.
 **Build the runtime:**
 ```bash
 cargo build --target wasm32-unknown-unknown --release
-wasm-bindgen --target web --out-dir ./pkg target/wasm32-unknown-unknown/release/bx_rust.wasm
+wasm-bindgen --target web --out-dir ./pkg target/wasm32-unknown-unknown/release/matchbox.wasm
 ```
 
 **Use in HTML:**
 ```javascript
-import init, { run_boxlang } from './pkg/bx_rust.js';
+import init, { run_boxlang } from './pkg/matchbox.js';
 await init();
 run_boxlang('println("Hello World")');
 ```
@@ -72,14 +72,14 @@ For production, you can compile your BoxLang code into a standalone WASM binary 
 cargo build --target wasm32-unknown-unknown --release
 
 # 2. Compile your script to a specialized WASM binary
-bx-rust --target wasm my_app.bxs
+matchbox --target wasm my_app.bxs
 # Produces: my_app.wasm
 ```
 
 **Deploy in the browser:**
 ```html
 <script type="module">
-    import init, { run_boxlang_bytecode } from './pkg/bx_rust.js';
+    import init, { run_boxlang_bytecode } from './pkg/matchbox.js';
 
     async function deploy() {
         // 1. Fetch the WASM binary containing your app
@@ -105,7 +105,7 @@ bx-rust --target wasm my_app.bxs
 You can compile BoxLang scripts into native JavaScript modules that run in the browser or Node.js via WASM:
 
 ```bash
-bx-rust --target js my_lib.bxs
+matchbox --target js my_lib.bxs
 ```
 
 This produces a `my_lib.js` file that exports all top-level BoxLang functions as asynchronous JS functions:

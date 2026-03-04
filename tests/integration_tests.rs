@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use bx_rust::process_file;
+use matchbox::process_file;
 
 macro_rules! script_test {
     ($name:ident, $file:expr) => {
