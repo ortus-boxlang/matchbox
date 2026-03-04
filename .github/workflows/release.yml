@@ -78,6 +78,14 @@ jobs:
           VERSION=$(grep "^version =" Cargo.toml | head -1 | cut -d '"' -f 2)
           echo "VERSION=v$VERSION" >> $GITHUB_OUTPUT
 
+      - name: Extract Changelog
+        id: extract_changelog
+        run: |
+          # Extract content between [Unreleased] and the next ## heading
+          # Sed range: /start/,/end/ but we need to exclude the markers
+          sed -n '/## \[Unreleased\]/,/## /p' CHANGELOG.md | sed '1d;$d' > release_notes.md
+          echo "BODY_PATH=release_notes.md" >> $GITHUB_OUTPUT
+
       - name: Download All Artifacts
         uses: actions/download-artifact@v4
         with:
@@ -93,7 +101,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
+          body_path: release_notes.md
           files: release-assets/*
-          generate_release_notes: true
+          generate_release_notes: false
           draft: false
           prerelease: false
