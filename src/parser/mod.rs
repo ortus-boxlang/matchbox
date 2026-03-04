@@ -462,13 +462,13 @@ fn parse_atom(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
                         // Operands like => are literals, not rules, so they don't appear in into_inner()
                         (params, inner.next().unwrap())
                     } else {
-                        // "function" is a literal, so it doesn't appear.
-                        // So first is either params or block.
-                        if first.as_rule() == Rule::params {
-                            let params = parse_params(first);
+                        // first is function_keyword, next is params or block
+                        let next = inner.next().unwrap();
+                        if next.as_rule() == Rule::params {
+                            let params = parse_params(next);
                             (params, inner.next().unwrap())
                         } else {
-                            (vec![], first)
+                            (vec![], next)
                         }
                     };
                     
