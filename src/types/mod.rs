@@ -23,9 +23,6 @@ pub enum BxValue {
     JsValue(wasm_bindgen::JsValue),
     #[serde(skip)]
     NativeObject(Rc<RefCell<dyn BxNativeObject>>),
-    #[cfg(feature = "jvm")]
-    #[serde(skip)]
-    JavaObject(jni::objects::GlobalRef),
 }
 
 pub trait BxVM {
@@ -73,8 +70,6 @@ impl fmt::Display for BxValue {
             #[cfg(target_arch = "wasm32")]
             BxValue::JsValue(js) => write!(f, "<js value {:?}>", js),
             BxValue::NativeObject(obj) => write!(f, "<native object {:?}>", obj.borrow()),
-            #[cfg(feature = "jvm")]
-            BxValue::JavaObject(_) => write!(f, "<java object>"),
         }
     }
 }

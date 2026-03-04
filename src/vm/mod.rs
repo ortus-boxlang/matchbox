@@ -953,12 +953,7 @@ impl VM {
                                 }
                             }
                         }
-                        #[cfg(feature = "jvm")]
-                        BxValue::JavaObject(_) => {
-                            self.throw_error(fiber_idx, "Java method invocation not yet implemented in this POC")?;
-                            continue;
-                        }
-                        _ => { self.throw_error(fiber_idx, "Can only invoke methods on instances, structs, JS objects, native objects, and Java objects.")?; continue; }
+                        _ => { self.throw_error(fiber_idx, "Can only invoke methods on instances, structs, JS objects, and native objects.")?; continue; }
                     }
                 }
                 OpCode::OpCall(arg_count) => {

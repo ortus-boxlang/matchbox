@@ -5,6 +5,8 @@ use rand::RngExt;
 use std::rc::Rc;
 use std::cell::RefCell;
 
+mod jni;
+
 pub fn register_all() -> HashMap<String, BxValue> {
     let mut bifs = HashMap::new();
 
@@ -187,15 +189,7 @@ fn create_object(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String
 
     match obj_type.as_str() {
         "java" => {
-            // Simulator
-            if class_name == "java.util.ArrayList" {
-                return Ok(BxValue::NativeObject(Rc::new(RefCell::new(JavaArrayListSimulator {
-                    items: Vec::new(),
-                }))));
-            } else if class_name == "java.lang.System" {
-                return Ok(BxValue::NativeObject(Rc::new(RefCell::new(JavaSystemSimulator))));
-            }
-            Err(format!("Java class {} not found in simulator", class_name))
+            jni::create_java_object(&class_name)
         }
         "rust" | "native" => {
             if class_name == "Mock" {
@@ -233,59 +227,5 @@ impl crate::types::BxNativeObject for MockNativeObject {
             return Ok(BxValue::String(format!("Rust says: {}", self.data)));
         }
         Err(format!("Method {} not found on native object", name))
-    }
-}
-
-// --- Java Simulators for Demo ---
-
-#[derive(Debug)]
-struct JavaArrayListSimulator {
-    items: Vec<BxValue>,
-}
-
-impl crate::types::BxNativeObject for JavaArrayListSimulator {
-    fn get_property(&self, _name: &str) -> BxValue { BxValue::Null }
-    fn set_property(&mut self, _name: &str, _value: BxValue) {}
-    fn call_method(&mut self, _vm: &mut dyn BxVM, name: &str, args: &[BxValue]) -> Result<BxValue, String> {
-        match name {
-            "add" => {
-                if args.len() != 1 { return Err("ArrayList.add() expects 1 argument".to_string()); }
-                self.items.push(args[0].clone());
-                Ok(BxValue::Boolean(true))
-            }
-            "size" => {
-                Ok(BxValue::Number(self.items.len() as f64))
-            }
-            "get" => {
-                if args.len() != 1 { return Err("ArrayList.get() expects 1 argument".to_string()); }
-                if let BxValue::Number(idx) = &args[0] {
-                    let i = *idx as usize;
-                    if i < self.items.len() {
-                        Ok(self.items[i].clone())
-                    } else {
-                        Err("Index out of bounds".to_string())
-                    }
-                } else {
-                    Err("Index must be a number".to_string())
-                }
-            }
-            _ => Err(format!("Method {} not found on ArrayList", name)),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct JavaSystemSimulator;
-
-impl crate::types::BxNativeObject for JavaSystemSimulator {
-    fn get_property(&self, _name: &str) -> BxValue { BxValue::Null }
-    fn set_property(&mut self, _name: &str, _value: BxValue) {}
-    fn call_method(&mut self, _vm: &mut dyn BxVM, name: &str, _args: &[BxValue]) -> Result<BxValue, String> {
-        if name == "currenttimemillis" {
-            let start = SystemTime::now();
-            let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
-            return Ok(BxValue::Number(since_the_epoch.as_millis() as f64));
-        }
-        Err(format!("Method {} not found on java.lang.System", name))
     }
 }
