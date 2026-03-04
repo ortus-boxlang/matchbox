@@ -467,7 +467,11 @@ impl VM {
                                 Err(_) => self.fibers[fiber_idx].stack.push(BxValue::Null),
                             }
                         }
-                        _ => { self.throw_error(fiber_idx, "Member access only supported on structs, instances, and JS objects")?; continue; }
+                        BxValue::NativeObject(obj) => {
+                            let val = obj.borrow().get_property(&name);
+                            self.fibers[fiber_idx].stack.push(val);
+                        }
+                        _ => { self.throw_error(fiber_idx, "Member access only supported on structs, instances, JS objects, and native objects")?; continue; }
                     }
                 }
                 OpCode::OpSetMember(idx) => {
@@ -491,7 +495,11 @@ impl VM {
                             Reflect::set(&js, &prop, &js_val).ok();
                             self.fibers[fiber_idx].stack.push(val);
                         }
-                        _ => { self.throw_error(fiber_idx, "Member assignment only supported on structs, instances, and JS objects")?; continue; }
+                        BxValue::NativeObject(obj) => {
+                            obj.borrow_mut().set_property(&name, val.clone());
+                            self.fibers[fiber_idx].stack.push(val);
+                        }
+                        _ => { self.throw_error(fiber_idx, "Member assignment only supported on structs, instances, JS objects, and native objects")?; continue; }
                     }
                 }
                 OpCode::OpInvoke(idx, arg_count) => {
@@ -633,7 +641,25 @@ impl VM {
                                 }
                             }
                         }
-                        _ => { self.throw_error(fiber_idx, "Can only invoke methods on instances, structs, and JS objects.")?; continue; }
+                        BxValue::NativeObject(obj) => {
+                            let mut args = Vec::with_capacity(arg_count);
+                            for _ in 0..arg_count {
+                                args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                            }
+                            args.reverse();
+                            self.fibers[fiber_idx].stack.pop(); // receiver
+                            match obj.borrow().call_method(self, &name, &args) {
+                                Ok(res) => {
+                                    self.fibers[fiber_idx].stack.push(res);
+                                    continue;
+                                }
+                                Err(e) => {
+                                    self.throw_error(fiber_idx, &e)?;
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => { self.throw_error(fiber_idx, "Can only invoke methods on instances, structs, JS objects, and native objects.")?; continue; }
                     }
                 }
                 OpCode::OpCall(arg_count) => {

@@ -21,6 +21,11 @@ pub enum BxValue {
     #[cfg(target_arch = "wasm32")]
     #[serde(skip)]
     JsValue(wasm_bindgen::JsValue),
+    #[serde(skip)]
+    NativeObject(Rc<RefCell<dyn BxNativeObject>>),
+    #[cfg(feature = "jvm")]
+    #[serde(skip)]
+    JavaObject(jni::objects::GlobalRef),
 }
 
 pub trait BxVM {
@@ -30,6 +35,19 @@ pub trait BxVM {
 }
 
 pub type BxNativeFunction = fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, String>;
+
+pub trait BxNativeObject: fmt::Debug {
+    fn get_property(&self, name: &str) -> BxValue;
+    fn set_property(&mut self, name: &str, value: BxValue);
+    fn call_method(&self, vm: &mut dyn BxVM, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
+}
+
+// Implement PartialEq for NativeObject manually since dyn trait can't derive it
+impl PartialEq for dyn BxNativeObject {
+    fn eq(&self, _other: &Self) -> bool {
+        false // Identity-based equality is safer for native objects
+    }
+}
 
 impl fmt::Display for BxValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -60,6 +78,9 @@ impl fmt::Display for BxValue {
             BxValue::Future(_) => write!(f, "<future>"),
             #[cfg(target_arch = "wasm32")]
             BxValue::JsValue(js) => write!(f, "<js value {:?}>", js),
+            BxValue::NativeObject(obj) => write!(f, "<native object {:?}>", obj.borrow()),
+            #[cfg(feature = "jvm")]
+            BxValue::JavaObject(_) => write!(f, "<java object>"),
         }
     }
 }

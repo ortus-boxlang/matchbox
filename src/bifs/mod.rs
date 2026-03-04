@@ -34,6 +34,9 @@ pub fn register_all() -> HashMap<String, BxValue> {
     // Async BIFs
     bifs.insert("runasync".to_string(), BxValue::NativeFunction(run_async));
 
+    // Core BIFs
+    bifs.insert("createobject".to_string(), BxValue::NativeFunction(create_object));
+
     bifs
 }
 
@@ -166,5 +169,67 @@ fn run_async(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
             Ok(vm.spawn(Rc::clone(func), func_args))
         }
         _ => Err("runAsync() expects a function as the first argument".to_string()),
+    }
+}
+
+fn create_object(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 2 { return Err("createObject() expects at least 2 arguments: (type, class)".to_string()); }
+    let obj_type = match &args[0] {
+        BxValue::String(s) => s.to_lowercase(),
+        _ => return Err("First argument to createObject must be a string (type)".to_string()),
+    };
+    
+    let class_name = match &args[1] {
+        BxValue::String(s) => s.clone(),
+        _ => return Err("Second argument to createObject must be a string (class)".to_string()),
+    };
+
+    match obj_type.as_str() {
+        "java" => {
+            #[cfg(feature = "jvm")]
+            {
+                // JNI implementation would go here
+                Err("JVM bridge not yet fully implemented in this POC".to_string())
+            }
+            #[cfg(not(feature = "jvm"))]
+            Err("JVM support not enabled. Build with --features jvm".to_string())
+        }
+        "rust" | "native" => {
+            // For this POC, we'll return a Mock Native Object if the class matches "Mock"
+            if class_name == "Mock" {
+                return Ok(BxValue::NativeObject(Rc::new(RefCell::new(MockNativeObject {
+                    data: "I am a Rust Mock".to_string(),
+                }))));
+            }
+            Err(format!("Native class {} not found", class_name))
+        }
+        _ => Err(format!("Unknown object type: {}", obj_type)),
+    }
+}
+
+#[derive(Debug)]
+struct MockNativeObject {
+    data: String,
+}
+
+impl crate::types::BxNativeObject for MockNativeObject {
+    fn get_property(&self, name: &str) -> BxValue {
+        if name == "data" {
+            return BxValue::String(self.data.clone());
+        }
+        BxValue::Null
+    }
+
+    fn set_property(&mut self, name: &str, value: BxValue) {
+        if name == "data" {
+            self.data = value.to_string();
+        }
+    }
+
+    fn call_method(&self, _vm: &mut dyn BxVM, name: &str, _args: &[BxValue]) -> Result<BxValue, String> {
+        if name == "greet" {
+            return Ok(BxValue::String(format!("Rust says: {}", self.data)));
+        }
+        Err(format!("Method {} not found on native object", name))
     }
 }
