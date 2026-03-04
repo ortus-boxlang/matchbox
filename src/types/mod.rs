@@ -2,8 +2,9 @@ use std::fmt;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BxValue {
     String(String),
     Number(f64),
@@ -12,6 +13,7 @@ pub enum BxValue {
     Array(Rc<RefCell<Vec<BxValue>>>),
     Struct(Rc<RefCell<HashMap<String, BxValue>>>),
     CompiledFunction(Rc<BxCompiledFunction>),
+    #[serde(skip)]
     NativeFunction(BxNativeFunction),
     Class(Rc<RefCell<BxClass>>),
     Instance(Rc<RefCell<BxInstance>>),
@@ -32,7 +34,6 @@ impl fmt::Display for BxValue {
             }
             BxValue::Struct(s) => {
                 let items: Vec<String> = s.borrow().iter().map(|(k, v)| {
-                    // Prevent recursion if value is the same struct
                     if let BxValue::Struct(inner_s) = v {
                         if Rc::ptr_eq(s, inner_s) {
                             return format!("{}: <recursive struct>", k);
@@ -50,21 +51,21 @@ impl fmt::Display for BxValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BxCompiledFunction {
     pub name: String,
     pub arity: usize,
     pub chunk: crate::vm::chunk::Chunk,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BxClass {
     pub name: String,
     pub constructor: crate::vm::chunk::Chunk,
     pub methods: HashMap<String, Rc<BxCompiledFunction>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BxInstance {
     pub class: Rc<RefCell<BxClass>>,
     pub this: Rc<RefCell<HashMap<String, BxValue>>>,

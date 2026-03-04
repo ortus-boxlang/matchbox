@@ -13,14 +13,14 @@ To create a high-performance, standalone implementation of BoxLang that focuses 
 - **Location:** `src/parser/boxlang.pest` and `src/parser/mod.rs`.
 
 ### 2. Execution: Bytecode Virtual Machine (VM)
-- **Decision:** Migrated from a tree-walking interpreter to a stack-based Bytecode VM.
-- **Rationale:** Better support for future features (Classes, Scopes), faster execution, and portability (WASM support).
+- **Decision:** Stack-based Bytecode VM.
+- **Rationale:** Better support for complex features (Classes, Scopes), faster execution, and deployment flexibility.
 - **Location:** `src/vm/mod.rs` (VM), `src/compiler/mod.rs` (AST to Bytecode compiler).
 
-### 3. Scoping & Types
-- **Decision:** Stack-based local scoping and HashMap-based global scoping.
-- **Rationale:** Efficiency and specification parity.
-- **Location:** `src/types/mod.rs` and `src/vm/mod.rs`.
+### 3. Binary Output & Deployment
+- **Decision:** Support for standalone Native and WASM binaries.
+- **Rationale:** Standalone distribution without requiring a pre-installed runtime.
+- **Mechanism:** Bytecode embedding at the end of native binaries or via WASM custom sections.
 
 ## Development Guidelines
 
@@ -39,7 +39,8 @@ To create a high-performance, standalone implementation of BoxLang that focuses 
 - [x] Add support for `Array` and `Struct` types.
 - [x] Implement for-in loops for arrays and structs.
 - [x] Add support for Classes and Objects.
-- [x] Implement Exception Handling (try/catch, simplified finally).
-- [ ] Expand the library of BIFs.
+- [x] Implement Exception Handling (try/catch).
+- [x] Support standalone Native and WASM binary production.
+- [ ] Expand the library of BIFs (Standard Library).
 - [ ] Add a REPL mode.
-- [ ] Produce native/WASM binaries.
+- [ ] Implement `include` and `import` for multi-file projects.

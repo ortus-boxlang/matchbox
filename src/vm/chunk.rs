@@ -1,7 +1,8 @@
 use crate::types::BxValue;
 use super::opcode::OpCode;
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Chunk {
     pub code: Vec<OpCode>,
     pub constants: Vec<BxValue>,
