@@ -7,6 +7,7 @@ pub enum Statement {
     },
     ForLoop {
         item: String,
+        index: Option<String>,
         collection: Expression,
         body: Vec<Statement>,
     },

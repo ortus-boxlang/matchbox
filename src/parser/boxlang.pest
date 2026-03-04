@@ -15,7 +15,7 @@ function_decl = { "function" ~ identifier ~ "(" ~ params? ~ ")" ~ "{" ~ statemen
 params = { identifier ~ ("," ~ identifier)* }
 
 for_loop = { "for" ~ "(" ~ (for_in | for_classic) ~ ")" ~ block }
-for_in = { identifier ~ ("in" ~ expression) }
+for_in = { identifier ~ ("," ~ identifier)? ~ "in" ~ expression }
 for_classic = { init? ~ ";" ~ condition? ~ ";" ~ update? }
 init = { assignment | expression }
 condition = { expression }

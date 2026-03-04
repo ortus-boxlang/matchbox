@@ -1,0 +1,25 @@
+// Test "for in" loops
+arr = ["apple", "banana", "cherry"]
+
+println("Iterating with just item:")
+for (fruit in arr) {
+    println("Fruit:", fruit)
+}
+
+println("
+Iterating with item and index (1-indexed):")
+for (fruit, i in arr) {
+    println(i, ":", fruit)
+}
+
+// Nested for-in loops
+nested_arr = [[1, 2], [3, 4], [5, 6]]
+println("
+Nested for-in iteration:")
+for (inner, row in nested_arr) {
+    print("Row ", row, ": ")
+    for (num in inner) {
+        print(num, " ")
+    }
+    println("")
+}

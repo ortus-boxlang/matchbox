@@ -61,8 +61,15 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
                 Rule::for_in => {
                     let mut rules = loop_type.into_inner();
                     let item = rules.next().unwrap().as_str().to_string();
-                    let collection = parse_expression(rules.next().unwrap())?;
-                    Ok(Statement::ForLoop { item, collection, body })
+                    let mut index = None;
+                    let next_rule = rules.next().unwrap();
+                    let collection = if next_rule.as_rule() == Rule::identifier {
+                        index = Some(next_rule.as_str().to_string());
+                        parse_expression(rules.next().unwrap())?
+                    } else {
+                        parse_expression(next_rule)?
+                    };
+                    Ok(Statement::ForLoop { item, index, collection, body })
                 }
                 Rule::for_classic => {
                     let rules = loop_type.into_inner();

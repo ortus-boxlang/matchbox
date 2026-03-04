@@ -80,13 +80,28 @@ impl Evaluator {
 
                 Ok(BxValue::Null)
             }
-            Statement::ForLoop { item: _, collection, body: _ } => {
-                // Simplified for basic POC (only handles arrays eventually, or just basic numbers)
-                // Let's implement a simple numeric loop or just bail for now if collection isn't valid.
-                // Actually, if we want `for(i in null)`, let's evaluate collection:
-                let _coll_val = self.eval_expression(collection)?;
-                // For simplicity in POC, just run it once or return Null. 
-                // A real BoxLang loop iterates over collections or structs.
+            Statement::ForLoop { item, index, collection, body } => {
+                let coll_val = self.eval_expression(collection)?;
+                
+                match coll_val {
+                    BxValue::Array(items) => {
+                        for (i, val) in items.iter().enumerate() {
+                            // BoxLang arrays are 1-indexed, so we use 1-based index
+                            let idx = i as f64 + 1.0;
+                            
+                            // Define variables in a sub-scope for the loop body
+                            let loop_env = Environment::new_with_parent(Rc::clone(&self.env));
+                            loop_env.borrow_mut().define(item.clone(), val.clone());
+                            if let Some(index_name) = index {
+                                loop_env.borrow_mut().define(index_name.clone(), BxValue::Number(idx));
+                            }
+                            
+                            let mut loop_evaluator = Evaluator::with_env(loop_env);
+                            loop_evaluator.eval_block(body)?;
+                        }
+                    }
+                    _ => bail!("Iteration only supported for arrays currently"),
+                }
                 Ok(BxValue::Null)
             }
         }
@@ -146,6 +161,11 @@ impl Evaluator {
                     if name.to_lowercase() == "println" || name.to_lowercase() == "echo" {
                         let out = evaluated_args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" ");
                         println!("{}", out);
+                        return Ok(BxValue::Null);
+                    }
+                    if name.to_lowercase() == "print" {
+                        let out = evaluated_args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" ");
+                        print!("{}", out);
                         return Ok(BxValue::Null);
                     }
                 }
