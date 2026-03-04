@@ -101,6 +101,22 @@ bx-rust --target wasm my_app.bxs
 </script>
 ```
 
+### 3. JavaScript Module Generation
+You can compile BoxLang scripts into native JavaScript modules that run in the browser or Node.js via WASM:
+
+```bash
+bx-rust --target js my_lib.bxs
+```
+
+This produces a `my_lib.js` file that exports all top-level BoxLang functions as asynchronous JS functions:
+
+```javascript
+import { multiply } from './my_lib.js';
+
+const result = await multiply(10, 20);
+console.log(result); // 200
+```
+
 ## Language Support Matrix
 
 | Feature | Status | Syntax Example |
