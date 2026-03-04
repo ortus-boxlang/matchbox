@@ -16,7 +16,7 @@ A high-performance, native Rust implementation of the BoxLang programming langua
 The `bx-rust` binary is a versatile tool that can interpret source code, compile to portable bytecode, or bundle applications into standalone executables.
 
 ### 1. Running Source Code (Interpreter Mode)
-Run a BoxLang script (`.bxs`) directly from source. The tool will parse, compile to memory, and execute it immediately.
+Run a BoxLang script (`.bxs`) directly from source.
 
 ```bash
 bx-rust my_script.bxs
@@ -30,68 +30,75 @@ bx-rust
 ```
 
 ### 3. Compiling to Bytecode
-Compile source code into a compact, portable binary format (`.bxb`). This is useful for distribution where you don't want to expose source code or want to skip the parsing phase in production.
+Compile source code into a compact, portable binary format (`.bxb`).
 
 ```bash
 bx-rust --build my_script.bxs
-# Produces: my_script.bxb
 ```
 
 ### 4. Producing Standalone Native Binaries
-Create a single executable file that contains both the BoxLang VM engine and your compiled code. This binary has **zero dependencies**.
+Create a single executable file that contains both the BoxLang VM engine and your compiled code.
 
 ```bash
 bx-rust --target native my_script.bxs
-# Produces: my_script (an executable)
 ```
 
 ## WebAssembly & Browser Support
 
-`bx-rust` supports running BoxLang directly in the browser via WebAssembly, including a full bridge to JavaScript APIs.
+`bx-rust` supports running BoxLang directly in the browser via WebAssembly.
 
-### 1. Building for WASM
-To use BoxLang in a web project, first compile the runtime to WASM using `wasm-pack` or `cargo build`:
+### 1. Runtime Integration (JIT-like)
+You can include the BoxLang engine in your page and run source code dynamically.
 
+**Build the runtime:**
 ```bash
-# Install wasm-bindgen-cli if you haven't
-cargo install -f wasm-bindgen-cli
-
-# Build the runtime
 cargo build --target wasm32-unknown-unknown --release
-
-# Generate JS glue code
 wasm-bindgen --target web --out-dir ./pkg target/wasm32-unknown-unknown/release/bx_rust.wasm
 ```
 
-### 2. Including in HTML
-You can then initialize the BoxLang VM and run scripts from your HTML:
+**Use in HTML:**
+```javascript
+import init, { run_boxlang } from './pkg/bx_rust.js';
+await init();
+run_boxlang('println("Hello World")');
+```
 
+### 2. Ahead-of-Time (AOT) Deployment
+For production, you can compile your BoxLang code into a standalone WASM binary that contains your application bytecode in a custom section.
+
+**Compile your app to WASM:**
+```bash
+# 1. Ensure runtime is built
+cargo build --target wasm32-unknown-unknown --release
+
+# 2. Compile your script to a specialized WASM binary
+bx-rust --target wasm my_app.bxs
+# Produces: my_app.wasm
+```
+
+**Deploy in the browser:**
 ```html
 <script type="module">
-    import init, { run_boxlang } from './pkg/bx_rust.js';
+    import init, { run_boxlang_bytecode } from './pkg/bx_rust.js';
 
-    async function run() {
-        await init();
+    async function deploy() {
+        // 1. Fetch the WASM binary containing your app
+        const response = await fetch('my_app.wasm');
+        const buffer = await response.arrayBuffer();
         
-        const code = `
-            doc = js.document;
-            app = doc.getElementById("app");
-            app.innerHTML = "<h1>Hello from BoxLang WASM!</h1>";
-            
-            // Async works too!
-            runAsync(() => {
-                sleep(1000);
-                js.console.log("Delayed message from BoxLang fiber");
-            });
-        `;
+        // 2. Initialize the BoxLang engine using the fetched bytes
+        await init(buffer);
         
-        run_boxlang(code);
+        // 3. Extract and run the embedded bytecode
+        const module = await WebAssembly.compile(buffer);
+        const sections = WebAssembly.Module.customSections(module, "boxlang_bytecode");
+        if (sections.length > 0) {
+            run_boxlang_bytecode(new Uint8Array(sections[0]));
+        }
     }
     
-    run();
+    deploy();
 </script>
-
-<div id="app">Loading BoxLang...</div>
 ```
 
 ## Language Support Matrix

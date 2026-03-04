@@ -19,10 +19,29 @@ const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
+pub fn run_boxlang_bytecode(bytes: &[u8]) -> String {
+    let res = (|| -> Result<String> {
+        let chunk: Chunk = bincode::deserialize(bytes)?;
+        let mut vm = vm::VM::new();
+        for (name, val) in bifs::register_all() {
+            vm.globals.insert(name, val);
+        }
+        let val = vm.interpret(chunk)?;
+        Ok(val.to_string())
+    })();
+
+    match res {
+        Ok(s) => s,
+        Err(e) => format!("Error: {}", e),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
 pub fn run_boxlang(source: &str) -> String {
     let res = (|| -> Result<String> {
         let ast = parser::parse(source)?;
-        let mut compiler = compiler::Compiler::new("wasm_input");
+        let compiler = compiler::Compiler::new("wasm_input");
         let chunk = compiler.compile(&ast)?;
         let mut vm = vm::VM::new();
         for (name, val) in bifs::register_all() {
@@ -257,9 +276,13 @@ fn produce_native_binary(chunk: &Chunk, source_path: &Path) -> Result<()> {
 }
 
 fn produce_wasm_binary(chunk: &Chunk, source_path: &Path) -> Result<()> {
-    let wasm_runner_path = Path::new("target/wasm32-wasip1/debug/bx-rust.wasm");
+    let mut wasm_runner_path = Path::new("target/wasm32-unknown-unknown/release/bx_rust.wasm");
     if !wasm_runner_path.exists() {
-        bail!("WASM runner not found. Please run 'cargo build --target wasm32-wasip1' first.");
+        wasm_runner_path = Path::new("target/wasm32-wasip1/debug/bx-rust.wasm");
+    }
+    
+    if !wasm_runner_path.exists() {
+        bail!("WASM runner not found. Please run 'cargo build --target wasm32-unknown-unknown --release' first.");
     }
     
     let wasm_bytes = fs::read(wasm_runner_path)?;
