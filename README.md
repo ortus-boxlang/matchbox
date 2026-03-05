@@ -117,6 +117,34 @@ const result = await multiply(10, 20);
 console.log(result); // 200
 ```
 
+### 4. Native Fusion (Hybrid Builds)
+MatchBox allows you to mix Rust and BoxLang seamlessly. Any Rust files in a `native/` directory in your project will be compiled directly into the MatchBox engine.
+
+**Structure:**
+```text
+my-project/
+├── main.bxs
+└── native/
+    └── utils.rs
+```
+
+**`native/utils.rs`:**
+```rust
+pub fn register_bifs() -> HashMap<String, BxValue> {
+    let mut bifs = HashMap::new();
+    bifs.insert("rust_add".into(), BxValue::NativeFunction(add));
+    bifs
+}
+// ... implementation
+```
+
+**Build for any target:**
+```bash
+matchbox --target native main.bxs
+matchbox --target wasm main.bxs
+matchbox --target js main.bxs
+```
+
 ## Language Support Matrix
 
 | Feature | Status | Syntax Example |

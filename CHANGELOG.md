@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Multi-target Native Fusion (Hybrid builds for Native, WASM, and JS).
 - Dynamic JNI reflection bridge for Java interoperability.
 - Persistent `BoxLangVM` for WASM with dynamic `call()` support.
 - Automated JavaScript module generation via `--target js`.

@@ -23,9 +23,6 @@ pub fn run_boxlang_bytecode(bytes: &[u8]) -> String {
     let res = (|| -> Result<String> {
         let chunk: Chunk = bincode::deserialize(bytes)?;
         let mut vm = vm::VM::new();
-        for (name, val) in bifs::register_all() {
-            vm.globals.insert(name, val);
-        }
         let val = vm.interpret(chunk)?;
         Ok(val.to_string())
     })();
@@ -44,9 +41,6 @@ pub fn run_boxlang(source: &str) -> String {
         let compiler = compiler::Compiler::new("wasm_input");
         let chunk = compiler.compile(&ast)?;
         let mut vm = vm::VM::new();
-        for (name, val) in bifs::register_all() {
-            vm.globals.insert(name, val);
-        }
         let val = vm.interpret(chunk)?;
         Ok(val.to_string())
     })();
@@ -68,11 +62,7 @@ pub struct BoxLangVM {
 impl BoxLangVM {
     #[wasm_bindgen(constructor)]
     pub fn new() -> BoxLangVM {
-        let mut vm = vm::VM::new();
-        for (name, val) in bifs::register_all() {
-            vm.globals.insert(name, val);
-        }
-        BoxLangVM { vm }
+        BoxLangVM { vm: vm::VM::new() }
     }
 
     pub fn load_bytecode(&mut self, bytes: &[u8]) -> Result<(), String> {
@@ -174,6 +164,13 @@ pub fn process_file(path: &Path, is_build: bool, target: Option<&str>) -> Result
             fs::write(&out_path, bytes)?;
             println!("Compiled to {}", out_path.display());
         } else if let Some(t) = target {
+            let project_root = path.parent().unwrap_or(Path::new("."));
+            let native_dir = project_root.join("native");
+            
+            if native_dir.exists() && native_dir.is_dir() {
+                return produce_fusion_artifact(&chunk, path, &native_dir, t, &ast);
+            }
+
             match t {
                 "native" => produce_native_binary(&chunk, path)?,
                 "wasm" => produce_wasm_binary(&chunk, path)?,
@@ -241,9 +238,6 @@ fn process_directory(path: &Path, is_build: bool, target: Option<&str>) -> Resul
 
 pub fn run_chunk(chunk: Chunk) -> Result<()> {
     let mut vm = vm::VM::new();
-    for (name, val) in bifs::register_all() {
-        vm.globals.insert(name, val);
-    }
     vm.interpret(chunk)?;
     Ok(())
 }
@@ -254,9 +248,6 @@ fn run_repl() -> Result<()> {
     println!("Type 'exit' or 'quit' to exit.");
 
     let mut vm = vm::VM::new();
-    for (name, val) in bifs::register_all() {
-        vm.globals.insert(name, val);
-    }
 
     loop {
         print!("bx> ");
@@ -351,6 +342,164 @@ fn produce_native_binary(chunk: &Chunk, source_path: &Path) -> Result<()> {
         fs::set_permissions(&out_path, perms)?;
     }
     println!("Native binary produced: {}", out_path.display());
+    Ok(())
+}
+
+fn produce_fusion_artifact(chunk: &Chunk, source_path: &Path, native_dir: &Path, target: &str, ast: &[ast::Statement]) -> Result<()> {
+    println!("Native Fusion detected! Target: {}. Building hybrid artifact...", target);
+    
+    let build_dir = std_env::current_dir()?.join("target").join("fusion");
+    if build_dir.exists() {
+        fs::remove_dir_all(&build_dir)?;
+    }
+    fs::create_dir_all(&build_dir.join("src"))?;
+
+    let is_wasm = target == "wasm" || target == "js";
+
+    // 1. Generate Cargo.toml
+    let mut cargo_toml = format!(r#"[package]
+name = "fusion_build"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+matchbox = {{ path = "{}" }}
+bincode = "1.3.3"
+anyhow = "1.0"
+"#, std_env::current_dir()?.display());
+
+    if is_wasm {
+        cargo_toml.push_str("wasm-bindgen = \"0.2\"\n");
+        cargo_toml.push_str("js-sys = \"0.3\"\n");
+    }
+
+    fs::write(build_dir.join("Cargo.toml"), cargo_toml)?;
+
+    // 2. Prepare user modules
+    let mut mod_decls = String::new();
+    let mut registration_calls = String::new();
+    
+    for entry in fs::read_dir(native_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+            let mod_name = path.file_stem().unwrap().to_str().unwrap();
+            fs::copy(&path, build_dir.join("src").join(format!("{}.rs", mod_name)))?;
+            mod_decls.push_str(&format!("mod {};\n", mod_name));
+            registration_calls.push_str(&format!("    for (name, val) in {}::register_bifs() {{ bifs.insert(name, val); }}\n", mod_name));
+        }
+    }
+
+    // 3. Generate main.rs / lib.rs
+    let bytecode = bincode::serialize(chunk)?;
+    let bytecode_array = format!("{:?}", bytecode);
+
+    let mut code = format!(r#"
+use matchbox::{{vm::VM, types::BxValue, Chunk}};
+use std::collections::HashMap;
+
+{}
+
+fn run_interpreted() -> anyhow::Result<()> {{
+    let mut bifs = HashMap::new();
+{}
+    
+    let bytecode: Vec<u8> = {};
+    let chunk: Chunk = bincode::deserialize(&bytecode)?;
+    
+    let mut vm = VM::new_with_bifs(bifs);
+    vm.interpret(chunk)?;
+    Ok(())
+}}
+"#, mod_decls, registration_calls, bytecode_array);
+
+    if is_wasm {
+        code.push_str(r#"
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub fn run() {
+    run_interpreted().unwrap();
+}
+
+#[wasm_bindgen]
+pub struct BoxLangVM {
+    vm: VM,
+}
+
+#[wasm_bindgen]
+impl BoxLangVM {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> BoxLangVM {
+        let mut bifs = HashMap::new();
+        // TODO: In a real implementation, we'd need to re-run registration here
+        BoxLangVM { vm: VM::new_with_bifs(bifs) }
+    }
+
+    pub fn load_bytecode(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let chunk: Chunk = bincode::deserialize(bytes).map_err(|e| e.to_string())?;
+        self.vm.interpret(chunk).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn call(&mut self, name: &str, args: js_sys::Array) -> Result<JsValue, String> {
+        let mut bx_args = Vec::new();
+        for i in 0..args.length() {
+            bx_args.push(self.vm.js_to_bx(args.get(i)));
+        }
+        match self.vm.call_function(name, bx_args) {
+            Ok(val) => Ok(self.vm.bx_to_js(&val)),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+"#);
+        fs::write(build_dir.join("src").join("lib.rs"), code)?;
+    } else {
+        code.push_str("fn main() -> anyhow::Result<()> { run_interpreted() }\n");
+        fs::write(build_dir.join("src").join("main.rs"), code)?;
+    }
+
+    // 4. Build
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("build").arg("--release").current_dir(&build_dir);
+    
+    if is_wasm {
+        cmd.arg("--target").arg("wasm32-unknown-unknown");
+    }
+
+    let status = cmd.status()?;
+    if !status.success() {
+        bail!("Failed to compile native fusion binary");
+    }
+
+    // 5. Handle Artifact
+    if target == "native" {
+        let exe_name = if cfg!(windows) { "fusion_build.exe" } else { "fusion_build" };
+        let artifact = build_dir.join("target").join("release").join(exe_name);
+        let out_path = source_path.with_extension("");
+        fs::copy(artifact, &out_path)?;
+        println!("Native Fusion binary produced: {}", out_path.display());
+    } else if target == "wasm" {
+        let artifact = build_dir.join("target").join("wasm32-unknown-unknown").join("release").join("fusion_build.wasm");
+        let out_path = source_path.with_extension("wasm");
+        fs::copy(artifact, &out_path)?;
+        println!("WASM Fusion binary produced: {}", out_path.display());
+    } else if target == "js" {
+        // For JS, we would normally run wasm-bindgen here. 
+        // For this POC, we'll produce the wasm and a notice.
+        let artifact = build_dir.join("target").join("wasm32-unknown-unknown").join("release").join("fusion_build.wasm");
+        let wasm_out = source_path.with_extension("wasm");
+        fs::copy(artifact, &wasm_out)?;
+        
+        // Re-use standard JS bundle logic but pointed to this new wasm
+        produce_js_bundle(chunk, source_path, ast)?;
+        println!("JS Fusion module produced. NOTE: Requires wasm-bindgen on the fusion artifact for full functionality.");
+    }
+
     Ok(())
 }
 

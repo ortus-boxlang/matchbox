@@ -109,6 +109,10 @@ impl BxVM for VM {
 
 impl VM {
     pub fn new() -> Self {
+        Self::new_with_bifs(HashMap::new())
+    }
+
+    pub fn new_with_bifs(external_bifs: HashMap<String, BxValue>) -> Self {
         #[allow(unused_mut)]
         let mut globals = HashMap::new();
         #[cfg(target_arch = "wasm32")]
@@ -116,6 +120,16 @@ impl VM {
             if let Some(window) = web_sys::window() {
                 globals.insert("js".to_string(), BxValue::JsValue(window.into()));
             }
+        }
+
+        // Register standard BIFs
+        for (name, val) in crate::bifs::register_all() {
+            globals.insert(name, val);
+        }
+
+        // Register external/plugin BIFs
+        for (name, val) in external_bifs {
+            globals.insert(name, val);
         }
 
         VM {
