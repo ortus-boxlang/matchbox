@@ -44,10 +44,19 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p matchbox_runner
+          mkdir -p stubs
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            cp target/${{ matrix.target }}/release/matchbox_runner.exe stubs/runner_stub_native
+          else
+            cp target/${{ matrix.target }}/release/matchbox_runner stubs/runner_stub_native
+          fi
+          cargo build --release --target ${{ matrix.target }} -p matchbox
 
       - name: Run Tests
-        run: cargo test --target ${{ matrix.target }}
+        run: cargo test
 
       - name: Prepare Binary
         shell: bash
