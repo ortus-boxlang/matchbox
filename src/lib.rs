@@ -81,7 +81,8 @@ impl BoxLangVM {
             bx_args.push(self.vm.js_to_bx(args.get(i)));
         }
 
-        let func = self.vm.globals.get(name).cloned()
+        let name_lower = name.to_lowercase();
+        let func = self.vm.globals.get(&name_lower).cloned()
             .ok_or_else(|| format!("Function {} not found", name))?;
 
         match self.vm.call_function_value(func, bx_args) {

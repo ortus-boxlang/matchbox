@@ -1386,7 +1386,8 @@ impl VM {
     }
 
     pub fn call_function(&mut self, name: &str, args: Vec<BxValue>) -> Result<BxValue> {
-        let func = self.globals.get(name).cloned();
+        let name_lower = name.to_lowercase();
+        let func = self.globals.get(&name_lower).cloned();
         if let Some(f) = func {
             return self.call_function_value(f, args);
         }
