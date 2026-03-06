@@ -167,6 +167,7 @@ impl VM {
                 "map" => Some("arraymap".to_string()),
                 "reduce" => Some("arrayreduce".to_string()),
                 "filter" => Some("arrayfilter".to_string()),
+                "tolist" => Some("arraytolist".to_string()),
                 _ => None,
             },
             BxValue::Struct(_) => match method_name {

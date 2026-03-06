@@ -41,11 +41,34 @@ pub fn register_all() -> HashMap<String, BxValue> {
     bifs.insert("ucase".to_string(), BxValue::NativeFunction(ucase));
     bifs.insert("arraymap".to_string(), BxValue::NativeFunction(array_map));
     bifs.insert("arrayeach".to_string(), BxValue::NativeFunction(array_each));
+    bifs.insert("arraytolist".to_string(), BxValue::NativeFunction(array_to_list));
 
     bifs
 }
 
 // --- Implementation ---
+
+fn array_to_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() { return Err("arrayToList() expects at least 1 argument: (array, [delimiter])".to_string()); }
+    let id = match &args[0] {
+        BxValue::Array(id) => *id,
+        _ => return Err("First argument to arrayToList must be an array".to_string()),
+    };
+    
+    let delimiter = if args.len() > 1 {
+        args[1].to_string()
+    } else {
+        ",".to_string()
+    };
+
+    let len = vm.array_len(id);
+    let mut parts = Vec::with_capacity(len);
+    for i in 0..len {
+        parts.push(vm.array_get(id, i).to_string());
+    }
+
+    Ok(BxValue::String(parts.join(&delimiter)))
+}
 
 fn array_map(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 { return Err("arrayMap() expects 2 arguments: (array, callback)".to_string()); }
