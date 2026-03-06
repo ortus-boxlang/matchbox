@@ -11,6 +11,13 @@ impl Statement {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct FunctionParam {
+    pub name: String,
+    pub type_name: Option<String>,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum StatementKind {
     Import(String),
     ClassDecl {
@@ -21,7 +28,9 @@ pub enum StatementKind {
     },
     FunctionDecl {
         name: String,
-        params: Vec<String>,
+        access_modifier: Option<String>,
+        return_type: Option<String>,
+        params: Vec<FunctionParam>,
         body: FunctionBody,
     },
     ForLoop {
@@ -140,7 +149,7 @@ pub enum Literal {
     Array(Vec<Expression>),
     Struct(Vec<(Expression, Expression)>),
     Function {
-        params: Vec<String>,
+        params: Vec<FunctionParam>,
         body: FunctionBody,
     },
 }

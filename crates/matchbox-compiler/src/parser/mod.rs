@@ -34,8 +34,24 @@ pub fn parse(source: &str) -> Result<Vec<Statement>> {
     Ok(ast)
 }
 
-fn parse_params(pair: pest::iterators::Pair<Rule>) -> Vec<String> {
-    pair.into_inner().map(|p| p.as_str().to_string()).collect()
+fn parse_params(pair: pest::iterators::Pair<Rule>) -> Vec<crate::ast::FunctionParam> {
+    let mut params = Vec::new();
+    for param_decl in pair.into_inner() {
+        let mut required = false;
+        let mut type_name = None;
+        let mut name = String::new();
+        
+        for inner in param_decl.into_inner() {
+            match inner.as_rule() {
+                Rule::required_keyword => required = true,
+                Rule::type_name => type_name = Some(inner.as_str().to_string()),
+                Rule::identifier => name = inner.as_str().to_string(),
+                _ => {}
+            }
+        }
+        params.push(crate::ast::FunctionParam { name, type_name, required });
+    }
+    params
 }
 
 fn parse_init(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
@@ -121,7 +137,23 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
         }
         Rule::function_decl => {
             let mut inner_rules = pair.into_inner();
-            let _kw = inner_rules.next().unwrap(); // function_keyword
+            
+            let mut access_modifier = None;
+            let mut return_type = None;
+            
+            let mut current = inner_rules.next().unwrap();
+            if current.as_rule() == Rule::access_modifier {
+                access_modifier = Some(current.as_str().to_string());
+                current = inner_rules.next().unwrap();
+            }
+            if current.as_rule() == Rule::type_name {
+                return_type = Some(current.as_str().to_string());
+                current = inner_rules.next().unwrap();
+            }
+            
+            // next is function_keyword
+            let _kw = current;
+            
             let name = inner_rules.next().unwrap().as_str().to_string();
             let mut params = Vec::new();
             
@@ -139,6 +171,8 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
             
             Ok(Statement::new(StatementKind::FunctionDecl { 
                 name, 
+                access_modifier,
+                return_type,
                 params, 
                 body: crate::ast::FunctionBody::Block(body_stmts) 
             }, line))
@@ -524,7 +558,11 @@ fn parse_atom(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
                             if let Some(param_rule) = param_inner.next() {
                                 match param_rule.as_rule() {
                                     Rule::params => parse_params(param_rule),
-                                    Rule::identifier => vec![param_rule.as_str().to_string()],
+                                    Rule::identifier => vec![crate::ast::FunctionParam {
+                                        name: param_rule.as_str().to_string(),
+                                        type_name: None,
+                                        required: false,
+                                    }],
                                     _ => vec![],
                                 }
                             } else {

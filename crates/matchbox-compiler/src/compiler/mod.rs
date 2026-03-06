@@ -79,7 +79,7 @@ impl Compiler {
                         }
                         ClassMember::Statement(inner_stmt) => {
                             match &inner_stmt.kind {
-                                StatementKind::FunctionDecl { name: func_name, params, body } => {
+                                StatementKind::FunctionDecl { name: func_name, access_modifier: _, return_type: _, params, body } => {
                                     let mut method_compiler = Compiler::new(&self.chunk.filename);
                                     method_compiler.is_class = true;
                                     method_compiler.imports = self.imports.clone();
@@ -313,7 +313,7 @@ impl Compiler {
 
                 Ok(())
             }
-            StatementKind::FunctionDecl { name, params, body } => {
+            StatementKind::FunctionDecl { name, access_modifier: _, return_type: _, params, body } => {
                 let func = self.compile_function(&name, &params, &body)?;
                 if self.is_repl && is_last {
                     let func_idx = self.chunk.add_constant(BxValue::CompiledFunction(Rc::new(func.clone())));
@@ -676,21 +676,20 @@ impl Compiler {
         }
     }
 
-    fn compile_function(&mut self, name: &str, params: &[String], body: &FunctionBody) -> Result<BxCompiledFunction> {
+    fn compile_function(&mut self, name: &str, params: &[crate::ast::FunctionParam], body: &crate::ast::FunctionBody) -> Result<BxCompiledFunction> {
         let mut sub_compiler = Compiler::new(&self.chunk.filename);
         sub_compiler.chunk.source = self.chunk.source.clone();
         sub_compiler.scope_depth = 1;
         sub_compiler.is_class = self.is_class;
         sub_compiler.imports = self.imports.clone();
         sub_compiler.current_line = self.current_line;
-        
+
         for param in params {
             sub_compiler.locals.push(Local {
-                name: param.clone(),
+                name: param.name.clone(),
                 depth: 1,
             });
         }
-
         match body {
             FunctionBody::Block(stmts) => {
                 for stmt in stmts {

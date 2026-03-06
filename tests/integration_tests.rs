@@ -41,3 +41,4 @@ script_test!(vm_struct_assign, "vm_struct_assign.bxs");
 script_test!(vm_struct_iter, "vm_struct_iter.bxs");
 script_test!(vm_inheritance, "vm_inheritance.bxs");
 script_test!(vm_accessors, "vm_accessors.bxs");
+script_test!(vm_typed_functions, "vm_typed_functions.bxs");

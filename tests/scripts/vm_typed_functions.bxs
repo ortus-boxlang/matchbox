@@ -1,0 +1,10 @@
+public string function greet(required string name) {
+    return "Hello, " & name;
+}
+
+private numeric function add(numeric a, numeric b) {
+    return a + b;
+}
+
+println(greet("Jacob"));
+println("Sum: " & add(5, 7));
