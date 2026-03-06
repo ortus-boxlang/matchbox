@@ -116,6 +116,12 @@ impl BxVM for VM {
             s.shape_id
         } else { 0 }
     }
+
+    fn future_on_error(&mut self, id: usize, handler: BxValue) {
+        if let GcObject::Future(f) = self.heap.get_mut(id) {
+            f.error_handler = Some(handler);
+        }
+    }
 }
 
 impl VM {
@@ -181,6 +187,10 @@ impl VM {
                 "round" => Some("round".to_string()),
                 _ => None,
             },
+            BxValue::Future(_) => match method_name {
+                "onerror" => Some("futureonerror".to_string()),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -195,6 +205,7 @@ impl VM {
         let future_id = self.heap.alloc(GcObject::Future(BxFuture {
             value: BxValue::Null,
             status: FutureStatus::Pending,
+            error_handler: None,
         }));
 
         let fiber = BxFiber {
@@ -222,6 +233,7 @@ impl VM {
         let future_id = self.heap.alloc(GcObject::Future(BxFuture {
             value: BxValue::Null,
             status: FutureStatus::Pending,
+            error_handler: None,
         }));
 
         let mut stack = Vec::with_capacity(256);
@@ -282,14 +294,24 @@ impl VM {
                     }
                     Err(e) => {
                         let fiber = self.fibers.remove(i);
+                        let mut handler = None;
                         if let GcObject::Future(f) = self.heap.get_mut(fiber.future_id) {
                             f.status = FutureStatus::Failed(e.to_string());
+                            handler = f.error_handler.clone();
                         }
                         
+                        if let Some(h) = handler {
+                            let err_val = BxValue::String(e.to_string());
+                            let _ = self.call_function_value(h, vec![err_val]);
+                            // Error was handled by user, do NOT return Err(e) yet.
+                            // If this was the last fiber, run_all will naturally exit the loop.
+                            continue;
+                        }
+
                         if self.fibers.is_empty() {
                             return Err(e);
                         } else {
-                            // Detached/Async task failed, print to stderr since it won't be caught by main loop
+                            // Detached/Async task failed without a handler
                             eprintln!("\n[Async Task Error] {}", e);
                         }
                     }
@@ -321,6 +343,11 @@ impl VM {
                 }
             }
             roots.push(BxValue::Future(fiber.future_id));
+            if let GcObject::Future(f) = self.heap.get(fiber.future_id) {
+                if let Some(handler) = &f.error_handler {
+                    roots.push(handler.clone());
+                }
+            }
         }
         // 2. Globals
         roots.extend(self.globals.values().cloned());
@@ -842,10 +869,32 @@ impl VM {
                                         continue;
                                     }
                                 }
-                            } else {
-                                self.throw_error(fiber_idx, &format!("Method {} not found on future.", name))?;
-                                continue;
+                            } else if let Some(bif_name) = self.resolve_member_method(&receiver_val, &name) {
+                                if let Some(BxValue::NativeFunction(bif)) = self.globals.get(&bif_name).cloned() {
+                                    let mut args = Vec::with_capacity(arg_count + 1);
+                                    for _ in 0..arg_count {
+                                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                                    }
+                                    args.reverse();
+                                    self.fibers[fiber_idx].stack.pop(); // receiver
+                                    
+                                    let mut final_args = vec![receiver_val];
+                                    final_args.extend(args);
+                                    
+                                    match bif(self, &final_args) {
+                                        Ok(res) => {
+                                            self.fibers[fiber_idx].stack.push(res);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            self.throw_error(fiber_idx, &e)?;
+                                            continue;
+                                        }
+                                    }
+                                }
                             }
+                            self.throw_error(fiber_idx, &format!("Method {} not found on future.", name))?;
+                            continue;
                         }
                         BxValue::Instance(id) => {
                             let (shape_id, properties_ptr, class) = if let GcObject::Instance(inst) = self.heap.get(id) {
@@ -1409,6 +1458,7 @@ impl VM {
                 let future_id = self.heap.alloc(GcObject::Future(crate::types::BxFuture {
                     value: BxValue::Null,
                     status: crate::types::FutureStatus::Pending,
+                    error_handler: None,
                 }));
 
                 let fiber = BxFiber {

@@ -39,6 +39,7 @@ pub trait BxVM {
     fn struct_len(&self, id: usize) -> usize;
     fn struct_new(&mut self) -> usize;
     fn struct_get_shape(&self, id: usize) -> usize;
+    fn future_on_error(&mut self, id: usize, handler: BxValue);
 }
 
 pub type BxNativeFunction = fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, String>;
@@ -108,6 +109,8 @@ pub struct BxInstance {
 pub struct BxFuture {
     pub value: BxValue,
     pub status: FutureStatus,
+    #[serde(skip)]
+    pub error_handler: Option<BxValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

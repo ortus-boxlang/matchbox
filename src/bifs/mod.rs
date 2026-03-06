@@ -42,11 +42,22 @@ pub fn register_all() -> HashMap<String, BxValue> {
     bifs.insert("arraymap".to_string(), BxValue::NativeFunction(array_map));
     bifs.insert("arrayeach".to_string(), BxValue::NativeFunction(array_each));
     bifs.insert("arraytolist".to_string(), BxValue::NativeFunction(array_to_list));
+    bifs.insert("futureonerror".to_string(), BxValue::NativeFunction(future_on_error));
 
     bifs
 }
 
 // --- Implementation ---
+
+fn future_on_error(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 2 { return Err("onError() expects 2 arguments: (future, callback)".to_string()); }
+    let id = match &args[0] {
+        BxValue::Future(id) => *id,
+        _ => return Err("First argument to onError must be a future".to_string()),
+    };
+    vm.future_on_error(id, args[1].clone());
+    Ok(args[0].clone()) // Return future for chaining
+}
 
 fn array_to_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() { return Err("arrayToList() expects at least 1 argument: (array, [delimiter])".to_string()); }
