@@ -242,15 +242,14 @@ fn run_async(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     vm.spawn_by_value(&args[0], Vec::new())
 }
 
-fn create_object(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+fn create_object(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 { return Err("createObject() expects at least 2 arguments: (type, class)".to_string()); }
-    let obj_type = args[0].to_string().to_lowercase();
-    let class_name = args[1].to_string();
+    let obj_type = vm.to_string(args[0]).to_lowercase();
+    let class_name = vm.to_string(args[1]);
 
     match obj_type.as_str() {
         "java" => {
-            // jni::create_java_object will also need heap access
-            Err("Java JNI not yet implemented for NaN-boxing".to_string())
+            jni::create_java_object(vm, &class_name)
         }
         "rust" | "native" => {
             Err("Native objects not yet implemented for NaN-boxing".to_string())

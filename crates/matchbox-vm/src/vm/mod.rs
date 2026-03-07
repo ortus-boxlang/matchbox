@@ -3,7 +3,7 @@ pub mod opcode;
 pub mod gc;
 pub mod shape;
 
-use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, box_string::BoxString};
+use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, box_string::BoxString};
 use self::chunk::{Chunk, IcEntry};
 use self::opcode::OpCode;
 use self::gc::{Heap, GcObject};
@@ -135,6 +135,10 @@ impl BxVM for VM {
         if let GcObject::Future(f) = self.heap.get_mut(id) {
             f.error_handler = Some(handler);
         }
+    }
+
+    fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize {
+        self.heap.alloc(GcObject::NativeObject(obj))
     }
 
     fn string_new(&mut self, s: String) -> usize {
@@ -1879,6 +1883,27 @@ impl VM {
                         }
                     } else if let Some(bif_name) = self.resolve_member_method(&receiver_val, &name) {
                         return self.execute_bif_call(fiber_idx, bif_name, arg_count, receiver_val);
+                    }
+                }
+                GcObject::NativeObject(obj) => {
+                    let obj = Rc::clone(obj);
+                    let mut args = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                    }
+                    args.reverse();
+                    self.fibers[fiber_idx].stack.pop(); // receiver
+
+                    let mut obj_borrow = obj.borrow_mut();
+                    match obj_borrow.call_method(self, &name, &args) {
+                        Ok(res) => {
+                            self.fibers[fiber_idx].stack.push(res);
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            drop(obj_borrow);
+                            return self.throw_error(fiber_idx, &e);
+                        }
                     }
                 }
                 GcObject::Instance(inst) => {
