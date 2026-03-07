@@ -121,6 +121,12 @@ fn main() {
         ];
 
         for (target, dest, src) in targets {
+            // Skip macOS targets on Linux unless specifically requested, as they need osxcross/zig
+            if cfg!(target_os = "linux") && target.contains("apple") {
+                stubs_rs_content.push_str(&format!("    stubs.insert(\"{}\", include_bytes!(\"../stubs/{}\"));\n", target, dest));
+                continue;
+            }
+            
             build_stub(Some(target), dest, src, target, &mut stubs_rs_content);
             if target == host {
                 stubs_rs_content.push_str(&format!("    stubs.insert(\"host\", include_bytes!(\"../stubs/{}\"));\n", dest));
