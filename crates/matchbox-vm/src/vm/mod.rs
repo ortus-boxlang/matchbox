@@ -3,7 +3,7 @@ pub mod opcode;
 pub mod gc;
 pub mod shape;
 
-use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, box_string::BoxString};
+use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, BxNativeFunction, box_string::BoxString};
 use self::chunk::{Chunk, IcEntry};
 use self::opcode::OpCode;
 use self::gc::{Heap, GcObject};
@@ -205,7 +205,7 @@ impl VM {
         Self::new_with_bifs(HashMap::new())
     }
 
-    pub fn new_with_bifs(external_bifs: HashMap<String, BxValue>) -> Self {
+    pub fn new_with_bifs(external_bifs: HashMap<String, BxNativeFunction>) -> Self {
         let mut vm = VM {
             fibers: Vec::new(),
             global_names: HashMap::new(),
@@ -230,8 +230,9 @@ impl VM {
         }
 
         // Register external/plugin BIFs
-        for (name, val) in external_bifs {
-            vm.insert_global(name, val);
+        for (name, func) in external_bifs {
+            let id = vm.heap.alloc(GcObject::NativeFunction(func));
+            vm.insert_global(name, BxValue::new_ptr(id));
         }
 
         vm

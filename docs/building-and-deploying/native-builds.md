@@ -131,24 +131,23 @@ Each file in `native/` must expose a `register_bifs` function that returns a map
 
 ```rust
 // native/math.rs
-use matchbox_vm::types::BxValue;
+use matchbox_vm::types::{BxValue, BxVM, BxNativeFunction};
 use std::collections::HashMap;
 
 /// Compute the factorial of a non-negative integer.
-pub fn factorial(args: Vec<BxValue>) -> Result<BxValue, String> {
+pub fn factorial(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     let n = args
         .first()
-        .and_then(|v| v.as_number())
+        .map(|v| v.as_number())
         .ok_or("factorial: expected a number argument")? as u64;
 
     let result = (1..=n).product::<u64>();
     Ok(BxValue::new_number(result as f64))
 }
 
-pub fn register_bifs(
-) -> HashMap<String, fn(Vec<BxValue>) -> Result<BxValue, String>> {
+pub fn register_bifs() -> HashMap<String, BxNativeFunction> {
     let mut map = HashMap::new();
-    map.insert("factorial".to_string(), factorial as fn(_) -> _);
+    map.insert("factorial".to_string(), factorial as BxNativeFunction);
     map
 }
 ```

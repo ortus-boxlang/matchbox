@@ -53,3 +53,35 @@ fn vm_interface_fail() {
     path.push("tests/scripts/vm_interface_fail.bxs");
     process_file(&path, false, None, Vec::new(), false, false).unwrap();
 }
+
+#[test]
+fn test_native_fusion_build() {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("tests/native_fusion/script.bxs");
+    
+    // 1. Build the native binary
+    if let Err(e) = process_file(&path, false, Some("native"), Vec::new(), false, false) {
+        panic!("Native fusion build failed: {}", e);
+    }
+    
+    // 2. Determine the output binary name
+    let out_name = if cfg!(windows) {
+        "script.exe"
+    } else {
+        "script"
+    };
+    let out_path = path.with_file_name(out_name);
+    
+    assert!(out_path.exists(), "Native binary was not produced");
+    
+    // 3. Execute the native binary
+    let output = std::process::Command::new(&out_path)
+        .output()
+        .expect("Failed to execute native binary");
+        
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("20"), "Expected output to contain 20, got: {}", stdout);
+    
+    // 4. Cleanup
+    let _ = std::fs::remove_file(&out_path);
+}

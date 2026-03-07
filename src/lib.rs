@@ -447,7 +447,7 @@ strip = true
     let bytecode = bincode::serialize(chunk)?;
 
     let mut code = format!(r#"
-    use matchbox_vm::{{vm::VM, types::BxValue, Chunk}};
+    use matchbox_vm::{{vm::VM, types::{{BxValue, BxNativeFunction}}, Chunk}};
     use std::collections::HashMap;
 
 {}

@@ -1,0 +1,2 @@
+result = multiply(4, 5)
+println(result)

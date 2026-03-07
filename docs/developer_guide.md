@@ -113,28 +113,29 @@ println("Result from Rust: " & result);
 
 2. Create a directory named `native/` in the same folder as `app.bxs`.
 
-3. Inside `native/`, create `math.rs`:
+3. Define the BIF in `native/rust_math.rs`:
+
 ```rust
-use matchbox_vm::types::BxValue;
+use matchbox_vm::types::{BxValue, BxVM, BxNativeFunction};
 use std::collections::HashMap;
 
 // The function signature MatchBox expects
-pub fn rust_math(args: Vec<BxValue>) -> Result<BxValue, String> {
+pub fn rust_math(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 2 {
         return Err("Expected 2 arguments".to_string());
     }
-    
+
     // Simple addition in Rust
-    let a = args[0].as_number().unwrap_or(0.0);
-    let b = args[1].as_number().unwrap_or(0.0);
-    
+    let a = args[0].as_number();
+    let b = args[1].as_number();
+
     Ok(BxValue::new_number(a + b))
 }
 
 // Register the BIF so BoxLang can find it
-pub fn register_bifs() -> HashMap<String, fn(Vec<BxValue>) -> Result<BxValue, String>> {
+pub fn register_bifs() -> HashMap<String, BxNativeFunction> {
     let mut map = HashMap::new();
-    map.insert("rust_math".to_string(), rust_math as fn(Vec<BxValue>) -> Result<BxValue, String>);
+    map.insert("rust_math".to_string(), rust_math as BxNativeFunction);
     map
 }
 ```
