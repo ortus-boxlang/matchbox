@@ -19,6 +19,12 @@ pub struct FunctionParam {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Attribute {
+    pub name: String,
+    pub args: Vec<Argument>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum StatementKind {
     Import(String),
     ClassDecl {
@@ -34,6 +40,7 @@ pub enum StatementKind {
     },
     FunctionDecl {
         name: String,
+        attributes: Vec<Attribute>,
         access_modifier: Option<String>,
         return_type: Option<String>,
         params: Vec<FunctionParam>,

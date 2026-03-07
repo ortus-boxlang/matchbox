@@ -113,6 +113,16 @@ fn parse_variable_decl_core(pair: pest::iterators::Pair<Rule>, line: u32) -> Res
     }
 }
 
+fn parse_attribute(pair: pest::iterators::Pair<Rule>) -> Result<crate::ast::Attribute> {
+    let mut inner = pair.into_inner();
+    let name = inner.next().unwrap().as_str().to_string();
+    let mut args = Vec::new();
+    if let Some(args_rule) = inner.next() {
+        args = parse_args(args_rule)?;
+    }
+    Ok(crate::ast::Attribute { name, args })
+}
+
 fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
     let line = pair.as_span().start_pos().line_col().0 as u32;
     let rule = pair.as_rule();
@@ -206,10 +216,16 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
         Rule::function_decl => {
             let mut inner_rules = pair.into_inner();
             
+            let mut attributes = Vec::new();
             let mut access_modifier = None;
             let mut return_type = None;
             
             let mut current = inner_rules.next().unwrap();
+            while current.as_rule() == Rule::attribute {
+                attributes.push(parse_attribute(current)?);
+                current = inner_rules.next().unwrap();
+            }
+
             if current.as_rule() == Rule::access_modifier {
                 access_modifier = Some(current.as_str().to_string());
                 current = inner_rules.next().unwrap();
@@ -246,6 +262,7 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
             
             Ok(Statement::new(StatementKind::FunctionDecl { 
                 name, 
+                attributes,
                 access_modifier,
                 return_type,
                 params, 

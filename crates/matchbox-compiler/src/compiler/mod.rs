@@ -79,7 +79,7 @@ impl Compiler {
                         }
                         ClassMember::Statement(inner_stmt) => {
                             match &inner_stmt.kind {
-                                StatementKind::FunctionDecl { name: func_name, access_modifier: _, return_type: _, params, body } => {
+                                StatementKind::FunctionDecl { name: func_name, attributes: _, access_modifier: _, return_type: _, params, body } => {
                                     if let FunctionBody::Abstract = body {
                                         bail!("Abstract functions only allowed in interfaces");
                                     }
@@ -207,7 +207,7 @@ impl Compiler {
                 }            StatementKind::InterfaceDecl { name, members } => {
                 let mut methods = HashMap::new();
                 for member in members {
-                    if let StatementKind::FunctionDecl { name: func_name, access_modifier: _, return_type: _, params, body } = &member.kind {
+                    if let StatementKind::FunctionDecl { name: func_name, attributes: _, access_modifier: _, return_type: _, params, body } = &member.kind {
                         let method = if let FunctionBody::Abstract = body {
                             None
                         } else {
@@ -498,7 +498,7 @@ impl Compiler {
 
                 Ok(())
             }
-            StatementKind::FunctionDecl { name, access_modifier: _, return_type: _, params, body } => {
+            StatementKind::FunctionDecl { name, attributes: _, access_modifier: _, return_type: _, params, body } => {
                 let func = self.compile_function(&name, &params, &body)?;
                 if self.is_repl && is_last {
                     let func_idx = self.chunk.add_constant(Constant::CompiledFunction(func.clone()));
@@ -1242,5 +1242,133 @@ impl Compiler {
         }
         
         bail!("No interface declaration found in {}", path.display());
+    }
+}
+
+use std::collections::HashSet;
+
+pub struct DependencyTracker {
+    pub used_symbols: HashSet<String>,
+}
+
+impl DependencyTracker {
+    pub fn new() -> Self {
+        Self { used_symbols: HashSet::new() }
+    }
+
+    pub fn track_statements(&mut self, stmts: &[Statement]) {
+        for stmt in stmts {
+            self.track_statement(stmt);
+        }
+    }
+
+    fn track_statement(&mut self, stmt: &Statement) {
+        match &stmt.kind {
+            StatementKind::FunctionDecl { body, .. } => {
+                self.track_function_body(body);
+            }
+            StatementKind::ClassDecl { members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Statement(s) => self.track_statement(s),
+                        _ => {}
+                    }
+                }
+            }
+            StatementKind::If { condition, then_branch, else_branch } => {
+                self.track_expression(condition);
+                self.track_statements(then_branch);
+                if let Some(eb) = else_branch {
+                    self.track_statements(eb);
+                }
+            }
+            StatementKind::ForLoop { collection, body, .. } => {
+                self.track_expression(collection);
+                self.track_statements(body);
+            }
+            StatementKind::ForClassic { init, condition, update, body } => {
+                if let Some(i) = init { self.track_statement(i); }
+                if let Some(c) = condition { self.track_expression(c); }
+                if let Some(u) = update { self.track_expression(u); }
+                self.track_statements(body);
+            }
+            StatementKind::Return(expr) => {
+                if let Some(e) = expr { self.track_expression(e); }
+            }
+            StatementKind::VariableDecl { value, .. } => {
+                self.track_expression(value);
+            }
+            StatementKind::Expression(expr) => {
+                self.track_expression(expr);
+            }
+            StatementKind::TryCatch { try_branch, catches, finally_branch } => {
+                self.track_statements(try_branch);
+                for catch in catches {
+                    self.track_statements(&catch.body);
+                }
+                if let Some(fb) = finally_branch {
+                    self.track_statements(fb);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn track_expression(&mut self, expr: &Expression) {
+        match &expr.kind {
+            ExpressionKind::FunctionCall { base, args } => {
+                if let ExpressionKind::Identifier(name) = &base.kind {
+                    self.used_symbols.insert(name.to_lowercase());
+                } else {
+                    self.track_expression(base);
+                }
+                for arg in args {
+                    self.track_expression(&arg.value);
+                }
+            }
+            ExpressionKind::Binary { left, right, .. } => {
+                self.track_expression(left);
+                self.track_expression(right);
+            }
+            ExpressionKind::Assignment { value, .. } => {
+                self.track_expression(value);
+            }
+            ExpressionKind::MemberAccess { base, .. } => {
+                self.track_expression(base);
+            }
+            ExpressionKind::ArrayAccess { base, index } => {
+                self.track_expression(base);
+                self.track_expression(index);
+            }
+            ExpressionKind::Literal(lit) => {
+                match lit {
+                    Literal::Array(items) => {
+                        for item in items { self.track_expression(item); }
+                    }
+                    Literal::Struct(members) => {
+                        for (k, v) in members {
+                            self.track_expression(k);
+                            self.track_expression(v);
+                        }
+                    }
+                    Literal::Function { body, .. } => {
+                        self.track_function_body(body);
+                    }
+                    _ => {}
+                }
+            }
+            ExpressionKind::Identifier(name) => {
+                 self.used_symbols.insert(name.to_lowercase());
+            }
+            _ => {}
+        }
+    }
+
+    fn track_function_body(&mut self, body: &FunctionBody) {
+        match body {
+            FunctionBody::Block(stmts) => self.track_statements(stmts),
+            FunctionBody::Expression(expr) => self.track_expression(expr),
+            _ => {}
+        }
     }
 }

@@ -10,9 +10,6 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     let mut bifs = HashMap::new();
 
     // Math BIFs
-    bifs.insert("abs".to_string(), abs as BxNativeFunction);
-    bifs.insert("min".to_string(), min as BxNativeFunction);
-    bifs.insert("max".to_string(), max as BxNativeFunction);
     bifs.insert("round".to_string(), round as BxNativeFunction);
     bifs.insert("randrange".to_string(), rand_range as BxNativeFunction);
 
@@ -22,8 +19,6 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     bifs.insert("arraynew".to_string(), array_new as BxNativeFunction);
 
     // Struct BIFs
-    bifs.insert("structkeyexists".to_string(), struct_key_exists as BxNativeFunction);
-    bifs.insert("structcount".to_string(), struct_count as BxNativeFunction);
     bifs.insert("structnew".to_string(), struct_new as BxNativeFunction);
 
     // Date/Time BIFs
@@ -38,9 +33,6 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     // Core BIFs
     bifs.insert("createobject".to_string(), create_object as BxNativeFunction);
     bifs.insert("ucase".to_string(), ucase as BxNativeFunction);
-    bifs.insert("arraymap".to_string(), array_map as BxNativeFunction);
-    bifs.insert("arrayeach".to_string(), array_each as BxNativeFunction);
-    bifs.insert("arraytolist".to_string(), array_to_list as BxNativeFunction);
     bifs.insert("futureonerror".to_string(), future_on_error as BxNativeFunction);
 
     bifs
@@ -59,87 +51,10 @@ fn future_on_error(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
     }
 }
 
-fn array_to_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.is_empty() { return Err("arrayToList() expects at least 1 argument: (array, [delimiter])".to_string()); }
-    let id = args[0].as_gc_id().ok_or_else(|| "First argument to arrayToList must be an array".to_string())?;
-    
-    let delimiter = if args.len() > 1 {
-        vm.to_string(args[1])
-    } else {
-        ",".to_string()
-    };
-
-    let len = vm.array_len(id);
-    let mut parts = Vec::with_capacity(len);
-    for i in 0..len {
-        parts.push(vm.to_string(vm.array_get(id, i)));
-    }
-
-    Ok(BxValue::new_ptr(vm.string_new(parts.join(&delimiter))))
-}
-
-fn array_map(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.len() < 2 { return Err("arrayMap() expects 2 arguments: (array, callback)".to_string()); }
-    let id = args[0].as_gc_id().ok_or_else(|| "First argument to arrayMap must be an array".to_string())?;
-    
-    let len = vm.array_len(id);
-    let new_id = vm.array_new();
-    
-    for i in 0..len {
-        let item = vm.array_get(id, i);
-        match vm.call_function_by_value(&args[1], vec![item]) {
-            Ok(res) => vm.array_push(new_id, res),
-            Err(e) => return Err(format!("Error in arrayMap callback: {}", e)),
-        }
-    }
-
-    Ok(BxValue::new_ptr(new_id))
-}
-
-fn array_each(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.len() < 2 { return Err("arrayEach() expects 2 arguments: (array, callback)".to_string()); }
-    let id = args[0].as_gc_id().ok_or_else(|| "First argument to arrayEach must be an array".to_string())?;
-    
-    let len = vm.array_len(id);
-    for i in 0..len {
-        let item = vm.array_get(id, i);
-        vm.call_function_by_value(&args[1], vec![item]).map_err(|e| format!("Error in arrayEach callback: {}", e))?;
-    }
-
-    Ok(BxValue::new_null())
-}
-
 fn ucase(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 { return Err("ucase() expects exactly 1 argument".to_string()); }
     let s = vm.to_string(args[0]).to_uppercase();
     Ok(BxValue::new_ptr(vm.string_new(s)))
-}
-
-fn abs(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.len() != 1 { return Err("abs() expects exactly 1 argument".to_string()); }
-    if args[0].is_number() {
-        Ok(BxValue::new_number(args[0].as_number().abs()))
-    } else {
-        Err("abs() expects a number".to_string())
-    }
-}
-
-fn min(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.len() != 2 { return Err("min() expects exactly 2 arguments".to_string()); }
-    if args[0].is_number() && args[1].is_number() {
-        Ok(BxValue::new_number(args[0].as_number().min(args[1].as_number())))
-    } else {
-        Err("min() expects numbers".to_string())
-    }
-}
-
-fn max(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.len() != 2 { return Err("max() expects exactly 2 arguments".to_string()); }
-    if args[0].is_number() && args[1].is_number() {
-        Ok(BxValue::new_number(args[0].as_number().max(args[1].as_number())))
-    } else {
-        Err("max() expects numbers".to_string())
-    }
 }
 
 fn round(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -184,26 +99,6 @@ fn array_append(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
 
 fn array_new(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     Ok(BxValue::new_ptr(vm.array_new()))
-}
-
-fn struct_key_exists(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.len() != 2 { return Err("structKeyExists() expects exactly 2 arguments".to_string()); }
-    if let Some(id) = args[0].as_gc_id() {
-        let k = vm.to_string(args[1]);
-        let shape_id = vm.struct_get_shape(id);
-        Ok(BxValue::new_bool(vm.get_shape_index(shape_id, &k.to_lowercase()).is_some()))
-    } else {
-        Err("structKeyExists() expects a struct and a string key".to_string())
-    }
-}
-
-fn struct_count(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.len() != 1 { return Err("structCount() expects exactly 1 argument".to_string()); }
-    if let Some(id) = args[0].as_gc_id() {
-        Ok(BxValue::new_number(vm.struct_len(id) as f64))
-    } else {
-        Err("structCount() expects a struct".to_string())
-    }
 }
 
 fn struct_new(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {

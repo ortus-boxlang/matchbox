@@ -615,8 +615,7 @@ impl VM {
                 OpCode::OpAddInt => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
-                    // In NaN-boxing, we can just do raw add if we know they are ints
-                    self.fibers[fiber_idx].stack.push(BxValue::new_int(a.as_int() + b.as_int()));
+                    self.fibers[fiber_idx].stack.push(BxValue::new_int(a.as_number() as i32 + b.as_number() as i32));
                 }
                 OpCode::OpAddFloat => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
@@ -648,7 +647,7 @@ impl VM {
                 OpCode::OpSubInt => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
-                    self.fibers[fiber_idx].stack.push(BxValue::new_int(a.as_int() - b.as_int()));
+                    self.fibers[fiber_idx].stack.push(BxValue::new_int(a.as_number() as i32 - b.as_number() as i32));
                 }
                 OpCode::OpSubFloat => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
@@ -668,7 +667,7 @@ impl VM {
                 OpCode::OpMulInt => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
-                    self.fibers[fiber_idx].stack.push(BxValue::new_int(a.as_int() * b.as_int()));
+                    self.fibers[fiber_idx].stack.push(BxValue::new_int(a.as_number() as i32 * b.as_number() as i32));
                 }
                 OpCode::OpMulFloat => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();

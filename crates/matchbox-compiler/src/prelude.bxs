@@ -1,0 +1,188 @@
+/**
+ * MatchBox Standard Library (Prelude)
+ */
+
+/**
+ * Maps an array to a new array using a callback function.
+ */
+function arrayMap(array, callback) {
+    var result = [];
+    for (item in array) {
+        arrayAppend(result, callback(item));
+    }
+    return result;
+}
+
+/**
+ * Iterates over an array and calls a callback function for each item.
+ */
+function arrayEach(array, callback) {
+    for (item in array) {
+        callback(item);
+    }
+}
+
+/**
+ * Filters an array based on a callback function.
+ */
+function arrayFilter(array, callback) {
+    var result = [];
+    for (item in array) {
+        if (callback(item)) {
+            arrayAppend(result, item);
+        }
+    }
+    return result;
+}
+
+/**
+ * Reduces an array to a single value using a callback function.
+ */
+function arrayReduce(array, callback, initialValue) {
+    var result = initialValue;
+    for (item in array) {
+        result = callback(result, item);
+    }
+    return result;
+}
+
+/**
+ * Joins array elements into a string using a delimiter.
+ */
+function arrayToList(array, delimiter = ",") {
+    var result = "";
+    var first = true;
+    for (item in array) {
+        if (first == false) {
+            result = result & delimiter;
+        }
+        result = result & item;
+        first = false;
+    }
+    return result;
+}
+
+/**
+ * Returns a new array that is the reverse of the input array.
+ */
+function arrayReverse(array) {
+    var result = [];
+    var len = len(array);
+    for (var i = len; i > 0; i--) {
+        arrayAppend(result, array[i]);
+    }
+    return result;
+}
+
+/**
+ * Returns the absolute value of a number.
+ */
+function abs(n) {
+    if (n < 0) {
+        return 0 - n;
+    }
+    return n;
+}
+
+/**
+ * Returns the minimum of two numbers.
+ */
+function min(a, b) {
+    if (a < b) {
+        return a;
+    }
+    return b;
+}
+
+/**
+ * Returns the maximum of two numbers.
+ */
+function max(a, b) {
+    if (a > b) {
+        return a;
+    }
+    return b;
+}
+
+/**
+ * Returns an array containing the keys of a struct.
+ */
+function structKeyArray(s) {
+    var result = [];
+    for (key in s) {
+        arrayAppend(result, key);
+    }
+    return result;
+}
+
+/**
+ * Returns true if a key exists in a struct.
+ */
+function structKeyExists(s, key) {
+    for (k in s) {
+        if (k == key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Returns the number of keys in a struct.
+ */
+function structCount(s) {
+    return len(structKeyArray(s));
+}
+
+/**
+ * Iterates over a struct and calls a callback function for each key-value pair.
+ */
+function structEach(s, callback) {
+    for (key, val in s) {
+        callback(key, val);
+    }
+}
+
+/**
+ * Returns true if a value is empty (null, empty string, empty array, or empty struct).
+ */
+function isEmpty(val) {
+    if (val == null) {
+        return true;
+    }
+    return len(val) == 0;
+}
+
+/**
+ * Maps a struct to a new struct using a callback function.
+ */
+function structMap(s, callback) {
+    var result = {};
+    for (key, val in s) {
+        result[key] = callback(key, val);
+    }
+    return result;
+}
+
+/**
+ * Returns a list of keys in a struct.
+ */
+function structKeyList(s, delimiter = ",") {
+    return arrayToList(structKeyArray(s), delimiter);
+}
+
+/**
+ * Returns a slice of an array.
+ */
+function arraySlice(array, offset, length) {
+    var result = [];
+    var end = offset + length;
+    var arrayLen = len(array);
+    if (end > arrayLen + 1) {
+        end = arrayLen + 1;
+    }
+    for (var i = offset; i < end; i++) {
+        arrayAppend(result, array[i]);
+    }
+    return result;
+}
