@@ -53,49 +53,53 @@ fn main() {
     let mut build_stub = |target: Option<&str>, dest_name: &str, src_name: &str, alias: &str, stubs_rs: &mut String| {
         let dest_path = stub_dest_dir.join(dest_name);
         
-        let mut cmd = Command::new(&cargo);
-        cmd.arg("build").arg("--release")
-           .current_dir(&runner_dir)
-           .env("CARGO_TARGET_DIR", &stub_target_dir);
-           
-        if let Some(t) = target {
-            cmd.arg("--target").arg(t);
-        }
+        if !dest_path.exists() {
+            let mut cmd = Command::new(&cargo);
+            cmd.arg("build").arg("--release")
+               .current_dir(&runner_dir)
+               .env("CARGO_TARGET_DIR", &stub_target_dir);
+               
+            if let Some(t) = target {
+                cmd.arg("--target").arg(t);
+            }
 
-        let output = cmd.output();
+            let output = cmd.output();
 
-        let mut success = false;
-        if let Ok(out) = output {
-            if out.status.success() {
-                let mut src_path = stub_target_dir.clone();
-                if let Some(t) = target {
-                    src_path = src_path.join(t);
-                }
-                src_path = src_path.join("release").join(src_name);
-                
-                if fs::copy(&src_path, &dest_path).is_ok() {
-                    success = true;
-                    println!("cargo:warning=Runner stub built and copied to {}", dest_path.display());
+            let mut success = false;
+            if let Ok(out) = output {
+                if out.status.success() {
+                    let mut src_path = stub_target_dir.clone();
+                    if let Some(t) = target {
+                        src_path = src_path.join(t);
+                    }
+                    src_path = src_path.join("release").join(src_name);
+                    
+                    if fs::copy(&src_path, &dest_path).is_ok() {
+                        success = true;
+                        println!("cargo:warning=Runner stub built and copied to {}", dest_path.display());
+                    } else {
+                        println!("cargo:warning=Failed to copy stub from {} to {}", src_path.display(), dest_path.display());
+                    }
                 } else {
-                    println!("cargo:warning=Failed to copy stub from {} to {}", src_path.display(), dest_path.display());
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    println!("cargo:warning=Failed to build stub: {}. Error: {}", dest_name, stderr);
+                    if !stdout.is_empty() {
+                        println!("cargo:warning=Stdout: {}", stdout);
+                    }
                 }
-            } else {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                println!("cargo:warning=Failed to build stub: {}. Error: {}", dest_name, stderr);
-                if !stdout.is_empty() {
-                    println!("cargo:warning=Stdout: {}", stdout);
-                }
+            } else if let Err(e) = output {
+                println!("cargo:warning=Failed to execute build command for {}: {}", dest_name, e);
             }
-        } else if let Err(e) = output {
-            println!("cargo:warning=Failed to execute build command for {}: {}", dest_name, e);
-        }
 
-        if !success {
-            println!("cargo:warning=Using dummy file for stub: {}.", dest_name);
-            if !dest_path.exists() {
-                let _ = fs::write(&dest_path, b"");
+            if !success {
+                println!("cargo:warning=Using dummy file for stub: {}.", dest_name);
+                if !dest_path.exists() {
+                    let _ = fs::write(&dest_path, b"");
+                }
             }
+        } else {
+            println!("cargo:warning=Using pre-existing stub for {}", dest_name);
         }
         
         stubs_rs.push_str(&format!("    stubs.insert(\"{}\", include_bytes!(\"../stubs/{}\"));\n", alias, dest_name));

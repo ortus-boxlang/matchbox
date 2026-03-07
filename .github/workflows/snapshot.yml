@@ -23,84 +23,119 @@ jobs:
       - name: Run Tests
         run: cargo test
 
-  build-linux-windows:
-    name: Build Linux & Windows Distributions
+  build-stubs:
+    name: Build Stubs - ${{ matrix.os }}
     needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, wasm32-wasip1
+          - os: macos-latest
+            targets: x86_64-apple-darwin, aarch64-apple-darwin
+          - os: windows-latest
+            targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+      
+      - name: Build Stubs
+        shell: bash
+        run: |
+          mkdir -p stubs-out
+          IFS=', ' read -r -a TGS <<< "${{ matrix.targets }}"
+          for target in "${TGS[@]}"; do
+            echo "Building stub for $target..."
+            cargo build --release --target "$target" -p matchbox_runner
+            
+            # Determine source filename
+            SRC_NAME="matchbox_runner"
+            if [[ "$target" == *"windows"* ]]; then SRC_NAME="matchbox_runner.exe"; fi
+            if [[ "$target" == *"wasm"* ]]; then SRC_NAME="matchbox_runner.wasm"; fi
+            
+            # Determine destination filename
+            DEST_NAME="runner_stub_$target"
+            if [[ "$target" == *"windows"* ]]; then DEST_NAME="$DEST_NAME.exe"; fi
+            if [[ "$target" == *"wasm"* ]]; then DEST_NAME="runner_stub_wasip1.wasm"; fi
+            
+            cp "target/$target/release/$SRC_NAME" "stubs-out/$DEST_NAME"
+          done
+
+      - name: Upload Stubs
+        uses: actions/upload-artifact@v4
+        with:
+          name: stubs-${{ matrix.os }}
+          path: stubs-out/*
+
+  aggregate-stubs:
+    name: Aggregate All Stubs
+    needs: build-stubs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Download All Stubs
+        uses: actions/download-artifact@v4
         with:
-          targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-gnu, wasm32-wasip1
+          path: all-stubs
+          merge-multiple: true
       
-      - name: Install Cross-Compilers
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-mingw-w64-x86-64
+      - name: Show stubs
+        run: ls -R all-stubs
 
-      - name: Build Distributions
-        run: |
-          mkdir -p dist
-          
-          # Linux x64 (Host)
-          cargo build --release --features cross-compile --target x86_64-unknown-linux-gnu
-          cp target/x86_64-unknown-linux-gnu/release/matchbox dist/matchbox-linux-x64
-
-          # Linux ARM64
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-          cargo build --release --features cross-compile --target aarch64-unknown-linux-gnu
-          cp target/aarch64-unknown-linux-gnu/release/matchbox dist/matchbox-linux-arm64
-
-          # Windows x64 (GNU)
-          cargo build --release --features cross-compile --target x86_64-pc-windows-gnu
-          cp target/x86_64-pc-windows-gnu/release/matchbox.exe dist/matchbox-windows-x64.exe
-
-      - name: Upload Artifacts
+      - name: Upload Aggregated Stubs
         uses: actions/upload-artifact@v4
         with:
-          name: matchbox-dist-linux-win
-          path: dist/*
+          name: aggregated-stubs
+          path: all-stubs/*
 
-  build-macos:
-    name: Build macOS Distributions
-    needs: test
-    runs-on: macos-latest
+  build-clis:
+    name: Build Fat CLI - ${{ matrix.os }}
+    needs: aggregate-stubs
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin, aarch64-apple-darwin, wasm32-wasip1
       
-      - name: Build Distributions
+      - name: Download Aggregated Stubs
+        uses: actions/download-artifact@v4
+        with:
+          name: aggregated-stubs
+          path: stubs
+
+      - name: Build Fat CLI
+        run: cargo build --release --features cross-compile
+
+      - name: Prepare Artifact
+        shell: bash
         run: |
           mkdir -p dist
+          OS_NAME="linux"
+          if [[ "${{ matrix.os }}" == *"macos"* ]]; then OS_NAME="macos"; fi
           
-          # macOS x64
-          cargo build --release --features cross-compile --target x86_64-apple-darwin
-          cp target/x86_64-apple-darwin/release/matchbox dist/matchbox-macos-x64
-
-          # macOS ARM64
-          cargo build --release --features cross-compile --target aarch64-apple-darwin
-          cp target/aarch64-apple-darwin/release/matchbox dist/matchbox-macos-arm64
-
-      - name: Upload Artifacts
+          cp target/release/matchbox dist/matchbox-$OS_NAME-fat
+      
+      - name: Upload Fat CLI
         uses: actions/upload-artifact@v4
         with:
-          name: matchbox-dist-macos
+          name: matchbox-${{ matrix.os }}-fat
           path: dist/*
 
   publish:
     name: Publish Snapshot
-    needs: [build-linux-windows, build-macos]
+    needs: build-clis
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       
-      - name: Download Artifacts
+      - name: Download Fat CLIs
         uses: actions/download-artifact@v4
         with:
           path: release-assets
@@ -111,7 +146,7 @@ jobs:
         with:
           tag_name: snapshot
           name: "Snapshot Build"
-          body: "This is a rolling snapshot build of the latest develop branch."
+          body: "This is a rolling snapshot build of the latest develop branch. These CLI binaries contain runner stubs for all platforms."
           files: release-assets/*
           draft: false
           prerelease: true
