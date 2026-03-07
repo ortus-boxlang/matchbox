@@ -32,11 +32,17 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            targets: x86_64-unknown-linux-gnu, i686-unknown-linux-gnu, aarch64-unknown-linux-gnu, armv7-unknown-linux-gnueabihf, wasm32-wasip1
+            targets: x86_64-unknown-linux-gnu, i686-unknown-linux-gnu, wasm32-wasip1
+            tag: linux-x86
+          - os: ubuntu-latest
+            targets: aarch64-unknown-linux-gnu, armv7-unknown-linux-gnueabihf
+            tag: linux-arm
           - os: macos-latest
             targets: x86_64-apple-darwin, aarch64-apple-darwin
+            tag: macos
           - os: windows-latest
             targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
+            tag: windows
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -44,16 +50,18 @@ jobs:
         with:
           targets: ${{ matrix.targets }}
       
-      - name: Install Cross-Compilers (Linux)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install Cross-Compilers (Linux ARM)
+        if: matrix.tag == 'linux-arm'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+
+      - name: Install Cross-Compilers (Linux x86)
+        if: matrix.tag == 'linux-x86'
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabihf \
-            libc6-dev-i386 \
-            gcc-multilib
+          sudo apt-get install -y gcc-multilib libc6-dev-i386
 
       - name: Build Stubs
         shell: bash
@@ -91,7 +99,7 @@ jobs:
       - name: Upload Stubs
         uses: actions/upload-artifact@v4
         with:
-          name: stubs-${{ matrix.os }}
+          name: stubs-${{ matrix.tag }}
           path: stubs-out/*
 
   aggregate-stubs:
@@ -151,16 +159,18 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       
-      - name: Install Cross-Compilers (Linux)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install Cross-Compilers (Linux ARM)
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+
+      - name: Install Cross-Compilers (Linux x86)
+        if: matrix.target == 'i686-unknown-linux-gnu'
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabihf \
-            libc6-dev-i386 \
-            gcc-multilib
+          sudo apt-get install -y gcc-multilib libc6-dev-i386
 
       - name: Download Aggregated Stubs
         uses: actions/download-artifact@v4
