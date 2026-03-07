@@ -68,7 +68,8 @@ impl BxValue {
     // ------------------------------------------------------------------------
     // Predicates
     // ------------------------------------------------------------------------
-    #[inline] pub fn is_number(&self) -> bool { self.0 < 0xFFF8000000000000 }
+    #[inline] pub fn is_float(&self) -> bool { self.0 < 0xFFF8000000000000 }
+    #[inline] pub fn is_number(&self) -> bool { self.is_float() || self.is_int() }
     #[inline] pub fn is_int(&self) -> bool { (self.0 & !Self::PAYLOAD_MASK) == Self::tag(Self::TAG_INT, 0) }
     #[inline] pub fn is_bool(&self) -> bool { (self.0 & !Self::PAYLOAD_MASK) == Self::tag(Self::TAG_BOOL, 0) }
     #[inline] pub fn is_null(&self) -> bool { (self.0 & !Self::PAYLOAD_MASK) == Self::tag(Self::TAG_NULL, 0) }
@@ -77,7 +78,15 @@ impl BxValue {
     // ------------------------------------------------------------------------
     // Extractors
     // ------------------------------------------------------------------------
-    #[inline] pub fn as_number(&self) -> f64 { f64::from_bits(self.0) }
+    #[inline] pub fn as_number(&self) -> f64 { 
+        if self.is_float() {
+            f64::from_bits(self.0)
+        } else if self.is_int() {
+            self.as_int() as f64
+        } else {
+            f64::NAN
+        }
+    }
     #[inline] pub fn as_int(&self) -> i32 { self.0 as i32 }
     #[inline] pub fn as_bool(&self) -> bool { (self.0 & Self::PAYLOAD_MASK) != 0 }
     #[inline] pub fn as_gc_id(&self) -> Option<usize> {

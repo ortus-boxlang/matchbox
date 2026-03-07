@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use crate::ast::{Expression, ExpressionKind, Literal, Statement, StatementKind, StringPart, FunctionBody, ClassMember};
-use matchbox_vm::types::{BxValue, BxCompiledFunction, BxClass, BxInterface, Constant, box_string::BoxString};
+use matchbox_vm::types::{BxCompiledFunction, BxClass, BxInterface, Constant, box_string::BoxString};
 use matchbox_vm::Chunk;
 use matchbox_vm::vm::opcode::OpCode;
 use std::rc::Rc;
@@ -679,9 +679,44 @@ impl Compiler {
                             self.chunk.write(OpCode::OpAdd, expr.line);
                         }
                     }
-                    "-" => self.chunk.write(OpCode::OpSubtract, expr.line),
-                    "*" => self.chunk.write(OpCode::OpMultiply, expr.line),
-                    "/" => self.chunk.write(OpCode::OpDivide, expr.line),
+                    "-" => {
+                        let mut specialized = false;
+                        if let (ExpressionKind::Literal(Literal::Number(a)), ExpressionKind::Literal(Literal::Number(b))) = (&left.kind, &right.kind) {
+                            if a.fract() == 0.0 && b.fract() == 0.0 {
+                                self.chunk.write(OpCode::OpSubInt, expr.line);
+                            } else {
+                                self.chunk.write(OpCode::OpSubFloat, expr.line);
+                            }
+                            specialized = true;
+                        }
+                        if !specialized {
+                            self.chunk.write(OpCode::OpSubtract, expr.line);
+                        }
+                    }
+                    "*" => {
+                        let mut specialized = false;
+                        if let (ExpressionKind::Literal(Literal::Number(a)), ExpressionKind::Literal(Literal::Number(b))) = (&left.kind, &right.kind) {
+                            if a.fract() == 0.0 && b.fract() == 0.0 {
+                                self.chunk.write(OpCode::OpMulInt, expr.line);
+                            } else {
+                                self.chunk.write(OpCode::OpMulFloat, expr.line);
+                            }
+                            specialized = true;
+                        }
+                        if !specialized {
+                            self.chunk.write(OpCode::OpMultiply, expr.line);
+                        }
+                    }
+                    "/" => {
+                        let mut specialized = false;
+                        if let (ExpressionKind::Literal(Literal::Number(_)), ExpressionKind::Literal(Literal::Number(_))) = (&left.kind, &right.kind) {
+                            self.chunk.write(OpCode::OpDivFloat, expr.line);
+                            specialized = true;
+                        }
+                        if !specialized {
+                            self.chunk.write(OpCode::OpDivide, expr.line);
+                        }
+                    }
                     "&" => self.chunk.write(OpCode::OpStringConcat, expr.line),
                     "==" => self.chunk.write(OpCode::OpEqual, expr.line),
                     "!=" => self.chunk.write(OpCode::OpNotEqual, expr.line),

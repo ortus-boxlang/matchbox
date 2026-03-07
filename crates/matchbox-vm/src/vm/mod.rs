@@ -634,6 +634,16 @@ impl VM {
                         continue;
                     }
                 }
+                OpCode::OpSubInt => {
+                    let b = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let a = self.fibers[fiber_idx].stack.pop().unwrap();
+                    self.fibers[fiber_idx].stack.push(BxValue::new_int(a.as_int() - b.as_int()));
+                }
+                OpCode::OpSubFloat => {
+                    let b = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let a = self.fibers[fiber_idx].stack.pop().unwrap();
+                    self.fibers[fiber_idx].stack.push(BxValue::new_number(a.as_number() - b.as_number()));
+                }
                 OpCode::OpMultiply => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
@@ -643,6 +653,16 @@ impl VM {
                         self.throw_error(fiber_idx, "Operands must be two numbers.")?;
                         continue;
                     }
+                }
+                OpCode::OpMulInt => {
+                    let b = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let a = self.fibers[fiber_idx].stack.pop().unwrap();
+                    self.fibers[fiber_idx].stack.push(BxValue::new_int(a.as_int() * b.as_int()));
+                }
+                OpCode::OpMulFloat => {
+                    let b = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let a = self.fibers[fiber_idx].stack.pop().unwrap();
+                    self.fibers[fiber_idx].stack.push(BxValue::new_number(a.as_number() * b.as_number()));
                 }
                 OpCode::OpDivide => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
@@ -655,6 +675,11 @@ impl VM {
                         self.throw_error(fiber_idx, "Operands must be two numbers.")?;
                         continue;
                     }
+                }
+                OpCode::OpDivFloat => {
+                    let b = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let a = self.fibers[fiber_idx].stack.pop().unwrap();
+                    self.fibers[fiber_idx].stack.push(BxValue::new_number(a.as_number() / b.as_number()));
                 }
                 OpCode::OpStringConcat => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
@@ -1869,11 +1894,11 @@ impl VM {
                         }
                         original_args.reverse();
                         self.fibers[fiber_idx].stack.pop(); // receiver
-
                         let args_array_id = self.heap.alloc(GcObject::Array(original_args));
                         let name_id = self.heap.alloc(GcObject::String(BoxString::new(&name)));
 
-                        self.fibers[fiber_idx].stack.push(receiver_val); // receiver at base                        self.fibers[fiber_idx].stack.push(BxValue::new_ptr(name_id));
+                        self.fibers[fiber_idx].stack.push(receiver_val); // receiver at base
+                        self.fibers[fiber_idx].stack.push(BxValue::new_ptr(name_id));
                         self.fibers[fiber_idx].stack.push(BxValue::new_ptr(args_array_id));
 
                         let mut frame = CallFrame {

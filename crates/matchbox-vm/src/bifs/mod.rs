@@ -1,10 +1,7 @@
 use std::collections::HashMap;
-use crate::types::{BxValue, BxVM, BxCompiledFunction, BxNativeFunction, BxNativeObject, BxStruct};
-use crate::vm::gc::{GcObject};
+use crate::types::{BxValue, BxVM, BxNativeFunction};
 use std::time::{SystemTime, UNIX_EPOCH};
 use rand::RngExt;
-use std::rc::Rc;
-use std::cell::RefCell;
 use chrono::Local;
 
 mod jni;

@@ -1,4 +1,4 @@
-use crate::types::{BxValue, Constant};
+use crate::types::Constant;
 use super::opcode::OpCode;
 use serde::{Serialize, Deserialize};
 
