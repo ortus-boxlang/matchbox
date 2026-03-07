@@ -220,6 +220,7 @@ impl VM {
             name: "script".to_string(),
             arity: 0,
             min_arity: 0,
+            params: Vec::new(),
             chunk: Rc::new(RefCell::new(chunk)),
         });
         
@@ -858,410 +859,27 @@ impl VM {
                         _ => { self.throw_error(fiber_idx, "Member assignment only supported on structs, instances, JS objects, and native objects")?; continue; }
                     }
                 }
+                OpCode::OpCall(arg_count) => {
+                    self.execute_call(fiber_idx, arg_count, None)?;
+                }
+                OpCode::OpCallNamed(total_count, names_idx) => {
+                    let names = match self.read_constant(fiber_idx, names_idx) {
+                        BxValue::StringArray(arr) => arr.clone(),
+                        _ => bail!("Internal VM error: names constant is not a StringArray"),
+                    };
+                    self.execute_call(fiber_idx, total_count, Some(names))?;
+                }
                 OpCode::OpInvoke(idx, arg_count) => {
                     let name = self.read_string_constant(fiber_idx, idx).to_lowercase();
-                    
-                    if self.fibers[fiber_idx].stack.len() < arg_count + 1 {
-                        bail!("Stack underflow: missing receiver or arguments for method call");
-                    }
-                    let receiver_idx = self.fibers[fiber_idx].stack.len() - 1 - arg_count;
-                    let receiver_val = self.fibers[fiber_idx].stack.get(receiver_idx).cloned().unwrap();
-                    
-                    match receiver_val {
-                        BxValue::Future(id) => {
-                            let (status, value) = if let GcObject::Future(f) = self.heap.get(id) {
-                                (f.status.clone(), f.value.clone())
-                            } else { unreachable!() };
-
-                            if name == "get" {
-                                match status {
-                                    FutureStatus::Pending => {
-                                        self.fibers[fiber_idx].frames.last_mut().unwrap().ip -= 1;
-                                        return Ok(None);
-                                    }
-                                    FutureStatus::Completed => {
-                                        for _ in 0..arg_count { self.fibers[fiber_idx].stack.pop(); }
-                                        self.fibers[fiber_idx].stack.pop();
-                                        self.fibers[fiber_idx].stack.push(value);
-                                        continue;
-                                    }
-                                    FutureStatus::Failed(e) => {
-                                        self.throw_error(fiber_idx, &format!("Async operation failed: {}", e))?;
-                                        continue;
-                                    }
-                                }
-                            } else if let Some(bif_name) = self.resolve_member_method(&receiver_val, &name) {
-                                if let Some(BxValue::NativeFunction(bif)) = self.globals.get(&bif_name).cloned() {
-                                    let mut args = Vec::with_capacity(arg_count + 1);
-                                    for _ in 0..arg_count {
-                                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
-                                    }
-                                    args.reverse();
-                                    self.fibers[fiber_idx].stack.pop(); // receiver
-                                    
-                                    let mut final_args = vec![receiver_val];
-                                    final_args.extend(args);
-                                    
-                                    match bif(self, &final_args) {
-                                        Ok(res) => {
-                                            self.fibers[fiber_idx].stack.push(res);
-                                            continue;
-                                        }
-                                        Err(e) => {
-                                            self.throw_error(fiber_idx, &e)?;
-                                            continue;
-                                        }
-                                    }
-                                }
-                            }
-                            self.throw_error(fiber_idx, &format!("Method {} not found on future.", name))?;
-                            continue;
-                        }
-                        BxValue::Instance(id) => {
-                            let (shape_id, properties_ptr, class) = if let GcObject::Instance(inst) = self.heap.get(id) {
-                                (inst.shape_id, &inst.properties as *const Vec<BxValue>, Rc::clone(&inst.class))
-                            } else { unreachable!() };
-
-                            let ic = {
-                                let fiber = &self.fibers[fiber_idx];
-                                let frame = fiber.frames.last().unwrap();
-                                let chunk = frame.function.chunk.borrow();
-                                chunk.caches[ip_at_start].clone()
-                            };
-
-                            let method = if let Some(IcEntry::Monomorphic { shape_id: cached_shape, index }) = ic {
-                                if cached_shape == shape_id {
-                                    if let BxValue::CompiledFunction(f) = unsafe { &*properties_ptr }[index].clone() {
-                                        Some(f)
-                                    } else { None }
-                                } else { None }
-                            } else { None };
-
-                            let method = if method.is_none() {
-                                if let Some(idx) = self.shapes.get_index(shape_id, &name) {
-                                    if let BxValue::CompiledFunction(f) = unsafe { &*properties_ptr }[idx].clone() {
-                                        {
-                                            let fiber = &self.fibers[fiber_idx];
-                                            let frame = fiber.frames.last().unwrap();
-                                            let mut chunk = frame.function.chunk.borrow_mut();
-                                            chunk.caches[ip_at_start] = Some(IcEntry::Monomorphic { shape_id, index: idx });
-                                        }
-                                        Some(f)
-                                    } else { None }
-                                } else if let Some(f) = self.resolve_method(Rc::clone(&class), &name) {
-                                    Some(f)
-                                } else { None }
-                            } else { method };
-                            
-                            if let Some(func) = method {
-                                if arg_count < func.min_arity || arg_count > func.arity {
-                                    self.throw_error(fiber_idx, &format!("Expected {} to {} arguments but got {}.", func.min_arity, func.arity, arg_count))?;
-                                    continue;
-                                } else {
-                                    let mut args = Vec::with_capacity(arg_count);
-                                    for _ in 0..arg_count {
-                                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
-                                    }
-                                    args.reverse();
-                                    
-                                    // Push actual args back
-                                    for arg in args { self.fibers[fiber_idx].stack.push(arg); }
-                                    // Push Null for missing optional args
-                                    for _ in 0..(func.arity - arg_count) {
-                                        self.fibers[fiber_idx].stack.push(BxValue::Null);
-                                    }
-
-                                    let frame = CallFrame {
-                                        function: func.clone(),
-                                        ip: 0,
-                                        stack_base: self.fibers[fiber_idx].stack.len() - func.arity,
-                                        receiver: Some(receiver_val),
-                                        handlers: Vec::new(),
-                                    };
-                                    self.fibers[fiber_idx].frames.push(frame);
-                                    continue;
-                                }
-                            } else if let Some(on_missing) = self.resolve_method(Rc::clone(&class), "onmissingmethod") {
-                                let mut original_args = Vec::with_capacity(arg_count);
-                                for _ in 0..arg_count {
-                                    original_args.push(self.fibers[fiber_idx].stack.pop().unwrap());
-                                }
-                                original_args.reverse();
-
-                                let args_array_id = self.heap.alloc(GcObject::Array(original_args));
-                                
-                                self.fibers[fiber_idx].stack.push(BxValue::String(name.clone()));
-                                self.fibers[fiber_idx].stack.push(BxValue::Array(args_array_id));
-
-                                let mut frame = CallFrame {
-                                    function: on_missing.clone(),
-                                    ip: 0,
-                                    stack_base: self.fibers[fiber_idx].stack.len() - 2,
-                                    receiver: Some(receiver_val),
-                                    handlers: Vec::new(),
-                                };
-                                
-                                // Adjust stack for missing arguments if onMissingMethod itself has optional arguments
-                                // Though typically it expects exactly 2: name and args array
-                                if 2 < on_missing.min_arity || 2 > on_missing.arity {
-                                    self.throw_error(fiber_idx, &format!("onMissingMethod must accept 2 arguments, but it expects {} to {}.", on_missing.min_arity, on_missing.arity))?;
-                                    continue;
-                                }
-                                for _ in 0..(on_missing.arity - 2) {
-                                    self.fibers[fiber_idx].stack.push(BxValue::Null);
-                                    frame.stack_base -= 1; // shift base back to account for extra nulls
-                                }
-                                // Recalculate stack base properly
-                                frame.stack_base = self.fibers[fiber_idx].stack.len() - on_missing.arity;
-
-                                self.fibers[fiber_idx].frames.push(frame);
-                                continue;
-                            } else {
-                                self.throw_error(fiber_idx, &format!("Method {} not found.", name))?;
-                                continue;
-                            }
-                        }
-                        BxValue::Struct(id) => {
-                            let (shape_id, properties_ptr) = if let GcObject::Struct(s) = self.heap.get(id) {
-                                (s.shape_id, &s.properties as *const Vec<BxValue>)
-                            } else { unreachable!() };
-
-                            let ic = {
-                                let fiber = &self.fibers[fiber_idx];
-                                let frame = fiber.frames.last().unwrap();
-                                let chunk = frame.function.chunk.borrow();
-                                chunk.caches[ip_at_start].clone()
-                            };
-
-                            let method = if let Some(IcEntry::Monomorphic { shape_id: cached_shape, index }) = ic {
-                                if cached_shape == shape_id {
-                                    if let BxValue::CompiledFunction(f) = unsafe { &*properties_ptr }[index].clone() {
-                                        Some(f)
-                                    } else { None }
-                                } else { None }
-                            } else { None };
-
-                            let method = if method.is_none() {
-                                if let Some(idx) = self.shapes.get_index(shape_id, &name) {
-                                    if let BxValue::CompiledFunction(func) = unsafe { &*properties_ptr }[idx].clone() {
-                                        {
-                                            let fiber = &self.fibers[fiber_idx];
-                                            let frame = fiber.frames.last().unwrap();
-                                            let mut chunk = frame.function.chunk.borrow_mut();
-                                            chunk.caches[ip_at_start] = Some(IcEntry::Monomorphic { shape_id, index: idx });
-                                        }
-                                        Some(func)
-                                    } else { None }
-                                } else { None }
-                            } else { method };
-
-                            if let Some(func) = method {
-                                if arg_count < func.min_arity || arg_count > func.arity {
-                                    self.throw_error(fiber_idx, &format!("Expected {} to {} arguments but got {}.", func.min_arity, func.arity, arg_count))?;
-                                    continue;
-                                } else {
-                                    let mut args = Vec::with_capacity(arg_count);
-                                    for _ in 0..arg_count {
-                                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
-                                    }
-                                    args.reverse();
-                                    
-                                    // Push actual args back
-                                    for arg in args { self.fibers[fiber_idx].stack.push(arg); }
-                                    // Push Null for missing optional args
-                                    for _ in 0..(func.arity - arg_count) {
-                                        self.fibers[fiber_idx].stack.push(BxValue::Null);
-                                    }
-
-                                    let frame = CallFrame {
-                                        function: func.clone(),
-                                        ip: 0,
-                                        stack_base: self.fibers[fiber_idx].stack.len() - func.arity,
-                                        receiver: Some(receiver_val),
-                                        handlers: Vec::new(),
-                                    };
-                                    self.fibers[fiber_idx].frames.push(frame);
-                                    continue;
-                                }
-                            } else if let Some(bif_name) = self.resolve_member_method(&receiver_val, &name) {
-                                if let Some(BxValue::NativeFunction(bif)) = self.globals.get(&bif_name).cloned() {
-                                    let mut args = Vec::with_capacity(arg_count + 1);
-                                    for _ in 0..arg_count {
-                                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
-                                    }
-                                    args.reverse();
-                                    self.fibers[fiber_idx].stack.pop(); // Pop the receiver
-                                    
-                                    let mut final_args = vec![receiver_val];
-                                    final_args.extend(args);
-                                    
-                                    match bif(self, &final_args) {
-                                        Ok(res) => {
-                                            self.fibers[fiber_idx].stack.push(res);
-                                            continue;
-                                        }
-                                        Err(e) => {
-                                            self.throw_error(fiber_idx, &e)?;
-                                            continue;
-                                        }
-                                    }
-                                } else {
-                                    self.throw_error(fiber_idx, &format!("Member {} not found or not callable.", name))?;
-                                    continue;
-                                }
-                            } else {
-                                self.throw_error(fiber_idx, &format!("Member {} not found or not callable.", name))?;
-                                continue;
-                            }
-                        }
-                        #[cfg(target_arch = "wasm32")]
-                        BxValue::JsValue(js) => {
-                            let prop = JsValue::from_str(&name);
-                            match Reflect::get(&js, &prop) {
-                                Ok(val) => {
-                                    if let Ok(func) = val.clone().dyn_into::<Function>() {
-                                        let js_args = Array::new();
-                                        for _ in 0..arg_count {
-                                            let arg_val = self.fibers[fiber_idx].stack.pop().unwrap();
-                                            js_args.unshift(&self.bx_to_js(&arg_val));
-                                        }
-                                        self.fibers[fiber_idx].stack.pop(); // Pop the receiver
-                                        match Reflect::apply(&func, &js, &js_args) {
-                                            Ok(res) => {
-                                                let bx_res = self.js_to_bx(res);
-                                                self.fibers[fiber_idx].stack.push(bx_res);
-                                                continue;
-                                            }
-                                            Err(e) => {
-                                                self.throw_error(fiber_idx, &format!("JS Error: {:?}", e))?;
-                                                continue;
-                                            }
-                                        }
-                                    } else {
-                                        self.throw_error(fiber_idx, &format!("Member {} is not a function", name))?;
-                                        continue;
-                                    }
-                                }
-                                Err(e) => {
-                                    self.throw_error(fiber_idx, &format!("JS Error: {:?}", e))?;
-                                    continue;
-                                }
-                            }
-                        }
-                        BxValue::NativeObject(obj) => {
-                            let mut args = Vec::with_capacity(arg_count);
-                            for _ in 0..arg_count {
-                                args.push(self.fibers[fiber_idx].stack.pop().unwrap());
-                            }
-                            args.reverse();
-                            self.fibers[fiber_idx].stack.pop(); // receiver
-                            match obj.borrow_mut().call_method(self, &name, &args) {
-                                Ok(res) => {
-                                    self.fibers[fiber_idx].stack.push(res);
-                                    continue;
-                                }
-                                Err(e) => {
-                                    self.throw_error(fiber_idx, &e)?;
-                                    continue;
-                                }
-                            }
-                        }
-                        _ => {
-                            if let Some(bif_name) = self.resolve_member_method(&receiver_val, &name) {
-                                if let Some(BxValue::NativeFunction(bif)) = self.globals.get(&bif_name).cloned() {
-                                    let mut args = Vec::with_capacity(arg_count + 1);
-                                    for _ in 0..arg_count {
-                                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
-                                    }
-                                    args.reverse();
-                                    self.fibers[fiber_idx].stack.pop(); // Pop the receiver
-                                    
-                                    // Inject receiver as first argument
-                                    let mut final_args = vec![receiver_val];
-                                    final_args.extend(args);
-                                    
-                                    match bif(self, &final_args) {
-                                        Ok(res) => {
-                                            self.fibers[fiber_idx].stack.push(res);
-                                            continue;
-                                        }
-                                        Err(e) => {
-                                            self.throw_error(fiber_idx, &e)?;
-                                            continue;
-                                        }
-                                    }
-                                }
-                            }
-                            self.throw_error(fiber_idx, &format!("Method {} not found or cannot be invoked on this type.", name))?;
-                            continue;
-                        }
-                    }
+                    self.execute_invoke(fiber_idx, name, arg_count, None, ip_at_start)?;
                 }
-                OpCode::OpCall(arg_count) => {
-                    let func_val = self.fibers[fiber_idx].stack[self.fibers[fiber_idx].stack.len() - 1 - arg_count].clone();
-                    match func_val {
-                        BxValue::CompiledFunction(func) => {
-                            if arg_count < func.min_arity || arg_count > func.arity {
-                                self.throw_error(fiber_idx, &format!("Expected {} to {} arguments but got {}.", func.min_arity, func.arity, arg_count))?;
-                                continue;
-                            } else {
-                                // Push Null for missing optional args
-                                for _ in 0..(func.arity - arg_count) {
-                                    self.fibers[fiber_idx].stack.push(BxValue::Null);
-                                }
-
-                                let frame = CallFrame {
-                                    function: Rc::clone(&func),
-                                    ip: 0,
-                                    stack_base: self.fibers[fiber_idx].stack.len() - func.arity,
-                                    receiver: self.fibers[fiber_idx].frames.last().unwrap().receiver.clone(),
-                                    handlers: Vec::new(),
-                                };
-                                self.fibers[fiber_idx].frames.push(frame);
-                            }
-                        }
-                        BxValue::NativeFunction(func) => {
-                            let mut args = Vec::with_capacity(arg_count);
-                            for _ in 0..arg_count {
-                                args.push(self.fibers[fiber_idx].stack.pop().unwrap());
-                            }
-                            args.reverse();
-                            self.fibers[fiber_idx].stack.pop(); // Pop the function object
-                            
-                            match func(self, &args) {
-                                Ok(val) => self.fibers[fiber_idx].stack.push(val),
-                                Err(e) => {
-                                    self.throw_error(fiber_idx, &e)?;
-                                    continue;
-                                }
-                            }
-                        }
-                        #[cfg(target_arch = "wasm32")]
-                        BxValue::JsValue(js) => {
-                            if let Ok(func) = js.clone().dyn_into::<Function>() {
-                                let js_args = Array::new();
-                                for _ in 0..arg_count {
-                                    let arg_val = self.fibers[fiber_idx].stack.pop().unwrap();
-                                    js_args.unshift(&self.bx_to_js(&arg_val));
-                                }
-                                self.fibers[fiber_idx].stack.pop(); // Pop the function
-                                match Reflect::apply(&func, &JsValue::UNDEFINED, &js_args) {
-                                    Ok(val) => {
-                                        let bx_val = self.js_to_bx(val);
-                                        self.fibers[fiber_idx].stack.push(bx_val);
-                                    }
-                                    Err(e) => {
-                                        self.throw_error(fiber_idx, &format!("JS Error: {:?}", e))?;
-                                        continue;
-                                    }
-                                }
-                            } else {
-                                self.throw_error(fiber_idx, "Can only call JS functions.")?;
-                                continue;
-                            }
-                        }
-                        _ => { self.throw_error(fiber_idx, "Can only call functions.")?; continue; }
-                    }
+                OpCode::OpInvokeNamed(name_idx, total_count, names_idx) => {
+                    let name = self.read_string_constant(fiber_idx, name_idx).to_lowercase();
+                    let names = match self.read_constant(fiber_idx, names_idx) {
+                        BxValue::StringArray(arr) => arr.clone(),
+                        _ => bail!("Internal VM error: names constant is not a StringArray"),
+                    };
+                    self.execute_invoke(fiber_idx, name, total_count, Some(names), ip_at_start)?;
                 }
                 OpCode::OpEqual => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
@@ -1398,6 +1016,7 @@ impl VM {
                                 name: format!("{}.constructor", class.borrow().name),
                                 arity: 0,
                                 min_arity: 0,
+                                params: Vec::new(),
                                 chunk: Rc::new(RefCell::new(class.borrow().constructor.borrow().clone())),
                             }),
                             ip: 0,
@@ -1570,6 +1189,435 @@ impl VM {
             BxValue::Number(n) => *n != 0.0,
             BxValue::String(s) => !s.is_empty() && s.to_lowercase() != "false",
             _ => true,
+        }
+    }
+
+    fn reorder_arguments(&self, args: Vec<BxValue>, names: Vec<String>, params: &[String]) -> Vec<BxValue> {
+        let mut final_args = vec![BxValue::Null; params.len()];
+        let mut positional_args = Vec::new();
+        let mut named_args = Vec::new();
+
+        for (i, arg_val) in args.into_iter().enumerate() {
+            if i < names.len() && !names[i].is_empty() {
+                named_args.push((names[i].to_lowercase(), arg_val));
+            } else {
+                positional_args.push(arg_val);
+            }
+        }
+
+        // 1. Fill positional args
+        for (i, arg_val) in positional_args.into_iter().enumerate() {
+            if i < final_args.len() {
+                final_args[i] = arg_val;
+            }
+        }
+
+        // 2. Fill named args
+        for (name, arg_val) in named_args {
+            if let Some(param_idx) = params.iter().position(|p| p.to_lowercase() == name) {
+                final_args[param_idx] = arg_val;
+            }
+        }
+        final_args
+    }
+
+    fn execute_call(&mut self, fiber_idx: usize, arg_count: usize, names: Option<Vec<String>>) -> Result<()> {
+        let func_val = self.fibers[fiber_idx].stack[self.fibers[fiber_idx].stack.len() - 1 - arg_count].clone();
+        match func_val {
+            BxValue::CompiledFunction(ref func) => {
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                }
+                args.reverse();
+                self.fibers[fiber_idx].stack.pop(); // Pop the function object
+
+                let final_args = if let Some(names_list) = names {
+                    self.reorder_arguments(args, names_list, &func.params)
+                } else {
+                    let mut a = args;
+                    for _ in 0..(func.arity - arg_count) {
+                        a.push(BxValue::Null);
+                    }
+                    a
+                };
+
+                // Push function back
+                let func_rc = Rc::clone(func);
+                self.fibers[fiber_idx].stack.push(BxValue::CompiledFunction(func_rc.clone()));
+                
+                // Push args back in order
+                for arg in final_args {
+                    self.fibers[fiber_idx].stack.push(arg);
+                }
+
+                let frame = CallFrame {
+                    function: func_rc,
+                    ip: 0,
+                    stack_base: self.fibers[fiber_idx].stack.len() - func.arity,
+                    receiver: self.fibers[fiber_idx].frames.last().unwrap().receiver.clone(),
+                    handlers: Vec::new(),
+                };
+                self.fibers[fiber_idx].frames.push(frame);
+                Ok(())
+            }
+            BxValue::NativeFunction(func) => {
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                }
+                args.reverse();
+                self.fibers[fiber_idx].stack.pop(); // Pop the function object
+                
+                match func(self, &args) {
+                    Ok(val) => {
+                        self.fibers[fiber_idx].stack.push(val);
+                        Ok(())
+                    }
+                    Err(e) => self.throw_error(fiber_idx, &e),
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            BxValue::JsValue(js) => {
+                if let Ok(func) = js.clone().dyn_into::<Function>() {
+                    let js_args = Array::new();
+                    for _ in 0..arg_count {
+                        let arg_val = self.fibers[fiber_idx].stack.pop().unwrap();
+                        js_args.unshift(&self.bx_to_js(&arg_val));
+                    }
+                    self.fibers[fiber_idx].stack.pop(); // Pop the function
+                    match Reflect::apply(&func, &JsValue::UNDEFINED, &js_args) {
+                        Ok(val) => {
+                            let bx_val = self.js_to_bx(val);
+                            self.fibers[fiber_idx].stack.push(bx_val);
+                            Ok(())
+                        }
+                        Err(e) => self.throw_error(fiber_idx, &format!("JS Error: {:?}", e)),
+                    }
+                } else {
+                    self.throw_error(fiber_idx, "Can only call JS functions.")
+                }
+            }
+            _ => self.throw_error(fiber_idx, "Can only call functions."),
+        }
+    }
+
+    fn execute_invoke(&mut self, fiber_idx: usize, name: String, arg_count: usize, names: Option<Vec<String>>, ip_at_start: usize) -> Result<()> {
+        if self.fibers[fiber_idx].stack.len() < arg_count + 1 {
+            bail!("Stack underflow: missing receiver or arguments for method call");
+        }
+        let receiver_idx = self.fibers[fiber_idx].stack.len() - 1 - arg_count;
+        let receiver_val = self.fibers[fiber_idx].stack.get(receiver_idx).cloned().unwrap();
+        
+        match receiver_val {
+            BxValue::Future(id) => {
+                let (status, value) = if let GcObject::Future(f) = self.heap.get(id) {
+                    (f.status.clone(), f.value.clone())
+                } else { unreachable!() };
+
+                if name == "get" {
+                    match status {
+                        FutureStatus::Pending => {
+                            self.fibers[fiber_idx].frames.last_mut().unwrap().ip -= 1;
+                            Ok(())
+                        }
+                        FutureStatus::Completed => {
+                            for _ in 0..arg_count { self.fibers[fiber_idx].stack.pop(); }
+                            self.fibers[fiber_idx].stack.pop();
+                            self.fibers[fiber_idx].stack.push(value);
+                            Ok(())
+                        }
+                        FutureStatus::Failed(e) => {
+                            self.throw_error(fiber_idx, &format!("Async operation failed: {}", e))
+                        }
+                    }
+                } else if let Some(bif_name) = self.resolve_member_method(&receiver_val, &name) {
+                    if let Some(BxValue::NativeFunction(bif)) = self.globals.get(&bif_name).cloned() {
+                        let mut args = Vec::with_capacity(arg_count + 1);
+                        for _ in 0..arg_count {
+                            args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                        }
+                        args.reverse();
+                        self.fibers[fiber_idx].stack.pop(); // receiver
+                        
+                        let mut final_args = vec![receiver_val];
+                        final_args.extend(args);
+                        
+                        match bif(self, &final_args) {
+                            Ok(res) => {
+                                self.fibers[fiber_idx].stack.push(res);
+                                Ok(())
+                            }
+                            Err(e) => self.throw_error(fiber_idx, &e),
+                        }
+                    } else {
+                        self.throw_error(fiber_idx, &format!("Method {} not found on future.", name))
+                    }
+                } else {
+                    self.throw_error(fiber_idx, &format!("Method {} not found on future.", name))
+                }
+            }
+            BxValue::Instance(id) => {
+                let (shape_id, properties_ptr, class) = if let GcObject::Instance(inst) = self.heap.get(id) {
+                    (inst.shape_id, &inst.properties as *const Vec<BxValue>, Rc::clone(&inst.class))
+                } else { unreachable!() };
+
+                let ic = {
+                    let fiber = &self.fibers[fiber_idx];
+                    let frame = fiber.frames.last().unwrap();
+                    let chunk = frame.function.chunk.borrow();
+                    chunk.caches[ip_at_start].clone()
+                };
+
+                let method = if let Some(IcEntry::Monomorphic { shape_id: cached_shape, index }) = ic {
+                    if cached_shape == shape_id {
+                        if let BxValue::CompiledFunction(f) = unsafe { &*properties_ptr }[index].clone() {
+                            Some(f)
+                        } else { None }
+                    } else { None }
+                } else { None };
+
+                let method = if method.is_none() {
+                    if let Some(idx) = self.shapes.get_index(shape_id, &name) {
+                        if let BxValue::CompiledFunction(f) = unsafe { &*properties_ptr }[idx].clone() {
+                            {
+                                let fiber = &self.fibers[fiber_idx];
+                                let frame = fiber.frames.last().unwrap();
+                                let mut chunk = frame.function.chunk.borrow_mut();
+                                chunk.caches[ip_at_start] = Some(IcEntry::Monomorphic { shape_id, index: idx });
+                            }
+                            Some(f)
+                        } else { None }
+                    } else if let Some(f) = self.resolve_method(Rc::clone(&class), &name) {
+                        Some(f)
+                    } else { None }
+                } else { method };
+                
+                if let Some(func) = method {
+                    let mut args = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                    }
+                    args.reverse();
+                    self.fibers[fiber_idx].stack.pop(); // receiver
+
+                    let final_args = if let Some(names_list) = names {
+                        self.reorder_arguments(args, names_list, &func.params)
+                    } else {
+                        let mut a = args;
+                        for _ in 0..(func.arity - arg_count) {
+                            a.push(BxValue::Null);
+                        }
+                        a
+                    };
+                    
+                    // Push receiver back
+                    self.fibers[fiber_idx].stack.push(receiver_val.clone());
+
+                    for arg in final_args { self.fibers[fiber_idx].stack.push(arg); }
+
+                    let frame = CallFrame {
+                        function: func.clone(),
+                        ip: 0,
+                        stack_base: self.fibers[fiber_idx].stack.len() - func.arity,
+                        receiver: Some(receiver_val),
+                        handlers: Vec::new(),
+                    };
+                    self.fibers[fiber_idx].frames.push(frame);
+                    Ok(())
+                } else if let Some(on_missing) = self.resolve_method(Rc::clone(&class), "onmissingmethod") {
+                    let mut original_args = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        original_args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                    }
+                    original_args.reverse();
+                    self.fibers[fiber_idx].stack.pop(); // receiver
+
+                    let args_array_id = self.heap.alloc(GcObject::Array(original_args));
+                    
+                    self.fibers[fiber_idx].stack.push(BxValue::String(name.clone()));
+                    self.fibers[fiber_idx].stack.push(BxValue::Array(args_array_id));
+
+                    let mut frame = CallFrame {
+                        function: on_missing.clone(),
+                        ip: 0,
+                        stack_base: self.fibers[fiber_idx].stack.len() - 2,
+                        receiver: Some(receiver_val),
+                        handlers: Vec::new(),
+                    };
+                    
+                    for _ in 0..(on_missing.arity - 2) {
+                        self.fibers[fiber_idx].stack.push(BxValue::Null);
+                    }
+                    frame.stack_base = self.fibers[fiber_idx].stack.len() - on_missing.arity;
+
+                    self.fibers[fiber_idx].frames.push(frame);
+                    Ok(())
+                } else {
+                    self.throw_error(fiber_idx, &format!("Method {} not found.", name))
+                }
+            }
+            BxValue::Struct(id) => {
+                let (shape_id, properties_ptr) = if let GcObject::Struct(s) = self.heap.get(id) {
+                    (s.shape_id, &s.properties as *const Vec<BxValue>)
+                } else { unreachable!() };
+
+                let ic = {
+                    let fiber = &self.fibers[fiber_idx];
+                    let frame = fiber.frames.last().unwrap();
+                    let chunk = frame.function.chunk.borrow();
+                    chunk.caches[ip_at_start].clone()
+                };
+
+                let method = if let Some(IcEntry::Monomorphic { shape_id: cached_shape, index }) = ic {
+                    if cached_shape == shape_id {
+                        if let BxValue::CompiledFunction(f) = unsafe { &*properties_ptr }[index].clone() {
+                            Some(f)
+                        } else { None }
+                    } else { None }
+                } else { None };
+
+                let method = if method.is_none() {
+                    if let Some(idx) = self.shapes.get_index(shape_id, &name) {
+                        if let BxValue::CompiledFunction(func) = unsafe { &*properties_ptr }[idx].clone() {
+                            {
+                                let fiber = &self.fibers[fiber_idx];
+                                let frame = fiber.frames.last().unwrap();
+                                let mut chunk = frame.function.chunk.borrow_mut();
+                                chunk.caches[ip_at_start] = Some(IcEntry::Monomorphic { shape_id, index: idx });
+                            }
+                            Some(func)
+                        } else { None }
+                    } else { None }
+                } else { method };
+
+                if let Some(func) = method {
+                    let mut args = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                    }
+                    args.reverse();
+                    self.fibers[fiber_idx].stack.pop(); // receiver
+
+                    let final_args = if let Some(names_list) = names {
+                        self.reorder_arguments(args, names_list, &func.params)
+                    } else {
+                        let mut a = args;
+                        for _ in 0..(func.arity - arg_count) {
+                            a.push(BxValue::Null);
+                        }
+                        a
+                    };
+                    
+                    // Push receiver back
+                    self.fibers[fiber_idx].stack.push(receiver_val.clone());
+
+                    for arg in final_args { self.fibers[fiber_idx].stack.push(arg); }
+
+                    let frame = CallFrame {
+                        function: func.clone(),
+                        ip: 0,
+                        stack_base: self.fibers[fiber_idx].stack.len() - func.arity,
+                        receiver: Some(receiver_val),
+                        handlers: Vec::new(),
+                    };
+                    self.fibers[fiber_idx].frames.push(frame);
+                    Ok(())
+                } else if let Some(bif_name) = self.resolve_member_method(&receiver_val, &name) {
+                    if let Some(BxValue::NativeFunction(bif)) = self.globals.get(&bif_name).cloned() {
+                        let mut args = Vec::with_capacity(arg_count + 1);
+                        for _ in 0..arg_count {
+                            args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                        }
+                        args.reverse();
+                        self.fibers[fiber_idx].stack.pop(); // Pop the receiver
+                        
+                        let mut final_args = vec![receiver_val];
+                        final_args.extend(args);
+                        
+                        match bif(self, &final_args) {
+                            Ok(res) => {
+                                self.fibers[fiber_idx].stack.push(res);
+                                Ok(())
+                            }
+                            Err(e) => self.throw_error(fiber_idx, &e),
+                        }
+                    } else {
+                        self.throw_error(fiber_idx, &format!("Member {} not found or not callable.", name))
+                    }
+                } else {
+                    self.throw_error(fiber_idx, &format!("Member {} not found or not callable.", name))
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            BxValue::JsValue(js) => {
+                let prop = js_sys::JsString::from(name);
+                match Reflect::get(&js, &prop) {
+                    Ok(val) => {
+                        if let Ok(func) = val.clone().dyn_into::<Function>() {
+                            let js_args = Array::new();
+                            for _ in 0..arg_count {
+                                let arg_val = self.fibers[fiber_idx].stack.pop().unwrap();
+                                js_args.unshift(&self.bx_to_js(&arg_val));
+                            }
+                            self.fibers[fiber_idx].stack.pop(); // Pop the receiver
+                            match Reflect::apply(&func, &js, &js_args) {
+                                Ok(res) => {
+                                    let bx_res = self.js_to_bx(res);
+                                    self.fibers[fiber_idx].stack.push(bx_res);
+                                    Ok(())
+                                }
+                                Err(e) => self.throw_error(fiber_idx, &format!("JS Error: {:?}", e)),
+                            }
+                        } else {
+                            self.throw_error(fiber_idx, &format!("Member {} is not a function", name))
+                        }
+                    }
+                    Err(e) => self.throw_error(fiber_idx, &format!("JS Error: {:?}", e)),
+                }
+            }
+            BxValue::NativeObject(obj) => {
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                }
+                args.reverse();
+                self.fibers[fiber_idx].stack.pop(); // receiver
+                match obj.borrow_mut().call_method(self, &name, &args) {
+                    Ok(res) => {
+                        self.fibers[fiber_idx].stack.push(res);
+                        Ok(())
+                    }
+                    Err(e) => self.throw_error(fiber_idx, &e),
+                }
+            }
+            _ => {
+                if let Some(bif_name) = self.resolve_member_method(&receiver_val, &name) {
+                    if let Some(BxValue::NativeFunction(bif)) = self.globals.get(&bif_name).cloned() {
+                        let mut args = Vec::with_capacity(arg_count + 1);
+                        for _ in 0..arg_count {
+                            args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                        }
+                        args.reverse();
+                        self.fibers[fiber_idx].stack.pop(); // Pop the receiver
+                        
+                        let mut final_args = vec![receiver_val];
+                        final_args.extend(args);
+                        
+                        match bif(self, &final_args) {
+                            Ok(res) => {
+                                self.fibers[fiber_idx].stack.push(res);
+                                Ok(())
+                            }
+                            Err(e) => self.throw_error(fiber_idx, &e),
+                        }
+                    } else {
+                        self.throw_error(fiber_idx, &format!("Method {} not found or cannot be invoked on this type.", name))
+                    }
+                } else {
+                    self.throw_error(fiber_idx, &format!("Method {} not found or cannot be invoked on this type.", name))
+                }
+            }
         }
     }
 

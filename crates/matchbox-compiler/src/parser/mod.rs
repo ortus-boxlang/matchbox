@@ -69,6 +69,34 @@ fn parse_block(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Statement>> {
     Ok(stmts)
 }
 
+fn parse_args(pair: pest::iterators::Pair<Rule>) -> Result<Vec<crate::ast::Argument>> {
+    let mut args = Vec::new();
+    for arg_pair in pair.into_inner() {
+        let mut inner = arg_pair.into_inner();
+        let first = inner.next().ok_or_else(|| anyhow!("Empty arg"))?;
+        
+        match first.as_rule() {
+            Rule::identifier => {
+                if let Some(value_pair) = inner.next() {
+                    // named: identifier = expression
+                    let name = Some(first.as_str().to_string());
+                    let value = parse_expression(value_pair)?;
+                    args.push(crate::ast::Argument { name, value });
+                } else {
+                    let value = Expression::new(ExpressionKind::Identifier(first.as_str().to_string()), first.as_span().start_pos().line_col().0);
+                    args.push(crate::ast::Argument { name: None, value });
+                }
+            }
+            Rule::expression => {
+                let value = parse_expression(first)?;
+                args.push(crate::ast::Argument { name: None, value });
+            }
+            _ => bail!("Unexpected rule in arg: {:?}", first.as_rule()),
+        }
+    }
+    Ok(args)
+}
+
 fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
     let line = pair.as_span().start_pos().line_col().0;
     let rule = pair.as_rule();
@@ -440,9 +468,7 @@ fn parse_primary(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
             Rule::function_call_args => {
                 let mut args = Vec::new();
                 if let Some(args_rule) = postfix.into_inner().next() {
-                    for arg in args_rule.into_inner() {
-                        args.push(parse_expression(arg)?);
-                    }
+                    args = parse_args(args_rule)?;
                 }
                 expr = Expression::new(ExpressionKind::FunctionCall {
                     base: Box::new(expr),
@@ -496,9 +522,7 @@ fn parse_atom(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
             let class_path = inner_rules.next().unwrap().as_str().to_string();
             let mut args = Vec::new();
             if let Some(args_rule) = inner_rules.next() {
-                for arg in args_rule.into_inner() {
-                    args.push(parse_expression(arg)?);
-                }
+                args = parse_args(args_rule)?;
             }
             Ok(Expression::new(ExpressionKind::New { class_path, args }, line))
         }

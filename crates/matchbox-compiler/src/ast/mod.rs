@@ -95,10 +95,16 @@ impl Expression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Argument {
+    pub name: Option<String>,
+    pub value: Expression,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExpressionKind {
     New {
         class_path: String,
-        args: Vec<Expression>,
+        args: Vec<Argument>,
     },
     Assignment {
         target: AssignmentTarget,
@@ -111,7 +117,7 @@ pub enum ExpressionKind {
     },
     FunctionCall {
         base: Box<Expression>,
-        args: Vec<Expression>,
+        args: Vec<Argument>,
     },
     ArrayAccess {
         base: Box<Expression>,

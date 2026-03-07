@@ -116,6 +116,7 @@ impl Compiler {
                                 name: format!("{}.{}", name, getter_name),
                                 arity: 0,
                                 min_arity: 0,
+                                params: Vec::new(),
                                 chunk: Rc::new(RefCell::new(getter_chunk)),
                             };
                             methods.insert(getter_name.to_lowercase(), Rc::new(func));
@@ -135,6 +136,7 @@ impl Compiler {
                                 name: format!("{}.{}", name, setter_name),
                                 arity: 1,
                                 min_arity: 1,
+                                params: vec!["val".to_string()],
                                 chunk: Rc::new(RefCell::new(setter_chunk)),
                             };
                             methods.insert(setter_name.to_lowercase(), Rc::new(func));
@@ -456,8 +458,16 @@ impl Compiler {
                     self.chunk.write(OpCode::OpGetGlobal(class_idx), expr.line);
                 }
                 
+                let mut arg_names = Vec::new();
+                let mut has_named = false;
                 for arg in args {
-                    self.compile_expression(arg)?;
+                    if let Some(name) = &arg.name {
+                        arg_names.push(name.clone());
+                        has_named = true;
+                    } else {
+                        arg_names.push("".to_string());
+                    }
+                    self.compile_expression(&arg.value)?;
                 }
                 
                 // OpNew(args.len()) replaces Class with Instance BELOW args
@@ -467,7 +477,12 @@ impl Compiler {
                 // Automatically call init() if args were passed
                 if !args.is_empty() {
                     let name_idx = self.chunk.add_constant(BxValue::String("init".to_string()));
-                    self.chunk.write(OpCode::OpInvoke(name_idx, args.len()), expr.line);
+                    if has_named {
+                        let names_idx = self.chunk.add_constant(BxValue::StringArray(arg_names));
+                        self.chunk.write(OpCode::OpInvokeNamed(name_idx, args.len(), names_idx), expr.line);
+                    } else {
+                        self.chunk.write(OpCode::OpInvoke(name_idx, args.len()), expr.line);
+                    }
                 }
                 
                 Ok(())
@@ -601,11 +616,23 @@ impl Compiler {
                 Ok(())
             }
             ExpressionKind::FunctionCall { base, args } => {
+                let mut arg_names = Vec::new();
+                let mut has_named = false;
+                
+                for arg in args {
+                    if let Some(name) = &arg.name {
+                        arg_names.push(name.clone());
+                        has_named = true;
+                    } else {
+                        arg_names.push("".to_string());
+                    }
+                }
+
                 if let ExpressionKind::Identifier(name) = &base.kind {
                     let lower_name = name.to_lowercase();
                     if lower_name == "println" || lower_name == "echo" {
                         for arg in args {
-                            self.compile_expression(arg)?;
+                            self.compile_expression(&arg.value)?;
                         }
                         self.chunk.write(OpCode::OpPrintln(args.len()), expr.line);
                         let null_idx = self.chunk.add_constant(BxValue::Null);
@@ -614,7 +641,7 @@ impl Compiler {
                     }
                     if lower_name == "print" {
                         for arg in args {
-                            self.compile_expression(arg)?;
+                            self.compile_expression(&arg.value)?;
                         }
                         self.chunk.write(OpCode::OpPrint(args.len()), expr.line);
                         let null_idx = self.chunk.add_constant(BxValue::Null);
@@ -626,18 +653,28 @@ impl Compiler {
                 if let ExpressionKind::MemberAccess { base: member_base, member } = &base.kind {
                     self.compile_expression(member_base)?;
                     for arg in args {
-                        self.compile_expression(arg)?;
+                        self.compile_expression(&arg.value)?;
                     }
                     let name_idx = self.chunk.add_constant(BxValue::String(member.clone()));
-                    self.chunk.write(OpCode::OpInvoke(name_idx, args.len()), expr.line);
+                    if has_named {
+                        let names_idx = self.chunk.add_constant(BxValue::StringArray(arg_names));
+                        self.chunk.write(OpCode::OpInvokeNamed(name_idx, args.len(), names_idx), expr.line);
+                    } else {
+                        self.chunk.write(OpCode::OpInvoke(name_idx, args.len()), expr.line);
+                    }
                     return Ok(());
                 }
 
                 self.compile_expression(base)?;
                 for arg in args {
-                    self.compile_expression(arg)?;
+                    self.compile_expression(&arg.value)?;
                 }
-                self.chunk.write(OpCode::OpCall(args.len()), expr.line);
+                if has_named {
+                    let names_idx = self.chunk.add_constant(BxValue::StringArray(arg_names));
+                    self.chunk.write(OpCode::OpCallNamed(args.len(), names_idx), expr.line);
+                } else {
+                    self.chunk.write(OpCode::OpCall(args.len()), expr.line);
+                }
                 Ok(())
             }
             ExpressionKind::ArrayAccess { base, index } => {
@@ -816,6 +853,7 @@ impl Compiler {
             name: name.to_string(),
             arity: params.len(),
             min_arity,
+            params: params.iter().map(|p| p.name.clone()).collect(),
             chunk: Rc::new(RefCell::new(sub_compiler.chunk)),
         })
     }

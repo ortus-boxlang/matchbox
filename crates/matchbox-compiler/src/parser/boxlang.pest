@@ -46,7 +46,7 @@ return_keyword = @{ "return" ~ !ASCII_ALPHANUMERIC }
 return_stmt = { return_keyword ~ expression? ~ ";"? }
 
 var_keyword = @{ "var" ~ !ASCII_ALPHANUMERIC }
-variable_decl = { var_keyword ~ assignment }
+variable_decl = { var_keyword ~ assignment ~ ";"? }
 
 required_keyword = @{ "required" ~ !ASCII_ALPHANUMERIC }
 param_decl = { required_keyword? ~ (type_name ~ identifier | identifier) ~ ("=" ~ expression)? }
@@ -129,7 +129,8 @@ postfix_op = { "++" | "--" }
 prefix_op = { ("++" | "--") ~ target }
 
 function_call = _{ identifier ~ function_call_args }
-args = { expression ~ ("," ~ expression)* }
+args = { arg ~ ("," ~ arg)* }
+arg = { (identifier ~ "=" ~ expression) | expression }
 
 literal = { string | number | boolean | null_lit | array_literal | struct_literal | anonymous_function }
 

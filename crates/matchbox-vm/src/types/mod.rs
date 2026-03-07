@@ -12,6 +12,7 @@ pub enum BxValue {
     Null,
     Array(usize), // GcId
     Struct(usize), // GcId
+    StringArray(Vec<String>),
     CompiledFunction(Rc<BxCompiledFunction>),
     #[serde(skip)]
     NativeFunction(BxNativeFunction),
@@ -66,6 +67,7 @@ impl fmt::Display for BxValue {
             BxValue::Null => write!(f, "null"),
             BxValue::Array(id) => write!(f, "<array id:{}>", id),
             BxValue::Struct(id) => write!(f, "<struct id:{}>", id),
+            BxValue::StringArray(arr) => write!(f, "<string array {:?}>", arr),
             BxValue::CompiledFunction(func) => write!(f, "<compiled function {}>", func.name),
             BxValue::NativeFunction(_) => write!(f, "<native function>"),
             BxValue::Class(class) => write!(f, "<class {}>", class.borrow().name),
@@ -84,6 +86,7 @@ pub struct BxCompiledFunction {
     pub name: String,
     pub arity: usize,     // Total parameters
     pub min_arity: usize, // Required parameters
+    pub params: Vec<String>, // Parameter names
     pub chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
 }
 

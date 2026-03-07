@@ -34,7 +34,9 @@ pub enum OpCode {
     OpMember(usize),       // dot access .member (index in constants)
     OpSetMember(usize),    // dot assignment .member = val
     OpInvoke(usize, usize), // name index, arg count
+    OpInvokeNamed(usize, usize, usize), // name index, total arg count, names index (in constants)
     OpCall(usize),         // arg count
+    OpCallNamed(usize, usize), // total arg count, names index (in constants)
     OpIterNext(usize, usize, usize, bool), // collection slot, cursor slot, offset if done, bool if should push index
     OpNew(usize),          // arg count
     OpGetPrivate(usize),   // name index (variables scope)
