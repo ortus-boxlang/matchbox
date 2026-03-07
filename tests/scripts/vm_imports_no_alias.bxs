@@ -1,0 +1,4 @@
+import tests.models.User;
+
+u = new User("Jacob");
+u.greet();

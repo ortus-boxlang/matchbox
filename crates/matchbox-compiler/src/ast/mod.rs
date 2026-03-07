@@ -26,7 +26,10 @@ pub struct Attribute {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StatementKind {
-    Import(String),
+    Import {
+        path: String,
+        alias: Option<String>,
+    },
     ClassDecl {
         name: String,
         extends: Option<String>,

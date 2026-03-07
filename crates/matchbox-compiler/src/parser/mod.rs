@@ -21,7 +21,13 @@ pub fn parse(source: &str) -> Result<Vec<Statement>> {
                         let mut inner = inner_pair.into_inner();
                         let _kw = inner.next().unwrap();
                         let path = inner.next().unwrap().as_str().to_string();
-                        ast.push(Statement::new(StatementKind::Import(path), line));
+                        let mut alias = None;
+                        if let Some(pair) = inner.next() {
+                            if pair.as_rule() == Rule::as_keyword {
+                                alias = Some(inner.next().unwrap().as_str().to_string());
+                            }
+                        }
+                        ast.push(Statement::new(StatementKind::Import { path, alias }, line));
                     }
                     Rule::statement => {
                         ast.push(parse_statement(inner_pair)?);
@@ -211,7 +217,13 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
             let mut inner = pair.into_inner();
             let _kw = inner.next().unwrap();
             let path = inner.next().unwrap().as_str().to_string();
-            Ok(Statement::new(StatementKind::Import(path), line))
+            let mut alias = None;
+            if let Some(pair) = inner.next() {
+                if pair.as_rule() == Rule::as_keyword {
+                    alias = Some(inner.next().unwrap().as_str().to_string());
+                }
+            }
+            Ok(Statement::new(StatementKind::Import { path, alias }, line))
         }
         Rule::function_decl => {
             let mut inner_rules = pair.into_inner();

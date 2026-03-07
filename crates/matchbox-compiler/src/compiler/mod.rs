@@ -52,9 +52,13 @@ impl Compiler {
     fn compile_statement(&mut self, stmt: &Statement, is_last: bool) -> Result<()> {
         self.current_line = stmt.line as u32;
         match &stmt.kind {
-            StatementKind::Import(path) => {
-                let alias = path.split('.').last().unwrap().to_string().to_lowercase();
-                self.imports.insert(alias, path.clone());
+            StatementKind::Import { path, alias } => {
+                let resolved_alias = if let Some(a) = alias {
+                    a.to_lowercase()
+                } else {
+                    path.split('.').last().unwrap().to_string().to_lowercase()
+                };
+                self.imports.insert(resolved_alias, path.clone());
                 Ok(())
             }
             StatementKind::ClassDecl { name, extends, accessors, implements, members } => {

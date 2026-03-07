@@ -19,7 +19,8 @@ statement = {
 }
 
 import_keyword = @{ "import" ~ !ASCII_ALPHANUMERIC }
-import_stmt = { import_keyword ~ dotted_identifier ~ ";"? }
+as_keyword = @{ "as" ~ !ASCII_ALPHANUMERIC }
+import_stmt = { import_keyword ~ dotted_identifier ~ (as_keyword ~ identifier)? ~ ";"? }
 dotted_identifier = @{ identifier ~ ("." ~ identifier)* }
 
 class_keyword = @{ "class" ~ !ASCII_ALPHANUMERIC }
