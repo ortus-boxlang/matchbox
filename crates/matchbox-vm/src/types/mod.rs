@@ -1,3 +1,5 @@
+pub mod value;
+
 use std::fmt;
 use std::collections::HashMap;
 use std::rc::Rc;
