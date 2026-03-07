@@ -10,6 +10,7 @@ rand = "0.10.0"
 getrandom = { version = "0.4.2", features = ["wasm_js"] }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 web-time = "1.1.0"
+chrono = { version = "0.4.39", features = ["serde"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 jni = { version = "0.21.1", features = ["invocation"] }

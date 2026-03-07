@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rand::RngExt;
 use std::rc::Rc;
 use std::cell::RefCell;
+use chrono::Local;
 
 mod jni;
 
@@ -66,7 +67,7 @@ fn array_to_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     let id = args[0].as_gc_id().ok_or_else(|| "First argument to arrayToList must be an array".to_string())?;
     
     let delimiter = if args.len() > 1 {
-        args[1].to_string()
+        vm.to_string(args[1])
     } else {
         ",".to_string()
     };
@@ -74,12 +75,10 @@ fn array_to_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     let len = vm.array_len(id);
     let mut parts = Vec::with_capacity(len);
     for i in 0..len {
-        parts.push(vm.array_get(id, i).to_string());
+        parts.push(vm.to_string(vm.array_get(id, i)));
     }
 
-    // String needs to be allocated on heap, but BIFs don't have direct heap access yet
-    // For now we might need to change BIF signature or BxVM trait
-    Err("String allocation in BIFs not yet implemented for NaN-boxing".to_string())
+    Ok(BxValue::new_ptr(vm.string_new(parts.join(&delimiter))))
 }
 
 fn array_map(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -113,10 +112,10 @@ fn array_each(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     Ok(BxValue::new_null())
 }
 
-fn ucase(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+fn ucase(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 { return Err("ucase() expects exactly 1 argument".to_string()); }
-    // Needs heap access to create new string
-    Err("String allocation in BIFs not yet implemented for NaN-boxing".to_string())
+    let s = vm.to_string(args[0]).to_uppercase();
+    Ok(BxValue::new_ptr(vm.string_new(s)))
 }
 
 fn abs(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -214,8 +213,10 @@ fn struct_new(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     Ok(BxValue::new_ptr(vm.struct_new()))
 }
 
-fn now(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
-    Err("String allocation in BIFs not yet implemented for NaN-boxing".to_string())
+fn now(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let now = Local::now();
+    let s = now.format("%Y-%m-%d %H:%M:%S").to_string();
+    Ok(BxValue::new_ptr(vm.string_new(s)))
 }
 
 fn get_tick_count(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
