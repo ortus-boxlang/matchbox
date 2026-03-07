@@ -48,10 +48,12 @@ jobs:
         shell: bash
         run: |
           mkdir -p stubs-out
+          ROOT_DIR=$(pwd)
+          cd crates/matchbox-runner
           IFS=', ' read -r -a TGS <<< "${{ matrix.targets }}"
           for target in "${TGS[@]}"; do
             echo "Building stub for $target..."
-            cargo build --release --target "$target" -p matchbox_runner
+            cargo build --release --target "$target"
             
             # Determine source filename
             SRC_NAME="matchbox_runner"
@@ -63,7 +65,7 @@ jobs:
             if [[ "$target" == *"windows"* ]]; then DEST_NAME="$DEST_NAME.exe"; fi
             if [[ "$target" == *"wasm"* ]]; then DEST_NAME="runner_stub_wasip1.wasm"; fi
             
-            cp "target/$target/release/$SRC_NAME" "stubs-out/$DEST_NAME"
+            cp "target/$target/release/$SRC_NAME" "$ROOT_DIR/stubs-out/$DEST_NAME"
           done
 
       - name: Upload Stubs
