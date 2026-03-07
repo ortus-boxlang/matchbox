@@ -20,7 +20,8 @@ statement = {
 
 import_keyword = @{ "import" ~ !ASCII_ALPHANUMERIC }
 as_keyword = @{ "as" ~ !ASCII_ALPHANUMERIC }
-import_stmt = { import_keyword ~ dotted_identifier ~ (as_keyword ~ identifier)? ~ ";"? }
+import_path = @{ (identifier ~ ":")? ~ dotted_identifier }
+import_stmt = { import_keyword ~ import_path ~ (as_keyword ~ identifier)? ~ ";"? }
 dotted_identifier = @{ identifier ~ ("." ~ identifier)* }
 
 class_keyword = @{ "class" ~ !ASCII_ALPHANUMERIC }
@@ -125,7 +126,7 @@ keyword = {
 }
 
 new_keyword = @{ "new" ~ !ASCII_ALPHANUMERIC }
-new_expression = { new_keyword ~ dotted_identifier ~ "(" ~ args? ~ ")" }
+new_expression = { new_keyword ~ import_path ~ "(" ~ args? ~ ")" }
 
 function_call_args = { "(" ~ args? ~ ")" }
 array_access = { "[" ~ expression ~ "]" }

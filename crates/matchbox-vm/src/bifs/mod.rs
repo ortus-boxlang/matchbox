@@ -144,7 +144,7 @@ fn create_object(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
 
     match obj_type.as_str() {
         "java" => {
-            jni::create_java_object(vm, &class_name)
+            jni::create_java_object(vm, &class_name, &args[2..])
         }
         "rust" | "native" => {
             Err("Native objects not yet implemented for NaN-boxing".to_string())

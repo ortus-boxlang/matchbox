@@ -23,6 +23,7 @@ script_test!(for_loop, "for_loop.bxs");
 script_test!(functions, "functions.bxs");
 script_test!(hello_world, "hello_world.bxs");
 script_test!(java_test, "java_test.bxs");
+script_test!(java_import, "java_import.bxs");
 script_test!(multi_file, "multi_file.bxs");
 script_test!(nested_interpolation, "nested_interpolation.bxs");
 script_test!(return_statement, "return.bxs");

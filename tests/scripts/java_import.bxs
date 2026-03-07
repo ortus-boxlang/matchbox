@@ -1,0 +1,15 @@
+import java:java.util.ArrayList as List;
+
+l = new List();
+l.add("item 1");
+l.add("item 2");
+println(l.size());
+
+l2 = new java:java.util.ArrayList();
+l2.add("direct");
+println(l2.size());
+
+import java:java.util.HashMap;
+map = new HashMap();
+map.put("key", "value");
+println(map.get("key"));

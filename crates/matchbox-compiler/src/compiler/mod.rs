@@ -569,6 +569,31 @@ impl Compiler {
                 let lower_path = class_path.to_lowercase();
                 let resolved_path = self.imports.get(&lower_path).cloned().unwrap_or(class_path.clone());
                 
+                if resolved_path.to_lowercase().starts_with("java:") {
+                    let java_class = &resolved_path[5..];
+                    
+                    // Push createObject onto stack
+                    let bif_name_idx = self.chunk.add_constant(Constant::String(BoxString::new("createobject")));
+                    self.chunk.write(OpCode::OpGetGlobal(bif_name_idx), expr.line);
+
+                    // Push type "java"
+                    let type_idx = self.chunk.add_constant(Constant::String(BoxString::new("java")));
+                    self.chunk.write(OpCode::OpConstant(type_idx), expr.line);
+
+                    // Push class name
+                    let class_idx = self.chunk.add_constant(Constant::String(BoxString::new(java_class)));
+                    self.chunk.write(OpCode::OpConstant(class_idx), expr.line);
+                    
+                    // Push arguments
+                    for arg in args {
+                        self.compile_expression(&arg.value)?;
+                    }
+                    
+                    // Call createObject(type, class, ...args)
+                    self.chunk.write(OpCode::OpCall(2 + args.len() as u32), expr.line);
+                    return Ok(());
+                }
+
                 if resolved_path.contains('.') {
                     let class_val = self.load_class_from_path(&resolved_path)?;
                     let class_idx = self.chunk.add_constant(class_val);

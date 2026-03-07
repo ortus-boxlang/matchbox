@@ -32,10 +32,10 @@ fn get_jvm() -> Result<Arc<JavaVM>, String> {
     res.clone()
 }
 
-pub fn create_java_object(vm: &mut dyn BxVM, class_name: &str) -> Result<BxValue, String> {
+pub fn create_java_object(vm: &mut dyn BxVM, class_name: &str, args: &[BxValue]) -> Result<BxValue, String> {
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (vm, class_name);
+        let _ = (vm, class_name, args);
         return Err("Java interoperability is not supported in WASM environments.".to_string());
     }
 
@@ -46,9 +46,49 @@ pub fn create_java_object(vm: &mut dyn BxVM, class_name: &str) -> Result<BxValue
         
         // Convert class name from "java.util.ArrayList" to "java/util/ArrayList"
         let jni_class_name = class_name.replace(".", "/");
+        let class = env.find_class(&jni_class_name)
+            .map_err(|e| format!("Failed to find class {}: {}", class_name, e))?;
+
+        // Support for non-default constructors via reflection
+        let constructors_array: JObjectArray = env.call_method(&class, "getConstructors", "()[Ljava/lang/reflect/Constructor;", &[])
+            .map_err(|e| format!("Failed to get constructors for {}: {}", class_name, e))?.l().map_err(|e| e.to_string())?.into();
         
-        let obj = env.new_object(&jni_class_name, "()V", &[])
-            .map_err(|e| format!("Failed to instantiate {}: {}", class_name, e))?;
+        let constructors_count = env.get_array_length(&constructors_array).map_err(|e| e.to_string())?;
+        let mut target_constructor = None;
+
+        for i in 0..constructors_count {
+            let constructor = env.get_object_array_element(&constructors_array, i).map_err(|e| e.to_string())?;
+            let params_array: JObjectArray = env.call_method(&constructor, "getParameterTypes", "()[Ljava/lang/Class;", &[])
+                .map_err(|e| e.to_string())?.l().map_err(|e| e.to_string())?.into();
+            let params_count = env.get_array_length(&params_array).map_err(|e| e.to_string())?;
+            
+            if params_count as usize == args.len() {
+                target_constructor = Some(constructor);
+                break;
+            }
+        }
+
+        let constructor = target_constructor.ok_or_else(|| format!("Constructor with {} arguments not found on class {}", args.len(), class_name))?;
+
+        // 3. Prepare Arguments
+        let object_class = env.find_class("java/lang/Object").map_err(|e| e.to_string())?;
+        let j_args_array = env.new_object_array(args.len() as i32, object_class, JObject::null())
+            .map_err(|e| e.to_string())?;
+        
+        let dummy_jni_obj = JniObject {
+            _jvm: Arc::clone(&jvm),
+            _global_ref: env.new_global_ref(JObject::null()).map_err(|e| e.to_string())?,
+        };
+
+        for (i, arg) in args.iter().enumerate() {
+            let j_arg = dummy_jni_obj.bx_to_java(&mut env, vm, arg)?;
+            env.set_object_array_element(&j_args_array, i as i32, j_arg).map_err(|e| e.to_string())?;
+        }
+
+        // 4. Invoke Constructor
+        let obj = env.call_method(&constructor, "newInstance", "([Ljava/lang/Object;)Ljava/lang/Object;", &[
+            (&j_args_array).into()
+        ]).map_err(|e| format!("Failed to instantiate {}: {}", class_name, e))?.l().map_err(|e| e.to_string())?;
         
         let global_ref = env.new_global_ref(obj)
             .map_err(|e| format!("Failed to create global ref: {}", e))?;
