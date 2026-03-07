@@ -234,9 +234,10 @@ impl Compiler {
                 Ok(())
             }
             StatementKind::Expression(expr) => {
-                self.compile_expression(expr)?;
-                if !self.is_repl || !is_last {
-                    self.chunk.write(OpCode::OpPop, stmt.line);
+                if self.is_repl && is_last {
+                    self.compile_expression(expr)?;
+                } else {
+                    self.compile_expression_as_statement(expr)?;
                 }
                 Ok(())
             }
@@ -319,11 +320,41 @@ impl Compiler {
                 Ok(())
             }
             StatementKind::If { condition, then_branch, else_branch } => {
-                self.compile_expression(condition)?;
-                
-                let jump_if_false_idx = self.chunk.code.len();
-                self.chunk.write(OpCode::OpJumpIfFalse(0), stmt.line);
-                self.chunk.write(OpCode::OpPop, stmt.line);
+                let mut optimized = false;
+                let mut jump_if_false_idx = 0;
+
+                if let ExpressionKind::Binary { left, operator, right } = &condition.kind {
+                    if *operator == "==" {
+                        if let (ExpressionKind::Identifier(name), ExpressionKind::Literal(lit)) = (&left.kind, &right.kind) {
+                            if let Some(slot) = self.resolve_local(name) {
+                                let const_idx = match lit {
+                                    Literal::Number(n) => Some(self.chunk.add_constant(Constant::Number(*n))),
+                                    Literal::Boolean(b) => Some(self.chunk.add_constant(Constant::Boolean(*b))),
+                                    Literal::String(parts) if parts.len() == 1 => {
+                                        if let StringPart::Text(t) = &parts[0] {
+                                            Some(self.chunk.add_constant(Constant::String(BoxString::new(t))))
+                                        } else { None }
+                                    },
+                                    Literal::Null => Some(self.chunk.add_constant(Constant::Null)),
+                                    _ => None,
+                                };
+                                
+                                if let Some(c_idx) = const_idx {
+                                    jump_if_false_idx = self.chunk.code.len();
+                                    self.chunk.write(OpCode::OpLocalJumpIfNeConst(slot, c_idx, 0), condition.line);
+                                    optimized = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !optimized {
+                    self.compile_expression(condition)?;
+                    jump_if_false_idx = self.chunk.code.len();
+                    self.chunk.write(OpCode::OpJumpIfFalse(0), stmt.line);
+                    self.chunk.write(OpCode::OpPop, stmt.line);
+                }
 
                 self.begin_scope();
                 for stmt in then_branch {
@@ -336,9 +367,15 @@ impl Compiler {
 
                 let false_target = self.chunk.code.len();
                 let offset = false_target - jump_if_false_idx - 1;
-                self.chunk.code[jump_if_false_idx] = OpCode::OpJumpIfFalse(offset);
                 
-                self.chunk.write(OpCode::OpPop, stmt.line);
+                if optimized {
+                    if let OpCode::OpLocalJumpIfNeConst(s, c, _) = self.chunk.code[jump_if_false_idx] {
+                        self.chunk.code[jump_if_false_idx] = OpCode::OpLocalJumpIfNeConst(s, c, offset);
+                    }
+                } else {
+                    self.chunk.code[jump_if_false_idx] = OpCode::OpJumpIfFalse(offset);
+                    self.chunk.write(OpCode::OpPop, stmt.line);
+                }
 
                 if let Some(else_stmts) = else_branch {
                     self.begin_scope();
@@ -369,20 +406,30 @@ impl Compiler {
                     let mut handled = false;
                     if let ExpressionKind::Binary { left, operator, right } = &cond_expr.kind {
                         if *operator == "<" {
-                            if let (ExpressionKind::Identifier(name), ExpressionKind::Literal(Literal::Number(_))) = (&left.kind, &right.kind) {
-                                if self.resolve_local(name).is_none() && !self.is_class {
+                            if let (ExpressionKind::Identifier(name), ExpressionKind::Literal(Literal::Number(limit))) = (&left.kind, &right.kind) {
+                                let const_idx = self.chunk.add_constant(Constant::Number(*limit));
+
+                                if let Some(slot) = self.resolve_local(name) {
+                                    // Local optimized candidate
+                                    self.compile_expression(cond_expr)?;
+                                    let jump_idx = self.chunk.code.len();
+                                    self.chunk.write(OpCode::OpJumpIfFalse(0), cond_expr.line);
+                                    self.chunk.write(OpCode::OpPop, cond_expr.line);
+                                    exit_jump = Some(jump_idx);
+                                    optimized_condition = Some((true, slot, const_idx)); // true = is_local
+                                    handled = true;
+                                } else if !self.is_class {
+                                    // Global optimized candidate
                                     let name_lower = name.to_lowercase();
                                     let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name_lower)));
-                                    let const_idx = if let ExpressionKind::Literal(Literal::Number(n)) = &right.kind {
-                                        self.chunk.add_constant(Constant::Number(*n))
-                                    } else { unreachable!() };
+                                    
                                     // Initial check (standard instructions)
                                     self.compile_expression(cond_expr)?;
                                     let jump_idx = self.chunk.code.len();
                                     self.chunk.write(OpCode::OpJumpIfFalse(0), cond_expr.line);
                                     self.chunk.write(OpCode::OpPop, cond_expr.line);
                                     exit_jump = Some(jump_idx);
-                                    optimized_condition = Some((name_idx, const_idx));
+                                    optimized_condition = Some((false, name_idx, const_idx)); // false = is_local
                                     handled = true;
                                 }
                             }
@@ -409,7 +456,10 @@ impl Compiler {
                     if let ExpressionKind::Postfix { base, operator } = &update_expr.kind {
                         if *operator == "++" {
                             if let ExpressionKind::Identifier(name) = &base.kind {
-                                if self.resolve_local(name).is_none() && !self.is_class {
+                                if let Some(slot) = self.resolve_local(name) {
+                                    self.chunk.write(OpCode::OpIncLocal(slot), update_expr.line);
+                                    optimized_update = true;
+                                } else if !self.is_class {
                                     let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
                                     self.chunk.write(OpCode::OpIncGlobal(name_idx), update_expr.line);
                                     optimized_update = true;
@@ -424,9 +474,14 @@ impl Compiler {
                     }
                 }
 
-                if let Some((name_idx, const_idx)) = optimized_condition {
-                    let offset = self.chunk.code.len() - body_start + 1; // +1 for OpGlobalCompareJump itself
-                    self.chunk.write(OpCode::OpGlobalCompareJump(name_idx, const_idx, offset), stmt.line);
+                if let Some((is_local, idx, const_idx)) = optimized_condition {
+                    if is_local {
+                        let offset = self.chunk.code.len() - body_start + 1;
+                        self.chunk.write(OpCode::OpLocalCompareJump(idx, const_idx, offset), stmt.line);
+                    } else {
+                        let offset = self.chunk.code.len() - body_start + 1;
+                        self.chunk.write(OpCode::OpGlobalCompareJump(idx, const_idx, offset), stmt.line);
+                    }
                 } else {
                     let loop_end = self.chunk.code.len();
                     let offset = loop_end - loop_start + 1;
@@ -609,7 +664,21 @@ impl Compiler {
                 self.compile_expression(left)?;
                 self.compile_expression(right)?;
                 match operator.as_str() {
-                    "+" => self.chunk.write(OpCode::OpAdd, expr.line),
+                    "+" => {
+                        let mut specialized = false;
+                        if let (ExpressionKind::Literal(Literal::Number(a)), ExpressionKind::Literal(Literal::Number(b))) = (&left.kind, &right.kind) {
+                            if a.fract() == 0.0 && b.fract() == 0.0 {
+                                self.chunk.write(OpCode::OpAddInt, expr.line);
+                            } else {
+                                self.chunk.write(OpCode::OpAddFloat, expr.line);
+                            }
+                            specialized = true;
+                        }
+                        
+                        if !specialized {
+                            self.chunk.write(OpCode::OpAdd, expr.line);
+                        }
+                    }
                     "-" => self.chunk.write(OpCode::OpSubtract, expr.line),
                     "*" => self.chunk.write(OpCode::OpMultiply, expr.line),
                     "/" => self.chunk.write(OpCode::OpDivide, expr.line),
@@ -929,6 +998,138 @@ impl Compiler {
             }
         }
         None
+    }
+
+    fn compile_expression_as_statement(&mut self, expr: &Expression) -> Result<()> {
+        match &expr.kind {
+            ExpressionKind::Assignment { target, value } => {
+                match target {
+                    crate::ast::AssignmentTarget::Identifier(name) => {
+                        let lower_name = name.to_lowercase();
+                        if lower_name == "variables" {
+                            bail!("Cannot assign to the 'variables' scope directly");
+                        }
+                        self.compile_expression(value)?;
+                        if let Some(slot) = self.resolve_local(&name) {
+                            self.chunk.write(OpCode::OpSetLocalPop(slot), expr.line);
+                        } else if self.is_class {
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&lower_name)));
+                            self.chunk.write(OpCode::OpSetPrivate(name_idx), expr.line);
+                            self.chunk.write(OpCode::OpPop, expr.line);
+                        } else {
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&lower_name)));
+                            self.chunk.write(OpCode::OpSetGlobalPop(name_idx), expr.line);
+                        }
+                    }
+                    crate::ast::AssignmentTarget::Member { base, member } => {
+                        self.compile_expression(base)?;
+                        self.compile_expression(value)?;
+                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                        self.chunk.write(OpCode::OpSetMember(name_idx), expr.line);
+                        self.chunk.write(OpCode::OpPop, expr.line);
+                    }
+                    crate::ast::AssignmentTarget::Index { base, index } => {
+                        self.compile_expression(base)?;
+                        self.compile_expression(index)?;
+                        self.compile_expression(value)?;
+                        self.chunk.write(OpCode::OpSetIndex, expr.line);
+                        self.chunk.write(OpCode::OpPop, expr.line);
+                    }
+                }
+                Ok(())
+            }
+            ExpressionKind::Postfix { base, operator } => {
+                match &base.kind {
+                    ExpressionKind::Identifier(name) => {
+                        if let Some(slot) = self.resolve_local(&name) {
+                            if *operator == "++" {
+                                self.chunk.write(OpCode::OpIncLocal(slot), expr.line);
+                            } else {
+                                self.compile_expression(base)?;
+                                self.chunk.write(OpCode::OpDec, expr.line);
+                                self.chunk.write(OpCode::OpSetLocalPop(slot), expr.line);
+                            }
+                        } else if !self.is_class {
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                            if *operator == "++" {
+                                self.chunk.write(OpCode::OpIncGlobal(name_idx), expr.line);
+                            } else {
+                                self.compile_expression(base)?;
+                                self.chunk.write(OpCode::OpDec, expr.line);
+                                self.chunk.write(OpCode::OpSetGlobalPop(name_idx), expr.line);
+                            }
+                        } else {
+                            self.compile_expression(expr)?;
+                            self.chunk.write(OpCode::OpPop, expr.line);
+                        }
+                    }
+                    ExpressionKind::MemberAccess { base: member_base, member } => {
+                        if *operator == "++" {
+                            self.compile_expression(member_base)?;
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                            self.chunk.write(OpCode::OpIncMember(name_idx), expr.line);
+                            self.chunk.write(OpCode::OpPop, expr.line); // OpIncMember pushes NEW value, we pop it
+                        } else {
+                            self.compile_expression(expr)?;
+                            self.chunk.write(OpCode::OpPop, expr.line);
+                        }
+                    }
+                    _ => {
+                        self.compile_expression(expr)?;
+                        self.chunk.write(OpCode::OpPop, expr.line);
+                    }
+                }
+                Ok(())
+            }
+            ExpressionKind::Prefix { operator, target } => {
+                match target {
+                    crate::ast::AssignmentTarget::Identifier(name) => {
+                        if let Some(slot) = self.resolve_local(&name) {
+                            if *operator == "++" {
+                                self.chunk.write(OpCode::OpIncLocal(slot), expr.line);
+                            } else {
+                                self.compile_expression(&Expression::new(ExpressionKind::Identifier(name.clone()), expr.line))?;
+                                self.chunk.write(OpCode::OpDec, expr.line);
+                                self.chunk.write(OpCode::OpSetLocalPop(slot), expr.line);
+                            }
+                        } else if !self.is_class {
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                            if *operator == "++" {
+                                self.chunk.write(OpCode::OpIncGlobal(name_idx), expr.line);
+                            } else {
+                                self.compile_expression(&Expression::new(ExpressionKind::Identifier(name.clone()), expr.line))?;
+                                self.chunk.write(OpCode::OpDec, expr.line);
+                                self.chunk.write(OpCode::OpSetGlobalPop(name_idx), expr.line);
+                            }
+                        } else {
+                            self.compile_expression(expr)?;
+                            self.chunk.write(OpCode::OpPop, expr.line);
+                        }
+                    }
+                    crate::ast::AssignmentTarget::Member { base: member_base, member } => {
+                        if *operator == "++" {
+                            self.compile_expression(member_base)?;
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                            self.chunk.write(OpCode::OpIncMember(name_idx), expr.line);
+                            self.chunk.write(OpCode::OpPop, expr.line);
+                        } else {
+                            self.compile_expression(expr)?;
+                            self.chunk.write(OpCode::OpPop, expr.line);
+                        }
+                    }
+                    _ => {
+                        self.compile_expression(expr)?;
+                        self.chunk.write(OpCode::OpPop, expr.line);
+                    }
+                }
+                Ok(())
+            }
+            _ => {
+                self.compile_expression(expr)?;
+                self.chunk.write(OpCode::OpPop, expr.line);
+                Ok(())
+            }
+        }
     }
 
     fn add_local(&mut self, name: String) {
