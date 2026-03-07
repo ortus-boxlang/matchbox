@@ -64,8 +64,18 @@ impl Value {
 
     #[inline]
     pub fn new_ptr(p: *mut c_void) -> Self {
-        let ptr_val = p as u64;
-        debug_assert!(ptr_val <= Self::PAYLOAD_MASK, "Pointer exceeds 48-bit payload space");
+        // Bridge through usize to ensure we can cast between pointer and u64 
+        // across both 32-bit (wasm32) and 64-bit (x86_64/aarch64) architectures.
+        let ptr_val = p as usize as u64;
+        
+        // Critical: On AArch64, the top 16 bits may contain Pointer Authentication Codes (PAC).
+        // By masking them off, we strip the hardware signature. We add a debug_assert
+        // to catch environments where pointers exceed the 48-bit address space.
+        debug_assert!(
+            ptr_val <= Self::PAYLOAD_MASK, 
+            "Pointer exceeds 48-bit payload space (Possible PAC signature detected)"
+        );
+        
         Self(Self::tag(Self::TAG_PTR, ptr_val & Self::PAYLOAD_MASK))
     }
 
@@ -135,7 +145,10 @@ impl Value {
     #[inline]
     pub fn as_ptr(&self) -> Option<*mut c_void> {
         if self.is_ptr() {
-            Some((self.0 & Self::PAYLOAD_MASK) as *mut c_void)
+            // Bridge through usize for safe cross-platform pointer reconstruction.
+            // On AArch64, if we were stripped of PAC bits, this returns a "raw" 
+            // address which may fail dereference if the OS enforces PAC.
+            Some((self.0 & Self::PAYLOAD_MASK) as usize as *mut c_void)
         } else {
             None
         }
