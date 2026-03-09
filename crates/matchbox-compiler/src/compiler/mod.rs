@@ -729,7 +729,7 @@ impl Compiler {
                     for (key_expr, val_expr) in members {
                         match &key_expr.kind {
                             ExpressionKind::Identifier(name) => {
-                                let idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.clone())));
+                                let idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
                                 self.chunk.write(OpCode::OpConstant(idx as u32), expr.line);
                             }
                             _ => self.compile_expression(key_expr)?,
@@ -917,7 +917,7 @@ impl Compiler {
                     crate::ast::AssignmentTarget::Member { base, member } => {
                         self.compile_expression(base)?;
                         self.compile_expression(value)?;
-                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member)));
+                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
                         self.chunk.write(OpCode::OpSetMember(name_idx as u32), expr.line);
                     }
                     crate::ast::AssignmentTarget::Index { base, index } => {
@@ -969,7 +969,7 @@ impl Compiler {
                     for arg in args {
                         self.compile_expression(&arg.value)?;
                     }
-                    let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member)));
+                    let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
                     if has_named {
                         let names_idx = self.chunk.add_constant(Constant::StringArray(arg_names));
                         self.chunk.write(OpCode::OpInvokeNamed(name_idx as u32, args.len() as u32, names_idx as u32), expr.line);
@@ -999,7 +999,7 @@ impl Compiler {
             }
             ExpressionKind::MemberAccess { base, member } => {
                 self.compile_expression(base)?;
-                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member)));
+                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
                 self.chunk.write(OpCode::OpMember(name_idx), expr.line);
                 Ok(())
             }
@@ -1025,7 +1025,7 @@ impl Compiler {
                     crate::ast::AssignmentTarget::Member { base, member } => {
                         self.compile_expression(base)?;
                         self.chunk.write(OpCode::OpDup, expr.line);
-                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member)));
+                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
                         self.chunk.write(OpCode::OpMember(name_idx), expr.line);
                         if operator == "++" {
                             self.chunk.write(OpCode::OpInc, expr.line);
@@ -1064,7 +1064,7 @@ impl Compiler {
                     ExpressionKind::MemberAccess { base: member_base, member } => {
                         self.compile_expression(member_base)?;
                         self.chunk.write(OpCode::OpDup, expr.line);
-                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member)));
+                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
                         self.chunk.write(OpCode::OpMember(name_idx), expr.line);
                         self.chunk.write(OpCode::OpSwap, expr.line);
                         self.chunk.write(OpCode::OpOver, expr.line);
@@ -1209,7 +1209,7 @@ impl Compiler {
                     crate::ast::AssignmentTarget::Member { base, member } => {
                         self.compile_expression(base)?;
                         self.compile_expression(value)?;
-                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member)));
+                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
                         self.chunk.write(OpCode::OpSetMember(name_idx as u32), expr.line);
                         self.chunk.write(OpCode::OpPop, expr.line as u32);
                     }

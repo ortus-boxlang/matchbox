@@ -2,12 +2,14 @@ pub mod chunk;
 pub mod opcode;
 pub mod gc;
 pub mod shape;
+pub mod intern;
 
 use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, BxNativeFunction, box_string::BoxString};
 use self::chunk::{Chunk, IcEntry};
 use self::opcode::OpCode;
 use self::gc::{Heap, GcObject};
 use self::shape::ShapeRegistry;
+use self::intern::StringInterner;
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -59,12 +61,13 @@ pub struct BxFiber {
 
 pub struct VM {
     pub fibers: Vec<BxFiber>,
-    pub global_names: HashMap<String, usize>,
+    pub global_names: HashMap<u32, usize>,
     pub global_values: Vec<BxValue>,
     pub current_fiber_idx: Option<usize>,
     pub shapes: ShapeRegistry,
     pub heap: Heap,
     pub native_classes: HashMap<String, BxNativeFunction>,
+    pub interner: StringInterner,
 }
 
 impl BxVM for VM {
@@ -109,7 +112,11 @@ impl BxVM for VM {
     }
 
     fn get_shape_index(&self, shape_id: u32, field_name: &str) -> Option<u32> {
-        self.shapes.get_index(shape_id, field_name)
+        if let Some(id) = self.interner.get_id(field_name) {
+            self.shapes.get_index(shape_id, id)
+        } else {
+            None
+        }
     }
 
     fn array_len(&self, id: usize) -> usize {
@@ -252,6 +259,7 @@ impl VM {
             shapes: ShapeRegistry::new(),
             heap: Heap::new(),
             native_classes: native_classes.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect(),
+            interner: StringInterner::new(),
         };
 
         #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -284,26 +292,33 @@ impl VM {
     }
 
     pub fn insert_global(&mut self, name: String, val: BxValue) {
-        let name_lower = name.to_lowercase();
-        if let Some(&idx) = self.global_names.get(&name_lower) {
+        let name_id = self.interner.intern(&name);
+        self.insert_global_interned(name_id, val);
+    }
+
+    fn insert_global_interned(&mut self, name_id: u32, val: BxValue) {
+        if let Some(&idx) = self.global_names.get(&name_id) {
             self.global_values[idx] = val;
         } else {
             let idx = self.global_values.len();
-            self.global_names.insert(name_lower, idx);
+            self.global_names.insert(name_id, idx);
             self.global_values.push(val);
         }
     }
 
     pub fn get_global(&self, name: &str) -> Option<BxValue> {
-        let name_lower = name.to_lowercase();
-        self.global_names.get(&name_lower).map(|&idx| self.global_values[idx])
+        if let Some(name_id) = self.interner.get_id(name) {
+            self.global_names.get(&name_id).map(|&idx| self.global_values[idx])
+        } else {
+            None
+        }
     }
 
 
     fn resolve_member_method(&self, receiver: &BxValue, method_name: &str) -> Option<String> {
-        let name = method_name.to_lowercase();
+        let name = method_name;
         if receiver.is_number() {
-            return match name.as_str() {
+            return match name {
                 "abs" => Some("abs".to_string()),
                 "round" => Some("round".to_string()),
                 _ => None,
@@ -312,13 +327,13 @@ impl VM {
 
         if let Some(id) = receiver.as_gc_id() {
             match self.heap.get(id) {
-                GcObject::String(_) => match name.as_str() {
+                GcObject::String(_) => match name {
                     "len" | "length" => Some("len".to_string()),
                     "ucase" | "touppercase" => Some("ucase".to_string()),
                     "lcase" | "tolowercase" => Some("lcase".to_string()),
                     _ => None,
                 },
-                GcObject::Array(_) => match name.as_str() {
+                GcObject::Array(_) => match name {
                     "len" | "length" | "count" => Some("len".to_string()),
                     "append" | "add" => Some("arrayappend".to_string()),
                     "each" => Some("arrayeach".to_string()),
@@ -328,13 +343,13 @@ impl VM {
                     "tolist" => Some("arraytolist".to_string()),
                     _ => None,
                 },
-                GcObject::Struct(_) => match name.as_str() {
+                GcObject::Struct(_) => match name {
                     "len" | "count" => Some("len".to_string()),
                     "exists" | "keyexists" => Some("structkeyexists".to_string()),
                     "each" => Some("structeach".to_string()),
                     _ => None,
                 },
-                GcObject::Future(_) => match name.as_str() {
+                GcObject::Future(_) => match name {
                     "onerror" => Some("futureonerror".to_string()),
                     _ => None,
                 },
@@ -598,9 +613,8 @@ impl VM {
                         }
                     } else {
                         // Slow path: resolve global and update IC
-                        let name = self.read_string_constant(fiber_idx, idx as usize);
-                        let name_lower = name.to_lowercase();
-                        if let Some(&global_idx) = self.global_names.get(&name_lower) {
+                        let name_id = self.read_intern_id(fiber_idx, idx as usize);
+                        if let Some(&global_idx) = self.global_names.get(&name_id) {
                             let val = self.global_values[global_idx];
                             if val.is_number() {
                                 self.global_values[global_idx] = BxValue::new_number(val.as_number() + 1.0);
@@ -612,6 +626,7 @@ impl VM {
                                 continue;
                             }
                         } else {
+                            let name = self.interner.resolve(name_id).to_string();
                             self.throw_error(fiber_idx, &format!("Global {} not found", name))?;
                             continue;
                         }
@@ -627,9 +642,8 @@ impl VM {
                     let val = if let Some(IcEntry::Global { index }) = ic {
                         self.global_values[index]
                     } else {
-                        let name = self.read_string_constant(fiber_idx, name_idx as usize);
-                        let name_lower = name.to_lowercase();
-                        if let Some(&global_idx) = self.global_names.get(&name_lower) {
+                        let name_id = self.read_intern_id(fiber_idx, name_idx as usize);
+                        if let Some(&global_idx) = self.global_names.get(&name_id) {
                             let v = self.global_values[global_idx];
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
                             let mut chunk = frame.function.chunk.borrow_mut();
@@ -800,17 +814,16 @@ impl VM {
                         let val = self.global_values[index];
                         self.fibers[fiber_idx].stack.push(val);
                     } else {
-                        let name = self.read_string_constant(fiber_idx, idx as usize);
-                        let name_lower = name.to_lowercase();
-                        if let Some(&global_idx) = self.global_names.get(&name_lower) {
+                        let name_id = self.read_intern_id(fiber_idx, idx as usize);
+                        if let Some(&global_idx) = self.global_names.get(&name_id) {
                             let val = self.global_values[global_idx];
                             self.fibers[fiber_idx].stack.push(val);
-                            
+
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
                             let mut chunk = frame.function.chunk.borrow_mut();
                             chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
                         } else {
-                            self.fibers[fiber_idx].stack.push(BxValue::new_null()); 
+                            self.fibers[fiber_idx].stack.push(BxValue::new_null());
                         }
                     }
                 }
@@ -826,17 +839,16 @@ impl VM {
                     if let Some(IcEntry::Global { index }) = ic {
                         self.global_values[index] = val;
                     } else {
-                        let name = self.read_string_constant(fiber_idx, idx as usize);
-                        let name_lower = name.to_lowercase();
-                        if let Some(&global_idx) = self.global_names.get(&name_lower) {
+                        let name_id = self.read_intern_id(fiber_idx, idx as usize);
+                        if let Some(&global_idx) = self.global_names.get(&name_id) {
                             self.global_values[global_idx] = val;
-                            
+
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
                             let mut chunk = frame.function.chunk.borrow_mut();
                             chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
                         } else {
-                            self.insert_global(name.clone(), val);
-                            if let Some(&global_idx) = self.global_names.get(&name_lower) {
+                            self.insert_global_interned(name_id, val);
+                            if let Some(&global_idx) = self.global_names.get(&name_id) {
                                 let frame = self.fibers[fiber_idx].frames.last().unwrap();
                                 let mut chunk = frame.function.chunk.borrow_mut();
                                 chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
@@ -856,17 +868,16 @@ impl VM {
                     if let Some(IcEntry::Global { index }) = ic {
                         self.global_values[index] = val;
                     } else {
-                        let name = self.read_string_constant(fiber_idx, idx as usize);
-                        let name_lower = name.to_lowercase();
-                        if let Some(&global_idx) = self.global_names.get(&name_lower) {
+                        let name_id = self.read_intern_id(fiber_idx, idx as usize);
+                        if let Some(&global_idx) = self.global_names.get(&name_id) {
                             self.global_values[global_idx] = val;
-                            
+
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
                             let mut chunk = frame.function.chunk.borrow_mut();
                             chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
                         } else {
-                            self.insert_global(name.clone(), val);
-                            if let Some(&global_idx) = self.global_names.get(&name_lower) {
+                            self.insert_global_interned(name_id, val);
+                            if let Some(&global_idx) = self.global_names.get(&name_id) {
                                 let frame = self.fibers[fiber_idx].frames.last().unwrap();
                                 let mut chunk = frame.function.chunk.borrow_mut();
                                 chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
@@ -875,12 +886,13 @@ impl VM {
                     }
                 }
                 OpCode::OpDefineGlobal(idx) => {
-                    let name = self.read_string_constant(fiber_idx, idx as usize);
+                    let name_id = self.read_intern_id(fiber_idx, idx as usize);
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
-                    self.insert_global(name, val);
+                    self.insert_global_interned(name_id, val);
                 }
                 OpCode::OpGetPrivate(idx) => {
-                    let name = self.read_string_constant(fiber_idx, idx as usize).to_lowercase();
+                    let name_id = self.read_intern_id(fiber_idx, idx as usize);
+                    let name = self.interner.resolve(name_id).to_string();
                     let val = if let Some(receiver) = self.fibers[fiber_idx].frames.last().unwrap().receiver {
                         if let Some(id) = receiver.as_gc_id() {
                             if name == "this" {
@@ -914,7 +926,8 @@ impl VM {
                     }
                 }
                 OpCode::OpSetPrivate(idx) => {
-                    let name = self.read_string_constant(fiber_idx, idx as usize).to_lowercase();
+                    let name_id = self.read_intern_id(fiber_idx, idx as usize);
+                    let name = self.interner.resolve(name_id).to_string();
                     let val = *self.fibers[fiber_idx].stack.last().unwrap();
                     if let Some(receiver) = self.fibers[fiber_idx].frames.last().unwrap().receiver {
                         if let Some(id) = receiver.as_gc_id() {
@@ -979,18 +992,19 @@ impl VM {
                 OpCode::OpStruct(count) => {
                     let mut shape_id = self.shapes.get_root();
                     let mut props = Vec::with_capacity(count as usize);
-                    
+
                     let mut kv_pairs = Vec::with_capacity(count as usize);
                     for _ in 0..count {
                         let value = self.fibers[fiber_idx].stack.pop().unwrap();
                         let key_val = self.fibers[fiber_idx].stack.pop().unwrap();
-                        let key = self.to_string(key_val).to_lowercase();
-                        kv_pairs.push((key, value));
+                        let key_str = self.to_string(key_val);
+                        let key_id = self.interner.intern(&key_str);
+                        kv_pairs.push((key_id, value));
                     }
-                    kv_pairs.reverse(); 
+                    kv_pairs.reverse();
 
-                    for (key, value) in kv_pairs {
-                        shape_id = self.shapes.transition(shape_id, &key);
+                    for (key_id, value) in kv_pairs {
+                        shape_id = self.shapes.transition(shape_id, key_id);
                         props.push(value);
                     }
 
@@ -1017,8 +1031,9 @@ impl VM {
                                 }
                             }
                             GcObject::Struct(s) => {
-                                let key = self.to_string(index_val).to_lowercase();
-                                if let Some(idx) = self.shapes.get_index(s.shape_id, &key) {
+                                let key_str = self.to_string(index_val);
+                                let key_id = self.interner.intern(&key_str);
+                                if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
                                     self.fibers[fiber_idx].stack.push(s.properties[idx as usize]);
                                 } else {
                                     self.fibers[fiber_idx].stack.push(BxValue::new_null());
@@ -1035,10 +1050,11 @@ impl VM {
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let index_val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
-                    
+
                     if let Some(id) = base_val.as_gc_id() {
-                        let key = if !index_val.is_number() && !index_val.is_int() {
-                            Some(self.to_string(index_val).to_lowercase())
+                        let key_id = if !index_val.is_number() && !index_val.is_int() {
+                            let key_str = self.to_string(index_val);
+                            Some(self.interner.intern(&key_str))
                         } else {
                             None
                         };
@@ -1065,21 +1081,21 @@ impl VM {
                                 }
                             }
                             GcObject::Struct(s) => {
-                                let key = key.unwrap();
-                                if let Some(idx) = self.shapes.get_index(s.shape_id, &key) {
+                                let key_id = key_id.unwrap();
+                                if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
                                     s.properties[idx as usize] = val;
                                 } else {
-                                    s.shape_id = self.shapes.transition(s.shape_id, &key);
+                                    s.shape_id = self.shapes.transition(s.shape_id, key_id);
                                     s.properties.push(val);
                                 }
                                 self.fibers[fiber_idx].stack.push(val);
                             }
                             GcObject::Instance(inst) => {
-                                let key = key.unwrap();
-                                if let Some(idx) = self.shapes.get_index(inst.shape_id, &key) {
+                                let key_id = key_id.unwrap();
+                                if let Some(idx) = self.shapes.get_index(inst.shape_id, key_id) {
                                     inst.properties[idx as usize] = val;
                                 } else {
-                                    inst.shape_id = self.shapes.transition(inst.shape_id, &key);
+                                    inst.shape_id = self.shapes.transition(inst.shape_id, key_id);
                                     inst.properties.push(val);
                                 }
                                 self.fibers[fiber_idx].stack.push(val);
@@ -1092,15 +1108,15 @@ impl VM {
                     }
                 }
                 OpCode::OpMember(idx) => {
-                    let original_name = self.read_string_constant(fiber_idx, idx as usize);
-                    let name = original_name.to_lowercase();
+                    let name_id = self.read_intern_id(fiber_idx, idx as usize);
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
-                    
+
                     if let Some(id) = base_val.as_gc_id() {
                         #[cfg(all(target_arch = "wasm32", feature = "js"))]
                         if let GcObject::JsValue(js) = self.heap.get(id) {
                             let js = js.clone();
-                            let prop = JsValue::from_str(&name);
+                            let name = self.interner.resolve(name_id);
+                            let prop = JsValue::from_str(name);
                             match Reflect::get(&js, &prop) {
                                 Ok(val) => {
                                     let bx_val = self.js_to_bx(val);
@@ -1115,7 +1131,8 @@ impl VM {
                         {
                             let maybe_handle = if let GcObject::JsHandle(h) = self.heap.get(id) { Some(*h) } else { None };
                             if let Some(handle) = maybe_handle {
-                                let key_bytes = original_name.as_bytes();
+                                let name = self.interner.resolve(name_id);
+                                let key_bytes = name.as_bytes();
                                 let mut str_buf = [0u8; 4096];
                                 let mut out_str_len: usize = 0;
                                 let mut out_num: f64 = 0.0;
@@ -1154,7 +1171,7 @@ impl VM {
                                     }
                                 }
 
-                                if let Some(idx) = self.shapes.get_index(shape_id, &name) {
+                                if let Some(idx) = self.shapes.get_index(shape_id, name_id) {
                                     {
                                         let fiber = &self.fibers[fiber_idx];
                                         let frame = fiber.frames.last().unwrap();
@@ -1187,7 +1204,7 @@ impl VM {
                                     }
                                 }
 
-                                if let Some(idx) = self.shapes.get_index(shape_id, &name) {
+                                if let Some(idx) = self.shapes.get_index(shape_id, name_id) {
                                     {
                                         let fiber = &self.fibers[fiber_idx];
                                         let frame = fiber.frames.last().unwrap();
@@ -1196,14 +1213,18 @@ impl VM {
                                     }
                                     let val = unsafe { &*properties_ptr }[idx as usize];
                                     self.fibers[fiber_idx].stack.push(val);
-                                } else if let Some(method) = self.resolve_method(Rc::clone(&class), &name) {
-                                    let m_id = self.heap.alloc(GcObject::CompiledFunction(method));
-                                    self.fibers[fiber_idx].stack.push(BxValue::new_ptr(m_id));
                                 } else {
-                                    self.fibers[fiber_idx].stack.push(BxValue::new_null());
+                                    let name = self.interner.resolve(name_id).to_string();
+                                    if let Some(method) = self.resolve_method(Rc::clone(&class), &name) {
+                                        let m_id = self.heap.alloc(GcObject::CompiledFunction(method));
+                                        self.fibers[fiber_idx].stack.push(BxValue::new_ptr(m_id));
+                                    } else {
+                                        self.fibers[fiber_idx].stack.push(BxValue::new_null());
+                                    }
                                 }
                             }
                             GcObject::NativeObject(obj) => {
+                                let name = self.interner.resolve(name_id).to_string();
                                 let val = obj.borrow().get_property(&name);
                                 self.fibers[fiber_idx].stack.push(val);
                             }
@@ -1215,16 +1236,16 @@ impl VM {
                     }
                 }
                 OpCode::OpSetMember(idx) => {
-                    let original_name = self.read_string_constant(fiber_idx, idx as usize);
-                    let name = original_name.to_lowercase();
+                    let name_id = self.read_intern_id(fiber_idx, idx as usize);
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
-                    
+
                     if let Some(id) = base_val.as_gc_id() {
                         #[cfg(all(target_arch = "wasm32", feature = "js"))]
                         if let GcObject::JsValue(js) = self.heap.get(id) {
                             let js = js.clone();
-                            let prop = JsValue::from_str(&name);
+                            let name = self.interner.resolve(name_id);
+                            let prop = JsValue::from_str(name);
                             let js_val = self.bx_to_js(&val);
                             Reflect::set(&js, &prop, &js_val).ok();
                             self.fibers[fiber_idx].stack.push(val);
@@ -1235,7 +1256,8 @@ impl VM {
                         {
                             let maybe_handle = if let GcObject::JsHandle(h) = self.heap.get(id) { Some(*h) } else { None };
                             if let Some(handle) = maybe_handle {
-                                let key_bytes = original_name.as_bytes();
+                                let name = self.interner.resolve(name_id);
+                                let key_bytes = name.as_bytes();
                                 if val.is_null() {
                                     unsafe { bx_js_set_prop_null(handle, key_bytes.as_ptr(), key_bytes.len()); }
                                 } else if val.is_bool() {
@@ -1284,7 +1306,7 @@ impl VM {
                                     }
                                 }
 
-                                if let Some(idx) = self.shapes.get_index(shape_id, &name) {
+                                if let Some(idx) = self.shapes.get_index(shape_id, name_id) {
                                     {
                                         let fiber = &self.fibers[fiber_idx];
                                         let frame = fiber.frames.last().unwrap();
@@ -1293,7 +1315,7 @@ impl VM {
                                     }
                                     s.properties[idx as usize] = val;
                                 } else {
-                                    s.shape_id = self.shapes.transition(shape_id, &name);
+                                    s.shape_id = self.shapes.transition(shape_id, name_id);
                                     s.properties.push(val);
                                 }
                                 self.fibers[fiber_idx].stack.push(val);
@@ -1315,7 +1337,7 @@ impl VM {
                                     }
                                 }
 
-                                if let Some(idx) = self.shapes.get_index(shape_id, &name) {
+                                if let Some(idx) = self.shapes.get_index(shape_id, name_id) {
                                     {
                                         let fiber = &self.fibers[fiber_idx];
                                         let frame = fiber.frames.last().unwrap();
@@ -1324,12 +1346,13 @@ impl VM {
                                     }
                                     inst.properties[idx as usize] = val;
                                 } else {
-                                    inst.shape_id = self.shapes.transition(shape_id, &name);
+                                    inst.shape_id = self.shapes.transition(shape_id, name_id);
                                     inst.properties.push(val);
                                 }
                                 self.fibers[fiber_idx].stack.push(val);
                             }
                             GcObject::NativeObject(obj) => {
+                                let name = self.interner.resolve(name_id).to_string();
                                 obj.borrow_mut().set_property(&name, val);
                                 self.fibers[fiber_idx].stack.push(val);
                             }
@@ -1341,7 +1364,7 @@ impl VM {
                     }
                 }
                 OpCode::OpIncMember(idx) => {
-                    let name = self.read_string_constant(fiber_idx, idx as usize).to_lowercase();
+                    let name_id = self.read_intern_id(fiber_idx, idx as usize);
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
 
                     if let Some(id) = base_val.as_gc_id() {
@@ -1359,7 +1382,7 @@ impl VM {
                                     if cached_shape == shape_id as usize { Some(index as usize) } else { None }
                                 } else { None };
 
-                                if let Some(idx) = index.or_else(|| self.shapes.get_index(shape_id, &name).map(|i| i as usize)) {
+                                if let Some(idx) = index.or_else(|| self.shapes.get_index(shape_id, name_id).map(|i| i as usize)) {
                                     let old_val = s.properties[idx];
                                     if old_val.is_number() {
                                         let new_val = BxValue::new_number(old_val.as_number() + 1.0);
@@ -1377,6 +1400,7 @@ impl VM {
                                         continue;
                                     }
                                 } else {
+                                    let name = self.interner.resolve(name_id).to_string();
                                     self.throw_error(fiber_idx, &format!("Member {} not found", name))?;
                                     continue;
                                 }
@@ -1394,13 +1418,13 @@ impl VM {
                                     if cached_shape == shape_id as usize { Some(index as usize) } else { None }
                                 } else { None };
 
-                                if let Some(idx) = index.or_else(|| self.shapes.get_index(shape_id, &name).map(|i| i as usize)) {
+                                if let Some(idx) = index.or_else(|| self.shapes.get_index(shape_id, name_id).map(|i| i as usize)) {
                                     let old_val = inst.properties[idx];
                                     if old_val.is_number() {
                                         let new_val = BxValue::new_number(old_val.as_number() + 1.0);
                                         inst.properties[idx] = new_val;
                                         self.fibers[fiber_idx].stack.push(new_val);
-                                        
+
                                         if index.is_none() {
                                             let fiber = &self.fibers[fiber_idx];
                                             let frame = fiber.frames.last().unwrap();
@@ -1412,6 +1436,7 @@ impl VM {
                                         continue;
                                     }
                                 } else {
+                                    let name = self.interner.resolve(name_id).to_string();
                                     self.throw_error(fiber_idx, &format!("Member {} not found", name))?;
                                     continue;
                                 }
@@ -1453,8 +1478,8 @@ impl VM {
                     self.execute_call(fiber_idx, total_count as usize, Some(names))?;
                 }
                 OpCode::OpInvoke(idx, arg_count) => {
-                    let original_name = self.read_string_constant(fiber_idx, idx as usize);
-                    let name = original_name.to_lowercase();
+                    let name_id = self.read_intern_id(fiber_idx, idx as usize);
+                    let name = self.interner.resolve(name_id).to_string();
                     #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
                     {
                         let receiver_idx = self.fibers[fiber_idx].stack.len() - 1 - arg_count as usize;
@@ -1463,7 +1488,7 @@ impl VM {
                             if let GcObject::JsHandle(h) = self.heap.get(id) { Some(*h) } else { None }
                         } else { None };
                         if let Some(handle) = maybe_handle {
-                            let method_bytes = original_name.as_bytes();
+                            let method_bytes = name.as_bytes();
                             let mut args = Vec::with_capacity(arg_count as usize);
                             for i in 0..(arg_count as usize) {
                                 args.push(self.fibers[fiber_idx].stack[receiver_idx + 1 + i]);
@@ -1491,8 +1516,8 @@ impl VM {
                     self.execute_invoke(fiber_idx, name, arg_count as usize, None, ip_at_start)?;
                 }
                 OpCode::OpInvokeNamed(name_idx, total_count, names_idx) => {
-                    let original_name = self.read_string_constant(fiber_idx, name_idx as usize);
-                    let name = original_name.to_lowercase();
+                    let invoke_name_id = self.read_intern_id(fiber_idx, name_idx as usize);
+                    let name = self.interner.resolve(invoke_name_id).to_string();
                     let names = match self.read_constant(fiber_idx, names_idx as usize) {
                         v if v.is_ptr() => {
                             if let GcObject::Array(arr) = self.heap.get(v.as_gc_id().unwrap()) {
@@ -1632,17 +1657,19 @@ impl VM {
                                     let keys = {
                                         let mut k = Vec::new();
                                         let shape = &self.shapes.shapes[s.shape_id as usize];
-                                        for key in shape.fields.keys() {
-                                            k.push(key.clone());
+                                        for &intern_id in shape.fields.keys() {
+                                            let resolved = self.interner.resolve(intern_id).to_string();
+                                            k.push((intern_id, resolved));
                                         }
-                                        k.sort();
+                                        k.sort_by(|a, b| a.1.cmp(&b.1));
                                         k
                                     };
                                     if cursor_val < keys.len() {
-                                        let key = &keys[cursor_val];
-                                        let idx = self.shapes.get_index(s.shape_id, key).unwrap();
+                                        let (field_id, key_str) = &keys[cursor_val];
+                                        let idx = self.shapes.get_index(s.shape_id, *field_id).unwrap();
                                         let val = s.properties[idx as usize];
-                                        let key_id = self.heap.alloc(GcObject::String(BoxString::new(key)));                                        (false, Some(BxValue::new_ptr(key_id)), Some(val))
+                                        let key_gc_id = self.heap.alloc(GcObject::String(BoxString::new(key_str)));
+                                        (false, Some(BxValue::new_ptr(key_gc_id)), Some(val))
                                     } else {
                                         (true, None, None)
                                     }
@@ -2157,7 +2184,8 @@ impl VM {
                     } else { None };
 
                     let method = if method.is_none() {
-                        if let Some(idx) = self.shapes.get_index(shape_id, &name) {
+                        let name_intern_id = self.interner.intern(&name);
+                        if let Some(idx) = self.shapes.get_index(shape_id, name_intern_id) {
                             let method_val = inst.properties[idx as usize];
                             if let Some(m_id) = method_val.as_gc_id() {
                                 if let GcObject::CompiledFunction(f) = self.heap.get(m_id) {
@@ -2353,6 +2381,13 @@ impl VM {
         panic!("Constant at index {} is not a string: {:?}", idx, val)
     }
 
+    /// Read a string constant, intern it, and return the InternId.
+    /// Since InternId is Copy (u32), the borrow on self is released.
+    fn read_intern_id(&mut self, fiber_idx: usize, idx: usize) -> u32 {
+        let s = self.read_string_constant(fiber_idx, idx);
+        self.interner.intern(&s)
+    }
+
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
     pub fn bx_to_js(&self, val: &BxValue) -> JsValue {
         if val.is_number() {
@@ -2379,8 +2414,9 @@ impl VM {
                 GcObject::Struct(s) => {
                     let js_obj = js_sys::Object::new();
                     let shape = &self.shapes.shapes[s.shape_id as usize];
-                    for (k, &idx) in shape.fields.iter() {
-                        Reflect::set(&js_obj, &JsValue::from_str(k), &self.bx_to_js(&s.properties[idx])).ok();
+                    for (&k, &idx) in shape.fields.iter() {
+                        let key_str = self.interner.resolve(k);
+                        Reflect::set(&js_obj, &JsValue::from_str(key_str), &self.bx_to_js(&s.properties[idx])).ok();
                     }
                     js_obj.into()
                 }
@@ -2457,9 +2493,10 @@ impl VM {
                 GcObject::Struct(s) => {
                     let mut map = serde_json::Map::new();
                     let shape = &self.shapes.shapes[s.shape_id as usize];
-                    for (k, &idx) in shape.fields.iter() {
+                    for (&k, &idx) in shape.fields.iter() {
                         if let Some(v) = s.properties.get(idx as usize) {
-                            map.insert(k.clone(), self.bx_to_json(v));
+                            let key_str = self.interner.resolve(k).to_string();
+                            map.insert(key_str, self.bx_to_json(v));
                         }
                     }
                     serde_json::Value::Object(map)
@@ -2498,7 +2535,8 @@ impl VM {
                 for (name, val) in obj {
                     let bx_val = self.json_to_bx(val);
                     let shape_id = bx_struct.shape_id;
-                    bx_struct.shape_id = self.shapes.transition(shape_id, &name);
+                    let name_id = self.interner.intern(&name);
+                    bx_struct.shape_id = self.shapes.transition(shape_id, name_id);
                     bx_struct.properties.push(bx_val);
                 }
                 let id = self.heap.alloc(GcObject::Struct(bx_struct));
