@@ -1,0 +1,24 @@
+
+function highPriorityTask() {
+    println("High priority start");
+    sleep(100);
+    println("High priority end");
+    return "high";
+}
+
+function normalPriorityTask() {
+    println("Normal priority start");
+    sleep(50);
+    println("Normal priority end");
+    return "normal";
+}
+
+// Spawn normal priority first
+f1 = runAsync(normalPriorityTask, 0);
+// Spawn high priority second
+f2 = runAsync(highPriorityTask, 1);
+
+println("Fibers spawned");
+// Both should eventually complete
+// In a fair scheduler with priorities, if both are ready, high runs first.
+// But here they both sleep.

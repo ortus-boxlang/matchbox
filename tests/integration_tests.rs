@@ -53,6 +53,7 @@ script_test!(vm_operators, "vm_operators.bxs");
 script_test!(vm_continue, "vm_continue.bxs");
 script_test!(vm_array_sparse, "vm_array_sparse.bxs");
 script_test!(vm_polymorphic_ic, "vm_polymorphic_ic.bxs");
+script_test!(vm_fiber_priority, "vm_fiber_priority.bxs");
 
 #[test]
 fn test_strip_source() {

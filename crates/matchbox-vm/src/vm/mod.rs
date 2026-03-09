@@ -57,6 +57,7 @@ pub struct BxFiber {
     pub future_id: usize,
     pub wait_until: Option<Instant>,
     pub yield_requested: bool,
+    pub priority: u8,
 }
 
 pub struct VM {
@@ -71,16 +72,16 @@ pub struct VM {
 }
 
 impl BxVM for VM {
-    fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>) -> BxValue {
-        self.spawn(func, args)
+    fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8) -> BxValue {
+        self.spawn(func, args, priority)
     }
 
-    fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>) -> Result<BxValue, String> {
+    fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, priority: u8) -> Result<BxValue, String> {
         if let Some(id) = func.as_gc_id() {
             let obj = self.heap.get(id);
             if let GcObject::CompiledFunction(f) = obj {
                 let f = Rc::clone(f);
-                Ok(self.spawn(f, args))
+                Ok(self.spawn(f, args, priority))
             } else {
                 Err("Value is not a callable function".to_string())
             }
@@ -414,6 +415,7 @@ impl VM {
             future_id,
             wait_until: None,
             yield_requested: false,
+            priority: 0,
         };
         
         self.fibers.push(fiber);
@@ -422,7 +424,7 @@ impl VM {
         res
     }
 
-    pub fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>) -> BxValue {
+    pub fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8) -> BxValue {
         let future_id = self.heap.alloc(GcObject::Future(BxFuture {
             value: BxValue::new_null(),
             status: FutureStatus::Pending,
@@ -446,6 +448,7 @@ impl VM {
             future_id,
             wait_until: None,
             yield_requested: false,
+            priority,
         };
 
         self.fibers.push(fiber);
@@ -458,6 +461,25 @@ impl VM {
         while !self.fibers.is_empty() {
             let mut i = 0;
             let mut all_waiting = true;
+            let mut earliest_wait: Option<Instant> = None;
+            
+            // 1. Find the highest priority among non-waiting fibers
+            let mut max_priority = 0;
+            let now = Instant::now();
+            for f in &self.fibers {
+                if let Some(until) = f.wait_until {
+                    if now < until {
+                        if earliest_wait.is_none() || until < earliest_wait.unwrap() {
+                            earliest_wait = Some(until);
+                        }
+                        continue;
+                    }
+                }
+                if f.priority > max_priority {
+                    max_priority = f.priority;
+                }
+            }
+
             while i < self.fibers.len() {
                 let now = Instant::now();
                 if let Some(until) = self.fibers[i].wait_until {
@@ -469,23 +491,30 @@ impl VM {
                     }
                 }
                 
+                // Only run fibers with the current maximum priority to avoid starvation of I/O/callbacks
+                if self.fibers[i].priority < max_priority {
+                    i += 1;
+                    all_waiting = false;
+                    continue;
+                }
+
                 all_waiting = false;
                 self.current_fiber_idx = Some(i);
                 match self.run_fiber(i, 100) {
                     Ok(Some(result)) => {
-                        let fiber = self.fibers.remove(i);
+                        let fiber = self.fibers.swap_remove(i);
                         if let GcObject::Future(f) = self.heap.get_mut(fiber.future_id) {
                             f.value = result;
                             f.status = FutureStatus::Completed;
                         }
                         last_result = result;
-                        continue;
+                        // No i += 1 here because swap_remove moved another fiber into index i
                     }
                     Ok(None) => {
                         i += 1;
                     }
                     Err(e) => {
-                        let fiber = self.fibers.remove(i);
+                        let fiber = self.fibers.swap_remove(i);
                         let mut handler = None;
                         if let GcObject::Future(f) = self.heap.get_mut(fiber.future_id) {
                             f.status = FutureStatus::Failed(e.to_string());
@@ -494,13 +523,14 @@ impl VM {
                         
                         if let Some(h) = handler {
                             self.spawn_error_handler(h, e.to_string());
-                            continue;
-                        }
-
-                        if self.fibers.is_empty() {
-                            return Err(e);
+                            // Since we spawned a new fiber, it will be at the end of the list.
+                            // The swap_removed fiber is gone, index i now has a different fiber.
                         } else {
-                            eprintln!("\n[Async Task Error] {}", e);
+                            if self.fibers.is_empty() {
+                                return Err(e);
+                            } else {
+                                eprintln!("\n[Async Task Error] {}", e);
+                            }
                         }
                     }
                 }
@@ -508,7 +538,15 @@ impl VM {
             }
             
             if all_waiting && !self.fibers.is_empty() {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                if let Some(until) = earliest_wait {
+                    let now = Instant::now();
+                    if until > now {
+                        std::thread::sleep(until - now);
+                    }
+                } else {
+                    // Fallback if somehow all_waiting but no earliest_wait
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }
 
             // Periodically collect garbage
@@ -2094,6 +2132,7 @@ impl VM {
                         future_id,
                         wait_until: None,
                         yield_requested: false,
+                        priority: 0,
                     };
                     self.fibers.push(fiber);
                     let fiber_idx = self.fibers.len() - 1;
@@ -2168,12 +2207,13 @@ impl VM {
     fn spawn_error_handler(&mut self, handler: BxValue, error_msg: String) {
         let err_id = self.heap.alloc(GcObject::String(BoxString::new(&error_msg)));
         let err_val = BxValue::new_ptr(err_id);
-        
+
         if let Some(id) = handler.as_gc_id() {
             match self.heap.get(id) {
                 GcObject::CompiledFunction(f) => {
-                    self.spawn(Rc::clone(f), vec![err_val]);
+                    self.spawn(Rc::clone(f), vec![err_val], 1);
                 }
+
                 GcObject::NativeFunction(f) => {
                     let f = *f;
                     let _ = f(self, &[err_val]);

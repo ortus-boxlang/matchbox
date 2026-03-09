@@ -134,7 +134,12 @@ fn bx_yield(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
 
 fn run_async(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() { return Err("runAsync() expects at least 1 argument".to_string()); }
-    vm.spawn_by_value(&args[0], Vec::new())
+    let priority = if args.len() >= 2 && args[1].is_number() {
+        args[1].as_number() as u8
+    } else {
+        0
+    };
+    vm.spawn_by_value(&args[0], Vec::new(), priority)
 }
 
 fn create_object(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
