@@ -399,7 +399,10 @@ fn produce_fusion_artifact(chunk: &Chunk, source_path: &Path, native_dir: &Path,
     let is_wasi = target == "wasi";
 
     // 1. Generate Cargo.toml
-    let vm_path = concat!(env!("CARGO_MANIFEST_DIR"), "/crates/matchbox-vm");
+    // Use forward slashes so the path is valid in a TOML string on all platforms
+    // (Windows paths with backslashes would require escaping inside TOML strings).
+    let vm_path = concat!(env!("CARGO_MANIFEST_DIR"), "/crates/matchbox-vm")
+        .replace('\\', "/");
     let mut cargo_toml = format!(r#"[package]
 name = "fusion_build"
 version = "0.1.0"
