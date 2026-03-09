@@ -4,6 +4,7 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
+matchbox-macros = { path = "../matchbox-macros" }
 anyhow = "1.0.102"
 bincode = "1.3.3"
 rand = "0.10.0"

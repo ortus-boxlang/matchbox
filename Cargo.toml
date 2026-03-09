@@ -2,6 +2,7 @@
 members = [
     "crates/matchbox-vm",
     "crates/matchbox-compiler",
+    "crates/matchbox-macros",
 ]
 
 [package]

@@ -387,6 +387,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "matchbox-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "matchbox_compiler"
 version = "0.2.0"
 dependencies = [
@@ -407,6 +416,7 @@ dependencies = [
  "getrandom",
  "jni",
  "js-sys",
+ "matchbox-macros",
  "rand",
  "serde",
  "serde_json",

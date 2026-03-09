@@ -86,6 +86,9 @@ fn test_native_fusion_build() {
     assert!(stdout.contains("20"), "Expected output to contain 20, got: {}", stdout);
     assert!(stdout.contains("ENCRYPTED(data)_WITH(my-secret)"), "Expected output to contain ENCRYPTED(data)_WITH(my-secret), got: {}", stdout);
     assert!(stdout.contains("ENCRYPTED(more-data)_WITH(another-key)"), "Expected output to contain ENCRYPTED(more-data)_WITH(another-key), got: {}", stdout);
+    assert!(stdout.contains("30"), "Expected output to contain 30, got: {}", stdout);
+    assert!(stdout.contains("150"), "Expected output to contain 150, got: {}", stdout);
+    assert!(stdout.contains("200"), "Expected output to contain 200, got: {}", stdout);
     
     // 4. Cleanup
     let _ = std::fs::remove_file(&out_path);

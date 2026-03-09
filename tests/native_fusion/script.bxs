@@ -7,3 +7,9 @@ println(v1.encrypt("data"));
 
 v2 = new rust:crypto.Vault("another-key");
 println(v2.encrypt("more-data"));
+
+println(macro_add(10, 20))
+
+calc = new rust:macro_module.NativeCalc(100);
+println(calc.add(50))
+println(calc.multiply(2))
