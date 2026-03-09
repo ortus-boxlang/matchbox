@@ -1730,12 +1730,22 @@ impl VM {
             if frame.ip > 0 && frame.ip <= chunk.lines.len() {
                 line = chunk.lines[frame.ip - 1];
                 
-                // Extract source snippet
-                if !chunk.source.is_empty() && line > 0 {
-                    let lines: Vec<&str> = chunk.source.lines().collect();
-                    if line as usize <= lines.len() {
-                        let code_line = lines[line as usize - 1].trim();
-                        source_snippet = format!("\n\n  |  {}\n  |  {}", line, code_line);
+                // Extract source snippet — prefer embedded source, fall back to disk
+                let source_text: Option<String> = if !chunk.source.is_empty() {
+                    Some(chunk.source.clone())
+                } else {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    { std::fs::read_to_string(&filename).ok() }
+                    #[cfg(target_arch = "wasm32")]
+                    { None }
+                };
+                if let Some(src) = source_text {
+                    if line > 0 {
+                        let src_lines: Vec<&str> = src.lines().collect();
+                        if line as usize <= src_lines.len() {
+                            let code_line = src_lines[line as usize - 1].trim();
+                            source_snippet = format!("\n\n  |  {}\n  |  {}", line, code_line);
+                        }
                     }
                 }
             }

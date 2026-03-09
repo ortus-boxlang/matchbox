@@ -1096,7 +1096,8 @@ impl Compiler {
 
     fn compile_function(&mut self, name: &str, params: &[crate::ast::FunctionParam], body: &crate::ast::FunctionBody) -> Result<BxCompiledFunction> {
         let mut sub_compiler = Compiler::new(&self.chunk.filename);
-        sub_compiler.chunk.source = self.chunk.source.clone();
+        // Source text lives only in the root chunk to avoid N copies per file.
+        // The VM falls back to disk when chunk.source is empty.
         sub_compiler.scope_depth = 1;
         sub_compiler.is_class = self.is_class;
         sub_compiler.imports = self.imports.clone();

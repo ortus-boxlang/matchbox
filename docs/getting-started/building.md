@@ -68,6 +68,27 @@ matchbox hello.bxb
 
 Bytecode files are compact and load faster than source, because the parsing and compilation step is already done.
 
+### Stripping Source for Smaller Binaries
+
+By default, `.bxb` files embed the full source text of your script to enable rich error snippets like:
+
+```
+VM Runtime Error: undefined is not a function
+
+  |  42
+  |  result = todos[id].text
+
+(at todo.bxs line 42)
+```
+
+For production deployments where binary size matters, use `--strip-source` to remove the embedded source text:
+
+```bash
+matchbox --build --strip-source hello.bxs
+```
+
+This typically reduces `.bxb` size by 30–40%. Errors still report the exact `filename:line`, and native binaries automatically fall back to reading the original `.bxs` file from disk if it is present alongside the binary.
+
 ---
 
 ## Compile to a Standalone Native Binary
@@ -123,6 +144,13 @@ OPTIONS:
     --build              Compile to portable bytecode (.bxb), do not execute
     --target <TARGET>    Compile and bundle for a specific deployment target
                          Possible values: native, wasm, js
+    --output <PATH>      Override the output file path for compiled artifacts
+    --strip-source       Strip embedded source text from compiled output
+                         Errors still report filename:line; native binaries
+                         fall back to reading the source file from disk
+    --keep <SYMBOLS>     Comma-separated list of BIFs to preserve from tree-shaking
+    --no-shaking         Disable tree-shaking; include full prelude
+    --no-std-lib         Exclude the standard library entirely
     --version            Print version info
     -h, --help           Print help
 ```

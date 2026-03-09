@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use matchbox::process_file;
+use matchbox_vm::Chunk;
 
 macro_rules! script_test {
     ($name:ident, $file:expr) => {
@@ -9,7 +10,7 @@ macro_rules! script_test {
             path.push("tests/scripts");
             path.push($file);
             
-            if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, None) {
+            if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None) {
                 panic!("Script {} failed: {}", $file, e);
             }
         }
@@ -53,11 +54,38 @@ script_test!(vm_continue, "vm_continue.bxs");
 script_test!(vm_array_sparse, "vm_array_sparse.bxs");
 
 #[test]
+fn test_strip_source() {
+    let mut script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    script_path.push("tests/scripts/vm_functions.bxs");
+
+    // Compile to a temp .bxb with --strip-source
+    let out_path = std::env::temp_dir().join("matchbox_strip_source_test.bxb");
+    if let Err(e) = process_file(&script_path, true, None, Vec::new(), false, false, true, Some(&out_path)) {
+        panic!("strip-source compile failed: {}", e);
+    }
+
+    // Deserialize and verify source is gone but line info is preserved
+    let bytes = std::fs::read(&out_path).expect("Could not read stripped .bxb");
+    let chunk: Chunk = bincode::deserialize(&bytes).expect("Could not deserialize .bxb");
+
+    assert!(chunk.source.is_empty(), "chunk.source should be empty after --strip-source, got {} bytes", chunk.source.len());
+    assert!(!chunk.lines.is_empty(), "chunk.lines should be preserved after --strip-source");
+    assert!(!chunk.filename.is_empty(), "chunk.filename should be preserved after --strip-source");
+
+    // Verify stripped bytecode still executes without error
+    if let Err(e) = process_file(&out_path, false, None, Vec::new(), false, false, false, None) {
+        panic!("Executing stripped .bxb failed: {}", e);
+    }
+
+    let _ = std::fs::remove_file(&out_path);
+}
+
+#[test]
 #[should_panic(expected = "must implement abstract method f")]
 fn vm_interface_fail() {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("tests/scripts/vm_interface_fail.bxs");
-    process_file(&path, false, None, Vec::new(), false, false, None).unwrap();
+    process_file(&path, false, None, Vec::new(), false, false, false, None).unwrap();
 }
 
 #[test]
@@ -66,7 +94,7 @@ fn test_native_fusion_build() {
     path.push("tests/native_fusion/script.bxs");
     
     // 1. Build the native binary
-    if let Err(e) = process_file(&path, false, Some("native"), Vec::new(), false, false, None) {
+    if let Err(e) = process_file(&path, false, Some("native"), Vec::new(), false, false, false, None) {
         panic!("Native fusion build failed: {}", e);
     }
     

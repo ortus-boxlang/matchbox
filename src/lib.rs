@@ -116,6 +116,7 @@ pub fn run() -> Result<()> {
     let is_build = args.contains(&"--build".to_string());
     let no_shaking = args.contains(&"--no-shaking".to_string());
     let no_std_lib = args.contains(&"--no-std-lib".to_string());
+    let strip_source = args.contains(&"--strip-source".to_string());
     let target = if let Some(idx) = args.iter().position(|a| a == "--target") {
         args.get(idx + 1).map(|s| s.as_str())
     } else {
@@ -146,9 +147,9 @@ pub fn run() -> Result<()> {
         Some(name) => {
             let path = Path::new(name);
             if path.is_dir() {
-                process_directory(path, is_build, target, keep_symbols, no_shaking, no_std_lib, output.as_deref())?;
+                process_directory(path, is_build, target, keep_symbols, no_shaking, no_std_lib, strip_source, output.as_deref())?;
             } else {
-                process_file(path, is_build, target, keep_symbols, no_shaking, no_std_lib, output.as_deref())?;
+                process_file(path, is_build, target, keep_symbols, no_shaking, no_std_lib, strip_source, output.as_deref())?;
             }
         }
         None => {
@@ -176,6 +177,8 @@ fn print_usage() {
     println!("  --no-shaking        Disable tree-shaking and include all prelude BIFs");
     println!("  --no-std-lib        Exclude the standard library (prelude) entirely");
     println!("  --output <path>     Set the output file path for compiled artifacts");
+    println!("  --strip-source      Strip embedded source text from compiled output");
+    println!("                      Errors still report file:line; native binaries fall back to disk for snippets");
     println!("\nIf no file is provided, matchbox starts in REPL mode.");
 }
 
@@ -188,7 +191,7 @@ fn print_version() {
     println!("built on: {}", date);
 }
 
-pub fn process_file(path: &Path, is_build: bool, target: Option<&str>, keep_symbols: Vec<String>, no_shaking: bool, no_std_lib: bool, output: Option<&Path>) -> Result<()> {
+pub fn process_file(path: &Path, is_build: bool, target: Option<&str>, keep_symbols: Vec<String>, no_shaking: bool, no_std_lib: bool, strip_source: bool, output: Option<&Path>) -> Result<()> {
     if path.extension().and_then(|s| s.to_str()) == Some("bxb") {
         let bytes = fs::read(path)?;
         let chunk: Chunk = bincode::deserialize(&bytes)?;
@@ -196,8 +199,12 @@ pub fn process_file(path: &Path, is_build: bool, target: Option<&str>, keep_symb
     } else {
         let source = fs::read_to_string(path)?;
         let ast = parser::parse(&source).map_err(|e| anyhow::anyhow!("Parse Error: {}", e))?;
-        let chunk = matchbox_compiler::compile_with_treeshaking(path.to_str().unwrap_or("unknown"), &ast, &source, keep_symbols, no_shaking, no_std_lib)
+        let mut chunk = matchbox_compiler::compile_with_treeshaking(path.to_str().unwrap_or("unknown"), &ast, &source, keep_symbols, no_shaking, no_std_lib)
             .map_err(|e| anyhow::anyhow!("Compiler Error: {}", e))?;
+
+        if strip_source {
+            strip_sources(&mut chunk);
+        }
 
         if is_build {
             let bytes = bincode::serialize(&chunk)?;
@@ -271,7 +278,7 @@ fn produce_js_bundle(chunk: &Chunk, source_path: &Path, ast: &[ast::Statement], 
     Ok(())
 }
 
-fn process_directory(path: &Path, is_build: bool, target: Option<&str>, keep_symbols: Vec<String>, no_shaking: bool, no_std_lib: bool, output: Option<&Path>) -> Result<()> {
+fn process_directory(path: &Path, is_build: bool, target: Option<&str>, keep_symbols: Vec<String>, no_shaking: bool, no_std_lib: bool, strip_source: bool, output: Option<&Path>) -> Result<()> {
     let entry_points = ["index.bxs", "main.bxs", "Application.bx"];
     let mut entry_file = None;
     for ep in entry_points {
@@ -282,7 +289,28 @@ fn process_directory(path: &Path, is_build: bool, target: Option<&str>, keep_sym
         }
     }
     let entry_file = entry_file.context("No entry point found in directory")?;
-    process_file(&entry_file, is_build, target, keep_symbols, no_shaking, no_std_lib, output)
+    process_file(&entry_file, is_build, target, keep_symbols, no_shaking, no_std_lib, strip_source, output)
+}
+
+/// Recursively clear embedded source text from a chunk tree.
+/// `filename` and per-opcode `lines` are preserved so errors still report `file:line`.
+/// Native binaries automatically fall back to reading the source file from disk.
+fn strip_sources(chunk: &mut Chunk) {
+    chunk.source = String::new();
+    for constant in chunk.constants.iter_mut() {
+        match constant {
+            types::Constant::CompiledFunction(f) => {
+                strip_sources(&mut *f.chunk.borrow_mut());
+            }
+            types::Constant::Class(cls) => {
+                strip_sources(&mut *cls.constructor.chunk.borrow_mut());
+                for method in cls.methods.values() {
+                    strip_sources(&mut *method.chunk.borrow_mut());
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn run_chunk(chunk: Chunk) -> Result<()> {

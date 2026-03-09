@@ -13,10 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`continue` Statement**: Skip to the next iteration in both `for` and `for-in` loops.
 - **Sparse Array Assignment**: Assigning to an out-of-bounds array index auto-grows the array, filling gaps with `null`. Reading beyond the end also returns `null` instead of throwing.
 - **`--output <path>` CLI flag**: Override the output file path when compiling a script.
+- **`--strip-source` CLI flag**: Strip embedded source text from compiled `.bxb` output for smaller binaries (~35% reduction on typical scripts). Errors still report `filename:line`; native binaries automatically fall back to reading the source file from disk for full error snippets.
 - **JS Interop (WASM target)**: `JsHandle`-based host function bridge (`matchbox_js_host`) for DOM and JS API access from BoxLang scripts compiled with `--target js`.
 
 ### Fixed
 - Fixed deserialized function chunks causing an index-out-of-bounds panic in the VM by calling `ensure_caches()` at frame entry when `ip == 0`.
+- Fixed source text being duplicated into every function/method sub-chunk at compile time (was O(functions × source_len)); now stored only in the root chunk, with disk fallback for error snippets.
 - `continue` now works correctly inside `for-in` loops (was only wired up for C-style `for` loops).
 
 ## [0.2.0] - 2026-03-07
