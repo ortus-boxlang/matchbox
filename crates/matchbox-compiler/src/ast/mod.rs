@@ -68,6 +68,7 @@ pub enum StatementKind {
     },
     Return(Option<Expression>),
     Throw(Option<Expression>),
+    Continue,
     TryCatch {
         try_branch: Vec<Statement>,
         catches: Vec<CatchBlock>,
@@ -124,6 +125,12 @@ pub enum ExpressionKind {
         left: Box<Expression>,
         operator: String,
         right: Box<Expression>,
+    },
+    UnaryNot(Box<Expression>),
+    Ternary {
+        condition: Box<Expression>,
+        then_expr: Box<Expression>,
+        else_expr: Box<Expression>,
     },
     FunctionCall {
         base: Box<Expression>,

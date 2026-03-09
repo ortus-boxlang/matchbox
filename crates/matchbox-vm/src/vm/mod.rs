@@ -20,6 +20,27 @@ use wasm_bindgen::prelude::*;
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use js_sys::{Array, Function, Reflect};
 
+#[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+#[link(wasm_import_module = "matchbox_js_host")]
+unsafe extern "C" {
+    fn bx_js_get_prop(
+        obj_id: u32, key_ptr: *const u8, key_len: usize,
+        str_buf: *mut u8, str_buf_len: usize, out_str_len: *mut usize,
+        out_num: *mut f64, out_bool: *mut i32, out_obj: *mut u32,
+    ) -> i32;
+    fn bx_js_set_prop_null(obj_id: u32, key_ptr: *const u8, key_len: usize);
+    fn bx_js_set_prop_bool(obj_id: u32, key_ptr: *const u8, key_len: usize, val: i32);
+    fn bx_js_set_prop_num(obj_id: u32, key_ptr: *const u8, key_len: usize, val: f64);
+    fn bx_js_set_prop_str(obj_id: u32, key_ptr: *const u8, key_len: usize, val_ptr: *const u8, val_len: usize);
+    fn bx_js_set_prop_obj(obj_id: u32, key_ptr: *const u8, key_len: usize, val_id: u32);
+    fn bx_js_call_method(
+        obj_id: u32, method_ptr: *const u8, method_len: usize,
+        args_json_ptr: *const u8, args_json_len: usize,
+        str_buf: *mut u8, str_buf_len: usize, out_str_len: *mut usize,
+        out_num: *mut f64, out_bool: *mut i32, out_obj: *mut u32,
+    ) -> i32;
+}
+
 pub struct CallFrame {
     pub function: Rc<BxCompiledFunction>,
     pub ip: usize,
@@ -198,6 +219,8 @@ impl VM {
                 GcObject::NativeObject(o) => format!("<native object {:?}>", o.borrow()),
                 #[cfg(all(target_arch = "wasm32", feature = "js"))]
                 GcObject::JsValue(js) => format!("<js value {:?}>", js),
+                #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+                GcObject::JsHandle(h) => format!("<js object #{}>", h),
             }
         } else {
             "<invalid>".to_string()
@@ -237,6 +260,12 @@ impl VM {
                 let id = vm.heap.alloc(GcObject::JsValue(window.into()));
                 vm.insert_global("js".to_string(), BxValue::new_ptr(id));
             }
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+        {
+            // WASI build: register `js` as handle 1 (window) for browser JS interop
+            let id = vm.heap.alloc(GcObject::JsHandle(1));
+            vm.insert_global("js".to_string(), BxValue::new_ptr(id));
         }
 
         // Register standard BIFs
@@ -487,6 +516,16 @@ impl VM {
             if self.fibers[fiber_idx].yield_requested {
                 self.fibers[fiber_idx].yield_requested = false;
                 return Ok(None);
+            }
+
+            // Ensure inline-cache slots exist when entering a frame for the first
+            // time.  The `caches` field is #[serde(skip)], so chunks loaded from
+            // bytecode arrive with an empty Vec.
+            if self.fibers[fiber_idx].frames.last().unwrap().ip == 0 {
+                let chunk_rc = Rc::clone(
+                    &self.fibers[fiber_idx].frames.last().unwrap().function.chunk,
+                );
+                chunk_rc.borrow_mut().ensure_caches();
             }
 
             let (instruction, ip_at_start) = {
@@ -967,8 +1006,8 @@ impl VM {
                                 if index_val.is_number() || index_val.is_int() {
                                     let idx = if index_val.is_int() { index_val.as_int() as usize } else { index_val.as_number() as usize };
                                     if idx < 1 || idx > arr.len() {
-                                        self.throw_error(fiber_idx, &format!("Array index out of bounds: {}", idx))?;
-                                        continue;
+                                        // Out-of-bounds reads return null (sparse array semantics)
+                                        self.fibers[fiber_idx].stack.push(BxValue::new_null());
                                     } else {
                                         self.fibers[fiber_idx].stack.push(arr[idx - 1]);
                                     }
@@ -1008,9 +1047,14 @@ impl VM {
                             GcObject::Array(arr) => {
                                 if index_val.is_number() || index_val.is_int() {
                                     let idx = if index_val.is_int() { index_val.as_int() as usize } else { index_val.as_number() as usize };
-                                    if idx < 1 || idx > arr.len() {
+                                    if idx < 1 {
                                         self.throw_error(fiber_idx, &format!("Array index out of bounds: {}", idx))?;
                                         continue;
+                                    } else if idx > arr.len() {
+                                        // Auto-grow: fill gaps with null
+                                        arr.resize(idx, BxValue::new_null());
+                                        arr[idx - 1] = val;
+                                        self.fibers[fiber_idx].stack.push(val);
                                     } else {
                                         arr[idx - 1] = val;
                                         self.fibers[fiber_idx].stack.push(val);
@@ -1048,7 +1092,8 @@ impl VM {
                     }
                 }
                 OpCode::OpMember(idx) => {
-                    let name = self.read_string_constant(fiber_idx, idx as usize).to_lowercase();
+                    let original_name = self.read_string_constant(fiber_idx, idx as usize);
+                    let name = original_name.to_lowercase();
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
                     
                     if let Some(id) = base_val.as_gc_id() {
@@ -1064,6 +1109,29 @@ impl VM {
                                 Err(_) => self.fibers[fiber_idx].stack.push(BxValue::new_null()),
                             }
                             continue;
+                        }
+
+                        #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+                        {
+                            let maybe_handle = if let GcObject::JsHandle(h) = self.heap.get(id) { Some(*h) } else { None };
+                            if let Some(handle) = maybe_handle {
+                                let key_bytes = original_name.as_bytes();
+                                let mut str_buf = [0u8; 4096];
+                                let mut out_str_len: usize = 0;
+                                let mut out_num: f64 = 0.0;
+                                let mut out_bool: i32 = 0;
+                                let mut out_obj: u32 = 0;
+                                let rtype = unsafe {
+                                    bx_js_get_prop(
+                                        handle, key_bytes.as_ptr(), key_bytes.len(),
+                                        str_buf.as_mut_ptr(), 4096, &mut out_str_len,
+                                        &mut out_num, &mut out_bool, &mut out_obj,
+                                    )
+                                };
+                                let bx_val = self.js_result_to_bx(rtype, &str_buf, out_str_len, out_num, out_bool, out_obj);
+                                self.fibers[fiber_idx].stack.push(bx_val);
+                                continue;
+                            }
                         }
 
                         match self.heap.get(id) {
@@ -1147,7 +1215,8 @@ impl VM {
                     }
                 }
                 OpCode::OpSetMember(idx) => {
-                    let name = self.read_string_constant(fiber_idx, idx as usize).to_lowercase();
+                    let original_name = self.read_string_constant(fiber_idx, idx as usize);
+                    let name = original_name.to_lowercase();
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
                     
@@ -1160,6 +1229,41 @@ impl VM {
                             Reflect::set(&js, &prop, &js_val).ok();
                             self.fibers[fiber_idx].stack.push(val);
                             continue;
+                        }
+
+                        #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+                        {
+                            let maybe_handle = if let GcObject::JsHandle(h) = self.heap.get(id) { Some(*h) } else { None };
+                            if let Some(handle) = maybe_handle {
+                                let key_bytes = original_name.as_bytes();
+                                if val.is_null() {
+                                    unsafe { bx_js_set_prop_null(handle, key_bytes.as_ptr(), key_bytes.len()); }
+                                } else if val.is_bool() {
+                                    unsafe { bx_js_set_prop_bool(handle, key_bytes.as_ptr(), key_bytes.len(), if val.as_bool() { 1 } else { 0 }); }
+                                } else if val.is_number() {
+                                    unsafe { bx_js_set_prop_num(handle, key_bytes.as_ptr(), key_bytes.len(), val.as_number()); }
+                                } else if val.is_int() {
+                                    unsafe { bx_js_set_prop_num(handle, key_bytes.as_ptr(), key_bytes.len(), val.as_int() as f64); }
+                                } else if let Some(val_gc_id) = val.as_gc_id() {
+                                    let maybe_str_bytes: Option<Vec<u8>> = if let GcObject::String(s) = self.heap.get(val_gc_id) {
+                                        Some(s.to_string().into_bytes())
+                                    } else { None };
+                                    let maybe_val_handle: Option<u32> = if let GcObject::JsHandle(h) = self.heap.get(val_gc_id) {
+                                        Some(*h)
+                                    } else { None };
+                                    if let Some(str_bytes) = maybe_str_bytes {
+                                        unsafe { bx_js_set_prop_str(handle, key_bytes.as_ptr(), key_bytes.len(), str_bytes.as_ptr(), str_bytes.len()); }
+                                    } else if let Some(val_handle) = maybe_val_handle {
+                                        unsafe { bx_js_set_prop_obj(handle, key_bytes.as_ptr(), key_bytes.len(), val_handle); }
+                                    } else {
+                                        unsafe { bx_js_set_prop_null(handle, key_bytes.as_ptr(), key_bytes.len()); }
+                                    }
+                                } else {
+                                    unsafe { bx_js_set_prop_null(handle, key_bytes.as_ptr(), key_bytes.len()); }
+                                }
+                                self.fibers[fiber_idx].stack.push(val);
+                                continue;
+                            }
                         }
 
                         match self.heap.get_mut(id) {
@@ -1349,11 +1453,46 @@ impl VM {
                     self.execute_call(fiber_idx, total_count as usize, Some(names))?;
                 }
                 OpCode::OpInvoke(idx, arg_count) => {
-                    let name = self.read_string_constant(fiber_idx, idx as usize).to_lowercase();
+                    let original_name = self.read_string_constant(fiber_idx, idx as usize);
+                    let name = original_name.to_lowercase();
+                    #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+                    {
+                        let receiver_idx = self.fibers[fiber_idx].stack.len() - 1 - arg_count as usize;
+                        let receiver_val = self.fibers[fiber_idx].stack[receiver_idx];
+                        let maybe_handle = if let Some(id) = receiver_val.as_gc_id() {
+                            if let GcObject::JsHandle(h) = self.heap.get(id) { Some(*h) } else { None }
+                        } else { None };
+                        if let Some(handle) = maybe_handle {
+                            let method_bytes = original_name.as_bytes();
+                            let mut args = Vec::with_capacity(arg_count as usize);
+                            for i in 0..(arg_count as usize) {
+                                args.push(self.fibers[fiber_idx].stack[receiver_idx + 1 + i]);
+                            }
+                            let args_json = self.bx_args_to_json(&args);
+                            let mut str_buf = [0u8; 4096];
+                            let mut out_str_len: usize = 0;
+                            let mut out_num: f64 = 0.0;
+                            let mut out_bool: i32 = 0;
+                            let mut out_obj: u32 = 0;
+                            let rtype = unsafe {
+                                bx_js_call_method(
+                                    handle, method_bytes.as_ptr(), method_bytes.len(),
+                                    args_json.as_ptr(), args_json.len(),
+                                    str_buf.as_mut_ptr(), 4096, &mut out_str_len,
+                                    &mut out_num, &mut out_bool, &mut out_obj,
+                                )
+                            };
+                            for _ in 0..(arg_count as usize + 1) { self.fibers[fiber_idx].stack.pop(); }
+                            let bx_val = self.js_result_to_bx(rtype, &str_buf, out_str_len, out_num, out_bool, out_obj);
+                            self.fibers[fiber_idx].stack.push(bx_val);
+                            continue;
+                        }
+                    }
                     self.execute_invoke(fiber_idx, name, arg_count as usize, None, ip_at_start)?;
                 }
                 OpCode::OpInvokeNamed(name_idx, total_count, names_idx) => {
-                    let name = self.read_string_constant(fiber_idx, name_idx as usize).to_lowercase();
+                    let original_name = self.read_string_constant(fiber_idx, name_idx as usize);
+                    let name = original_name.to_lowercase();
                     let names = match self.read_constant(fiber_idx, names_idx as usize) {
                         v if v.is_ptr() => {
                             if let GcObject::Array(arr) = self.heap.get(v.as_gc_id().unwrap()) {
@@ -1457,6 +1596,11 @@ impl VM {
                         self.throw_error(fiber_idx, "Comparison only supported for numbers currently")?;
                         continue;
                     }
+                }
+                OpCode::OpNot => {
+                    let a = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let res = self.is_truthy(a);
+                    self.fibers[fiber_idx].stack.push(BxValue::new_bool(!res));
                 }
 
                 // --- Control Flow / Misc ---
@@ -1838,6 +1982,64 @@ impl VM {
         } else {
             self.throw_error(fiber_idx, "Can only call functions.")
         }
+    }
+
+    #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+    fn js_result_to_bx(&mut self, rtype: i32, str_buf: &[u8], str_len: usize, num: f64, b: i32, obj_id: u32) -> BxValue {
+        match rtype {
+            1 => BxValue::new_bool(b != 0),
+            2 => BxValue::new_number(num),
+            3 => {
+                let s = std::str::from_utf8(&str_buf[..str_len.min(str_buf.len())]).unwrap_or("");
+                let id = self.heap.alloc(GcObject::String(BoxString::new(s)));
+                BxValue::new_ptr(id)
+            }
+            4 => {
+                let id = self.heap.alloc(GcObject::JsHandle(obj_id));
+                BxValue::new_ptr(id)
+            }
+            _ => BxValue::new_null(),
+        }
+    }
+
+    #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+    fn bx_args_to_json(&self, args: &[BxValue]) -> Vec<u8> {
+        let mut out = b"[".to_vec();
+        for (i, v) in args.iter().enumerate() {
+            if i > 0 { out.push(b','); }
+            if v.is_null() {
+                out.extend_from_slice(b"null");
+            } else if v.is_bool() {
+                out.extend_from_slice(if v.as_bool() { b"true" } else { b"false" });
+            } else if v.is_number() {
+                out.extend_from_slice(format!("{}", v.as_number()).as_bytes());
+            } else if v.is_int() {
+                out.extend_from_slice(format!("{}", v.as_int()).as_bytes());
+            } else if let Some(gc_id) = v.as_gc_id() {
+                let maybe_handle = if let GcObject::JsHandle(h) = self.heap.get(gc_id) { Some(*h) } else { None };
+                if let Some(h) = maybe_handle {
+                    out.extend_from_slice(format!("{{\"h\":{}}}", h).as_bytes());
+                } else {
+                    let s = self.to_string(*v);
+                    out.push(b'"');
+                    for ch in s.chars() {
+                        match ch {
+                            '"' => out.extend_from_slice(b"\\\""),
+                            '\\' => out.extend_from_slice(b"\\\\"),
+                            '\n' => out.extend_from_slice(b"\\n"),
+                            '\r' => out.extend_from_slice(b"\\r"),
+                            '\t' => out.extend_from_slice(b"\\t"),
+                            c => { let mut buf = [0u8; 4]; out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes()); }
+                        }
+                    }
+                    out.push(b'"');
+                }
+            } else {
+                out.extend_from_slice(b"null");
+            }
+        }
+        out.push(b']');
+        out
     }
 
     fn execute_invoke(&mut self, fiber_idx: usize, name: String, arg_count: usize, names: Option<Vec<String>>, ip_at_start: usize) -> Result<()> {

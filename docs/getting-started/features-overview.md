@@ -100,6 +100,28 @@ for (key in user) {
 }
 ```
 
+### Break & Continue
+
+Use `continue` to skip the rest of the current iteration and move to the next. Both `for` and `for-in` loops support it.
+
+```boxlang
+for (i = 1; i <= 5; i++) {
+    if (i == 3) { continue }   // skip 3
+    println(i)                  // prints 1, 2, 4, 5
+}
+```
+
+### Ternary Operator
+
+The ternary `?:` operator is a compact one-line `if/else` that evaluates to a value:
+
+```boxlang
+label = (score >= 90) ? "Pass" : "Fail"
+
+// Nestable
+grade = (score >= 90) ? "A" : (score >= 80) ? "B" : "C"
+```
+
 ---
 
 ## Functions
@@ -172,13 +194,28 @@ fruits = ["apple", "banana", "cherry"]
 
 println(fruits[1])              // apple
 arrayAppend(fruits, "date")
-println(arrayLen(fruits))       // 4
+println(len(fruits))            // 4
 
 // Iteration
 for (fruit in fruits) {
     println(fruit)
 }
 ```
+
+### Sparse Array Assignment
+
+Arrays auto-grow when you assign to an index beyond their current length. Gaps are filled with `null`.
+
+```boxlang
+records = []
+records[1] = "first"    // array is now ["first"]
+records[3] = "third"    // array is now ["first", null, "third"]
+
+println(len(records))   // 3
+println(records[2])     // (null — the gap)
+```
+
+Reading beyond the end of an array also returns `null` rather than throwing an error.
 
 ### Common Array BIFs
 

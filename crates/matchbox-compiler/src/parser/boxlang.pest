@@ -12,6 +12,7 @@ statement = {
     | if_statement
     | try_catch
     | return_stmt
+    | continue_stmt
     | throw_stmt
     | variable_decl
     | expression_stmt
@@ -80,6 +81,9 @@ try_catch = { try_keyword ~ block ~ catch_block* ~ finally_block? }
 catch_block = { catch_keyword ~ "(" ~ identifier ~ ")" ~ block }
 finally_block = { finally_keyword ~ block }
 
+continue_keyword = @{ "continue" ~ !ASCII_ALPHANUMERIC }
+continue_stmt = { continue_keyword ~ ";"? }
+
 throw_keyword = @{ "throw" ~ !ASCII_ALPHANUMERIC }
 throw_stmt = { throw_keyword ~ expression? ~ ";"? }
 
@@ -87,24 +91,29 @@ expression_stmt = { expression ~ ";"? }
 
 expression = {
     assignment
-    | binary_expr
+    | conditional_expr
 }
+
+conditional_expr = { binary_expr ~ ("?" ~ expression ~ ":" ~ expression)? }
 
 assignment = { target ~ "=" ~ expression }
 target = { atom ~ (array_access | member_access)* }
 
 binary_expr = { primary ~ (operator ~ primary)* }
 
-operator = { "+" | "-" | "*" | "/" | "==" | "!=" | "<=" | ">=" | "<" | ">" | "&" }
+operator = { "&&" | "||" | "+" | "-" | "*" | "/" | "==" | "!=" | "<=" | ">=" | "<" | ">" | "&" }
 
 primary = { atom ~ (function_call_args | array_access | member_access | postfix_op)* }
 
 atom = {
     new_expression
+    | unary_not
     | literal
     | !keyword ~ identifier
     | "(" ~ expression ~ ")"
 }
+
+unary_not = { "!" ~ primary }
 
 keyword = {
     import_keyword
@@ -113,6 +122,7 @@ keyword = {
     | property_keyword
     | function_keyword
     | return_keyword
+    | continue_keyword
     | var_keyword
     | for_keyword
     | in_keyword

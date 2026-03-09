@@ -43,6 +43,10 @@ fn main() {
     
     println!("cargo:rerun-if-changed=crates/matchbox-runner/src/main.rs");
     println!("cargo:rerun-if-changed=crates/matchbox-runner/Cargo.toml");
+    println!("cargo:rerun-if-changed=crates/matchbox-vm/src/vm/mod.rs");
+    println!("cargo:rerun-if-changed=crates/matchbox-vm/src/vm/opcode.rs");
+    println!("cargo:rerun-if-changed=crates/matchbox-vm/src/lib.rs");
+    println!("cargo:rerun-if-changed=crates/matchbox-vm/Cargo.toml");
     println!("cargo:rerun-if-changed=build.rs");
 
     let mut stubs_rs_content = String::from("use std::collections::HashMap;\n\n");
@@ -52,8 +56,31 @@ fn main() {
     // Helper closure to build and copy a stub
     let build_stub = |target: Option<&str>, dest_name: &str, src_name: &str, alias: &str, stubs_rs: &mut String| {
         let dest_path = stub_dest_dir.join(dest_name);
-        
-        if !dest_path.exists() {
+
+        // Determine whether we need (re)build: missing stub, zero-length stub,
+        // or any tracked source file is newer than the stub.
+        let sources_to_watch = [
+            Path::new(&root_dir).join("crates/matchbox-runner/src/main.rs"),
+            Path::new(&root_dir).join("crates/matchbox-runner/Cargo.toml"),
+            Path::new(&root_dir).join("crates/matchbox-vm/src/vm/mod.rs"),
+            Path::new(&root_dir).join("crates/matchbox-vm/src/vm/opcode.rs"),
+            Path::new(&root_dir).join("crates/matchbox-vm/src/lib.rs"),
+            Path::new(&root_dir).join("crates/matchbox-vm/Cargo.toml"),
+        ];
+        let stub_mtime = dest_path.metadata()
+            .and_then(|m| m.modified())
+            .ok();
+        let needs_rebuild = stub_mtime.map_or(true, |stub_time| {
+            fs::metadata(&dest_path).map(|m| m.len() == 0).unwrap_or(true)
+            || sources_to_watch.iter().any(|src| {
+                src.metadata()
+                    .and_then(|m| m.modified())
+                    .map(|src_time| src_time > stub_time)
+                    .unwrap_or(false)
+            })
+        });
+
+        if needs_rebuild {
             let mut cmd = Command::new(&cargo);
             cmd.arg("build").arg("--release")
                .current_dir(&runner_dir)

@@ -14,3 +14,4 @@ target/
 /fusion_build/
 docs/examples/native_fusion/app
 tests/native_fusion/script
+docs/examples/wasm_browser/todo.js

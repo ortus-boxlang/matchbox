@@ -103,13 +103,21 @@ mod wasm_interface {
         let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
         let chunk: Chunk = match bincode::deserialize(bytes) {
             Ok(c) => c,
-            Err(_) => return -1,
+            Err(e) => {
+                eprintln!("[matchbox] bytecode deserialize error: {}", e);
+                LAST_RESULT.with(|lr| *lr.borrow_mut() = format!("{{\"error\":\"Deserialize: {}\"}}", e));
+                return -1;
+            }
         };
         
         VM_INSTANCE.with(|vm| {
             match vm.borrow_mut().interpret(chunk) {
                 Ok(_) => 0,
-                Err(_) => -2,
+                Err(e) => {
+                    eprintln!("[matchbox] interpret error: {}", e);
+                    LAST_RESULT.with(|lr| *lr.borrow_mut() = format!("{{\"error\":\"Runtime: {}\"}}", e));
+                    -2
+                }
             }
         })
     }

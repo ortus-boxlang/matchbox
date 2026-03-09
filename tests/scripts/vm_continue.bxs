@@ -1,0 +1,42 @@
+// Test continue in loops
+
+// Basic continue: sum only odd values 1..10
+// Use a flip-flag since % is not yet a supported operator
+sum = 0
+isEven = true
+for (i = 1; i <= 10; i++) {
+    isEven = !isEven   // starts false on i=1 (odd), true on i=2 (even), ...
+    if (isEven) { continue }
+    sum = sum + i
+}
+// 1+3+5+7+9 = 25
+if (sum != 25) { throw "continue in for loop failed: sum = " & sum }
+
+// Continue in for-in loop: skip first element
+items = [10, 20, 30, 40]
+collected = []
+skipFirst = true
+for (n in items) {
+    if (skipFirst) {
+        skipFirst = false
+        continue
+    }
+    arrayAppend(collected, n)
+}
+// Should have collected 20, 30, 40
+if (len(collected) != 3) { throw "continue in for-in loop failed: len = " & len(collected) }
+if (collected[1] != 20)  { throw "continue for-in: first should be 20, got " & collected[1] }
+if (collected[3] != 40)  { throw "continue for-in: third should be 40, got " & collected[3] }
+
+// Continue only affects the innermost loop
+outer = 0
+for (i = 1; i <= 3; i++) {
+    for (j = 1; j <= 3; j++) {
+        if (j == 2) { continue }
+        outer = outer + 1
+    }
+}
+// Each outer iteration: j=1 counts, j=2 skipped, j=3 counts -> 2 per outer * 3 = 6
+if (outer != 6) { throw "continue in nested loop affected wrong loop: outer = " & outer }
+
+println("Continue tests passed")

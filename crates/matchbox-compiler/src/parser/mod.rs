@@ -385,6 +385,9 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
             };
             Ok(Statement::new(StatementKind::Throw(expr), line))
         }
+        Rule::continue_stmt => {
+            Ok(Statement::new(StatementKind::Continue, line))
+        }
         Rule::variable_decl => {
             let inner = pair.into_inner().next().unwrap(); // variable_decl_core
             parse_variable_decl_core(inner, line)
@@ -411,6 +414,22 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
         Rule::expression | Rule::init | Rule::condition | Rule::update => {
             let inner = pair.into_inner().next().ok_or_else(|| anyhow!("Empty expression"))?;
             parse_expression(inner)
+        }
+        Rule::conditional_expr => {
+            let mut inner = pair.into_inner();
+            let binary_pair = inner.next().unwrap();
+            let expr = parse_expression(binary_pair)?;
+            if let Some(then_pair) = inner.next() {
+                let then_expr = parse_expression(then_pair)?;
+                let else_expr = parse_expression(inner.next().unwrap())?;
+                Ok(Expression::new(ExpressionKind::Ternary {
+                    condition: Box::new(expr),
+                    then_expr: Box::new(then_expr),
+                    else_expr: Box::new(else_expr),
+                }, line))
+            } else {
+                Ok(expr)
+            }
         }
         Rule::assignment => {
             let mut rules = pair.into_inner();
@@ -546,6 +565,11 @@ fn parse_atom(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
         Rule::atom => {
             let inner = pair.into_inner().next().unwrap();
             parse_atom(inner)
+        }
+        Rule::unary_not => {
+            let inner = pair.into_inner().next().unwrap();
+            let expr = parse_primary(inner)?;
+            Ok(Expression::new(ExpressionKind::UnaryNot(Box::new(expr)), line))
         }
         Rule::prefix_op => {
             let operator = if pair.as_str().starts_with("++") { "++" } else { "--" }.to_string();

@@ -18,6 +18,8 @@ pub enum GcObject {
     NativeObject(Rc<RefCell<dyn BxNativeObject>>),
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
     JsValue(wasm_bindgen::JsValue),
+    #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+    JsHandle(u32),
 }
 
 pub struct Heap {
@@ -80,6 +82,8 @@ impl Heap {
                 GcObject::String(_) | GcObject::NativeFunction(_) | GcObject::Class(_) | GcObject::Interface(_) | GcObject::CompiledFunction(_) | GcObject::NativeObject(_) => Vec::new(),
                 #[cfg(all(target_arch = "wasm32", feature = "js"))]
                 GcObject::JsValue(_) => Vec::new(),
+                #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+                GcObject::JsHandle(_) => Vec::new(),
                 GcObject::Array(arr) => arr.clone(),
                 GcObject::Struct(s) => s.properties.clone(),
                 GcObject::Instance(inst) => {

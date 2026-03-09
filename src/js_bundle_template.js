@@ -59,12 +59,91 @@ const wasiShim = {
 
 async function init(wasmBytes) {
     const imports = {
-        wasi_snapshot_preview1: wasiShim
+        wasi_snapshot_preview1: wasiShim,
+        matchbox_js_host: matchbox_js_host
     };
 
     const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
     wasm = instance.exports;
 }
+
+const jsHandles = new Map([[1, globalThis]]);
+let nextJsHandle = 2;
+
+function bxEncodeResult(val, strBufPtr, strBufLen, outStrLenPtr, outNumPtr, outBoolPtr, outObjPtr) {
+    const mem = new DataView(wasm.memory.buffer);
+    const u8 = new Uint8Array(wasm.memory.buffer);
+    if (val === null || val === undefined) return 0;
+    if (typeof val === 'boolean') { mem.setInt32(outBoolPtr, val ? 1 : 0, true); return 1; }
+    if (typeof val === 'number') { mem.setFloat64(outNumPtr, val, true); return 2; }
+    if (typeof val === 'string') {
+        const encoded = cachedTextEncoder.encode(val);
+        const writeLen = Math.min(encoded.length, strBufLen);
+        u8.set(encoded.subarray(0, writeLen), strBufPtr);
+        mem.setUint32(outStrLenPtr, encoded.length, true);
+        return 3;
+    }
+    if (typeof val === 'object' || typeof val === 'function') {
+        const id = nextJsHandle++;
+        jsHandles.set(id, val);
+        mem.setUint32(outObjPtr, id, true);
+        return 4;
+    }
+    return 0;
+}
+
+const matchbox_js_host = {
+    bx_js_get_prop: (objId, keyPtr, keyLen, strBufPtr, strBufLen, outStrLenPtr, outNumPtr, outBoolPtr, outObjPtr) => {
+        const obj = jsHandles.get(objId);
+        if (obj == null) return 0;
+        const key = cachedTextDecoder.decode(new Uint8Array(wasm.memory.buffer).subarray(keyPtr, keyPtr + keyLen));
+        return bxEncodeResult(obj[key], strBufPtr, strBufLen, outStrLenPtr, outNumPtr, outBoolPtr, outObjPtr);
+    },
+    bx_js_set_prop_null: (objId, keyPtr, keyLen) => {
+        const obj = jsHandles.get(objId); if (!obj) return;
+        const key = cachedTextDecoder.decode(new Uint8Array(wasm.memory.buffer).subarray(keyPtr, keyPtr + keyLen));
+        obj[key] = null;
+    },
+    bx_js_set_prop_bool: (objId, keyPtr, keyLen, val) => {
+        const obj = jsHandles.get(objId); if (!obj) return;
+        const key = cachedTextDecoder.decode(new Uint8Array(wasm.memory.buffer).subarray(keyPtr, keyPtr + keyLen));
+        obj[key] = val !== 0;
+    },
+    bx_js_set_prop_num: (objId, keyPtr, keyLen, val) => {
+        const obj = jsHandles.get(objId); if (!obj) return;
+        const key = cachedTextDecoder.decode(new Uint8Array(wasm.memory.buffer).subarray(keyPtr, keyPtr + keyLen));
+        obj[key] = val;
+    },
+    bx_js_set_prop_str: (objId, keyPtr, keyLen, valPtr, valLen) => {
+        const obj = jsHandles.get(objId); if (!obj) return;
+        const u8 = new Uint8Array(wasm.memory.buffer);
+        const key = cachedTextDecoder.decode(u8.subarray(keyPtr, keyPtr + keyLen));
+        obj[key] = cachedTextDecoder.decode(u8.subarray(valPtr, valPtr + valLen));
+    },
+    bx_js_set_prop_obj: (objId, keyPtr, keyLen, valId) => {
+        const obj = jsHandles.get(objId); if (!obj) return;
+        const key = cachedTextDecoder.decode(new Uint8Array(wasm.memory.buffer).subarray(keyPtr, keyPtr + keyLen));
+        obj[key] = jsHandles.get(valId) ?? null;
+    },
+    bx_js_call_method: (objId, methodPtr, methodLen, argsJsonPtr, argsJsonLen, strBufPtr, strBufLen, outStrLenPtr, outNumPtr, outBoolPtr, outObjPtr) => {
+        const obj = jsHandles.get(objId);
+        if (obj == null) return 0;
+        const u8 = new Uint8Array(wasm.memory.buffer);
+        const method = cachedTextDecoder.decode(u8.subarray(methodPtr, methodPtr + methodLen));
+        const argsJson = cachedTextDecoder.decode(u8.subarray(argsJsonPtr, argsJsonPtr + argsJsonLen));
+        let args = [];
+        try {
+            const raw = JSON.parse(argsJson);
+            args = raw.map(a => (a && typeof a === 'object' && 'h' in a) ? (jsHandles.get(a.h) ?? null) : a);
+        } catch (_) {}
+        try {
+            return bxEncodeResult(obj[method](...args), strBufPtr, strBufLen, outStrLenPtr, outNumPtr, outBoolPtr, outObjPtr);
+        } catch (e) {
+            console.error('[matchbox] JS call error: ' + method, e);
+            return 0;
+        }
+    },
+};
 
 export class BoxLangVM {
     constructor() {}
@@ -76,7 +155,19 @@ export class BoxLangVM {
         mem.set(bytes, ptr);
         const res = wasm.boxlang_load_bytecode(ptr, len);
         if (res !== 0) {
-            throw new Error("Failed to load bytecode: " + res);
+            // Try to retrieve the error message stored by the Rust side
+            let detail = "code " + res;
+            try {
+                const errLen = wasm.boxlang_get_last_result_len();
+                if (errLen > 0) {
+                    const errPtr = wasm.boxlang_get_last_result_ptr?.() ?? 0;
+                    const errBuf = new Uint8Array(wasm.memory.buffer).subarray(errPtr, errPtr + errLen);
+                    const errStr = new TextDecoder().decode(errBuf);
+                    const parsed = JSON.parse(errStr);
+                    if (parsed && parsed.error) detail = parsed.error;
+                }
+            } catch (_) {}
+            throw new Error("Failed to load bytecode: " + detail);
         }
     }
 

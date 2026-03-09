@@ -1,0 +1,40 @@
+// Test logical operators and ternary
+
+// Logical OR
+if (!(true || false)) { throw "true || false should be true" }
+if (!(false || true)) { throw "false || true should be true" }
+if (false || false)   { throw "false || false should be false" }
+
+// Logical AND
+if (!(true && true))  { throw "true && true should be true" }
+if (true && false)    { throw "true && false should be false" }
+
+// Logical NOT
+if (!(!false))        { throw "!false should be true" }
+if (!(!(1 == 2)))     { throw "!(1 == 2) should be true" }
+if (!true)            { throw "!!true should be false" }
+
+// Ternary operator
+label = (10 > 5) ? "big" : "small"
+if (label != "big")   { throw "ternary true branch failed: got " & label }
+
+label2 = (2 > 5) ? "big" : "small"
+if (label2 != "small") { throw "ternary false branch failed: got " & label2 }
+
+// Nested ternary
+score = 75
+grade = (score >= 90) ? "A" : (score >= 80) ? "B" : (score >= 70) ? "C" : "F"
+if (grade != "C") { throw "nested ternary grade failed: got " & grade }
+
+// Ternary resolves to a value usable in expressions
+a = 4
+b = 7
+bigger = (a > b) ? a : b
+if (bigger != 7) { throw "ternary max failed: got " & bigger }
+
+// Combine operators
+x = 5
+if (!((x > 3) && (x < 10))) { throw "compound && failed" }
+if (!((x < 3) || (x == 5))) { throw "compound || failed" }
+
+println("Operator tests passed")

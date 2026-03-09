@@ -1,0 +1,35 @@
+// Test array sparse assignment (auto-grow) and out-of-bounds reads
+
+// Auto-grow: assigning to index beyond current length
+sparse = []
+sparse[1] = "a"
+if (sparse[1] != "a") { throw "sparse[1] write/read failed: got " & sparse[1] }
+
+// Grow by more than 1: gaps filled
+sparse[3] = "c"
+if (sparse[3] != "c") { throw "sparse[3] should be 'c', got " & sparse[3] }
+
+// Length reflects highest assigned index
+if (len(sparse) != 3) { throw "sparse array length should be 3, got " & len(sparse) }
+
+// Out-of-bounds read returns null/falsy (no throw)
+nothing = sparse[10]
+if (nothing) { throw "out-of-bounds read should be falsy" }
+
+// Overwrite an existing slot
+sparse[2] = "b"
+if (sparse[2] != "b") { throw "overwrite sparse[2] failed: got " & sparse[2] }
+
+// Simulate a todo map: integer-keyed assignment
+todos = []
+nextId = 1
+todo1 = { id: 1, text: "Buy milk" }
+todos[nextId] = todo1
+nextId = nextId + 1
+todo2 = { id: 2, text: "Write tests" }
+todos[nextId] = todo2
+
+if (todos[1].text != "Buy milk")    { throw "todos[1].text failed: got " & todos[1].text }
+if (todos[2].text != "Write tests") { throw "todos[2].text failed: got " & todos[2].text }
+
+println("Array sparse tests passed")

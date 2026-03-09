@@ -70,6 +70,7 @@ pub enum OpCode {
     OpLessEqual,
     OpGreater,
     OpGreaterEqual,
+    OpNot,
 
     // Control Flow / Misc
     OpIterNext(u32, u32, u32, bool),
