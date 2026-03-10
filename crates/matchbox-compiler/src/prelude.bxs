@@ -2,6 +2,8 @@
  * MatchBox Standard Library (Prelude)
  */
 
+// --- Array BIFs ---
+
 /**
  * Maps an array to a new array using a callback function.
  */
@@ -14,7 +16,7 @@ function arrayMap(array, callback) {
 }
 
 /**
- * Iterates over an array and calls a callback function for each item.
+ * Iterates over an array and calls a callback for each item.
  */
 function arrayEach(array, callback) {
     for (item in array) {
@@ -23,12 +25,12 @@ function arrayEach(array, callback) {
 }
 
 /**
- * Filters an array based on a callback function.
+ * Filters an array based on a predicate function.
  */
-function arrayFilter(array, callback) {
+function arrayFilter(array, predicate) {
     var result = [];
     for (item in array) {
-        if (callback(item)) {
+        if (predicate(item)) {
             arrayAppend(result, item);
         }
     }
@@ -36,7 +38,7 @@ function arrayFilter(array, callback) {
 }
 
 /**
- * Reduces an array to a single value using a callback function.
+ * Reduces an array to a single value using an accumulator function.
  */
 function arrayReduce(array, callback, initialValue) {
     var result = initialValue;
@@ -47,13 +49,13 @@ function arrayReduce(array, callback, initialValue) {
 }
 
 /**
- * Joins array elements into a string using a delimiter.
+ * Converts an array to a string using a delimiter.
  */
 function arrayToList(array, delimiter = ",") {
     var result = "";
     var first = true;
     for (item in array) {
-        if (first == false) {
+        if (!first) {
             result = result & delimiter;
         }
         result = result & item;
@@ -63,112 +65,15 @@ function arrayToList(array, delimiter = ",") {
 }
 
 /**
- * Returns a new array that is the reverse of the input array.
+ * Returns a new array with the elements in reverse order.
  */
 function arrayReverse(array) {
     var result = [];
-    var len = len(array);
-    for (var i = len; i > 0; i--) {
+    var length = len(array);
+    for (var i = length; i >= 1; i--) {
         arrayAppend(result, array[i]);
     }
     return result;
-}
-
-/**
- * Returns the absolute value of a number.
- */
-function abs(n) {
-    if (n < 0) {
-        return 0 - n;
-    }
-    return n;
-}
-
-/**
- * Returns the minimum of two numbers.
- */
-function min(a, b) {
-    if (a < b) {
-        return a;
-    }
-    return b;
-}
-
-/**
- * Returns the maximum of two numbers.
- */
-function max(a, b) {
-    if (a > b) {
-        return a;
-    }
-    return b;
-}
-
-/**
- * Returns an array containing the keys of a struct.
- */
-function structKeyArray(s) {
-    var result = [];
-    for (key in s) {
-        arrayAppend(result, key);
-    }
-    return result;
-}
-
-/**
- * Returns true if a key exists in a struct.
- */
-function structKeyExists(s, key) {
-    for (k in s) {
-        if (k == key) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/**
- * Returns the number of keys in a struct.
- */
-function structCount(s) {
-    return len(structKeyArray(s));
-}
-
-/**
- * Iterates over a struct and calls a callback function for each key-value pair.
- */
-function structEach(s, callback) {
-    for (key, val in s) {
-        callback(key, val);
-    }
-}
-
-/**
- * Returns true if a value is empty (null, empty string, empty array, or empty struct).
- */
-function isEmpty(val) {
-    if (val == null) {
-        return true;
-    }
-    return len(val) == 0;
-}
-
-/**
- * Maps a struct to a new struct using a callback function.
- */
-function structMap(s, callback) {
-    var result = {};
-    for (key, val in s) {
-        result[key] = callback(key, val);
-    }
-    return result;
-}
-
-/**
- * Returns a list of keys in a struct.
- */
-function structKeyList(s, delimiter = ",") {
-    return arrayToList(structKeyArray(s), delimiter);
 }
 
 /**
@@ -185,4 +90,389 @@ function arraySlice(array, offset, length) {
         arrayAppend(result, array[i]);
     }
     return result;
+}
+
+/**
+ * Returns the first element of an array.
+ */
+function arrayFirst(array) {
+    if (len(array) == 0) {
+        return null;
+    }
+    return array[1];
+}
+
+/**
+ * Returns the last element of an array.
+ */
+function arrayLast(array) {
+    var length = len(array);
+    if (length == 0) {
+        return null;
+    }
+    return array[length];
+}
+
+/**
+ * Prepends a value to the beginning of an array.
+ */
+function arrayPrepend(array, value) {
+    arrayInsertAt(array, 1, value);
+    return true;
+}
+
+/**
+ * Finds the index of a value in an array. Returns 0 if not found.
+ */
+function arrayFind(array, value) {
+    var length = len(array);
+    for (var i = 1; i <= length; i++) {
+        if (array[i] == value) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+/**
+ * Determines if an array contains a specific value.
+ */
+function arrayContains(array, value) {
+    return arrayFind(array, value) > 0;
+}
+
+/**
+ * Returns the sum of values in an array.
+ */
+function arraySum(array) {
+    var sum = 0;
+    for (item in array) {
+        sum = sum + item;
+    }
+    return sum;
+}
+
+/**
+ * Returns the average of values in an array.
+ */
+function arrayAvg(array) {
+    var length = len(array);
+    if (length == 0) {
+        return 0;
+    }
+    return arraySum(array) / length;
+}
+
+/**
+ * Returns the minimum value in an array.
+ */
+function arrayMin(array) {
+    var length = len(array);
+    if (length == 0) {
+        return null;
+    }
+    var result = array[1];
+    for (item in array) {
+        if (item < result) {
+            result = item;
+        }
+    }
+    return result;
+}
+
+/**
+ * Returns the maximum value in an array.
+ */
+function arrayMax(array) {
+    var length = len(array);
+    if (length == 0) {
+        return null;
+    }
+    var result = array[1];
+    for (item in array) {
+        if (item > result) {
+            result = item;
+        }
+    }
+    return result;
+}
+
+/**
+ * Determines if every element in an array satisfies a condition.
+ */
+function arrayEvery(array, callback) {
+    for (item in array) {
+        if (!callback(item)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Determines if at least one element in an array satisfies a condition.
+ */
+function arraySome(array, callback) {
+    for (item in array) {
+        if (callback(item)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Determines if no elements in an array satisfy a condition.
+ */
+function arrayNone(array, callback) {
+    return !arraySome(array, callback);
+}
+
+/**
+ * Deletes a specific value from an array.
+ */
+function arrayDelete(array, value) {
+    var index = arrayFind(array, value);
+    if (index > 0) {
+        arrayDeleteAt(array, index);
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Returns an array containing only unique values.
+ */
+function arrayUnique(array) {
+    var result = [];
+    for (item in array) {
+        if (!arrayContains(result, item)) {
+            arrayAppend(result, item);
+        }
+    }
+    return result;
+}
+
+/**
+ * Finds the index of a value in an array (case-insensitive).
+ */
+function arrayFindNoCase(array, value) {
+    var length = len(array);
+    var search = lcase(value);
+    for (var i = 1; i <= length; i++) {
+        if (lcase(array[i]) == search) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+/**
+ * Determines if an array contains a specific value (case-insensitive).
+ */
+function arrayContainsNoCase(array, value) {
+    return arrayFindNoCase(array, value) > 0;
+}
+
+/**
+ * Sorts an array.
+ */
+function arraySort(array, sortType = "text", sortOrder = "asc") {
+    var length = len(array);
+    // Simple bubble sort for now
+    for (var i = 1; i <= length; i++) {
+        for (var j = 1; j <= length - i; j++) {
+            var shouldSwap = false;
+            var val1 = array[j];
+            var val2 = array[j+1];
+            
+            if (sortOrder == "asc") {
+                if (val1 > val2) {
+                    shouldSwap = true;
+                }
+            } else {
+                if (val1 < val2) {
+                    shouldSwap = true;
+                }
+            }
+            
+            if (shouldSwap) {
+                var temp = array[j];
+                array[j] = array[j+1];
+                array[j+1] = temp;
+            }
+        }
+    }
+    return true;
+}
+
+// --- Struct BIFs ---
+
+/**
+ * Appends properties from one struct to another.
+ */
+function structAppend(target, source, overwrite = true) {
+    var keys = structKeyArray(source);
+    for (key in keys) {
+        if (overwrite || !structKeyExists(target, key)) {
+            structInsert(target, key, source[key]);
+        }
+    }
+    return true;
+}
+
+/**
+ * Returns a shallow copy of a struct.
+ */
+function structCopy(struct) {
+    var result = {};
+    structAppend(result, struct);
+    return result;
+}
+
+/**
+ * Iterates over a struct and calls a callback for each key-value pair.
+ */
+function structEach(struct, callback) {
+    var keys = structKeyArray(struct);
+    for (key in keys) {
+        callback(key, struct[key], struct);
+    }
+}
+
+/**
+ * Maps a struct to a new struct using a callback function.
+ */
+function structMap(struct, callback) {
+    var result = {};
+    var keys = structKeyArray(struct);
+    for (key in keys) {
+        structInsert(result, key, callback(key, struct[key], struct));
+    }
+    return result;
+}
+
+/**
+ * Filters a struct based on a predicate function.
+ */
+function structFilter(struct, predicate) {
+    var result = {};
+    var keys = structKeyArray(struct);
+    for (key in keys) {
+        if (predicate(key, struct[key], struct)) {
+            structInsert(result, key, struct[key]);
+        }
+    }
+    return result;
+}
+
+/**
+ * Reduces a struct to a single value using an accumulator function.
+ */
+function structReduce(struct, callback, initialValue) {
+    var result = initialValue;
+    var keys = structKeyArray(struct);
+    for (key in keys) {
+        result = callback(result, key, struct[key], struct);
+    }
+    return result;
+}
+
+/**
+ * Determines if every element in a struct satisfies a condition.
+ */
+function structEvery(struct, callback) {
+    var keys = structKeyArray(struct);
+    for (key in keys) {
+        if (!callback(key, struct[key], struct)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Determines if at least one element in a struct satisfies a condition.
+ */
+function structSome(struct, callback) {
+    var keys = structKeyArray(struct);
+    for (key in keys) {
+        if (callback(key, struct[key], struct)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Determines if no elements in a struct satisfy a condition.
+ */
+function structNone(struct, callback) {
+    return !structSome(struct, callback);
+}
+
+/**
+ * Returns an array of values in a struct.
+ */
+function structValueArray(struct) {
+    var result = [];
+    var keys = structKeyArray(struct);
+    for (key in keys) {
+        arrayAppend(result, struct[key]);
+    }
+    return result;
+}
+
+/**
+ * Returns a delimited list of keys in a struct.
+ */
+function structKeyList(struct, delimiter = ",") {
+    return arrayToList(structKeyArray(struct), delimiter);
+}
+
+/**
+ * Finds a key in a struct by value.
+ */
+function structFindValue(struct, value) {
+    var keys = structKeyArray(struct);
+    for (key in keys) {
+        if (struct[key] == value) {
+            return key;
+        }
+    }
+    return null;
+}
+
+/**
+ * Sorts struct keys and returns them as an array.
+ */
+function structSort(struct, sortType = "text", sortOrder = "asc") {
+    var keys = structKeyArray(struct);
+    var length = structCount(keys);
+    for (var i = 1; i <= length; i++) {
+        for (var j = 1; j <= length - i; j++) {
+            var key1 = keys[j];
+            var key2 = keys[j+1];
+            var val1 = struct[key1];
+            var val2 = struct[key2];
+            
+            var shouldSwap = false;
+            if (sortOrder == "asc") {
+                if (val1 > val2) {
+                    shouldSwap = true;
+                }
+            } else {
+                if (val1 < val2) {
+                    shouldSwap = true;
+                }
+            }
+            
+            if (shouldSwap) {
+                var temp = keys[j];
+                keys[j] = keys[j+1];
+                keys[j+1] = temp;
+            }
+        }
+    }
+    return keys;
 }

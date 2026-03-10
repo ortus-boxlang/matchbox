@@ -420,6 +420,7 @@ dependencies = [
  "rand",
  "serde",
  "serde_json",
+ "uuid",
  "wasm-bindgen",
  "web-sys",
  "web-time",
@@ -681,6 +682,18 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "uuid"
+version = "1.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a68d3c8f01c0cfa54a75291d83601161799e4a89a39e0929f4b0354d88757a37"
+dependencies = [
+ "getrandom",
+ "js-sys",
+ "rand",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "version_check"

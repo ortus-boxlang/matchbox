@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rand::RngExt;
 use chrono::Local;
 use std::io::{self, Write};
+use uuid::Uuid;
 
 mod jni;
 
@@ -15,12 +16,36 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     bifs.insert("randrange".to_string(), rand_range as BxNativeFunction);
 
     // Array BIFs
-    bifs.insert("len".to_string(), len as BxNativeFunction);
     bifs.insert("arrayappend".to_string(), array_append as BxNativeFunction);
     bifs.insert("arraynew".to_string(), array_new as BxNativeFunction);
+    bifs.insert("arraypop".to_string(), array_pop_bif as BxNativeFunction);
+    bifs.insert("arraydeleteat".to_string(), array_delete_at_bif as BxNativeFunction);
+    bifs.insert("arrayinsertat".to_string(), array_insert_at_bif as BxNativeFunction);
+    bifs.insert("arrayclear".to_string(), array_clear_bif as BxNativeFunction);
+    bifs.insert("arrayset".to_string(), array_set_bif as BxNativeFunction);
 
     // Struct BIFs
     bifs.insert("structnew".to_string(), struct_new as BxNativeFunction);
+    bifs.insert("structinsert".to_string(), struct_set_bif as BxNativeFunction);
+    bifs.insert("structupdate".to_string(), struct_set_bif as BxNativeFunction);
+    bifs.insert("structdelete".to_string(), struct_delete_bif as BxNativeFunction);
+    bifs.insert("structkeyexists".to_string(), struct_key_exists_bif as BxNativeFunction);
+    bifs.insert("structget".to_string(), struct_get_bif as BxNativeFunction);
+    bifs.insert("structkeyarray".to_string(), struct_key_array_bif as BxNativeFunction);
+    bifs.insert("structclear".to_string(), struct_clear_bif as BxNativeFunction);
+    bifs.insert("structcount".to_string(), len as BxNativeFunction);
+
+    // Core BIFs
+    bifs.insert("len".to_string(), len as BxNativeFunction);
+    bifs.insert("createobject".to_string(), create_object as BxNativeFunction);
+    bifs.insert("ucase".to_string(), ucase as BxNativeFunction);
+    bifs.insert("lcase".to_string(), lcase as BxNativeFunction);
+    bifs.insert("futureonerror".to_string(), future_on_error as BxNativeFunction);
+
+    // System BIFs
+    bifs.insert("createuuid".to_string(), create_uuid as BxNativeFunction);
+    bifs.insert("createguid".to_string(), create_guid as BxNativeFunction);
+    bifs.insert("getsystemsetting".to_string(), get_system_setting as BxNativeFunction);
 
     // Date/Time BIFs
     bifs.insert("now".to_string(), now as BxNativeFunction);
@@ -38,11 +63,6 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     // Async BIFs
     bifs.insert("runasync".to_string(), run_async as BxNativeFunction);
 
-    // Core BIFs
-    bifs.insert("createobject".to_string(), create_object as BxNativeFunction);
-    bifs.insert("ucase".to_string(), ucase as BxNativeFunction);
-    bifs.insert("futureonerror".to_string(), future_on_error as BxNativeFunction);
-
     bifs
 }
 
@@ -51,7 +71,6 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
 fn future_on_error(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 { return Err("onError() expects 2 arguments: (future, callback)".to_string()); }
     if let Some(id) = args[0].as_gc_id() {
-        // We should ideally check if it's actually a future here, but requires VM access to heap type
         vm.future_on_error(id, args[1]);
         Ok(args[0])
     } else {
@@ -62,6 +81,12 @@ fn future_on_error(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
 fn ucase(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 { return Err("ucase() expects exactly 1 argument".to_string()); }
     let s = vm.to_string(args[0]).to_uppercase();
+    Ok(BxValue::new_ptr(vm.string_new(s)))
+}
+
+fn lcase(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 1 { return Err("lcase() expects exactly 1 argument".to_string()); }
+    let s = vm.to_string(args[0]).to_lowercase();
     Ok(BxValue::new_ptr(vm.string_new(s)))
 }
 
@@ -88,12 +113,41 @@ fn rand_range(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
 fn len(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 { return Err("len() expects exactly 1 argument".to_string()); }
     if let Some(id) = args[0].as_gc_id() {
-        // Generic len for array/struct
-        Ok(BxValue::new_number(vm.array_len(id) as f64))
+        Ok(BxValue::new_number(vm.get_len(id) as f64))
     } else {
         Err("len() expects a string, array, or struct".to_string())
     }
 }
+
+// --- System BIFs ---
+
+fn create_uuid(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let id = Uuid::new_v4().to_string().to_uppercase();
+    Ok(BxValue::new_ptr(vm.string_new(id)))
+}
+
+fn create_guid(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let id = Uuid::new_v4().to_string().to_uppercase();
+    Ok(BxValue::new_ptr(vm.string_new(id)))
+}
+
+fn get_system_setting(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() { return Err("getSystemSetting() expects at least 1 argument".to_string()); }
+    let key = vm.to_string(args[0]);
+    
+    match std::env::var(&key) {
+        Ok(val) => Ok(BxValue::new_ptr(vm.string_new(val))),
+        Err(_) => {
+            if args.len() > 1 {
+                Ok(args[1])
+            } else {
+                Ok(BxValue::new_null())
+            }
+        }
+    }
+}
+
+// --- Array BIFs ---
 
 fn array_append(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 2 { return Err("arrayAppend() expects exactly 2 arguments".to_string()); }
@@ -109,9 +163,133 @@ fn array_new(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     Ok(BxValue::new_ptr(vm.array_new()))
 }
 
+fn array_pop_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() { return Err("arrayPop() expects 1 argument".to_string()); }
+    if let Some(id) = args[0].as_gc_id() {
+        vm.array_pop(id)
+    } else {
+        Err("arrayPop() expects an array".to_string())
+    }
+}
+
+fn array_delete_at_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 2 { return Err("arrayDeleteAt() expects 2 arguments: (array, index)".to_string()); }
+    if let Some(id) = args[0].as_gc_id() {
+        let idx = args[1].as_number() as usize;
+        if idx == 0 { return Err("Array index must be 1-based".to_string()); }
+        vm.array_delete_at(id, idx - 1)
+    } else {
+        Err("arrayDeleteAt() expects an array as the first argument".to_string())
+    }
+}
+
+fn array_insert_at_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 3 { return Err("arrayInsertAt() expects 3 arguments: (array, index, value)".to_string()); }
+    if let Some(id) = args[0].as_gc_id() {
+        let idx = args[1].as_number() as usize;
+        if idx == 0 { return Err("Array index must be 1-based".to_string()); }
+        vm.array_insert_at(id, idx - 1, args[2])?;
+        Ok(args[0])
+    } else {
+        Err("arrayInsertAt() expects an array as the first argument".to_string())
+    }
+}
+
+fn array_clear_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() { return Err("arrayClear() expects 1 argument".to_string()); }
+    if let Some(id) = args[0].as_gc_id() {
+        vm.array_clear(id)?;
+        Ok(BxValue::new_bool(true))
+    } else {
+        Err("arrayClear() expects an array".to_string())
+    }
+}
+
+fn array_set_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 3 { return Err("arraySet() expects 3 arguments: (array, index, value)".to_string()); }
+    if let Some(id) = args[0].as_gc_id() {
+        let idx = args[1].as_number() as usize;
+        if idx == 0 { return Err("Array index must be 1-based".to_string()); }
+        vm.array_set(id, idx - 1, args[2])?;
+        Ok(args[0])
+    } else {
+        Err("arraySet() expects an array as the first argument".to_string())
+    }
+}
+
+// --- Struct BIFs ---
+
 fn struct_new(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     Ok(BxValue::new_ptr(vm.struct_new()))
 }
+
+fn struct_set_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 3 { return Err("structInsert() expects 3 arguments: (struct, key, value)".to_string()); }
+    if let Some(id) = args[0].as_gc_id() {
+        let key = vm.to_string(args[1]);
+        vm.struct_set(id, &key, args[2]);
+        Ok(args[0])
+    } else {
+        Err("structInsert() expects a struct as the first argument".to_string())
+    }
+}
+
+fn struct_get_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 2 { return Err("structGet() expects 2 arguments: (struct, key)".to_string()); }
+    if let Some(id) = args[0].as_gc_id() {
+        let key = vm.to_string(args[1]);
+        Ok(vm.struct_get(id, &key))
+    } else {
+        Err("structGet() expects a struct as the first argument".to_string())
+    }
+}
+
+fn struct_delete_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 2 { return Err("structDelete() expects 2 arguments: (struct, key)".to_string()); }
+    if let Some(id) = args[0].as_gc_id() {
+        let key = vm.to_string(args[1]);
+        Ok(BxValue::new_bool(vm.struct_delete(id, &key)))
+    } else {
+        Err("structDelete() expects a struct as the first argument".to_string())
+    }
+}
+
+fn struct_key_exists_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 2 { return Err("structKeyExists() expects 2 arguments: (struct, key)".to_string()); }
+    if let Some(id) = args[0].as_gc_id() {
+        let key = vm.to_string(args[1]);
+        Ok(BxValue::new_bool(vm.struct_key_exists(id, &key)))
+    } else {
+        Err("structKeyExists() expects a struct as the first argument".to_string())
+    }
+}
+
+fn struct_key_array_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() { return Err("structKeyArray() expects 1 argument".to_string()); }
+    if let Some(id) = args[0].as_gc_id() {
+        let keys = vm.struct_key_array(id);
+        let arr_id = vm.array_new();
+        for key in keys {
+            let s_id = vm.string_new(key);
+            vm.array_push(arr_id, BxValue::new_ptr(s_id));
+        }
+        Ok(BxValue::new_ptr(arr_id))
+    } else {
+        Err("structKeyArray() expects a struct".to_string())
+    }
+}
+
+fn struct_clear_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() { return Err("structClear() expects 1 argument".to_string()); }
+    if let Some(id) = args[0].as_gc_id() {
+        vm.struct_clear(id);
+        Ok(BxValue::new_bool(true))
+    } else {
+        Err("structClear() expects a struct".to_string())
+    }
+}
+
+// --- Date/Time BIFs ---
 
 fn now(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     let now = Local::now();
@@ -201,11 +379,6 @@ fn cli_get_args(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String>
     let options_id = vm.struct_new();
     let positionals_id = vm.array_new();
 
-    // BoxLang's cliGetArgs typically starts after the script name if it's being run as a script.
-    // In our runner: 
-    // args[0] = executable (matchbox)
-    // args[1..] = script path followed by user args OR just args if REPL
-    // We'll detect if args[1] is a file path. For simplicity, we skip until the first argument that isn't matchbox or a .bxs/.bxb file.
     let mut user_args = Vec::new();
     let mut skip = true;
     for arg in all_args {
@@ -222,35 +395,28 @@ fn cli_get_args(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String>
         if arg.starts_with("--") {
             let part = &arg[2..];
             if part.starts_with('!') {
-                // --!flag (false)
                 vm.struct_set(options_id, &part[1..], BxValue::new_bool(false));
             } else if part.starts_with("no-") {
-                // --no-flag (false)
                 vm.struct_set(options_id, &part[3..], BxValue::new_bool(false));
             } else if let Some(idx) = part.find('=') {
-                // --key=value
                 let key = &part[..idx];
                 let val = &part[idx+1..];
                 let val_id = vm.string_new(val.to_string());
                 vm.struct_set(options_id, key, BxValue::new_ptr(val_id));
             } else {
-                // --flag (true)
                 vm.struct_set(options_id, part, BxValue::new_bool(true));
             }
         } else if arg.starts_with('-') && arg.len() > 1 {
             let part = &arg[1..];
             if let Some(idx) = part.find('=') {
-                // -k=v
                 let key = &part[..idx];
                 let val = &part[idx+1..];
                 let val_id = vm.string_new(val.to_string());
                 vm.struct_set(options_id, key, BxValue::new_ptr(val_id));
             } else {
-                // -f (true)
                 vm.struct_set(options_id, part, BxValue::new_bool(true));
             }
         } else {
-            // positional
             let s_id = vm.string_new(arg);
             vm.array_push(positionals_id, BxValue::new_ptr(s_id));
         }

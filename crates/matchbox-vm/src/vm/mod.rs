@@ -121,6 +121,15 @@ impl BxVM for VM {
         }
     }
 
+    fn get_len(&self, id: usize) -> usize {
+        match self.heap.get(id) {
+            GcObject::Array(arr) => arr.len(),
+            GcObject::Struct(s) => s.properties.len(),
+            GcObject::String(s) => s.len(),
+            _ => 0,
+        }
+    }
+
     fn array_len(&self, id: usize) -> usize {
         if let GcObject::Array(arr) = self.heap.get(id) {
             arr.len()
@@ -133,10 +142,73 @@ impl BxVM for VM {
         }
     }
 
+    fn array_pop(&mut self, id: usize) -> Result<BxValue, String> {
+        if let GcObject::Array(arr) = self.heap.get_mut(id) {
+            Ok(arr.pop().unwrap_or(BxValue::new_null()))
+        } else {
+            Err("Not an array".to_string())
+        }
+    }
+
     fn array_get(&self, id: usize, idx: usize) -> BxValue {
         if let GcObject::Array(arr) = self.heap.get(id) {
             arr.get(idx).copied().unwrap_or(BxValue::new_null())
         } else { BxValue::new_null() }
+    }
+
+    fn array_set(&mut self, id: usize, idx: usize, val: BxValue) -> Result<(), String> {
+        if let GcObject::Array(arr) = self.heap.get_mut(id) {
+            if idx < arr.len() {
+                arr[idx] = val;
+                Ok(())
+            } else if idx < 100_000 { // Reasonable limit for sparse expansion
+                arr.resize(idx + 1, BxValue::new_null());
+                arr[idx] = val;
+                Ok(())
+            } else {
+                Err(format!("Index {} out of bounds", idx))
+            }
+        } else {
+            Err("Not an array".to_string())
+        }
+    }
+
+    fn array_delete_at(&mut self, id: usize, idx: usize) -> Result<BxValue, String> {
+        if let GcObject::Array(arr) = self.heap.get_mut(id) {
+            if idx < arr.len() {
+                Ok(arr.remove(idx))
+            } else {
+                Err(format!("Index {} out of bounds", idx))
+            }
+        } else {
+            Err("Not an array".to_string())
+        }
+    }
+
+    fn array_insert_at(&mut self, id: usize, idx: usize, val: BxValue) -> Result<(), String> {
+        if let GcObject::Array(arr) = self.heap.get_mut(id) {
+            if idx <= arr.len() {
+                arr.insert(idx, val);
+                Ok(())
+            } else if idx < 100_000 {
+                arr.resize(idx, BxValue::new_null());
+                arr.push(val);
+                Ok(())
+            } else {
+                Err(format!("Index {} out of bounds", idx))
+            }
+        } else {
+            Err("Not an array".to_string())
+        }
+    }
+
+    fn array_clear(&mut self, id: usize) -> Result<(), String> {
+        if let GcObject::Array(arr) = self.heap.get_mut(id) {
+            arr.clear();
+            Ok(())
+        } else {
+            Err("Not an array".to_string())
+        }
     }
 
     fn array_new(&mut self) -> usize {
@@ -165,6 +237,75 @@ impl BxVM for VM {
                 s.shape_id = self.shapes.transition(s.shape_id, key_id);
                 s.properties.push(val);
             }
+        }
+    }
+
+    fn struct_get(&self, id: usize, key: &str) -> BxValue {
+        let key_id = self.interner.get_id(key).unwrap_or(u32::MAX);
+        if let GcObject::Struct(s) = self.heap.get(id) {
+            if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
+                return s.properties[idx as usize];
+            }
+        }
+        BxValue::new_null()
+    }
+
+    fn struct_delete(&mut self, id: usize, key: &str) -> bool {
+        let key_id = self.interner.get_id(key).unwrap_or(u32::MAX);
+        if let GcObject::Struct(s) = self.heap.get_mut(id) {
+            if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
+                // To delete from a shape-based struct, we must reconstruct the struct's state
+                // minus the deleted field and find/create a new shape.
+                let mut entries = Vec::new();
+                let current_shape = &self.shapes.shapes[s.shape_id as usize];
+                for (&fid, &fidx) in &current_shape.fields {
+                    if fid != key_id {
+                        entries.push((fid, s.properties[fidx as usize]));
+                    }
+                }
+                
+                // Sort by index to maintain some consistency if possible, 
+                // but really we just want a shape that has these fields.
+                // For simplicity, we'll build a new shape chain from root.
+                let mut new_shape_id = self.shapes.get_root();
+                let mut new_properties = Vec::with_capacity(entries.len());
+                for (fid, val) in entries {
+                    new_shape_id = self.shapes.transition(new_shape_id, fid);
+                    new_properties.push(val);
+                }
+                
+                s.shape_id = new_shape_id;
+                s.properties = new_properties;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn struct_key_exists(&self, id: usize, key: &str) -> bool {
+        let key_id = self.interner.get_id(key).unwrap_or(u32::MAX);
+        if let GcObject::Struct(s) = self.heap.get(id) {
+            return self.shapes.get_index(s.shape_id, key_id).is_some();
+        }
+        false
+    }
+
+    fn struct_key_array(&self, id: usize) -> Vec<String> {
+        if let GcObject::Struct(s) = self.heap.get(id) {
+            let shape = &self.shapes.shapes[s.shape_id as usize];
+            let mut keys = vec![String::new(); shape.fields.len()];
+            for (&fid, &fidx) in &shape.fields {
+                keys[fidx as usize] = self.interner.resolve(fid).to_string();
+            }
+            return keys;
+        }
+        Vec::new()
+    }
+
+    fn struct_clear(&mut self, id: usize) {
+        if let GcObject::Struct(s) = self.heap.get_mut(id) {
+            s.shape_id = self.shapes.get_root();
+            s.properties.clear();
         }
     }
 
@@ -2059,9 +2200,9 @@ impl VM {
                     if a.is_number() && b.is_number() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_bool(a.as_number() < b.as_number()));
                     } else {
-                        flush_ip!();
-                        self.throw_error(fiber_idx, "Comparison only supported for numbers currently")?;
-                        frame_changed = true; continue 'quantum;
+                        let sa = self.to_string_internal(a);
+                        let sb = self.to_string_internal(b);
+                        self.fibers[fiber_idx].stack.push(BxValue::new_bool(sa < sb));
                     }
                 }
                 op::LESS_EQUAL => {
@@ -2070,9 +2211,9 @@ impl VM {
                     if a.is_number() && b.is_number() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_bool(a.as_number() <= b.as_number()));
                     } else {
-                        flush_ip!();
-                        self.throw_error(fiber_idx, "Comparison only supported for numbers currently")?;
-                        frame_changed = true; continue 'quantum;
+                        let sa = self.to_string_internal(a);
+                        let sb = self.to_string_internal(b);
+                        self.fibers[fiber_idx].stack.push(BxValue::new_bool(sa <= sb));
                     }
                 }
                 op::GREATER => {
@@ -2081,9 +2222,9 @@ impl VM {
                     if a.is_number() && b.is_number() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_bool(a.as_number() > b.as_number()));
                     } else {
-                        flush_ip!();
-                        self.throw_error(fiber_idx, "Comparison only supported for numbers currently")?;
-                        frame_changed = true; continue 'quantum;
+                        let sa = self.to_string_internal(a);
+                        let sb = self.to_string_internal(b);
+                        self.fibers[fiber_idx].stack.push(BxValue::new_bool(sa > sb));
                     }
                 }
                 op::GREATER_EQUAL => {
@@ -2092,9 +2233,9 @@ impl VM {
                     if a.is_number() && b.is_number() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_bool(a.as_number() >= b.as_number()));
                     } else {
-                        flush_ip!();
-                        self.throw_error(fiber_idx, "Comparison only supported for numbers currently")?;
-                        frame_changed = true; continue 'quantum;
+                        let sa = self.to_string_internal(a);
+                        let sb = self.to_string_internal(b);
+                        self.fibers[fiber_idx].stack.push(BxValue::new_bool(sa >= sb));
                     }
                 }
                 op::NOT => {
@@ -2472,8 +2613,13 @@ impl VM {
                         self.reorder_arguments(args, names_list, &func.params)
                     } else {
                         let mut a = args;
-                        for _ in 0..(func.arity as usize - arg_count) {
-                            a.push(BxValue::new_null());
+                        if (func.arity as usize) > arg_count {
+                            for _ in 0..(func.arity as usize - arg_count) {
+                                a.push(BxValue::new_null());
+                            }
+                        } else if arg_count > (func.arity as usize) {
+                            // Trim extra arguments if function doesn't support varargs (MatchBox doesn't yet)
+                            a.truncate(func.arity as usize);
                         }
                         a
                     };
