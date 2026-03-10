@@ -500,7 +500,7 @@ impl VM {
 
                 all_waiting = false;
                 self.current_fiber_idx = Some(i);
-                match self.run_fiber(i, 1000) {
+                match self.run_fiber(i, 10_000) {
                     Ok(Some(result)) => {
                         let fiber = self.fibers.swap_remove(i);
                         if let GcObject::Future(f) = self.heap.get_mut(fiber.future_id) {
@@ -559,7 +559,21 @@ impl VM {
     }
 
     fn run_fiber(&mut self, fiber_idx: usize, quantum: usize) -> Result<Option<BxValue>> {
-        'quantum: for _ in 0..quantum {
+        // Persistent state across `'quantum` iterations.  Refreshed only when
+        // `frame_changed` is true (after CALL/RETURN/THROW/NEW/etc.).
+        // In tight loops there are no frame changes, so these are loaded just once.
+        let mut remaining = quantum;
+        let mut frame_changed  = true;
+        let mut ip:           usize                     = 0;
+        let mut stack_base:   usize                     = 0;
+        let mut code_ptr:     *const u32                = std::ptr::null();
+        let mut code_len:     usize                     = 0;
+        let mut promoted_ptr: *mut Vec<Option<BxValue>> = std::ptr::null_mut();
+        let trace = std::env::var("BX_TRACE").is_ok();
+
+        'quantum: while remaining > 0 {
+            remaining -= 1;
+
             if fiber_idx >= self.fibers.len() {
                 return Ok(None);
             }
@@ -571,42 +585,87 @@ impl VM {
                 return Ok(None);
             }
 
-            // Ensure inline-cache slots exist when entering a frame for the first
-            // time.  The `caches` field is #[serde(skip)], so chunks loaded from
-            // bytecode arrive with an empty Vec.
-            if self.fibers[fiber_idx].frames.last().unwrap().ip == 0 {
-                let chunk_rc = Rc::clone(
-                    &self.fibers[fiber_idx].frames.last().unwrap().function.chunk,
-                );
-                chunk_rc.borrow_mut().ensure_caches();
+            // Reload all frame-derived state when the frame changes.
+            // In tight loops `frame_changed` stays false — this block never runs.
+            if frame_changed {
+                frame_changed = false;
+                ip = self.fibers[fiber_idx].frames.last().unwrap().ip;
+                stack_base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
+                if ip == 0 {
+                    let chunk_rc = Rc::clone(
+                        &self.fibers[fiber_idx].frames.last().unwrap().function.chunk,
+                    );
+                    chunk_rc.borrow_mut().ensure_caches();
+                }
+                // SAFETY: code/promoted_constants never mutated; Rc keeps them alive.
+                unsafe {
+                    let frame = self.fibers[fiber_idx].frames.last().unwrap();
+                    let chunk_ptr = frame.function.chunk.as_ptr();
+                    code_ptr     = (*chunk_ptr).code.as_ptr();
+                    code_len     = (*chunk_ptr).code.len();
+                    promoted_ptr = frame.function.promoted_constants.as_ptr();
+                }
             }
 
-            let (word0, ip_at_start) = {
-                let fiber = &self.fibers[fiber_idx];
-                let frame = fiber.frames.last().unwrap();
-                let chunk = frame.function.chunk.borrow();
-                if frame.ip >= chunk.code.len() {
-                    return Ok(Some(BxValue::new_null()));
-                }
-                (chunk.code[frame.ip], frame.ip)
-            };
-
-            self.fibers[fiber_idx].frames.last_mut().unwrap().ip += 1;
+            if ip >= code_len {
+                return Ok(Some(BxValue::new_null()));
+            }
+            // SAFETY: ip < code_len; pointer is valid for the Rc<Chunk> lifetime.
+            let word0 = unsafe { *code_ptr.add(ip) };
+            let ip_at_start = ip;
+            ip += 1;
 
             let opcode = (word0 & 0xFF) as u8;
             let op0 = word0 >> 8;
 
-            // Read next word and advance IP (for multi-word instructions)
+            if trace {
+                let stack = &self.fibers[fiber_idx].stack;
+                let stack_display: Vec<String> = stack.iter().map(|v| {
+                    if v.is_null() { "null".to_string() }
+                    else if v.is_bool() { format!("bool({})", v.as_bool()) }
+                    else if v.is_int() { format!("int({})", v.as_int()) }
+                    else if v.is_number() { format!("num({})", v.as_number()) }
+                    else if v.is_ptr() { format!("ptr({:?})", v.as_gc_id()) }
+                    else { "?".to_string() }
+                }).collect();
+                eprintln!("[TRACE] ip={:04} sb={} op={} op0={} stack=[{}]",
+                    ip_at_start,
+                    stack_base,
+                    crate::vm::opcode::opcode_name(opcode),
+                    op0,
+                    stack_display.join(", "));
+            }
+
+            // Flush ip to frame before frame changes or throws.
+            macro_rules! flush_ip {
+                () => {
+                    self.fibers[fiber_idx].frames.last_mut().unwrap().ip = ip;
+                };
+            }
+
+            // Read next word via raw code pointer — zero RefCell overhead.
             macro_rules! next_word {
                 () => {{
-                    let ip = self.fibers[fiber_idx].frames.last().unwrap().ip;
-                    let w = {
-                        let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                        let chunk = frame.function.chunk.borrow();
-                        chunk.code[ip]
-                    };
-                    self.fibers[fiber_idx].frames.last_mut().unwrap().ip += 1;
+                    let w = unsafe { *code_ptr.add(ip) };
+                    ip += 1;
                     w
+                }};
+            }
+
+            // vm_throw! flushes ip, throws, then marks frame_changed so the next
+            // iteration reloads ip = handler_ip set by throw_value.
+            macro_rules! vm_throw {
+                ($msg:expr) => {{
+                    flush_ip!();
+                    self.throw_error(fiber_idx, $msg)?;
+                    frame_changed = true;
+                    continue 'quantum;
+                }};
+                ($fmt:literal, $($args:expr),+) => {{
+                    flush_ip!();
+                    self.throw_error(fiber_idx, &format!($fmt, $($args),+))?;
+                    frame_changed = true;
+                    continue 'quantum;
                 }};
             }
 
@@ -614,31 +673,35 @@ impl VM {
                 // --- Hot Loop / Specialized Opcodes ---
                 op::INC_LOCAL => {
                     let slot = op0;
-                    let base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
-                    let val = self.fibers[fiber_idx].stack[base + slot as usize];
+                    let val = self.fibers[fiber_idx].stack[stack_base + slot as usize];
                     if val.is_number() {
-                        self.fibers[fiber_idx].stack[base + slot as usize] = BxValue::new_number(val.as_number() + 1.0);
+                        self.fibers[fiber_idx].stack[stack_base + slot as usize] = BxValue::new_number(val.as_number() + 1.0);
                     } else if val.is_int() {
-                        self.fibers[fiber_idx].stack[base + slot as usize] = BxValue::new_int(val.as_int() + 1);
+                        self.fibers[fiber_idx].stack[stack_base + slot as usize] = BxValue::new_int(val.as_int() + 1);
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Increment operand must be a number")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::LOCAL_COMPARE_JUMP => {
                     let slot = op0;
                     let const_idx = next_word!();
                     let offset = next_word!();
-                    let base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
-                    let val = self.fibers[fiber_idx].stack[base + slot as usize];
-                    let limit = self.read_constant(fiber_idx, const_idx as usize);
+                    let val = self.fibers[fiber_idx].stack[stack_base + slot as usize];
+                    let limit: BxValue = {
+                        let already = unsafe {
+                            (&*promoted_ptr).get(const_idx as usize).copied().flatten()
+                        };
+                        if let Some(v) = already { v } else { self.read_constant(fiber_idx, const_idx as usize) }
+                    };
                     if val.is_number() && limit.is_number() {
                         if val.as_number() < limit.as_number() {
-                            self.fibers[fiber_idx].frames.last_mut().unwrap().ip -= offset as usize;
+                            ip -= offset as usize;
                         }
                     } else if val.is_int() && limit.is_int() {
                         if val.as_int() < limit.as_int() {
-                            self.fibers[fiber_idx].frames.last_mut().unwrap().ip -= offset as usize;
+                            ip -= offset as usize;
                         }
                     }
                 }
@@ -648,18 +711,22 @@ impl VM {
                     let slot = op0;
                     let const_idx = next_word!();
                     let offset = next_word!();
-                    let base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
-                    let val = self.fibers[fiber_idx].stack[base + slot as usize];
+                    let val = self.fibers[fiber_idx].stack[stack_base + slot as usize];
                     let next_val = if val.is_int() {
                         BxValue::new_int(val.as_int() + 1)
                     } else if val.is_number() {
                         BxValue::new_number(val.as_number() + 1.0)
                     } else {
-                        self.throw_error(fiber_idx, "For loop variable must be a number")?;
-                        continue;
+                        vm_throw!("For loop variable must be a number");
                     };
-                    self.fibers[fiber_idx].stack[base + slot as usize] = next_val;
-                    let limit = self.read_constant(fiber_idx, const_idx as usize);
+                    self.fibers[fiber_idx].stack[stack_base + slot as usize] = next_val;
+                    // Hot-path: read the loop-limit constant without a RefCell borrow.
+                    // SAFETY: single-threaded VM; the code_ptr borrow has already dropped;
+                    // no concurrent mutable access to promoted_constants is possible here.
+                    let limit: BxValue = {
+                        let already = unsafe { (&*promoted_ptr).get(const_idx as usize).copied().flatten() };
+                        if let Some(v) = already { v } else { self.read_constant(fiber_idx, const_idx as usize) }
+                    };
                     let should_loop = if next_val.is_int() && limit.is_int() {
                         next_val.as_int() < limit.as_int()
                     } else if next_val.is_number() && limit.is_number() {
@@ -668,7 +735,7 @@ impl VM {
                         false
                     };
                     if should_loop {
-                        self.fibers[fiber_idx].frames.last_mut().unwrap().ip -= offset as usize;
+                        ip -= offset as usize;
                     }
                 }
                 op::COMPARE_JUMP => {
@@ -679,11 +746,10 @@ impl VM {
 
                     if val.is_number() && limit.is_number() {
                         if val.as_number() < limit.as_number() {
-                            self.fibers[fiber_idx].frames.last_mut().unwrap().ip -= offset as usize;
+                            ip -= offset as usize;
                         }
                     } else {
-                        self.throw_error(fiber_idx, "OpCompareJump expects numeric operands")?;
-                        continue;
+                        vm_throw!("OpCompareJump expects numeric operands");
                     }
                 }
                 op::INC_GLOBAL => {
@@ -699,8 +765,9 @@ impl VM {
                         if val.is_number() {
                             self.global_values[index] = BxValue::new_number(val.as_number() + 1.0);
                         } else {
+                            flush_ip!();
                             self.throw_error(fiber_idx, "Operand of increment must be a number")?;
-                            continue;
+                            frame_changed = true; continue 'quantum;
                         }
                     } else {
                         // Slow path: resolve global and update IC
@@ -713,13 +780,15 @@ impl VM {
                                 let mut chunk = frame.function.chunk.borrow_mut();
                                 chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
                             } else {
+                                flush_ip!();
                                 self.throw_error(fiber_idx, "Operand of increment must be a number")?;
-                                continue;
+                                frame_changed = true; continue 'quantum;
                             }
                         } else {
                             let name = self.interner.resolve(name_id).to_string();
+                            flush_ip!();
                             self.throw_error(fiber_idx, &format!("Global {} not found", name))?;
-                            continue;
+                            frame_changed = true; continue 'quantum;
                         }
                     }
                 }
@@ -751,7 +820,7 @@ impl VM {
                     let limit = self.read_constant(fiber_idx, const_idx as usize);
                     if val.is_number() && limit.is_number() {
                         if val.as_number() < limit.as_number() {
-                            self.fibers[fiber_idx].frames.last_mut().unwrap().ip -= offset as usize;
+                            ip -= offset as usize;
                         }
                     }
                 }
@@ -759,21 +828,18 @@ impl VM {
                 // --- Basic Hot Opcodes ---
                 op::GET_LOCAL => {
                     let slot = op0;
-                    let base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
-                    let val = self.fibers[fiber_idx].stack[base + slot as usize];
+                    let val = self.fibers[fiber_idx].stack[stack_base + slot as usize];
                     self.fibers[fiber_idx].stack.push(val);
                 }
                 op::SET_LOCAL => {
                     let slot = op0;
-                    let base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
                     let val = *self.fibers[fiber_idx].stack.last().unwrap();
-                    self.fibers[fiber_idx].stack[base + slot as usize] = val;
+                    self.fibers[fiber_idx].stack[stack_base + slot as usize] = val;
                 }
                 op::SET_LOCAL_POP => {
                     let slot = op0;
-                    let base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
-                    self.fibers[fiber_idx].stack[base + slot as usize] = val;
+                    self.fibers[fiber_idx].stack[stack_base + slot as usize] = val;
                 }
                 op::CONSTANT => {
                     let idx = op0;
@@ -808,8 +874,9 @@ impl VM {
                     if a.is_number() && b.is_number() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_number(a.as_number() - b.as_number()));
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Operands must be two numbers.")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::SUB_INT => {
@@ -828,8 +895,9 @@ impl VM {
                     if a.is_number() && b.is_number() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_number(a.as_number() * b.as_number()));
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Operands must be two numbers.")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::MUL_INT => {
@@ -847,11 +915,12 @@ impl VM {
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     if a.is_number() && b.is_number() {
                         let b_n = b.as_number();
-                        if b_n == 0.0 { self.throw_error(fiber_idx, "Division by zero")?; continue; }
+                        if b_n == 0.0 { flush_ip!(); self.throw_error(fiber_idx, "Division by zero")?; frame_changed = true; continue 'quantum; }
                         else { self.fibers[fiber_idx].stack.push(BxValue::new_number(a.as_number() / b_n)); }
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Operands must be two numbers.")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::DIV_FLOAT => {
@@ -865,16 +934,16 @@ impl VM {
                 op::JUMP_IF_FALSE => {
                     let offset = op0;
                     if !self.is_truthy(*self.fibers[fiber_idx].stack.last().unwrap()) {
-                        self.fibers[fiber_idx].frames.last_mut().unwrap().ip += offset as usize;
+                        ip += offset as usize;
                     }
                 }
                 op::JUMP => {
                     let offset = op0;
-                    self.fibers[fiber_idx].frames.last_mut().unwrap().ip += offset as usize;
+                    ip += offset as usize;
                 }
                 op::LOOP => {
                     let offset = op0;
-                    self.fibers[fiber_idx].frames.last_mut().unwrap().ip -= offset as usize;
+                    ip -= offset as usize;
                 }
                 op::RETURN => {
                     let fiber = &mut self.fibers[fiber_idx];
@@ -901,6 +970,9 @@ impl VM {
                         }
                         fiber.stack.push(result);
                     }
+                    // Reload frame state for the caller on the next iteration.
+                    frame_changed = true;
+                    continue 'quantum;
                 }
 
                 // --- Global / Scope Opcodes ---
@@ -1027,8 +1099,9 @@ impl VM {
                     if let Some(v) = val {
                         self.fibers[fiber_idx].stack.push(v);
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, &format!("'variables' scope only available in classes. Tried to access '{}'", name))?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::SET_PRIVATE => {
@@ -1043,8 +1116,9 @@ impl VM {
                             }
                         }
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "'variables' scope only available in classes.")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
 
@@ -1070,8 +1144,9 @@ impl VM {
                     } else if val.is_int() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_int(val.as_int() + 1));
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Increment operand must be a number")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::DEC => {
@@ -1081,8 +1156,9 @@ impl VM {
                     } else if val.is_int() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_int(val.as_int() - 1));
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Decrement operand must be a number")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
 
@@ -1135,8 +1211,9 @@ impl VM {
                                         self.fibers[fiber_idx].stack.push(arr[idx - 1]);
                                     }
                                 } else {
+                                    flush_ip!();
                                     self.throw_error(fiber_idx, "Array index must be a number")?;
-                                    continue;
+                                    frame_changed = true; continue 'quantum;
                                 }
                             }
                             GcObject::Struct(s) => {
@@ -1148,11 +1225,12 @@ impl VM {
                                     self.fibers[fiber_idx].stack.push(BxValue::new_null());
                                 }
                             }
-                            _ => { self.throw_error(fiber_idx, "Invalid access: base must be array or struct")?; continue; }
+                            _ => { flush_ip!(); self.throw_error(fiber_idx, "Invalid access: base must be array or struct")?; frame_changed = true; continue 'quantum; }
                         }
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Invalid access: base must be array or struct")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::SET_INDEX => {
@@ -1173,8 +1251,9 @@ impl VM {
                                 if index_val.is_number() || index_val.is_int() {
                                     let idx = if index_val.is_int() { index_val.as_int() as usize } else { index_val.as_number() as usize };
                                     if idx < 1 {
+                                        flush_ip!();
                                         self.throw_error(fiber_idx, &format!("Array index out of bounds: {}", idx))?;
-                                        continue;
+                                        frame_changed = true; continue 'quantum;
                                     } else if idx > arr.len() {
                                         // Auto-grow: fill gaps with null
                                         arr.resize(idx, BxValue::new_null());
@@ -1185,8 +1264,9 @@ impl VM {
                                         self.fibers[fiber_idx].stack.push(val);
                                     }
                                 } else {
+                                    flush_ip!();
                                     self.throw_error(fiber_idx, "Array index must be a number")?;
-                                    continue;
+                                    frame_changed = true; continue 'quantum;
                                 }
                             }
                             GcObject::Struct(s) => {
@@ -1209,11 +1289,12 @@ impl VM {
                                 }
                                 self.fibers[fiber_idx].stack.push(val);
                             }
-                            _ => { self.throw_error(fiber_idx, "Invalid indexed assignment")?; continue; }
+                            _ => { flush_ip!(); self.throw_error(fiber_idx, "Invalid indexed assignment")?; frame_changed = true; continue 'quantum; }
                         }
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Invalid indexed assignment")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::MEMBER => {
@@ -1234,7 +1315,8 @@ impl VM {
                                 }
                                 Err(_) => self.fibers[fiber_idx].stack.push(BxValue::new_null()),
                             }
-                            continue;
+                            flush_ip!();
+                            continue 'quantum;
                         }
 
                         #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
@@ -1257,7 +1339,8 @@ impl VM {
                                 };
                                 let bx_val = self.js_result_to_bx(rtype, &str_buf, out_str_len, out_num, out_bool, out_obj);
                                 self.fibers[fiber_idx].stack.push(bx_val);
-                                continue;
+                                flush_ip!();
+                                continue 'quantum;
                             }
                         }
 
@@ -1278,7 +1361,8 @@ impl VM {
                                         if cached_shape == shape_id as usize {
                                             let val = unsafe { &*properties_ptr }[index as usize];
                                             self.fibers[fiber_idx].stack.push(val);
-                                            continue;
+                                            flush_ip!();
+                                            continue 'quantum;
                                         }
                                     }
                                     Some(IcEntry::Polymorphic { entries, count }) => {
@@ -1286,6 +1370,7 @@ impl VM {
                                             if entries[i].0 == shape_id as usize {
                                                 let val = unsafe { &*properties_ptr }[entries[i].1];
                                                 self.fibers[fiber_idx].stack.push(val);
+                                                flush_ip!();
                                                 continue 'quantum;
                                             }
                                         }
@@ -1342,7 +1427,8 @@ impl VM {
                                         if cached_shape == shape_id as usize {
                                             let val = unsafe { &*properties_ptr }[index as usize];
                                             self.fibers[fiber_idx].stack.push(val);
-                                            continue;
+                                            flush_ip!();
+                                            continue 'quantum;
                                         }
                                     }
                                     Some(IcEntry::Polymorphic { entries, count }) => {
@@ -1350,6 +1436,7 @@ impl VM {
                                             if entries[i].0 == shape_id as usize {
                                                 let val = unsafe { &*properties_ptr }[entries[i].1];
                                                 self.fibers[fiber_idx].stack.push(val);
+                                                flush_ip!();
                                                 continue 'quantum;
                                             }
                                         }
@@ -1400,11 +1487,12 @@ impl VM {
                                 let val = obj.borrow().get_property(&name);
                                 self.fibers[fiber_idx].stack.push(val);
                             }
-                            _ => { self.throw_error(fiber_idx, "Member access only supported on structs, instances, JS objects, and native objects")?; continue; }
+                            _ => { flush_ip!(); self.throw_error(fiber_idx, "Member access only supported on structs, instances, JS objects, and native objects")?; frame_changed = true; continue 'quantum; }
                         }
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Member access only supported on structs, instances, JS objects, and native objects")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::SET_MEMBER => {
@@ -1422,7 +1510,8 @@ impl VM {
                             let js_val = self.bx_to_js(&val);
                             Reflect::set(&js, &prop, &js_val).ok();
                             self.fibers[fiber_idx].stack.push(val);
-                            continue;
+                            flush_ip!();
+                            continue 'quantum;
                         }
 
                         #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
@@ -1457,7 +1546,8 @@ impl VM {
                                     unsafe { bx_js_set_prop_null(handle, key_bytes.as_ptr(), key_bytes.len()); }
                                 }
                                 self.fibers[fiber_idx].stack.push(val);
-                                continue;
+                                flush_ip!();
+                                continue 'quantum;
                             }
                         }
 
@@ -1476,7 +1566,8 @@ impl VM {
                                         if cached_shape == shape_id as usize {
                                             s.properties[index as usize] = val;
                                             self.fibers[fiber_idx].stack.push(val);
-                                            continue;
+                                            flush_ip!();
+                                            continue 'quantum;
                                         }
                                     }
                                     Some(IcEntry::Polymorphic { entries, count }) => {
@@ -1484,6 +1575,7 @@ impl VM {
                                             if entries[i].0 == shape_id as usize {
                                                 s.properties[entries[i].1] = val;
                                                 self.fibers[fiber_idx].stack.push(val);
+                                                flush_ip!();
                                                 continue 'quantum;
                                             }
                                         }
@@ -1538,7 +1630,8 @@ impl VM {
                                         if cached_shape == shape_id as usize {
                                             inst.properties[index as usize] = val;
                                             self.fibers[fiber_idx].stack.push(val);
-                                            continue;
+                                            flush_ip!();
+                                            continue 'quantum;
                                         }
                                     }
                                     Some(IcEntry::Polymorphic { entries, count }) => {
@@ -1546,6 +1639,7 @@ impl VM {
                                             if entries[i].0 == shape_id as usize {
                                                 inst.properties[entries[i].1] = val;
                                                 self.fibers[fiber_idx].stack.push(val);
+                                                flush_ip!();
                                                 continue 'quantum;
                                             }
                                         }
@@ -1591,11 +1685,12 @@ impl VM {
                                 obj.borrow_mut().set_property(&name, val);
                                 self.fibers[fiber_idx].stack.push(val);
                             }
-                            _ => { self.throw_error(fiber_idx, "Member assignment only supported on structs, instances, JS objects, and native objects")?; continue; }
+                            _ => { flush_ip!(); self.throw_error(fiber_idx, "Member assignment only supported on structs, instances, JS objects, and native objects")?; frame_changed = true; continue 'quantum; }
                         }
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Member assignment only supported on structs, instances, JS objects, and native objects")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::INC_MEMBER => {
@@ -1664,13 +1759,15 @@ impl VM {
                                             }
                                         }
                                     } else {
+                                        flush_ip!();
                                         self.throw_error(fiber_idx, "Increment operand must be a number")?;
-                                        continue;
+                                        frame_changed = true; continue 'quantum;
                                     }
                                 } else {
                                     let name = self.interner.resolve(name_id).to_string();
+                                    flush_ip!();
                                     self.throw_error(fiber_idx, &format!("Member {} not found", name))?;
-                                    continue;
+                                    frame_changed = true; continue 'quantum;
                                 }
                             }
                             GcObject::Instance(inst) => {
@@ -1732,23 +1829,27 @@ impl VM {
                                             }
                                         }
                                     } else {
+                                        flush_ip!();
                                         self.throw_error(fiber_idx, "Increment operand must be a number")?;
-                                        continue;
+                                        frame_changed = true; continue 'quantum;
                                     }
                                 } else {
                                     let name = self.interner.resolve(name_id).to_string();
+                                    flush_ip!();
                                     self.throw_error(fiber_idx, &format!("Member {} not found", name))?;
-                                    continue;
+                                    frame_changed = true; continue 'quantum;
                                 }
                             }
                             _ => { 
-                                self.throw_error(fiber_idx, "Fused increment only supported on structs and instances for now")?; 
-                                continue; 
+                                flush_ip!();
+                                self.throw_error(fiber_idx, "Fused increment only supported on structs and instances for now")?;
+                                frame_changed = true; continue 'quantum; 
                             }
                         }
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Member access only supported on objects")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::STRING_CONCAT => {
@@ -1763,7 +1864,10 @@ impl VM {
                 // --- Calls / Invocations ---
                 op::CALL => {
                     let arg_count = op0;
+                    flush_ip!();
                     self.execute_call(fiber_idx, arg_count as usize, None)?;
+                    frame_changed = true;
+                    continue 'quantum;
                 }
                 op::CALL_NAMED => {
                     let total_count = op0;
@@ -1778,7 +1882,10 @@ impl VM {
                         }
                         _ => bail!("Internal VM error: names constant is not a StringArray"),
                     };
+                    flush_ip!();
                     self.execute_call(fiber_idx, total_count as usize, Some(names))?;
+                    frame_changed = true;
+                    continue 'quantum;
                 }
                 op::INVOKE => {
                     let name_idx = op0;
@@ -1815,10 +1922,15 @@ impl VM {
                             for _ in 0..(arg_count as usize + 1) { self.fibers[fiber_idx].stack.pop(); }
                             let bx_val = self.js_result_to_bx(rtype, &str_buf, out_str_len, out_num, out_bool, out_obj);
                             self.fibers[fiber_idx].stack.push(bx_val);
-                            continue;
+                            flush_ip!();
+                            frame_changed = true;
+                            continue 'quantum;
                         }
                     }
+                    flush_ip!();
                     self.execute_invoke(fiber_idx, name, arg_count as usize, None, ip_at_start)?;
+                    frame_changed = true;
+                    continue 'quantum;
                 }
                 op::INVOKE_NAMED => {
                     let name_idx = op0;
@@ -1836,7 +1948,10 @@ impl VM {
                         }
                         _ => bail!("Internal VM error: names constant is not a StringArray"),
                     };
+                    flush_ip!();
                     self.execute_invoke(fiber_idx, name, total_count as usize, Some(names), ip_at_start)?;
+                    frame_changed = true;
+                    continue 'quantum;
                 }
                 op::NEW => {
                     let arg_count = op0;
@@ -1867,14 +1982,15 @@ impl VM {
                                 receiver: Some(instance_val),
                                 handlers: Vec::new(),
                             };
+                            flush_ip!();
                             self.fibers[fiber_idx].frames.push(frame);
+                            frame_changed = true;
+                            continue 'quantum;
                         } else {
-                            self.throw_error(fiber_idx, "Can only instantiate classes.")?;
-                            continue;
+                            vm_throw!("Can only instantiate classes.");
                         }
                     } else {
-                        self.throw_error(fiber_idx, "Can only instantiate classes.")?;
-                        continue;
+                        vm_throw!("Can only instantiate classes.");
                     }
                 }
 
@@ -1897,8 +2013,9 @@ impl VM {
                     if a.is_number() && b.is_number() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_bool(a.as_number() < b.as_number()));
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Comparison only supported for numbers currently")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::LESS_EQUAL => {
@@ -1907,8 +2024,9 @@ impl VM {
                     if a.is_number() && b.is_number() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_bool(a.as_number() <= b.as_number()));
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Comparison only supported for numbers currently")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::GREATER => {
@@ -1917,8 +2035,9 @@ impl VM {
                     if a.is_number() && b.is_number() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_bool(a.as_number() > b.as_number()));
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Comparison only supported for numbers currently")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::GREATER_EQUAL => {
@@ -1927,8 +2046,9 @@ impl VM {
                     if a.is_number() && b.is_number() {
                         self.fibers[fiber_idx].stack.push(BxValue::new_bool(a.as_number() >= b.as_number()));
                     } else {
+                        flush_ip!();
                         self.throw_error(fiber_idx, "Comparison only supported for numbers currently")?;
-                        continue;
+                        frame_changed = true; continue 'quantum;
                     }
                 }
                 op::NOT => {
@@ -1944,9 +2064,8 @@ impl VM {
                     let cursor_slot = word1 & 0x7FFF_FFFF;
                     let push_index = (word1 >> 31) != 0;
                     let offset = next_word!();
-                    let base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
-                    let collection_idx = base + collection_slot as usize;
-                    let cursor_idx = base + cursor_slot as usize;
+                    let collection_idx = stack_base + collection_slot as usize;
+                    let cursor_idx = stack_base + cursor_slot as usize;
                     
                     let (is_done, next_val, next_idx) = {
                         let cursor_val = if self.fibers[fiber_idx].stack[cursor_idx].is_number() {
@@ -2000,7 +2119,7 @@ impl VM {
                     };
 
                     if is_done {
-                        self.fibers[fiber_idx].frames.last_mut().unwrap().ip += offset as usize;
+                        ip += offset as usize;
                     } else {
                         let current_cursor = self.fibers[fiber_idx].stack[cursor_idx];
                         let next_cursor_val = if current_cursor.is_int() { BxValue::new_int(current_cursor.as_int() + 1) } else { BxValue::new_number(current_cursor.as_number() + 1.0) };
@@ -2015,16 +2134,15 @@ impl VM {
                     let slot = op0;
                     let const_idx = next_word!();
                     let offset = next_word!();
-                    let base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
-                    let val = self.fibers[fiber_idx].stack[base + slot as usize];
+                    let val = self.fibers[fiber_idx].stack[stack_base + slot as usize];
                     let constant = self.read_constant(fiber_idx, const_idx as usize);
                     if val != constant {
-                        self.fibers[fiber_idx].frames.last_mut().unwrap().ip += offset as usize;
+                        ip += offset as usize;
                     }
                 }
                 op::PUSH_HANDLER => {
                     let offset = op0;
-                    let target_ip = self.fibers[fiber_idx].frames.last().unwrap().ip + offset as usize;
+                    let target_ip = ip + offset as usize;
                     self.fibers[fiber_idx].frames.last_mut().unwrap().handlers.push(target_ip);
                 }
                 op::POP_HANDLER => {
@@ -2032,7 +2150,10 @@ impl VM {
                 }
                 op::THROW => {
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
+                    flush_ip!();
                     self.throw_value(fiber_idx, val)?;
+                    frame_changed = true;
+                    continue 'quantum;
                 }
                 op::PRINT => {
                     let count = op0;
@@ -2058,6 +2179,11 @@ impl VM {
                     bail!("Unknown opcode: {}", opcode);
                 }
             }
+            // ip persists across iterations within a single quantum slice.
+        }
+        // Quantum exhausted — flush ip so the next run_fiber call resumes at the right place.
+        if !self.fibers[fiber_idx].frames.is_empty() {
+            self.fibers[fiber_idx].frames.last_mut().unwrap().ip = ip;
         }
         Ok(None)
     }
