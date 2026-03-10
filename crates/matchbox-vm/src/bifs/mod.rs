@@ -3,6 +3,7 @@ use crate::types::{BxValue, BxVM, BxNativeFunction};
 use std::time::{SystemTime, UNIX_EPOCH};
 use rand::RngExt;
 use chrono::Local;
+use std::io::{self, Write};
 
 mod jni;
 
@@ -26,6 +27,13 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     bifs.insert("gettickcount".to_string(), get_tick_count as BxNativeFunction);
     bifs.insert("sleep".to_string(), sleep as BxNativeFunction);
     bifs.insert("yield".to_string(), bx_yield as BxNativeFunction);
+
+    // CLI BIFs
+    bifs.insert("cliclear".to_string(), cli_clear as BxNativeFunction);
+    bifs.insert("cliexit".to_string(), cli_exit as BxNativeFunction);
+    bifs.insert("cligetargs".to_string(), cli_get_args as BxNativeFunction);
+    bifs.insert("cliread".to_string(), cli_read as BxNativeFunction);
+    bifs.insert("cliconfirm".to_string(), cli_confirm as BxNativeFunction);
 
     // Async BIFs
     bifs.insert("runasync".to_string(), run_async as BxNativeFunction);
@@ -159,4 +167,146 @@ fn create_object(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
         }
         _ => Err(format!("Unknown object type: {}", obj_type)),
     }
+}
+
+// --- CLI BIFs ---
+
+fn cli_clear(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        print!("\x1B[2J\x1B[1;1H");
+        let _ = io::stdout().flush();
+    }
+    Ok(BxValue::new_null())
+}
+
+fn cli_exit(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    let code = if args.len() >= 1 && args[0].is_number() {
+        args[0].as_number() as i32
+    } else {
+        0
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    std::process::exit(code);
+    
+    #[cfg(target_arch = "wasm32")]
+    return Err("cliExit not supported in WASM environment".to_string());
+    
+    #[allow(unreachable_code)]
+    Ok(BxValue::new_null())
+}
+
+fn cli_get_args(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let all_args = vm.get_cli_args();
+    let options_id = vm.struct_new();
+    let positionals_id = vm.array_new();
+
+    // BoxLang's cliGetArgs typically starts after the script name if it's being run as a script.
+    // In our runner: 
+    // args[0] = executable (matchbox)
+    // args[1..] = script path followed by user args OR just args if REPL
+    // We'll detect if args[1] is a file path. For simplicity, we skip until the first argument that isn't matchbox or a .bxs/.bxb file.
+    let mut user_args = Vec::new();
+    let mut skip = true;
+    for arg in all_args {
+        if skip {
+            if arg.ends_with("matchbox") || arg.ends_with("matchbox.exe") || arg.ends_with(".bxs") || arg.ends_with(".bxb") {
+                continue;
+            }
+            skip = false;
+        }
+        user_args.push(arg);
+    }
+
+    for arg in user_args {
+        if arg.starts_with("--") {
+            let part = &arg[2..];
+            if part.starts_with('!') {
+                // --!flag (false)
+                vm.struct_set(options_id, &part[1..], BxValue::new_bool(false));
+            } else if part.starts_with("no-") {
+                // --no-flag (false)
+                vm.struct_set(options_id, &part[3..], BxValue::new_bool(false));
+            } else if let Some(idx) = part.find('=') {
+                // --key=value
+                let key = &part[..idx];
+                let val = &part[idx+1..];
+                let val_id = vm.string_new(val.to_string());
+                vm.struct_set(options_id, key, BxValue::new_ptr(val_id));
+            } else {
+                // --flag (true)
+                vm.struct_set(options_id, part, BxValue::new_bool(true));
+            }
+        } else if arg.starts_with('-') && arg.len() > 1 {
+            let part = &arg[1..];
+            if let Some(idx) = part.find('=') {
+                // -k=v
+                let key = &part[..idx];
+                let val = &part[idx+1..];
+                let val_id = vm.string_new(val.to_string());
+                vm.struct_set(options_id, key, BxValue::new_ptr(val_id));
+            } else {
+                // -f (true)
+                vm.struct_set(options_id, part, BxValue::new_bool(true));
+            }
+        } else {
+            // positional
+            let s_id = vm.string_new(arg);
+            vm.array_push(positionals_id, BxValue::new_ptr(s_id));
+        }
+    }
+
+    let result_id = vm.struct_new();
+    vm.struct_set(result_id, "options", BxValue::new_ptr(options_id));
+    vm.struct_set(result_id, "positionals", BxValue::new_ptr(positionals_id));
+    
+    Ok(BxValue::new_ptr(result_id))
+}
+
+fn cli_read(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() >= 1 {
+        print!("{}", vm.to_string(args[0]));
+        let _ = io::stdout().flush();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut input = String::new();
+        match io::stdin().read_line(&mut input) {
+            Ok(_) => {
+                let trimmed = input.trim_end_matches(['\r', '\n']).to_string();
+                Ok(BxValue::new_ptr(vm.string_new(trimmed)))
+            }
+            Err(e) => Err(format!("Failed to read from stdin: {}", e)),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    Err("cliRead not supported in WASM environment without JS interop".to_string())
+}
+
+fn cli_confirm(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    let prompt = if args.len() >= 1 {
+        vm.to_string(args[0])
+    } else {
+        "Confirm?".to_string()
+    };
+    
+    print!("{} (Y/n): ", prompt);
+    let _ = io::stdout().flush();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut input = String::new();
+        match io::stdin().read_line(&mut input) {
+            Ok(_) => {
+                let trimmed = input.trim().to_lowercase();
+                Ok(BxValue::new_bool(trimmed == "y" || trimmed == "yes" || trimmed.is_empty()))
+            }
+            Err(e) => Err(format!("Failed to read from stdin: {}", e)),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    Err("cliConfirm not supported in WASM environment".to_string())
 }

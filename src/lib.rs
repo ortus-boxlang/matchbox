@@ -314,7 +314,8 @@ fn strip_sources(chunk: &mut Chunk) {
 }
 
 pub fn run_chunk(chunk: Chunk) -> Result<()> {
-    let mut vm = vm::VM::new();
+    let args: Vec<String> = std_env::args().collect();
+    let mut vm = vm::VM::new_with_args(args);
     vm.interpret(chunk)?;
     Ok(())
 }
@@ -324,9 +325,11 @@ fn run_repl() -> Result<()> {
     println!("BoxLang REPL (Rust)");
     println!("Type 'exit' or 'quit' to exit.");
 
-    let mut vm = vm::VM::new();
-    
+    let args: Vec<String> = std_env::args().collect();
+    let mut vm = vm::VM::new_with_args(args);
+
     // Load full prelude for REPL
+
     let prelude_ast = parser::parse(matchbox_compiler::PRELUDE_SOURCE)?;
     let compiler = compiler::Compiler::new("prelude");
     let prelude_chunk = compiler.compile(&prelude_ast, matchbox_compiler::PRELUDE_SOURCE)?;

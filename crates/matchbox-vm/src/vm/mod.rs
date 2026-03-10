@@ -69,6 +69,7 @@ pub struct VM {
     pub heap: Heap,
     pub native_classes: HashMap<String, BxNativeFunction>,
     pub interner: StringInterner,
+    pub cli_args: Vec<String>,
 }
 
 impl BxVM for VM {
@@ -155,6 +156,18 @@ impl BxVM for VM {
         }))
     }
 
+    fn struct_set(&mut self, id: usize, key: &str, val: BxValue) {
+        let key_id = self.interner.intern(key);
+        if let GcObject::Struct(s) = self.heap.get_mut(id) {
+            if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
+                s.properties[idx as usize] = val;
+            } else {
+                s.shape_id = self.shapes.transition(s.shape_id, key_id);
+                s.properties.push(val);
+            }
+        }
+    }
+
     fn struct_get_shape(&self, id: usize) -> u32 {
         if let GcObject::Struct(s) = self.heap.get(id) {
             s.shape_id
@@ -200,6 +213,10 @@ impl BxVM for VM {
             }
         }
         BoxString::new(&self.to_string_internal(val))
+    }
+
+    fn get_cli_args(&self) -> Vec<String> {
+        self.cli_args.clone()
     }
 }
 
@@ -251,6 +268,12 @@ impl VM {
         Self::new_with_bifs(HashMap::new(), HashMap::new())
     }
 
+    pub fn new_with_args(args: Vec<String>) -> Self {
+        let mut vm = Self::new();
+        vm.cli_args = args;
+        vm
+    }
+
     pub fn new_with_bifs(external_bifs: HashMap<String, BxNativeFunction>, native_classes: HashMap<String, BxNativeFunction>) -> Self {
         let mut vm = VM {
             fibers: Vec::new(),
@@ -261,6 +284,7 @@ impl VM {
             heap: Heap::new(),
             native_classes: native_classes.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect(),
             interner: StringInterner::new(),
+            cli_args: Vec::new(),
         };
 
         #[cfg(all(target_arch = "wasm32", feature = "js"))]

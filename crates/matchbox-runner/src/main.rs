@@ -36,15 +36,17 @@ static mut BOXLANG_EMBED: [u8; EMBED_CAPACITY] = {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<()> {
+    let args: Vec<String> = std_env::args().collect();
     let bytes = fs::read(std_env::current_exe()?)?;
     let chunk = load_embedded_bytecode(&bytes)?;
-    let mut vm = VM::new();
+    let mut vm = VM::new_with_args(args);
     vm.interpret(chunk)?;
     Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
 fn main() -> Result<()> {
+    let args: Vec<String> = std_env::args().collect();
     // Safety: single-threaded WASM, no concurrent access.
     let embed: &[u8] = unsafe {
         std::slice::from_raw_parts((&raw const BOXLANG_EMBED) as *const u8, EMBED_CAPACITY)
@@ -67,7 +69,7 @@ fn main() -> Result<()> {
 
     let bytecode = &embed[12..12 + len];
     let chunk: Chunk = bincode::deserialize(bytecode)?;
-    let mut vm = VM::new();
+    let mut vm = VM::new_with_args(args);
     vm.interpret(chunk)?;
     Ok(())
 }

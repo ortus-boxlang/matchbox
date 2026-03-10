@@ -115,6 +115,7 @@ pub trait BxVM {
     fn array_new(&mut self) -> usize;
     fn struct_len(&self, id: usize) -> usize;
     fn struct_new(&mut self) -> usize;
+    fn struct_set(&mut self, id: usize, key: &str, val: BxValue);
     fn struct_get_shape(&self, id: usize) -> u32;
     fn future_on_error(&mut self, id: usize, handler: BxValue);
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize;
@@ -122,6 +123,7 @@ pub trait BxVM {
     fn string_new(&mut self, s: String) -> usize;
     fn to_string(&self, val: BxValue) -> String;
     fn to_box_string(&self, val: BxValue) -> BoxString;
+    fn get_cli_args(&self) -> Vec<String>;
 }
 
 pub type BxNativeFunction = fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, String>;
