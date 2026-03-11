@@ -30,6 +30,7 @@ js-sys = "0.3.77"
 [features]
 default = []
 cross-compile = []
+jit = ["matchbox_vm/jit"]
 
 [profile.release]
 opt-level = "z"     # Optimize for size

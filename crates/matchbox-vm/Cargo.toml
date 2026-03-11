@@ -21,6 +21,12 @@ web-sys = { version = "0.3.77", optional = true, features = ["Window", "Document
 [features]
 default = []
 js = ["wasm-bindgen", "js-sys", "web-sys", "getrandom/wasm_js"]
+jit = ["cranelift-jit", "cranelift-frontend", "cranelift-codegen", "cranelift-module", "cranelift-native"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 jni = { version = "0.21.1", features = ["invocation"] }
+cranelift-jit = { version = "0.129.1", optional = true }
+cranelift-frontend = { version = "0.129.1", optional = true }
+cranelift-codegen = { version = "0.129.1", optional = true }
+cranelift-module = { version = "0.129.1", optional = true }
+cranelift-native = { version = "0.129.1", optional = true }

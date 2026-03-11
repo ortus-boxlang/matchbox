@@ -3,6 +3,8 @@ pub mod opcode;
 pub mod gc;
 pub mod shape;
 pub mod intern;
+#[cfg(feature = "jit")]
+pub mod jit;
 
 use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, BxNativeFunction, box_string::BoxString};
 use self::chunk::{Chunk, IcEntry};
@@ -70,6 +72,8 @@ pub struct VM {
     pub native_classes: HashMap<String, BxNativeFunction>,
     pub interner: StringInterner,
     pub cli_args: Vec<String>,
+    #[cfg(feature = "jit")]
+    pub jit: Option<Box<jit::JitState>>,
 }
 
 impl BxVM for VM {
@@ -426,6 +430,8 @@ impl VM {
             native_classes: native_classes.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect(),
             interner: StringInterner::new(),
             cli_args: Vec::new(),
+            #[cfg(feature = "jit")]
+            jit: None,
         };
 
         #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -455,6 +461,16 @@ impl VM {
         }
 
         vm
+    }
+
+    /// Activate the Cranelift JIT. Call this before `interpret` to enable
+    /// hot-loop compilation. No-op (compile error) without the `jit` feature.
+    #[cfg(feature = "jit")]
+    pub fn enable_jit(&mut self) {
+        match jit::JitState::new() {
+            Ok(state) => self.jit = Some(Box::new(state)),
+            Err(e) => eprintln!("[JIT] init failed: {}", e),
+        }
     }
 
     pub fn insert_global(&mut self, name: String, val: BxValue) {
@@ -752,6 +768,25 @@ impl VM {
         let mut safe_point_count: u32 = 0;
         let trace = std::env::var("BX_TRACE").is_ok();
 
+        // JIT profiling state — tracked per run_fiber call to avoid per-iteration
+        // HashMap overhead.  Only a single local counter is hot; the JitState's
+        // HashMap is consulted at most twice (once to compile, once to cache here).
+        #[cfg(feature = "jit")]
+        let mut jit_hot_ip: usize = usize::MAX;   // ip_at_start of the loop being counted
+        #[cfg(feature = "jit")]
+        let mut jit_hot_count: u64 = 0;           // consecutive iterations of that loop
+        // Once compiled, we cache the fn pointer locally so subsequent invocations
+        // don't need a HashMap lookup either.
+        #[cfg(feature = "jit")]
+        let mut jit_active: Option<(usize, jit::JitLoopFn)> = None; // (ip_at_start, fn)
+        // Generic body-loop JIT state.
+        #[cfg(feature = "jit")]
+        let mut jit_body_hot_ip: usize = usize::MAX;
+        #[cfg(feature = "jit")]
+        let mut jit_body_hot_count: u64 = 0;
+        #[cfg(feature = "jit")]
+        let mut jit_body_active: Option<(usize, jit::GenericJitLoopFn)> = None; // (ip_at_start, fn)
+
         'quantum: loop {
             if fiber_idx >= self.fibers.len() {
                 return Ok(None);
@@ -935,13 +970,143 @@ impl VM {
                         false
                     };
                     if should_loop {
-                        ip -= offset as usize;
-                        // Safe point: yield to scheduler if timeslice expired.
-                        // Skipped entirely when timeslice_end is None (single-fiber case).
-                        if let Some(end) = timeslice_end {
-                            safe_point_count = safe_point_count.wrapping_add(1);
-                            if safe_point_count & 1023 == 0 && Instant::now() >= end {
-                                break 'quantum; // ip flushed after the loop
+                        // JIT fast path: eliminate remaining loop iterations with one native call.
+                        // Uses local counters (no per-iteration HashMap) for near-zero overhead.
+                        #[cfg(feature = "jit")]
+                        {
+                            if next_val.is_number() && limit.is_number() && offset == 3 {
+                                // ── Tier-1: empty self-loop ──────────────────────────────────
+                                if let Some((active_ip, compiled)) = jit_active {
+                                    if active_ip == ip_at_start {
+                                        let final_val = unsafe {
+                                            compiled(next_val.as_number(), limit.as_number())
+                                        };
+                                        unsafe {
+                                            *locals_ptr.add(slot as usize) =
+                                                BxValue::new_number(final_val);
+                                        }
+                                        // Loop complete — do NOT jump back.
+                                    } else {
+                                        ip -= offset as usize;
+                                    }
+                                } else {
+                                    if jit_hot_ip == ip_at_start {
+                                        jit_hot_count += 1;
+                                        const JIT_PROFILE_THRESHOLD: u64 = 5_000;
+                                        if jit_hot_count >= JIT_PROFILE_THRESHOLD {
+                                            let fn_id = code_ptr as usize;
+                                            if let Some(ref mut jit) = self.jit {
+                                                jit.profile_loop(fn_id, ip_at_start, jit_hot_count);
+                                                if let Some(f) = jit.get_compiled_loop(fn_id, ip_at_start) {
+                                                    jit_active = Some((ip_at_start, f));
+                                                }
+                                            }
+                                            jit_hot_count = 0;
+                                        }
+                                    } else {
+                                        jit_hot_ip    = ip_at_start;
+                                        jit_hot_count = 1;
+                                    }
+                                    ip -= offset as usize;
+                                    if let Some(end) = timeslice_end {
+                                        safe_point_count = safe_point_count.wrapping_add(1);
+                                        if safe_point_count & 1023 == 0 && Instant::now() >= end {
+                                            break 'quantum;
+                                        }
+                                    }
+                                }
+                            } else if next_val.is_number() && limit.is_number() && offset > 3 {
+                                // ── Tier-2: generic numeric body ─────────────────────────────
+                                // The JIT translates each body bytecode 1:1 into Cranelift IR
+                                // and emits a real native loop — no mathematical shortcuts.
+                                if let Some((active_ip, compiled)) = jit_body_active {
+                                    if active_ip == ip_at_start {
+                                        // Fast path: call the compiled native loop.
+                                        // The function reads/writes all referenced locals
+                                        // in-place through locals_ptr.
+                                        unsafe { compiled(locals_ptr as *mut u64) };
+                                        // Do NOT jump back — the loop ran to completion.
+                                        if let Some(end) = timeslice_end {
+                                            safe_point_count = safe_point_count.wrapping_add(1);
+                                            if safe_point_count & 1023 == 0 && Instant::now() >= end {
+                                                break 'quantum;
+                                            }
+                                        }
+                                    } else {
+                                        ip -= offset as usize;
+                                    }
+                                } else {
+                                    if jit_body_hot_ip == ip_at_start {
+                                        jit_body_hot_count += 1;
+                                        const JIT_BODY_THRESHOLD: u64 = 5_000;
+                                        if jit_body_hot_count >= JIT_BODY_THRESHOLD {
+                                            let fn_id = code_ptr as usize;
+                                            // Copy body bytes (offset - 3 words before FOR_LOOP_STEP).
+                                            let body_start = ip - offset as usize;
+                                            let body_len   = offset as usize - 3;
+                                            let body_code: Vec<u32> = unsafe {
+                                                std::slice::from_raw_parts(
+                                                    code_ptr.add(body_start), body_len,
+                                                ).to_vec()
+                                            };
+                                            // Extract numeric constants referenced in the body.
+                                            let mut const_map: HashMap<u32, f64> = HashMap::new();
+                                            for &word in &body_code {
+                                                if (word & 0xFF) as u8 == op::CONSTANT {
+                                                    let cidx = word >> 8;
+                                                    let cv = self.read_constant(fiber_idx, cidx as usize);
+                                                    if cv.is_number() {
+                                                        const_map.insert(cidx, cv.as_number());
+                                                    }
+                                                }
+                                            }
+                                            if let Some(ref mut jit) = self.jit {
+                                                jit.profile_generic(
+                                                    fn_id, ip_at_start,
+                                                    jit_body_hot_count,
+                                                    &body_code, slot,
+                                                    limit.as_number(),
+                                                    &const_map,
+                                                );
+                                                if let Some(f) = jit.get_compiled_generic(fn_id, ip_at_start) {
+                                                    jit_body_active = Some((ip_at_start, f));
+                                                }
+                                            }
+                                            jit_body_hot_count = 0;
+                                        }
+                                    } else {
+                                        jit_body_hot_ip    = ip_at_start;
+                                        jit_body_hot_count = 1;
+                                    }
+                                    ip -= offset as usize;
+                                    if let Some(end) = timeslice_end {
+                                        safe_point_count = safe_point_count.wrapping_add(1);
+                                        if safe_point_count & 1023 == 0 && Instant::now() >= end {
+                                            break 'quantum;
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Non-float or unhandled: plain interpreter.
+                                ip -= offset as usize;
+                                if let Some(end) = timeslice_end {
+                                    safe_point_count = safe_point_count.wrapping_add(1);
+                                    if safe_point_count & 1023 == 0 && Instant::now() >= end {
+                                        break 'quantum;
+                                    }
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "jit"))]
+                        {
+                            ip -= offset as usize;
+                            // Safe point: yield to scheduler if timeslice expired.
+                            // Skipped entirely when timeslice_end is None (single-fiber case).
+                            if let Some(end) = timeslice_end {
+                                safe_point_count = safe_point_count.wrapping_add(1);
+                                if safe_point_count & 1023 == 0 && Instant::now() >= end {
+                                    break 'quantum; // ip flushed after the loop
+                                }
                             }
                         }
                     }

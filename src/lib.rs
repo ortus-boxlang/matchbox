@@ -350,7 +350,11 @@ fn strip_sources(chunk: &mut Chunk) {
 
 pub fn run_chunk(chunk: Chunk) -> Result<()> {
     let args: Vec<String> = std_env::args().collect();
-    let mut vm = vm::VM::new_with_args(args);
+    let mut vm = vm::VM::new_with_args(args.clone());
+    #[cfg(feature = "jit")]
+    if args.contains(&"--jit".to_string()) {
+        vm.enable_jit();
+    }
     vm.interpret(chunk)?;
     Ok(())
 }
