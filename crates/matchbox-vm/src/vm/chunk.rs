@@ -11,6 +11,7 @@ enum ConstantKey {
     Boolean(bool),
     Null,
     StringArray(Vec<String>),
+    Function(u32),
 }
 
 impl ConstantKey {
@@ -21,7 +22,8 @@ impl ConstantKey {
             Constant::Boolean(b) => Some(ConstantKey::Boolean(*b)),
             Constant::Null => Some(ConstantKey::Null),
             Constant::StringArray(v) => Some(ConstantKey::StringArray(v.clone())),
-            Constant::CompiledFunction(_) | Constant::Class(_) | Constant::Interface(_) => None,
+            Constant::CompiledFunction(f) => Some(ConstantKey::Function(f.function_id)),
+            Constant::Class(_) | Constant::Interface(_) => None,
         }
     }
 }
@@ -30,6 +32,7 @@ impl ConstantKey {
 pub struct Chunk {
     pub code: Vec<u32>,
     pub constants: Vec<Constant>,
+    pub functions: Vec<Chunk>,
     pub lines: Vec<u32>,
     pub filename: String,
     pub source: String,
@@ -44,6 +47,7 @@ impl Default for Chunk {
         Chunk {
             code: Vec::new(),
             constants: Vec::new(),
+            functions: Vec::new(),
             lines: Vec::new(),
             filename: String::new(),
             source: String::new(),
@@ -74,6 +78,7 @@ impl Chunk {
         Chunk {
             code: Vec::new(),
             constants: Vec::new(),
+            functions: Vec::new(),
             lines: Vec::new(),
             filename: filename.to_string(),
             source: String::new(),
@@ -151,9 +156,61 @@ impl Chunk {
         }
     }
 
+    pub fn add_function(&mut self, chunk: Chunk) -> u32 {
+        let idx = self.functions.len() as u32;
+        self.functions.push(chunk);
+        idx
+    }
+
     pub fn ensure_caches(&mut self) {
         if self.caches.len() < self.code.len() {
             self.caches.resize(self.code.len(), None);
+        }
+    }
+
+    pub fn reconstruct_functions(&mut self) {
+        use std::rc::Rc;
+        use std::cell::RefCell;
+
+        // Recurse into sub-chunks first
+        for func_chunk in self.functions.iter_mut() {
+            func_chunk.reconstruct_functions();
+        }
+
+        // Now update constants in this chunk that reference those sub-chunks
+        for constant in self.constants.iter_mut() {
+            match constant {
+                Constant::CompiledFunction(f) => {
+                    let sub_chunk = self.functions[f.function_id as usize].clone();
+                    let constant_count = sub_chunk.constants.len();
+                    f.chunk = Some(Rc::new(RefCell::new(sub_chunk)));
+                    f.promoted_constants = RefCell::new(vec![None; constant_count]);
+                }
+                Constant::Class(cls) => {
+                    let sub_chunk = self.functions[cls.constructor.function_id as usize].clone();
+                    let constant_count = sub_chunk.constants.len();
+                    cls.constructor.chunk = Some(Rc::new(RefCell::new(sub_chunk)));
+                    cls.constructor.promoted_constants = RefCell::new(vec![None; constant_count]);
+
+                    for (_, method) in cls.methods.iter_mut() {
+                        let sub_chunk = self.functions[method.function_id as usize].clone();
+                        let constant_count = sub_chunk.constants.len();
+                        method.chunk = Some(Rc::new(RefCell::new(sub_chunk)));
+                        method.promoted_constants = RefCell::new(vec![None; constant_count]);
+                    }
+                }
+                Constant::Interface(iface) => {
+                    for (_, method_opt) in iface.methods.iter_mut() {
+                        if let Some(method) = method_opt {
+                            let sub_chunk = self.functions[method.function_id as usize].clone();
+                            let constant_count = sub_chunk.constants.len();
+                            method.chunk = Some(Rc::new(RefCell::new(sub_chunk)));
+                            method.promoted_constants = RefCell::new(vec![None; constant_count]);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
 }

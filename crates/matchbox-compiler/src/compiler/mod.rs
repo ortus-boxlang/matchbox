@@ -98,7 +98,7 @@ impl Compiler {
                                     method_compiler.module_paths = self.module_paths.clone();
                                     method_compiler.current_line = inner_stmt.line as u32;
                                     let func = method_compiler.compile_function(&func_name, &params, &body)?;
-                                    methods.insert(func_name.to_lowercase(), Rc::new(func));
+                                    methods.insert(func_name.to_lowercase(), func);
                                 }
                                 _ => {
                                     constructor_compiler.compile_statement(inner_stmt, false)?;
@@ -122,16 +122,17 @@ impl Compiler {
                             getter_chunk.emit1(op::GET_PRIVATE, name_idx as u32, stmt.line as u32);
                             getter_chunk.emit0(op::RETURN, stmt.line as u32);
                             
-                            let constant_count = getter_chunk.constants.len();
+                            let function_id = self.chunk.add_function(getter_chunk);
                             let func = BxCompiledFunction {
                                 name: format!("{}.{}", name, getter_name),
                                 arity: 0,
                                 min_arity: 0,
                                 params: Vec::new(),
-                                chunk: Rc::new(RefCell::new(getter_chunk)),
-                                promoted_constants: RefCell::new(vec![None; constant_count]),
+                                function_id,
+                                chunk: None,
+                                promoted_constants: RefCell::new(Vec::new()),
                             };
-                            methods.insert(getter_name.to_lowercase(), Rc::new(func));
+                            methods.insert(getter_name.to_lowercase(), func);
                         }
 
                         // Setter: setProp(val)
@@ -144,16 +145,17 @@ impl Compiler {
                             setter_chunk.emit1(op::SET_PRIVATE, name_idx as u32, stmt.line as u32);
                             setter_chunk.emit0(op::RETURN, stmt.line as u32);
                             
-                            let constant_count = setter_chunk.constants.len();
+                            let function_id = self.chunk.add_function(setter_chunk);
                             let func = BxCompiledFunction {
                                 name: format!("{}.{}", name, setter_name),
                                 arity: 1,
                                 min_arity: 1,
                                 params: vec!["val".to_string()],
-                                chunk: Rc::new(RefCell::new(setter_chunk)),
-                                promoted_constants: RefCell::new(vec![None; constant_count]),
+                                function_id,
+                                chunk: None,
+                                promoted_constants: RefCell::new(Vec::new()),
                             };
-                            methods.insert(setter_name.to_lowercase(), Rc::new(func));
+                            methods.insert(setter_name.to_lowercase(), func);
                         }
                     }
                 }
@@ -180,7 +182,7 @@ impl Compiler {
                         for (method_name, method_opt) in &iface.methods {
                             if !methods.contains_key(method_name) {
                                 if let Some(default_impl) = method_opt {
-                                    methods.insert(method_name.clone(), Rc::clone(default_impl));
+                                    methods.insert(method_name.clone(), default_impl.clone());
                                 } else {
                                     bail!("Class {} must implement abstract method {} from interface {}", name, method_name, iface.name);
                                 }
@@ -191,22 +193,23 @@ impl Compiler {
                 
                 constructor_compiler.chunk.emit0(op::RETURN, stmt.line as u32);
 
-                let constructor_constant_count = constructor_compiler.chunk.constants.len();
+                let function_id = self.chunk.add_function(constructor_compiler.chunk);
                 let constructor = BxCompiledFunction {
                     name: format!("{}.constructor", name),
                     arity: 0,
                     min_arity: 0,
                     params: Vec::new(),
-                    chunk: Rc::new(RefCell::new(constructor_compiler.chunk)),
-                    promoted_constants: RefCell::new(vec![None; constructor_constant_count]),
+                    function_id,
+                    chunk: None,
+                    promoted_constants: RefCell::new(Vec::new()),
                 };
 
                 let class = BxClass {
                     name: name.clone(),
                     extends: extends.as_ref().map(|s| s.to_lowercase()),
                     implements: implements.iter().map(|s| s.to_lowercase()).collect(),
-                    constructor: Rc::new(constructor),
-                    methods,
+                    constructor,
+                    methods: methods.into_iter().collect(),
                 };
 
                 let class_idx = self.chunk.add_constant(Constant::Class(class));
@@ -214,7 +217,8 @@ impl Compiler {
                 let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
                 self.chunk.emit1(op::DEFINE_GLOBAL, name_idx as u32, stmt.line as u32);
                 Ok(())
-                }            StatementKind::InterfaceDecl { name, members } => {
+            }
+            StatementKind::InterfaceDecl { name, members } => {
                 let mut methods = HashMap::new();
                 for member in members {
                     if let StatementKind::FunctionDecl { name: func_name, attributes: _, access_modifier: _, return_type: _, params, body } = &member.kind {
@@ -227,7 +231,7 @@ impl Compiler {
                             method_compiler.module_paths = self.module_paths.clone();
                             method_compiler.current_line = member.line;
                             let func = method_compiler.compile_function(func_name, params, body)?;
-                            Some(Rc::new(func))
+                            Some(func)
                         };
                         methods.insert(func_name.to_lowercase(), method);
                     } else {
@@ -236,7 +240,7 @@ impl Compiler {
                 }
                 let iface = BxInterface {
                     name: name.clone(),
-                    methods,
+                    methods: methods.into_iter().collect(),
                 };
                 let iface_idx = self.chunk.add_constant(Constant::Interface(iface));
                 self.chunk.emit1(op::CONSTANT, iface_idx, stmt.line as u32);
@@ -548,11 +552,10 @@ impl Compiler {
             }
             StatementKind::FunctionDecl { name, attributes: _, access_modifier: _, return_type: _, params, body } => {
                 let func = self.compile_function(&name, &params, &body)?;
+                let func_idx = self.chunk.add_constant(Constant::CompiledFunction(func));
                 if self.is_repl && is_last {
-                    let func_idx = self.chunk.add_constant(Constant::CompiledFunction(func.clone()));
                     self.chunk.emit1(op::CONSTANT, func_idx, stmt.line as u32);
                 }
-                let func_idx = self.chunk.add_constant(Constant::CompiledFunction(func));
                 self.chunk.emit1(op::CONSTANT, func_idx, stmt.line as u32);
                 let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
                 self.chunk.emit1(op::DEFINE_GLOBAL, name_idx as u32, stmt.line as u32);
@@ -1187,14 +1190,15 @@ impl Compiler {
             }
         }
 
-        let constant_count = sub_compiler.chunk.constants.len();
+        let function_id = self.chunk.add_function(sub_compiler.chunk);
         Ok(BxCompiledFunction {
             name: name.to_string(),
             arity: params.len() as u32,
             min_arity,
             params: params.iter().map(|p| p.name.to_lowercase()).collect(),
-            chunk: Rc::new(RefCell::new(sub_compiler.chunk)),
-            promoted_constants: RefCell::new(vec![None; constant_count]),
+            function_id,
+            chunk: None,
+            promoted_constants: RefCell::new(Vec::new()),
         })
     }
 

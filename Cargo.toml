@@ -4,6 +4,9 @@ members = [
     "crates/matchbox-compiler",
     "crates/matchbox-macros",
 ]
+exclude = [
+    "crates/matchbox-esp32-runner",
+]
 
 [package]
 name = "matchbox"
@@ -13,6 +16,10 @@ build = "build.rs"
 
 [dependencies]
 anyhow = "1.0.102"
+postcard = { version = "1.0", features = ["alloc", "use-std"] }
+notify = "8.0.0"
+ctrlc = "3.4"
+libc = "0.2"
 bincode = "1.3.3"
 matchbox_vm = { path = "crates/matchbox-vm" }
 matchbox_compiler = { path = "crates/matchbox-compiler" }

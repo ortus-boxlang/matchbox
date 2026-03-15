@@ -154,6 +154,95 @@ fn main() {
     // Always build WASI if possible
     build_stub(Some("wasm32-wasip1"), "runner_stub_wasip1.wasm", "matchbox_runner.wasm", "wasi", &mut stubs_rs_content, &features);
 
+    // Build ESP32 stubs if possible
+    let esp32_targets = vec![
+        ("xtensa-esp32-espidf", "runner_stub_esp32.elf"),
+        ("xtensa-esp32s3-espidf", "runner_stub_esp32s3.elf"),
+        ("riscv32imc-esp-espidf", "runner_stub_esp32c3.elf"),
+    ];
+
+    for (target, dest) in esp32_targets {
+        let dest_path = stub_dest_dir.join(dest);
+        
+        // Determine whether we need (re)build: missing stub, zero-length stub,
+        // or any tracked source file is newer than the stub.
+        let sources_to_watch = [
+            Path::new(&root_dir).join("crates/matchbox-esp32-runner/src/main.rs"),
+            Path::new(&root_dir).join("crates/matchbox-esp32-runner/Cargo.toml"),
+            Path::new(&root_dir).join("crates/matchbox-esp32-runner/build.rs"),
+            Path::new(&root_dir).join("crates/matchbox-vm/src/lib.rs"),
+        ];
+        
+        let stub_mtime = dest_path.metadata().and_then(|m| m.modified()).ok();
+        let is_empty = fs::metadata(&dest_path).map(|m| m.len() == 0).unwrap_or(true);
+        
+        let needs_rebuild = stub_mtime.map_or(true, |stub_time| {
+            is_empty || sources_to_watch.iter().any(|src| {
+                src.metadata()
+                    .and_then(|m| m.modified())
+                    .map(|src_time| src_time > stub_time)
+                    .unwrap_or(false)
+            })
+        });
+
+        if needs_rebuild {
+            println!("cargo:warning=Building ESP32 stub for {} (this may take a few minutes)...", target);
+            let mut success = false;
+            
+            // Use a completely independent target directory to avoid any lock contention
+            let independent_target_dir = Path::new(&root_dir).join("target").join("esp32_stubs").join(target);
+            fs::create_dir_all(&independent_target_dir).ok();
+
+            let mut cmd = Command::new("rustup");
+            cmd.arg("run").arg("esp").arg("cargo")
+               .arg("build").arg("--release")
+               .arg("--target").arg(target)
+               .arg("--target-dir").arg(&independent_target_dir)
+               .current_dir(Path::new(&root_dir).join("crates/matchbox-esp32-runner"))
+               .env("BOXLANG_BYTECODE_PATH", "") 
+               .env_remove("CARGO_MAKEFLAGS")   
+               .env_remove("MAKEFLAGS")
+               .env_remove("CARGO_TARGET_DIR")
+               .env_remove("RUSTC")
+               .env_remove("CARGO")
+               .env_remove("RUSTDOC")
+               .env_remove("RUSTFLAGS")
+               .env_remove("CARGO_ENCODED_RUSTFLAGS")
+               .env_remove("RUSTC_WORKSPACE_WRAPPER");
+
+            // We use output() instead of status() to capture the error.
+            match cmd.output() {
+                Ok(output) if output.status.success() => {
+                    let src_path = independent_target_dir.join(target).join("release").join("matchbox-esp32-runner");
+                    if fs::copy(&src_path, &dest_path).is_ok() {
+                        success = true;
+                        println!("cargo:warning=ESP32 stub successfully built for {}", target);
+                    } else {
+                        println!("cargo:warning=Failed to copy ESP32 stub from {} to {}", src_path.display(), dest_path.display());
+                    }
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    println!("cargo:warning=ESP32 build failed for {} with status: {}", target, output.status);
+                    println!("cargo:warning=STDERR: {}", stderr);
+                    if !stdout.is_empty() {
+                        println!("cargo:warning=STDOUT: {}", stdout);
+                    }
+                }
+                Err(e) => {
+                    println!("cargo:warning=Failed to execute cargo build for ESP32 stub {}: {}", target, e);
+                }
+            }
+
+            if !success && !dest_path.exists() {
+                let _ = fs::write(&dest_path, b"");
+            }
+        }
+        
+        stubs_rs_content.push_str(&format!("    stubs.insert(\"{}\", include_bytes!(\"../stubs/{}\"));\n", target, dest));
+    }
+
     if cfg!(feature = "cross-compile") {
         let targets = vec![
             ("x86_64-unknown-linux-gnu", "runner_stub_x86_64-unknown-linux-gnu", "matchbox_runner"),

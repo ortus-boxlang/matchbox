@@ -194,7 +194,11 @@ pub struct BxCompiledFunction {
     pub arity: u32,     // Total parameters
     pub min_arity: u32, // Required parameters
     pub params: Vec<String>, // Parameter names
-    pub chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
+    /// Index into the parent chunk's `functions` list. Used for serialization.
+    pub function_id: u32,
+
+    #[serde(skip)]
+    pub chunk: Option<Rc<RefCell<crate::vm::chunk::Chunk>>>,
     #[serde(skip)]
     pub promoted_constants: RefCell<Vec<Option<BxValue>>>,
 }
@@ -204,14 +208,14 @@ pub struct BxClass {
     pub name: String,
     pub extends: Option<String>,
     pub implements: Vec<String>,
-    pub constructor: Rc<BxCompiledFunction>,
-    pub methods: HashMap<String, Rc<BxCompiledFunction>>,
+    pub constructor: BxCompiledFunction,
+    pub methods: Vec<(String, BxCompiledFunction)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BxInterface {
     pub name: String,
-    pub methods: HashMap<String, Option<Rc<BxCompiledFunction>>>,
+    pub methods: Vec<(String, Option<BxCompiledFunction>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

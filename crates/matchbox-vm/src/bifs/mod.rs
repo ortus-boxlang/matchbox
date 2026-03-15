@@ -6,7 +6,15 @@ use chrono::Local;
 use uuid::Uuid;
 
 
+#[cfg(feature = "bif-jni")]
 mod jni;
+#[cfg(not(feature = "bif-jni"))]
+mod jni {
+    use crate::types::{BxValue, BxVM};
+    pub fn create_java_object(_vm: &mut dyn BxVM, _class_name: &str, _args: &[BxValue]) -> Result<BxValue, String> {
+        Err("Java interoperability is not enabled in this build.".to_string())
+    }
+}
 mod fs;
 mod http;
 mod json;

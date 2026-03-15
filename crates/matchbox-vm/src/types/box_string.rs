@@ -7,7 +7,7 @@ pub const SSO_CAPACITY: usize = 22;
 
 #[derive(Clone, Debug)]
 pub struct RopeData {
-    pub len: usize,
+    pub len: u32,
     pub left: BoxString,
     pub right: BoxString,
 }
@@ -45,7 +45,7 @@ impl BoxString {
         match &self.repr {
             StringRepr::Inline { len, .. } => *len as usize,
             StringRepr::Flat(s) => s.len(),
-            StringRepr::Rope(rope) => rope.len,
+            StringRepr::Rope(rope) => rope.len as usize,
         }
     }
 
@@ -73,7 +73,7 @@ impl BoxString {
         } else {
             BoxString {
                 repr: StringRepr::Rope(Arc::new(RopeData {
-                    len: total_len,
+                    len: total_len as u32,
                     left: self.clone(),
                     right: other.clone(),
                 })),
@@ -99,7 +99,7 @@ impl BoxString {
 
     pub fn flatten(&mut self) -> &str {
         if let StringRepr::Rope(rope) = &self.repr {
-            let mut s = String::with_capacity(rope.len);
+            let mut s = String::with_capacity(rope.len as usize);
             self.append_to_string(&mut s);
             self.repr = StringRepr::Flat(Arc::from(s));
         }
