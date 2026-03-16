@@ -127,6 +127,11 @@ jobs:
       - name: Build ESP32 Stubs
         env:
           BOXLANG_BYTECODE_PATH: ""
+          # Point rustup/cargo at the esp user's pre-installed toolchain directories.
+          # Running as root sets HOME=/github/home, so RUSTUP_HOME/CARGO_HOME would
+          # default to empty paths and rustup can't find the 'esp' toolchain.
+          RUSTUP_HOME: /home/esp/.rustup
+          CARGO_HOME: /home/esp/.cargo
         shell: bash
         run: |
           mkdir -p stubs-out
