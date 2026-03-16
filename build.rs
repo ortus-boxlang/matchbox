@@ -154,6 +154,11 @@ fn main() {
     // Always build WASI if possible
     build_stub(Some("wasm32-wasip1"), "runner_stub_wasip1.wasm", "matchbox_runner.wasm", "wasi", &mut stubs_rs_content, &features);
 
+    // Always build web WASM if possible (requires wasm32-unknown-unknown target + js feature)
+    let mut web_features = features.clone();
+    web_features.push("js");
+    build_stub(Some("wasm32-unknown-unknown"), "runner_stub_wasm32-unknown-unknown.wasm", "matchbox_runner.wasm", "web", &mut stubs_rs_content, &web_features);
+
     // Build ESP32 stubs if possible
     let esp32_targets = vec![
         ("xtensa-esp32-espidf", "runner_stub_esp32.elf"),

@@ -13,8 +13,12 @@ anyhow = "1.0.102"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "0.2"
+
 [features]
 default = []
+js = ["matchbox_vm/js"]
 bif-io = ["matchbox_vm/bif-io"]
 bif-http = ["matchbox_vm/bif-http"]
 bif-zip = ["matchbox_vm/bif-zip"]

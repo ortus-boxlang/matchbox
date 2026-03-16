@@ -1,6 +1,8 @@
 use matchbox_vm::{Chunk, vm::VM};
 use anyhow::Result;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::env as std_env;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::fs;
 use postcard;
 
@@ -10,7 +12,7 @@ const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
 // WASM Entry Points (Web/Node)
 // ---------------------------------------------------------------------------
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasm {
     use super::*;
     use wasm_bindgen::prelude::*;
@@ -33,6 +35,7 @@ mod wasm {
 // Native Entry Point (CLI)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn load_embedded_bytecode() -> Result<Chunk> {
     let exe_path = std_env::current_exe()?;
     let bytes = fs::read(exe_path)?;
@@ -59,6 +62,11 @@ fn load_embedded_bytecode() -> Result<Chunk> {
     Ok(chunk)
 }
 
+// wasm32-unknown-unknown: entry points are the #[wasm_bindgen] exported fns above
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn main() {}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn main() -> Result<()> {
     // 1. Try to load embedded bytecode from the executable itself
     let chunk = match load_embedded_bytecode() {
