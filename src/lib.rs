@@ -1115,6 +1115,7 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool) -> 
     use std::time::Duration;
     use std::process::{Child, Stdio};
     use std::sync::{Arc, Mutex};
+    #[cfg(unix)]
     use std::os::unix::process::CommandExt;
 
     let (tx, rx) = channel();
@@ -1135,10 +1136,12 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool) -> 
     ctrlc::set_handler(move || {
         println!("\nWATCH MODE: Shutting down...");
         if let Ok(mut child_opt) = monitor_child_ctrlc.lock() {
-            if let Some(child) = child_opt.take() {
+            if let Some(mut child) = child_opt.take() {
                 // Kill the whole process group
-                let pgid = child.id();
-                unsafe { libc::kill(-(pgid as i32), libc::SIGKILL); }
+                #[cfg(unix)]
+                unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+                #[cfg(not(unix))]
+                { child.kill().ok(); }
             }
         }
         std::process::exit(0);
@@ -1154,6 +1157,7 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool) -> 
         }
         
         // Put the child in its own process group
+        #[cfg(unix)]
         unsafe {
             cmd.pre_exec(|| {
                 libc::setpgid(0, 0);
@@ -1178,9 +1182,11 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool) -> 
                     
                     // 1. Kill existing monitor
                     if let Ok(mut child_opt) = monitor_child.lock() {
-                        if let Some(child) = child_opt.take() {
-                            let pgid = child.id();
-                            unsafe { libc::kill(-(pgid as i32), libc::SIGKILL); }
+                        if let Some(mut child) = child_opt.take() {
+                            #[cfg(unix)]
+                            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+                            #[cfg(not(unix))]
+                            { child.kill().ok(); }
                         }
                     }
 
