@@ -3256,7 +3256,7 @@ impl VM {
                     let shape = &self.shapes.shapes[s.shape_id as usize];
                     for (&k, &idx) in shape.fields.iter() {
                         let key_str = self.interner.resolve(k);
-                        Reflect::set(&js_obj, &JsValue::from_str(key_str), &self.bx_to_js(&s.properties[idx])).ok();
+                        Reflect::set(&js_obj, &JsValue::from_str(key_str), &self.bx_to_js(&s.properties[idx as usize])).ok();
                     }
                     js_obj.into()
                 }

@@ -117,8 +117,8 @@ jobs:
     runs-on: ubuntu-latest
     container:
       # espressif/idf-rust: all chip targets, Rust + ESP-IDF pre-installed.
-      # Update the tag when newer versions are available: espressif/idf-rust:<chips>_<rust_ver>_<idf_ver>
-      image: espressif/idf-rust:all_v1.85.0_v5.3.2
+      # Tag format: espressif/idf-rust:<chips>_<rust_ver> — update when newer versions appear on Docker Hub.
+      image: espressif/idf-rust:all_1.92.0.0
     steps:
       - uses: actions/checkout@v4
       - name: Build ESP32 Stubs
