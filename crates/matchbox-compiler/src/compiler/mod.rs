@@ -42,6 +42,20 @@ impl Compiler {
         }
     }
 
+    pub fn with_chunk(chunk: Chunk) -> Self {
+        Compiler {
+            chunk,
+            locals: Vec::new(),
+            scope_depth: 0,
+            is_class: false,
+            imports: HashMap::new(),
+            module_paths: HashMap::new(),
+            current_line: 0,
+            is_repl: false,
+            continue_patches: Vec::new(),
+        }
+    }
+
     pub fn compile(mut self, ast: &[Statement], source: &str) -> Result<Chunk> {
         self.chunk.source = source.to_string();
         let len = ast.len();
@@ -66,7 +80,7 @@ impl Compiler {
                 Ok(())
             }
             StatementKind::ClassDecl { name, extends, accessors, implements, members } => {
-                let mut constructor_compiler = Compiler::new(&self.chunk.filename);
+                let mut constructor_compiler = Compiler::with_chunk(self.chunk.new_sub_chunk());
                 constructor_compiler.is_class = true;
                 constructor_compiler.scope_depth = 1;
                 constructor_compiler.imports = self.imports.clone();
@@ -92,12 +106,12 @@ impl Compiler {
                                     if let FunctionBody::Abstract = body {
                                         bail!("Abstract functions only allowed in interfaces");
                                     }
-                                    let mut method_compiler = Compiler::new(&self.chunk.filename);
+                                    let mut method_compiler = Compiler::with_chunk(self.chunk.new_sub_chunk());
                                     method_compiler.is_class = true;
                                     method_compiler.imports = self.imports.clone();
                                     method_compiler.module_paths = self.module_paths.clone();
                                     method_compiler.current_line = inner_stmt.line as u32;
-                                    let func = method_compiler.compile_function(&func_name, &params, &body)?;
+                                    let mut func = method_compiler.compile_function(&func_name, &params, &body)?;
                                     methods.insert(func_name.to_lowercase(), func);
                                 }
                                 _ => {
@@ -122,15 +136,12 @@ impl Compiler {
                             getter_chunk.emit1(op::GET_PRIVATE, name_idx as u32, stmt.line as u32);
                             getter_chunk.emit0(op::RETURN, stmt.line as u32);
                             
-                            let function_id = self.chunk.add_function(getter_chunk);
                             let func = BxCompiledFunction {
                                 name: format!("{}.{}", name, getter_name),
                                 arity: 0,
                                 min_arity: 0,
                                 params: Vec::new(),
-                                function_id,
-                                chunk: None,
-                                promoted_constants: RefCell::new(Vec::new()),
+                                chunk: getter_chunk,
                             };
                             methods.insert(getter_name.to_lowercase(), func);
                         }
@@ -145,15 +156,12 @@ impl Compiler {
                             setter_chunk.emit1(op::SET_PRIVATE, name_idx as u32, stmt.line as u32);
                             setter_chunk.emit0(op::RETURN, stmt.line as u32);
                             
-                            let function_id = self.chunk.add_function(setter_chunk);
                             let func = BxCompiledFunction {
                                 name: format!("{}.{}", name, setter_name),
                                 arity: 1,
                                 min_arity: 1,
                                 params: vec!["val".to_string()],
-                                function_id,
-                                chunk: None,
-                                promoted_constants: RefCell::new(Vec::new()),
+                                chunk: setter_chunk,
                             };
                             methods.insert(setter_name.to_lowercase(), func);
                         }
@@ -193,15 +201,12 @@ impl Compiler {
                 
                 constructor_compiler.chunk.emit0(op::RETURN, stmt.line as u32);
 
-                let function_id = self.chunk.add_function(constructor_compiler.chunk);
                 let constructor = BxCompiledFunction {
                     name: format!("{}.constructor", name),
                     arity: 0,
                     min_arity: 0,
                     params: Vec::new(),
-                    function_id,
-                    chunk: None,
-                    promoted_constants: RefCell::new(Vec::new()),
+                    chunk: constructor_compiler.chunk,
                 };
 
                 let class = BxClass {
@@ -225,7 +230,7 @@ impl Compiler {
                         let method = if let FunctionBody::Abstract = body {
                             None
                         } else {
-                            let mut method_compiler = Compiler::new(&self.chunk.filename);
+                            let mut method_compiler = Compiler::with_chunk(self.chunk.new_sub_chunk());
                             method_compiler.is_class = true;
                             method_compiler.imports = self.imports.clone();
                             method_compiler.module_paths = self.module_paths.clone();
@@ -1120,7 +1125,7 @@ impl Compiler {
     }
 
     fn compile_function(&mut self, name: &str, params: &[crate::ast::FunctionParam], body: &crate::ast::FunctionBody) -> Result<BxCompiledFunction> {
-        let mut sub_compiler = Compiler::new(&self.chunk.filename);
+        let mut sub_compiler = Compiler::with_chunk(self.chunk.new_sub_chunk());
         // Source text lives only in the root chunk to avoid N copies per file.
         // The VM falls back to disk when chunk.source is empty.
         sub_compiler.scope_depth = 1;
@@ -1190,15 +1195,12 @@ impl Compiler {
             }
         }
 
-        let function_id = self.chunk.add_function(sub_compiler.chunk);
         Ok(BxCompiledFunction {
             name: name.to_string(),
             arity: params.len() as u32,
             min_arity,
             params: params.iter().map(|p| p.name.to_lowercase()).collect(),
-            function_id,
-            chunk: None,
-            promoted_constants: RefCell::new(Vec::new()),
+            chunk: sub_compiler.chunk,
         })
     }
 
@@ -1402,13 +1404,14 @@ impl Compiler {
             .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", class_path, e))?;
 
         let filename = file_path.to_str().unwrap_or(class_path);
-        let mut sub_compiler = Compiler::new(filename);
+        let mut sub_compiler = Compiler::with_chunk(self.chunk.new_sub_chunk());
         sub_compiler.imports = self.imports.clone();
         sub_compiler.module_paths = self.module_paths.clone();
         sub_compiler.is_class = true;
         sub_compiler.current_line = self.current_line;
 
-        let chunk = sub_compiler.compile(&ast, &source)?;
+        let mut chunk = sub_compiler.compile(&ast, &source)?;
+        chunk.reconstruct_functions();
 
         for constant in chunk.constants {
             if let Constant::Class(_) = constant {
@@ -1454,13 +1457,14 @@ impl Compiler {
             .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", iface_path, e))?;
 
         let filename = file_path.to_str().unwrap_or(iface_path);
-        let mut sub_compiler = Compiler::new(filename);
+        let mut sub_compiler = Compiler::with_chunk(self.chunk.new_sub_chunk());
         sub_compiler.imports = self.imports.clone();
         sub_compiler.module_paths = self.module_paths.clone();
         sub_compiler.is_class = true;
         sub_compiler.current_line = self.current_line;
 
-        let chunk = sub_compiler.compile(&ast, &source)?;
+        let mut chunk = sub_compiler.compile(&ast, &source)?;
+        chunk.reconstruct_functions();
 
         for constant in chunk.constants {
             if let Constant::Interface(_) = constant {

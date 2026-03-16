@@ -453,7 +453,8 @@ fn run_async(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     } else {
         0
     };
-    vm.spawn_by_value(&args[0], Vec::new(), priority)
+    let chunk = vm.current_chunk().ok_or_else(|| "No chunk context available".to_string())?;
+    vm.spawn_by_value(&args[0], Vec::new(), priority, chunk)
 }
 
 fn create_object(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {

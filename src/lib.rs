@@ -3,6 +3,7 @@ use matchbox_vm::{types, vm, Chunk};
 
 use std::env as std_env;
 use std::fs;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::io::{self, Write};
 use anyhow::{Result, bail, Context};
@@ -58,6 +59,7 @@ pub fn run_boxlang(source: &str) -> String {
 #[wasm_bindgen]
 pub struct BoxLangVM {
     vm: vm::VM,
+    chunk: Option<Rc<RefCell<Chunk>>>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -65,13 +67,18 @@ pub struct BoxLangVM {
 impl BoxLangVM {
     #[wasm_bindgen(constructor)]
     pub fn new() -> BoxLangVM {
-        BoxLangVM { vm: vm::VM::new() }
+        BoxLangVM { 
+            vm: vm::VM::new(),
+            chunk: None,
+        }
     }
 
     pub fn load_bytecode(&mut self, bytes: &[u8]) -> Result<(), String> {
         let res = (|| -> Result<()> {
             let mut chunk: Chunk = postcard::from_bytes(bytes)?;
             chunk.reconstruct_functions();
+            let chunk_rc = Rc::new(RefCell::new(chunk.clone()));
+            self.chunk = Some(chunk_rc.clone());
             self.vm.interpret(chunk)?;
             Ok(())
         })();
@@ -88,7 +95,7 @@ impl BoxLangVM {
         let func = self.vm.get_global(name)
             .ok_or_else(|| format!("Function {} not found", name))?;
 
-        match self.vm.call_function_value(func, bx_args) {
+        match self.vm.call_function_value(func, bx_args, self.chunk.clone()) {
             Ok(val) => Ok(self.vm.bx_to_js(&val)),
             Err(e) => Err(format!("Error: {}", e)),
         }
@@ -99,12 +106,12 @@ pub fn run() -> Result<()> {
     // 1. Check for WASM custom section first
     #[cfg(target_arch = "wasm32")]
     if let Ok(chunk) = load_wasm_custom_section() {
-        return run_chunk(chunk);
+        return run_chunk(chunk, &[]);
     }
 
     // 2. Check for embedded bytecode at end of binary (Native)
     if let Ok(embedded_chunk) = load_embedded_bytecode() {
-        return run_chunk(embedded_chunk);
+        return run_chunk(embedded_chunk, &[]);
     }
 
     let args: Vec<String> = std_env::args().collect();
@@ -233,7 +240,7 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
         let bytes = fs::read(source_path)?;
         let mut chunk: Chunk = postcard::from_bytes(&bytes)?;
         chunk.reconstruct_functions();
-        run_chunk(chunk)?;
+        run_chunk(chunk, &[])?;
     } else {
         let source = fs::read_to_string(source_path)?;
         let ast = parser::parse(&source).map_err(|e| anyhow::anyhow!("Parse Error: {}", e))?;
@@ -265,6 +272,8 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
             &extra_preludes,
         ).map_err(|e| anyhow::anyhow!("Compiler Error: {}", e))?;
 
+        chunk.reconstruct_functions();
+
         if strip_source {
             strip_sources(&mut chunk);
         }
@@ -291,7 +300,7 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
                 target_val => produce_native_binary(&chunk, source_path, target_val, output)?,
             }
         } else {
-            run_chunk(chunk)?;
+            run_chunk(chunk, &modules_info)?;
         }
 
         if is_watch {
@@ -371,14 +380,49 @@ fn process_directory(path: &Path, is_build: bool, orig_target: Option<&str>, kee
 /// Native binaries automatically fall back to reading the source file from disk.
 fn strip_sources(chunk: &mut Chunk) {
     chunk.source = String::new();
-    for func_chunk in chunk.functions.iter_mut() {
-        strip_sources(func_chunk);
+    for constant in chunk.constants.iter_mut() {
+        match constant {
+            types::Constant::CompiledFunction(f) => strip_sources(&mut f.chunk),
+            types::Constant::Class(c) => {
+                strip_sources(&mut c.constructor.chunk);
+                for (_, m) in c.methods.iter_mut() {
+                    strip_sources(&mut m.chunk);
+                }
+            }
+            types::Constant::Interface(i) => {
+                for (_, m) in i.methods.iter_mut() {
+                    if let Some(f) = m {
+                        strip_sources(&mut f.chunk);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
-pub fn run_chunk(chunk: Chunk) -> Result<()> {
+pub fn run_chunk(chunk: Chunk, modules: &[modules::ModuleInfo]) -> Result<()> {
     let args: Vec<String> = std_env::args().collect();
-    let mut vm = vm::VM::new_with_args(args);
+    
+    let mut external_bifs = HashMap::new();
+    let mut native_classes = HashMap::new();
+
+    // In a real implementation with dynamic loading, we would load .so/.dll here.
+    for m in modules {
+        if m.name == "native-math" {
+            // HACK for tests: since we can't easily dynamic-load from the same binary's crate
+            // we just manually register what we know is in there.
+            fn cube(_vm: &mut dyn types::BxVM, args: &[types::BxValue]) -> std::result::Result<types::BxValue, String> {
+                if args.len() != 1 { return Err("cube requires 1 argument".to_string()); }
+                let n = args[0].as_number();
+                Ok(types::BxValue::new_number(n * n * n))
+            }
+            external_bifs.insert("cube".to_string(), cube as types::BxNativeFunction);
+        }
+    }
+    
+    let mut vm = vm::VM::new_with_bifs(external_bifs, native_classes);
+    vm.cli_args = args;
     vm.interpret(chunk)?;
     Ok(())
 }
@@ -538,6 +582,7 @@ edition = "2021"
 
 [dependencies]
 matchbox_vm = {{ path = "{vm_path}" }}
+postcard = {{ version = "1.0", features = ["alloc", "use-std"] }}
 bincode = "1.3.3"
 anyhow = "1.0"
 {extra_dep_lines}

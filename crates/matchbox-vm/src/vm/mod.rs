@@ -45,10 +45,12 @@ unsafe extern "C" {
 
 pub struct CallFrame {
     pub function: Rc<BxCompiledFunction>,
+    pub chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
     pub ip: usize,
     pub stack_base: usize,
     pub receiver: Option<BxValue>,
     pub handlers: Vec<usize>,
+    pub promoted_constants: Vec<Option<BxValue>>,
 }
 
 pub struct BxFiber {
@@ -73,16 +75,26 @@ pub struct VM {
 }
 
 impl BxVM for VM {
-    fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8) -> BxValue {
-        self.spawn(func, args, priority)
+    fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>> {
+        if let Some(idx) = self.current_fiber_idx {
+            self.fibers[idx].frames.last().map(|f| Rc::clone(&f.chunk))
+        } else {
+            None
+        }
     }
 
-    fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, priority: u8) -> Result<BxValue, String> {
+    fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue {
+        let dummy = Rc::new(RefCell::new(Chunk::default()));
+        self.spawn(func, args, priority, dummy)
+    }
+
+    fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, priority: u8, _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String> {
         if let Some(id) = func.as_gc_id() {
             let obj = self.heap.get(id);
             if let GcObject::CompiledFunction(f) = obj {
                 let f = Rc::clone(f);
-                Ok(self.spawn(f, args, priority))
+                let dummy = Rc::new(RefCell::new(Chunk::default()));
+                Ok(self.spawn(f, args, priority, dummy))
             } else {
                 Err("Value is not a callable function".to_string())
             }
@@ -91,8 +103,8 @@ impl BxVM for VM {
         }
     }
 
-    fn call_function_by_value(&mut self, func: &BxValue, args: Vec<BxValue>) -> Result<BxValue, String> {
-        self.call_function_value(*func, args).map_err(|e| e.to_string())
+    fn call_function_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String> {
+        self.call_function_value(*func, args, Some(chunk)).map_err(|e| e.to_string())
     }
 
     fn yield_fiber(&mut self) {
@@ -622,16 +634,16 @@ impl VM {
 
     pub fn interpret(&mut self, mut chunk: Chunk) -> Result<BxValue> {
         chunk.ensure_caches();
+        let chunk_for_func = chunk.clone();
+        let chunk_rc = Rc::new(RefCell::new(chunk));
         let function = Rc::new(BxCompiledFunction {
             name: "script".to_string(),
             arity: 0,
             min_arity: 0,
             params: Vec::new(),
-            function_id: 0, // Not used for root
-            chunk: Some(Rc::new(RefCell::new(chunk))),
-            promoted_constants: RefCell::new(Vec::new()),
+            chunk: chunk_for_func,
         });
-        
+
         let future_id = self.heap.alloc(GcObject::Future(BxFuture {
             value: BxValue::new_null(),
             status: FutureStatus::Pending,
@@ -642,11 +654,14 @@ impl VM {
             stack: Vec::with_capacity(256),
             frames: vec![CallFrame {
                 function,
+                chunk: chunk_rc,
                 ip: 0,
                 stack_base: 0,
                 receiver: None,
                 handlers: Vec::new(),
+                promoted_constants: Vec::new(),
             }],
+
             future_id,
             wait_until: None,
             yield_requested: false,
@@ -659,26 +674,34 @@ impl VM {
         res
     }
 
-    pub fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8) -> BxValue {
+    pub fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue {
         let future_id = self.heap.alloc(GcObject::Future(BxFuture {
             value: BxValue::new_null(),
             status: FutureStatus::Pending,
             error_handler: None,
         }));
 
-        let mut stack = Vec::with_capacity(256);
+        let mut stack = Vec::with_capacity(func.arity as usize + 1);
+        let func_val = BxValue::new_ptr(self.heap.alloc(GcObject::CompiledFunction(Rc::clone(&func))));
+        stack.push(func_val); // function itself at base
         for arg in args {
             stack.push(arg);
         }
+        while stack.len() < (func.arity + 1) as usize {
+            stack.push(BxValue::new_null());
+        }
 
+        let chunk = Rc::new(RefCell::new(func.chunk.clone()));
         let fiber = BxFiber {
             stack,
             frames: vec![CallFrame {
                 function: func,
+                chunk,
                 ip: 0,
-                stack_base: 0,
+                stack_base: 1,
                 receiver: None,
                 handlers: Vec::new(),
+                promoted_constants: Vec::new(),
             }],
             future_id,
             wait_until: None,
@@ -842,17 +865,17 @@ impl VM {
                 stack_base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
                 if ip == 0 {
                     let chunk_rc = Rc::clone(
-                        self.fibers[fiber_idx].frames.last().unwrap().function.chunk.as_ref().expect("Chunk should be reconstructed"),
+                        &self.fibers[fiber_idx].frames.last().unwrap().chunk,
                     );
                     chunk_rc.borrow_mut().ensure_caches();
                 }
                 // SAFETY: code/promoted_constants never mutated; Rc keeps them alive.
                 unsafe {
-                    let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                    let chunk_ptr = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").as_ptr();
+                    let frame = self.fibers[fiber_idx].frames.last_mut().unwrap();
+                    let chunk_ptr = frame.chunk.as_ptr();
                     code_ptr     = (*chunk_ptr).code.as_ptr();
                     code_len     = (*chunk_ptr).code.len();
-                    promoted_ptr = frame.function.promoted_constants.as_ptr();
+                    promoted_ptr = &mut frame.promoted_constants as *mut _;
                 }
                 // Reserve headroom so that push() within this frame's execution
                 // won't reallocate the stack Vec and invalidate locals_ptr.
@@ -1034,7 +1057,7 @@ impl VM {
                     let idx = op0;
                     let ic = {
                         let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                        let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                        let chunk = frame.chunk.borrow();
                         chunk.caches[ip_at_start].clone()
                     };
 
@@ -1055,7 +1078,7 @@ impl VM {
                             if val.is_number() {
                                 self.global_values[global_idx] = BxValue::new_number(val.as_number() + 1.0);
                                 let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                                let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                                let mut chunk = frame.chunk.borrow_mut();
                                 chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
                             } else {
                                 flush_ip!();
@@ -1076,7 +1099,7 @@ impl VM {
                     let offset = next_word!();
                     let ic = {
                         let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                        let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                        let chunk = frame.chunk.borrow();
                         chunk.caches[ip_at_start].clone()
                     };
 
@@ -1087,7 +1110,7 @@ impl VM {
                         if let Some(&global_idx) = self.global_names.get(&name_id) {
                             let v = self.global_values[global_idx];
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                            let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                            let mut chunk = frame.chunk.borrow_mut();
                             chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
                             v
                         } else {
@@ -1271,7 +1294,7 @@ impl VM {
                     let idx = op0;
                     let ic = {
                         let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                        let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                        let chunk = frame.chunk.borrow();
                         chunk.caches[ip_at_start].clone()
                     };
 
@@ -1285,7 +1308,7 @@ impl VM {
                             self.fibers[fiber_idx].stack.push(val);
 
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                            let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                            let mut chunk = frame.chunk.borrow_mut();
                             chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
                         } else {
                             self.fibers[fiber_idx].stack.push(BxValue::new_null());
@@ -1296,7 +1319,7 @@ impl VM {
                     let idx = op0;
                     let ic = {
                         let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                        let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                        let chunk = frame.chunk.borrow();
                         chunk.caches[ip_at_start].clone()
                     };
 
@@ -1310,13 +1333,13 @@ impl VM {
                             self.global_values[global_idx] = val;
 
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                            let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                            let mut chunk = frame.chunk.borrow_mut();
                             chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
                         } else {
                             self.insert_global_interned(name_id, val);
                             if let Some(&global_idx) = self.global_names.get(&name_id) {
                                 let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                                let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                                let mut chunk = frame.chunk.borrow_mut();
                                 chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
                             }
                         }
@@ -1326,7 +1349,7 @@ impl VM {
                     let idx = op0;
                     let ic = {
                         let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                        let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                        let chunk = frame.chunk.borrow();
                         chunk.caches[ip_at_start].clone()
                     };
 
@@ -1340,13 +1363,13 @@ impl VM {
                             self.global_values[global_idx] = val;
 
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                            let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                            let mut chunk = frame.chunk.borrow_mut();
                             chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
                         } else {
                             self.insert_global_interned(name_id, val);
                             if let Some(&global_idx) = self.global_names.get(&name_id) {
                                 let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                                let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                                let mut chunk = frame.chunk.borrow_mut();
                                 chunk.caches[ip_at_start] = Some(IcEntry::Global { index: global_idx });
                             }
                         }
@@ -1643,7 +1666,7 @@ impl VM {
                                 let ic = {
                                     let fiber = &self.fibers[fiber_idx];
                                     let frame = fiber.frames.last().unwrap();
-                                    let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                                    let chunk = frame.chunk.borrow();
                                     chunk.caches[ip_at_start].clone()
                                 };
 
@@ -1673,7 +1696,7 @@ impl VM {
                                     {
                                         let fiber = &self.fibers[fiber_idx];
                                         let frame = fiber.frames.last().unwrap();
-                                        let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                                        let mut chunk = frame.chunk.borrow_mut();
                                         match chunk.caches[ip_at_start] {
                                             None => {
                                                 chunk.caches[ip_at_start] = Some(IcEntry::Monomorphic { shape_id: shape_id as usize, index: idx as usize });
@@ -1709,7 +1732,7 @@ impl VM {
                                 let ic = {
                                     let fiber = &self.fibers[fiber_idx];
                                     let frame = fiber.frames.last().unwrap();
-                                    let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                                    let chunk = frame.chunk.borrow();
                                     chunk.caches[ip_at_start].clone()
                                 };
 
@@ -1739,7 +1762,7 @@ impl VM {
                                     {
                                         let fiber = &self.fibers[fiber_idx];
                                         let frame = fiber.frames.last().unwrap();
-                                        let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                                        let mut chunk = frame.chunk.borrow_mut();
                                         match chunk.caches[ip_at_start] {
                                             None => {
                                                 chunk.caches[ip_at_start] = Some(IcEntry::Monomorphic { shape_id: shape_id as usize, index: idx as usize });
@@ -1848,7 +1871,7 @@ impl VM {
                                 let ic = {
                                     let fiber = &self.fibers[fiber_idx];
                                     let frame = fiber.frames.last().unwrap();
-                                    let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                                    let chunk = frame.chunk.borrow();
                                     chunk.caches[ip_at_start].clone()
                                 };
 
@@ -1878,7 +1901,7 @@ impl VM {
                                     {
                                         let fiber = &self.fibers[fiber_idx];
                                         let frame = fiber.frames.last().unwrap();
-                                        let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                                        let mut chunk = frame.chunk.borrow_mut();
                                         match chunk.caches[ip_at_start] {
                                             None => {
                                                 chunk.caches[ip_at_start] = Some(IcEntry::Monomorphic { shape_id: shape_id as usize, index: idx as usize });
@@ -1912,7 +1935,7 @@ impl VM {
                                 let ic = {
                                     let fiber = &self.fibers[fiber_idx];
                                     let frame = fiber.frames.last().unwrap();
-                                    let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                                    let chunk = frame.chunk.borrow();
                                     chunk.caches[ip_at_start].clone()
                                 };
 
@@ -1942,7 +1965,7 @@ impl VM {
                                     {
                                         let fiber = &self.fibers[fiber_idx];
                                         let frame = fiber.frames.last().unwrap();
-                                        let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                                        let mut chunk = frame.chunk.borrow_mut();
                                         match chunk.caches[ip_at_start] {
                                             None => {
                                                 chunk.caches[ip_at_start] = Some(IcEntry::Monomorphic { shape_id: shape_id as usize, index: idx as usize });
@@ -1996,7 +2019,7 @@ impl VM {
                                 let ic = {
                                     let fiber = &self.fibers[fiber_idx];
                                     let frame = fiber.frames.last().unwrap();
-                                    let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                                    let chunk = frame.chunk.borrow();
                                     chunk.caches[ip_at_start].clone()
                                 };
 
@@ -2027,7 +2050,7 @@ impl VM {
                                         if index.is_none() {
                                             let fiber = &self.fibers[fiber_idx];
                                             let frame = fiber.frames.last().unwrap();
-                                            let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                                            let mut chunk = frame.chunk.borrow_mut();
                                             match chunk.caches[ip_at_start] {
                                                 None => {
                                                     chunk.caches[ip_at_start] = Some(IcEntry::Monomorphic { shape_id: shape_id as usize, index: idx as usize });
@@ -2066,7 +2089,7 @@ impl VM {
                                 let ic = {
                                     let fiber = &self.fibers[fiber_idx];
                                     let frame = fiber.frames.last().unwrap();
-                                    let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                                    let chunk = frame.chunk.borrow();
                                     chunk.caches[ip_at_start].clone()
                                 };
 
@@ -2097,7 +2120,7 @@ impl VM {
                                         if index.is_none() {
                                             let fiber = &self.fibers[fiber_idx];
                                             let frame = fiber.frames.last().unwrap();
-                                            let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                                            let mut chunk = frame.chunk.borrow_mut();
                                             match chunk.caches[ip_at_start] {
                                                 None => {
                                                     chunk.caches[ip_at_start] = Some(IcEntry::Monomorphic { shape_id: shape_id as usize, index: idx as usize });
@@ -2270,12 +2293,18 @@ impl VM {
                             let instance_val = BxValue::new_ptr(inst_id);
                             self.fibers[fiber_idx].stack[class_idx] = instance_val;
 
+                            let constructor = class.borrow().constructor.clone();
+                            let sub_chunk = constructor.chunk.clone();
+                            let constant_count = sub_chunk.constants.len();
+
                             let frame = CallFrame {
-                                function: Rc::new(class.borrow().constructor.clone()),
+                                function: Rc::new(constructor),
+                                chunk: Rc::new(RefCell::new(sub_chunk)),
                                 ip: 0,
                                 stack_base: class_idx + 1 + arg_count as usize,
                                 receiver: Some(instance_val),
                                 handlers: Vec::new(),
+                                promoted_constants: vec![None; constant_count],
                             };
                             flush_ip!();
                             self.fibers[fiber_idx].frames.push(frame);
@@ -2496,7 +2525,7 @@ impl VM {
 
         if !self.fibers[fiber_idx].frames.is_empty() {
             let frame = self.fibers[fiber_idx].frames.last().unwrap();
-            let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+            let chunk = frame.chunk.borrow();
             filename = chunk.filename.clone();
             if frame.ip > 0 && frame.ip <= chunk.lines.len() {
                 line = chunk.lines[frame.ip - 1];
@@ -2539,14 +2568,14 @@ impl VM {
         bail!("VM Runtime Error: {}{}\n(at {} line {})", val_str, source_snippet, filename, line);
     }
 
-    pub fn call_function(&mut self, name: &str, args: Vec<BxValue>) -> Result<BxValue> {
+    pub fn call_function(&mut self, name: &str, args: Vec<BxValue>, chunk: Option<Rc<RefCell<Chunk>>>) -> Result<BxValue> {
         if let Some(f) = self.get_global(name) {
-            return self.call_function_value(f, args);
+            return self.call_function_value(f, args, chunk);
         }
         anyhow::bail!("Function {} not found", name)
     }
 
-    pub fn call_function_value(&mut self, func: BxValue, args: Vec<BxValue>) -> Result<BxValue> {
+    pub fn call_function_value(&mut self, func: BxValue, args: Vec<BxValue>, chunk: Option<Rc<RefCell<Chunk>>>) -> Result<BxValue> {
         if let Some(id) = func.as_gc_id() {
             match self.heap.get(id) {
                 GcObject::CompiledFunction(f) => {
@@ -2570,14 +2599,18 @@ impl VM {
                         stack.push(BxValue::new_null());
                     }
 
+                    let chunk = Rc::new(RefCell::new(f.chunk.clone()));
+
                     let fiber = BxFiber {
                         stack,
                         frames: vec![CallFrame {
                             function: f,
+                            chunk,
                             ip: 0,
                             stack_base: 1,
                             receiver: None,
                             handlers: Vec::new(),
+                            promoted_constants: Vec::new(),
                         }],
                         future_id,
                         wait_until: None,
@@ -2664,7 +2697,9 @@ impl VM {
         if let Some(id) = handler.as_gc_id() {
             match self.heap.get(id) {
                 GcObject::CompiledFunction(f) => {
-                    self.spawn(Rc::clone(f), vec![err_val], 1);
+                    let f_rc = Rc::clone(f);
+                    let dummy_chunk = Rc::new(RefCell::new(Chunk::default()));
+                    self.spawn(f_rc, vec![err_val], 1, dummy_chunk);
                 }
 
                 GcObject::NativeFunction(f) => {
@@ -2739,12 +2774,16 @@ impl VM {
                         self.fibers[fiber_idx].stack.push(arg);
                     }
 
+                    let sub_chunk = func.chunk.clone();
+                    let constant_count = sub_chunk.constants.len();
                     let mut frame = CallFrame {
                         function: Rc::clone(&func),
+                        chunk: Rc::new(RefCell::new(sub_chunk)),
                         ip: 0,
                         stack_base: 0,
                         receiver: self.fibers[fiber_idx].frames.last().unwrap().receiver,
                         handlers: Vec::new(),
+                        promoted_constants: vec![None; constant_count],
                     };
                     // Let's be consistent: stack_base is where first arg is. Function is at stack_base - 1.
                     frame.stack_base = self.fibers[fiber_idx].stack.len() - func.arity as usize;
@@ -2922,7 +2961,7 @@ impl VM {
                     let ic = {
                         let fiber = &self.fibers[fiber_idx];
                         let frame = fiber.frames.last().unwrap();
-                        let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+                        let chunk = frame.chunk.borrow();
                         chunk.caches[ip_at_start].clone()
                     };
 
@@ -2966,7 +3005,7 @@ impl VM {
                                     {
                                         let fiber = &self.fibers[fiber_idx];
                                         let frame = fiber.frames.last().unwrap();
-                                        let mut chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow_mut();
+                                        let mut chunk = frame.chunk.borrow_mut();
                                         match chunk.caches[ip_at_start] {
                                             None => {
                                                 chunk.caches[ip_at_start] = Some(IcEntry::Monomorphic { shape_id: shape_id as usize, index: idx as usize });
@@ -3022,12 +3061,16 @@ impl VM {
 
                         for arg in final_args { self.fibers[fiber_idx].stack.push(arg); }
 
+                        let sub_chunk = func.chunk.clone();
+                        let constant_count = sub_chunk.constants.len();
                         let frame = CallFrame {
                             function: func.clone(),
+                            chunk: Rc::new(RefCell::new(sub_chunk)),
                             ip: 0,
                             stack_base: self.fibers[fiber_idx].stack.len() - func.arity as usize,
                             receiver: Some(receiver_val),
                             handlers: Vec::new(),
+                            promoted_constants: vec![None; constant_count],
                         };
                         self.fibers[fiber_idx].frames.push(frame);
                         return Ok(());
@@ -3045,12 +3088,16 @@ impl VM {
                         self.fibers[fiber_idx].stack.push(BxValue::new_ptr(name_id));
                         self.fibers[fiber_idx].stack.push(BxValue::new_ptr(args_array_id));
 
+                        let sub_chunk = on_missing.chunk.clone();
+                        let constant_count = sub_chunk.constants.len();
                         let mut frame = CallFrame {
                             function: on_missing.clone(),
+                            chunk: Rc::new(RefCell::new(sub_chunk)),
                             ip: 0,
                             stack_base: self.fibers[fiber_idx].stack.len() - 2,
                             receiver: Some(receiver_val),
                             handlers: Vec::new(),
+                            promoted_constants: vec![None; constant_count],
                         };
                         
                         for _ in 0..(on_missing.arity - 2) {
@@ -3106,14 +3153,13 @@ impl VM {
         let val = {
             let fiber = &self.fibers[fiber_idx];
             let frame = fiber.frames.last().unwrap();
-            let function = &frame.function;
             
-            let mut promoted = function.promoted_constants.borrow_mut();
-            if promoted.len() <= idx {
-                let chunk_len = function.chunk.as_ref().expect("Chunk should be reconstructed").borrow().constants.len();
-                promoted.resize(chunk_len, None);
+            let promoted = &frame.promoted_constants;
+            if idx < promoted.len() {
+                promoted[idx]
+            } else {
+                None
             }
-            promoted[idx]
         };
 
         if let Some(v) = val {
@@ -3123,16 +3169,20 @@ impl VM {
         let constant = {
             let fiber = &self.fibers[fiber_idx];
             let frame = fiber.frames.last().unwrap();
-            let chunk = frame.function.chunk.as_ref().expect("Chunk should be reconstructed").borrow();
+            let chunk = frame.chunk.borrow();
             chunk.constants[idx].clone()
         };
 
         let promoted = self.promote_constant(constant);
         
         {
-            let fiber = &self.fibers[fiber_idx];
-            let frame = fiber.frames.last().unwrap();
-            frame.function.promoted_constants.borrow_mut()[idx] = Some(promoted);
+            let fiber = &mut self.fibers[fiber_idx];
+            let frame = fiber.frames.last_mut().unwrap();
+            if idx >= frame.promoted_constants.len() {
+                let chunk_len = frame.chunk.borrow().constants.len();
+                frame.promoted_constants.resize(chunk_len, None);
+            }
+            frame.promoted_constants[idx] = Some(promoted);
         }
         
         promoted
@@ -3154,9 +3204,6 @@ impl VM {
                 BxValue::new_ptr(id)
             }
             Constant::CompiledFunction(f) => {
-                let mut f = f;
-                let count = f.chunk.as_ref().expect("Chunk should be reconstructed").borrow().constants.len();
-                f.promoted_constants = RefCell::new(vec![None; count]);
                 BxValue::new_ptr(self.heap.alloc(GcObject::CompiledFunction(Rc::new(f))))
             }
             Constant::Class(c) => BxValue::new_ptr(self.heap.alloc(GcObject::Class(Rc::new(RefCell::new(c))))),

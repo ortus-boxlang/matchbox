@@ -35,13 +35,14 @@ wasm-bindgen = "0.2.100"
 js-sys = "0.3.77"
 
 [features]
-default = []
+default = ["bif-io", "bif-jni", "bif-crypto", "bif-cli"]
 cross-compile = []
 bif-io = ["matchbox_vm/bif-io"]
 bif-http = ["matchbox_vm/bif-http"]
 bif-zip = ["matchbox_vm/bif-zip"]
 bif-crypto = ["matchbox_vm/bif-crypto"]
 bif-cli = ["matchbox_vm/bif-cli"]
+bif-jni = ["matchbox_vm/bif-jni"]
 
 [profile.release]
 opt-level = "z"     # Optimize for size

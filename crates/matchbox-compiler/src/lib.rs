@@ -77,7 +77,9 @@ pub fn compile_with_treeshaking(
 
     let mut compiler = compiler::Compiler::new(filename);
     compiler.module_paths = module_paths;
-    compiler.compile(&combined_ast, source)
+    let mut chunk = compiler.compile(&combined_ast, source)?;
+    chunk.reconstruct_functions();
+    Ok(chunk)
 }
 
 /// Tree-shake a pool of prelude/module statements against the user AST.
