@@ -879,6 +879,13 @@ impl VM {
         let mut jit_body_hot_count: u64 = 0;
         #[cfg(feature = "jit")]
         let mut jit_body_active: Option<(usize, jit::GenericJitLoopFn)> = None; // (ip_at_start, fn)
+        // Tier-3: array iterator JIT state.
+        #[cfg(feature = "jit")]
+        let mut jit_iter_hot_ip: usize = usize::MAX;
+        #[cfg(feature = "jit")]
+        let mut jit_iter_hot_count: u64 = 0;
+        #[cfg(feature = "jit")]
+        let mut jit_iter_active: Option<(usize, jit::ArrayIterJitFn)> = None;
 
         'quantum: loop {
             if fiber_idx >= self.fibers.len() {
@@ -1120,8 +1127,8 @@ impl VM {
                                         // The function reads/writes all referenced locals
                                         // in-place through locals_ptr.
                                         eprintln!("[JIT] calling compiled loop at ip={}!", ip_at_start);
-                                        let deopt = unsafe { compiled(locals_ptr as *mut u64) };
-                                        
+                                        let deopt = unsafe { compiled(locals_ptr as *mut u64, &self.heap as *const _ as *const std::ffi::c_void) };
+
                                         if deopt == 1 {
                                             eprintln!("[JIT] deoptimizing loop at ip={} (type mismatch)!", ip_at_start);
                                             // The JIT bailed out (e.g. type guard failed).
@@ -1159,6 +1166,11 @@ impl VM {
                                             };
                                             // Extract numeric constants referenced in the body.
                                             let mut const_map: HashMap<u32, f64> = HashMap::new();
+                                            let ic_entries = {
+                                                let frame = self.fibers[fiber_idx].frames.last().unwrap();
+                                                let c = frame.chunk.borrow();
+                                                c.caches[body_start .. body_start + body_len].to_vec()
+                                            };
                                             for &word in &body_code {
                                                 if (word & 0xFF) as u8 == op::CONSTANT {
                                                     let cidx = word >> 8;
@@ -1172,7 +1184,9 @@ impl VM {
                                                 jit.profile_generic(
                                                     fn_id, ip_at_start,
                                                     jit_body_hot_count,
-                                                    &body_code, slot,
+                                                    &body_code,
+                                                    &ic_entries,
+                                                    slot,
                                                     limit.as_number(),
                                                     &const_map,
                                                 );
@@ -2644,12 +2658,91 @@ impl VM {
                     if is_done {
                         ip += offset as usize;
                     } else {
-                        let current_cursor = self.fibers[fiber_idx].stack[cursor_idx];
-                        let next_cursor_val = if current_cursor.is_int() { BxValue::new_int(current_cursor.as_int() + 1) } else { BxValue::new_number(current_cursor.as_number() + 1.0) };
-                        self.fibers[fiber_idx].stack[cursor_idx] = next_cursor_val;
-                        self.fibers[fiber_idx].stack.push(next_val.unwrap());
-                        if push_index {
-                            self.fibers[fiber_idx].stack.push(next_idx.unwrap());
+                        // ── Tier-3 JIT fast-path (numeric arrays, no index push) ──────────
+                        #[cfg(feature = "jit")]
+                        let handled_by_jit = {
+                            let mut handled = false;
+                            if !push_index {
+                                let collection = self.fibers[fiber_idx].stack[collection_idx];
+                                if let Some(gc_id) = collection.as_gc_id() {
+                                    let is_array = matches!(self.heap.get_opt(gc_id), Some(GcObject::Array(_)));
+                                    if is_array {
+                                        if let Some((active_ip, compiled)) = jit_iter_active {
+                                            if active_ip == ip_at_start {
+                                                let (arr_ptr, arr_len) = match self.heap.get(gc_id) {
+                                                    GcObject::Array(arr) => (arr.as_ptr() as *const u64, arr.len() as u64),
+                                                    _ => unreachable!(),
+                                                };
+                                                let deopt = unsafe {
+                                                    compiled(locals_ptr as *mut u64, arr_ptr, arr_len)
+                                                };
+                                                if deopt == 0 {
+                                                    ip += offset as usize; // jump past loop
+                                                } else {
+                                                    eprintln!("[JIT] deopt iter loop ip={}", ip_at_start);
+                                                    jit_iter_active = None;
+                                                }
+                                                handled = deopt == 0;
+                                            }
+                                        } else {
+                                            // Profiling path
+                                            if jit_iter_hot_ip == ip_at_start {
+                                                jit_iter_hot_count += 1;
+                                                const JIT_ITER_THRESHOLD: u64 = 5_000;
+                                                if jit_iter_hot_count == JIT_ITER_THRESHOLD {
+                                                    let fn_id      = code_ptr as usize;
+                                                    let body_start = ip_at_start + 3;
+                                                    let body_len   = offset as usize - 1;
+                                                    let body_code: Vec<u32> = unsafe {
+                                                        std::slice::from_raw_parts(code_ptr.add(body_start), body_len).to_vec()
+                                                    };
+                                                    let mut const_map: HashMap<u32, f64> = HashMap::new();
+                                                    for &word in &body_code {
+                                                        if (word & 0xFF) as u8 == op::CONSTANT {
+                                                            let cidx = word >> 8;
+                                                            let cv = self.read_constant(fiber_idx, cidx as usize);
+                                                            if cv.is_number() {
+                                                                const_map.insert(cidx, cv.as_number());
+                                                            }
+                                                        }
+                                                    }
+                                                    if let Some(ref mut jit) = self.jit {
+                                                        jit.profile_iter(
+                                                            fn_id, ip_at_start, cursor_slot,
+                                                            jit_iter_hot_count,
+                                                            &body_code, &const_map,
+                                                        );
+                                                        if let Some(f) = jit.get_compiled_iter(fn_id, ip_at_start) {
+                                                            jit_iter_active = Some((ip_at_start, f));
+                                                        }
+                                                    }
+                                                    jit_iter_hot_count = 0;
+                                                }
+                                            } else {
+                                                jit_iter_hot_ip    = ip_at_start;
+                                                jit_iter_hot_count = 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            handled
+                        };
+
+                        // Normal single-iteration path
+                        #[cfg(feature = "jit")]
+                        let do_normal = !handled_by_jit;
+                        #[cfg(not(feature = "jit"))]
+                        let do_normal = true;
+
+                        if do_normal {
+                            let current_cursor = self.fibers[fiber_idx].stack[cursor_idx];
+                            let next_cursor_val = if current_cursor.is_int() { BxValue::new_int(current_cursor.as_int() + 1) } else { BxValue::new_number(current_cursor.as_number() + 1.0) };
+                            self.fibers[fiber_idx].stack[cursor_idx] = next_cursor_val;
+                            self.fibers[fiber_idx].stack.push(next_val.unwrap());
+                            if push_index {
+                                self.fibers[fiber_idx].stack.push(next_idx.unwrap());
+                            }
                         }
                     }
                 }

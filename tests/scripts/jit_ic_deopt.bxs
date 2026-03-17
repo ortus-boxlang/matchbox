@@ -1,0 +1,29 @@
+// Test script for Native Inline Caching Deoptimization (Structs)
+
+function run_test() {
+    println("Starting JIT IC Deopt Test...");
+    
+    var obj1 = { id: 1, age: 20 };
+    var obj2 = { id: 2, age: 50 }; // Same shape
+    var obj3 = { name: "Bob", age: 100 }; // Different shape!
+
+    var sum = 0;
+    
+    // Iterations 0-10000: uses obj1, JIT profiles and compiles
+    // Iterations 10001-14999: uses obj1, JIT runs fast
+    // Iteration 15000: uses obj3, JIT sees different shape and deopts!
+    
+    var current_obj = obj1;
+    
+    for (var j = 0; j < 2; j++) {
+        for (var i = 0; i < 15000; i++) {
+            sum = sum + current_obj.age;
+        }
+        // Second outer loop changes the object shape
+        current_obj = obj3;
+    }
+    
+    println("Final Sum: " & sum);
+}
+
+run_test();

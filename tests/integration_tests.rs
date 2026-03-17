@@ -56,7 +56,40 @@ script_test!(bvm_features, "bvm_features.bxs");
 script_test!(vm_safe_nav_elvis, "vm_safe_nav_elvis.bxs");
 script_test!(vm_switch, "vm_switch.bxs");
 script_test!(vm_while, "vm_while.bxs");
-script_test!(jit_type_guards, "jit_type_guards.bxs");
+#[test]
+fn jit_type_guards() {
+    // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
+    let builder = std::thread::Builder::new().name("jit_type_guards".into()).stack_size(8 * 1024 * 1024);
+    let handler = builder.spawn(|| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("scripts")
+            .join("jit_type_guards.bxs");
+
+        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+            panic!("Script execution failed: {}", e);
+        }
+    }).unwrap();
+    handler.join().unwrap();
+}
+
+#[test]
+#[cfg(feature = "jit")]
+fn jit_iter() {
+    // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
+    let builder = std::thread::Builder::new().name("jit_iter".into()).stack_size(8 * 1024 * 1024);
+    let handler = builder.spawn(|| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("scripts")
+            .join("jit_iter.bxs");
+
+        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+            panic!("jit_iter.bxs failed: {}", e);
+        }
+    }).unwrap();
+    handler.join().unwrap();
+}
 
 #[test]
 fn test_vm_interface_fail() {

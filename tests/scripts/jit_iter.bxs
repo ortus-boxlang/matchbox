@@ -1,0 +1,16 @@
+// Triggers Tier-3 JIT: 100-element numeric array × 60 reps = 6000 iterations
+// JIT compiles after 5000 iterations, then handles the remaining reps in bulk.
+function run_numeric_sum() {
+    var arr = [];
+    for (var i = 0; i < 100; i++) {
+        arr[i + 1] = i * 1.0;
+    }
+    var sum = 0.0;
+    for (var rep = 0; rep < 60; rep++) {
+        for (item in arr) {
+            sum = sum + item;
+        }
+    }
+    println("Sum: " & sum);  // Expect 297000.0
+}
+run_numeric_sum();

@@ -75,6 +75,11 @@ impl Heap {
         self.objects[id].as_ref().expect("Attempted to access collected object")
     }
 
+    #[inline]
+    pub fn get_opt(&self, id: GcId) -> Option<&GcObject> {
+        self.objects.get(id).and_then(|o| o.as_ref())
+    }
+
     pub fn get_mut(&mut self, id: GcId) -> &mut GcObject {
         if self.generations[id] > 0 && !self.dirty[id] {
             self.dirty[id] = true;

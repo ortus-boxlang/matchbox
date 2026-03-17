@@ -33,6 +33,11 @@ impl BxValue {
     // Constructors
     // ------------------------------------------------------------------------
     #[inline]
+    pub fn to_bits(self) -> u64 {
+        self.0
+    }
+
+    #[inline]
     pub fn new_number(f: f64) -> Self {
         let bits = f.to_bits();
         if bits >= 0xFFF8000000000000 {

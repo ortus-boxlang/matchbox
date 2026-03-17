@@ -1,0 +1,21 @@
+// Test script for Native Inline Caching (Structs)
+
+function run_test() {
+    println("Starting JIT IC Test...");
+    
+    var obj = {
+        id: 1,
+        age: 20
+    };
+
+    var sum = 0;
+    
+    // JIT should compile this loop and inline-cache the .age access
+    for (var j = 0; j < 15000; j++) {
+        sum = sum + obj.age;
+    }
+    
+    println("Final Sum: " & sum);
+}
+
+run_test();
