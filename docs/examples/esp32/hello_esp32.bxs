@@ -1,8 +1,7 @@
 // hello_esp32.bxs
 // A simple BoxLang script to run on an ESP32
 
-println("[BoxLang] Hello from ESP32!!!!!")
-println("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+println("[BoxLang] Hello from ESP32!")
 println("[BoxLang] Current Chip Architecture: " & server.os.arch)
 
 // A simple loop to demonstrate execution

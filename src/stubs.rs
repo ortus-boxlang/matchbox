@@ -9,7 +9,7 @@ pub fn get_stub(target: &str) -> Option<&'static [u8]> {
     stubs.insert("xtensa-esp32-espidf", include_bytes!("../stubs/runner_stub_esp32.elf"));
     stubs.insert("xtensa-esp32s3-espidf", include_bytes!("../stubs/runner_stub_esp32s3.elf"));
     stubs.insert("riscv32imc-esp-espidf", include_bytes!("../stubs/runner_stub_esp32c3.elf"));
-    stubs.insert("host", include_bytes!("../stubs/runner_stub_x86_64-pc-windows-msvc"));
-    stubs.insert("x86_64-pc-windows-msvc", include_bytes!("../stubs/runner_stub_x86_64-pc-windows-msvc"));
+    stubs.insert("host", include_bytes!("../stubs/runner_stub_x86_64-unknown-linux-gnu"));
+    stubs.insert("x86_64-unknown-linux-gnu", include_bytes!("../stubs/runner_stub_x86_64-unknown-linux-gnu"));
     stubs.get(target).copied()
 }

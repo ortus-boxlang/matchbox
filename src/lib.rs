@@ -296,7 +296,16 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
                 "wasi" => produce_wasi_binary(&chunk, source_path, output)?,
                 "wasm" => produce_wasm_binary(&chunk, source_path, output)?,
                 "js" => produce_js_bundle(&chunk, source_path, &ast, output)?,
-                "esp32" => produce_esp32_binary(&chunk, source_path, output, is_flash, orig_chip, is_fast_deploy, is_watch, is_full_flash)?,
+                "esp32" => {
+                    // In watch mode, force a full flash on the initial entry so the
+                    // on-device runner always matches the current bytecode format.
+                    let (fd, ff) = if is_watch {
+                        (false, true)
+                    } else {
+                        (is_fast_deploy, is_full_flash)
+                    };
+                    produce_esp32_binary(&chunk, source_path, output, is_flash, orig_chip, fd, ff)?;
+                }
                 target_val => produce_native_binary(&chunk, source_path, target_val, output)?,
             }
         } else {
@@ -865,7 +874,9 @@ impl BoxLangVM {
         println!("ESP32 Fusion binary produced: {}", out_path.display());
         if is_flash {
             let mut flash_cmd = std::process::Command::new("espflash");
-            flash_cmd.arg("flash").arg("--chip").arg(chip).arg(&out_path);
+            flash_cmd.arg("flash")
+                .arg("--chip").arg(chip)
+                .arg(&out_path);
             flash_cmd.status()?;
         }
     } else if target == "native" {
@@ -976,7 +987,7 @@ fn produce_wasm_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>)
     Ok(())
 }
 
-fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>, is_flash: bool, chip: Option<&str>, is_fast_deploy: bool, is_watch: bool, is_full_flash: bool) -> Result<()> {
+fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>, is_flash: bool, chip: Option<&str>, is_fast_deploy: bool, is_full_flash: bool) -> Result<()> {
     let chip = chip.unwrap_or("esp32");
     let bytecode_bytes = postcard::to_stdvec(chunk)?;
 
@@ -989,25 +1000,40 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
     };
 
     if is_fast_deploy {
-        println!("FAST DEPLOY: Sending bytecode to ESP32 'storage' partition...");
+        println!("FAST DEPLOY: Sending {} bytes of bytecode to ESP32 'storage' partition...", bytecode_bytes.len());
         // 1. Prepare the data: [4 bytes length (LE)][bytecode bytes]
         let mut data = (bytecode_bytes.len() as u32).to_le_bytes().to_vec();
         data.extend_from_slice(&bytecode_bytes);
+        // Pad to 4KB sector boundary — espflash may not fully program the last
+        // partial flash page, leaving trailing 0xFF on the chip.
+        let sector_size = 4096;
+        let padded_len = (data.len() + sector_size - 1) / sector_size * sector_size;
+        data.resize(padded_len, 0xFF);
 
         let temp_bin = std_env::temp_dir().join("matchbox_fast_deploy.bin");
-        fs::write(&temp_bin, data)?;
+        fs::write(&temp_bin, &data)?;
 
         // 2. Flash ONLY the data partition using espflash.
+        //    Use --after no-reset so the flash chip finishes its write cycle
+        //    before we reset.  USB-JTAG hard-reset can interrupt the last page write.
         let mut flash_cmd = std::process::Command::new("espflash");
         flash_cmd.arg("write-bin")
             .arg("--chip").arg(chip)
+            .arg("--after").arg("no-reset")
             .arg("0x110000") // Offset for 'storage' partition
             .arg(&temp_bin);
-        
+
         let status = flash_cmd.status()?;
         if !status.success() {
             bail!("Fast deploy failed. Ensure the device is connected and already has a MatchBox Runner flashed. (Try --full-flash for the first time)");
         }
+
+        // 3. Reset the device separately so the firmware boots with the new bytecode.
+        let mut reset_cmd = std::process::Command::new("espflash");
+        reset_cmd.arg("reset")
+            .arg("--chip").arg(chip);
+        let _ = reset_cmd.status();
+
         println!("Fast deploy successful!");
         return Ok(());
     }
@@ -1045,7 +1071,7 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
                 if !status.success() { bail!("Failed to flash stub."); }
                 
                 // 2. Automatically perform fast-deploy for the bytecode
-                return produce_esp32_binary(chunk, source_path, output, false, Some(chip), true, is_watch, is_full_flash);
+                return produce_esp32_binary(chunk, source_path, output, false, Some(chip), true, is_full_flash);
             } else {
                 println!("ESP32 firmware produced (stub): {}", out_path.display());
                 println!("NOTE: To run this, you must also flash the bytecode to the 'storage' partition.");
@@ -1109,6 +1135,19 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
     Ok(())
 }
 
+/// Poll until the serial port path exists or the timeout expires.
+fn wait_for_port(port: &str, timeout: std::time::Duration) -> bool {
+    use std::time::Instant;
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if Path::new(port).exists() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
+}
+
 fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool) -> Result<()> {
     use notify::{Watcher, RecursiveMode, event::EventKind};
     use std::sync::mpsc::channel;
@@ -1132,31 +1171,65 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool) -> 
     let monitor_child: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
 
     // Handle Ctrl+C to kill the child process before exiting
-    let monitor_child_ctrlc = Arc::clone(&monitor_child);
+    let monitor_ctrlc = Arc::clone(&monitor_child);
     ctrlc::set_handler(move || {
         println!("\nWATCH MODE: Shutting down...");
-        if let Ok(mut child_opt) = monitor_child_ctrlc.lock() {
+        if let Ok(mut child_opt) = monitor_ctrlc.lock() {
             if let Some(mut child) = child_opt.take() {
-                // Kill the whole process group
                 #[cfg(unix)]
                 unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
                 #[cfg(not(unix))]
                 { child.kill().ok(); }
+                let _ = child.wait();
             }
         }
         std::process::exit(0);
     }).expect("Error setting Ctrl+C handler");
 
-    let start_monitor = |chip: &Option<String>| -> Option<Child> {
-        let mut cmd = std::process::Command::new("espflash");
-        cmd.arg("monitor");
-        cmd.arg("--non-interactive");
-        cmd.arg("--after").arg("hard-reset");
-        if let Some(c) = chip {
-            cmd.arg("--chip").arg(c);
+    // Detect the serial port once using espflash's board-info (quick probe)
+    let serial_port = {
+        let output = std::process::Command::new("espflash")
+            .arg("board-info")
+            .arg("--before").arg("no-reset-no-sync")
+            .output();
+        let mut port = None;
+        if let Ok(out) = &output {
+            let combined = String::from_utf8_lossy(&out.stderr).to_string()
+                + &String::from_utf8_lossy(&out.stdout);
+            for line in combined.lines() {
+                if line.contains("Serial port:") {
+                    if let Some(p) = line.split("Serial port:").nth(1) {
+                        port = Some(p.trim().trim_matches('\'').to_string());
+                    }
+                }
+            }
         }
-        
-        // Put the child in its own process group
+        port.unwrap_or_else(|| {
+            for p in &["/dev/ttyACM0", "/dev/ttyUSB0", "/dev/ttyACM1", "/dev/ttyUSB1"] {
+                if Path::new(p).exists() { return p.to_string(); }
+            }
+            "/dev/ttyACM0".to_string()
+        })
+    };
+    println!("WATCH MODE: Using serial port: {}", serial_port);
+
+    // Read serial output directly via stty + cat.  espflash monitor always
+    // enters the bootloader handshake which breaks USB-JTAG (chip reset
+    // disconnects USB).  Raw cat avoids that entirely.
+    // Read serial output directly via stty + cat.  espflash monitor always
+    // enters the bootloader handshake which breaks USB-JTAG (chip reset
+    // disconnects USB).  Raw cat avoids that entirely.
+    let start_monitor = |port: &str| -> Option<Child> {
+        // Configure serial port for raw mode at 115200 baud
+        let _ = std::process::Command::new("stty")
+            .arg("-F").arg(port)
+            .arg("115200").arg("raw").arg("-echo")
+            .status();
+
+        let mut cmd = std::process::Command::new("cat");
+        cmd.arg(port);
+
+        // Put the child in its own process group for clean kill
         #[cfg(unix)]
         unsafe {
             cmd.pre_exec(|| {
@@ -1164,53 +1237,93 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool) -> 
                 Ok(())
             });
         }
-        cmd.stdin(Stdio::null());
 
-        cmd.spawn().ok()
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        match cmd.spawn() {
+            Ok(child) => Some(child),
+            Err(e) => {
+                eprintln!("Failed to start serial monitor: {}", e);
+                None
+            }
+        }
     };
 
     println!("WATCH MODE: Initial monitor starting...");
+    wait_for_port(&serial_port, Duration::from_secs(5));
     if let Ok(mut child_opt) = monitor_child.lock() {
-        *child_opt = start_monitor(&chip);
+        *child_opt = start_monitor(&serial_port);
     }
 
     loop {
         if let Ok(event) = rx.recv() {
             if let EventKind::Modify(_) = event.kind {
                 if event.paths.iter().any(|p| fs::canonicalize(p).map(|cp| cp == source_path_abs).unwrap_or(false)) {
-                    println!("\nChange detected! Killing monitor and re-deploying...");
-                    
-                    // 1. Kill existing monitor
+                    // Debounce: drain the channel and wait for silence
+                    std::thread::sleep(Duration::from_millis(200));
+                    while let Ok(_) = rx.try_recv() {}
+
+                    println!("\nChange detected! Killing monitor...");
+
+                    // 1. Kill existing monitor and wait for it to fully exit
                     if let Ok(mut child_opt) = monitor_child.lock() {
                         if let Some(mut child) = child_opt.take() {
                             #[cfg(unix)]
                             unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
                             #[cfg(not(unix))]
                             { child.kill().ok(); }
+                            let _ = child.wait();
                         }
                     }
 
-                    // Small delay to ensure port is released
-                    std::thread::sleep(Duration::from_millis(500));
-                    
-                    let res = (|| -> Result<()> {
-                        let source_text = fs::read_to_string(source_path)?;
-                        let ast = parser::parse(&source_text)?;
-                        let compiler = compiler::Compiler::new(source_path.to_str().unwrap());
-                        let chunk = compiler.compile(&ast, &source_text)?;
-                        produce_esp32_binary(&chunk, source_path, None, true, chip.as_deref(), true, true, is_full_flash)?;
-                        Ok(())
-                    })();
+                    println!("Re-deploying...");
 
-                    if let Err(e) = res {
-                        eprintln!("Redeploy failed: {}", e);
-                    } else {
-                        println!("Live update successful! Restarting monitor...");
+                    // 2. Recompile and fast-deploy
+                    let mut flash_success = false;
+                    for attempt in 1..=3 {
+                        if !wait_for_port(&serial_port, Duration::from_secs(5)) {
+                            println!("Attempt {}: port {} not available, retrying...", attempt, serial_port);
+                            continue;
+                        }
+
+                        let res = (|| -> Result<()> {
+                            let source_text = fs::read_to_string(source_path)?;
+                            let ast = parser::parse(&source_text)
+                                .map_err(|e| anyhow::anyhow!("Parse Error: {}", e))?;
+                            let chunk = matchbox_compiler::compile_with_treeshaking(
+                                source_path.to_str().unwrap_or("unknown"),
+                                &ast,
+                                &source_text,
+                                Vec::new(),  // keep_symbols
+                                false,       // no_shaking
+                                false,       // no_std_lib
+                                &[],         // module_mappings
+                                &[],         // extra_preludes
+                            ).map_err(|e| anyhow::anyhow!("Compiler Error: {}", e))?;
+                            produce_esp32_binary(&chunk, source_path, None, true, chip.as_deref(), true, is_full_flash)?;
+                            Ok(())
+                        })();
+
+                        if let Err(e) = res {
+                            println!("Redeploy attempt {} failed: {}. Retrying...", attempt, e);
+                            std::thread::sleep(Duration::from_millis(1000));
+                        } else {
+                            println!("Live update successful! Restarting monitor...");
+                            flash_success = true;
+                            break;
+                        }
                     }
 
-                    // 3. Restart monitor (which triggers reset)
+                    if !flash_success {
+                        eprintln!("CRITICAL: Redeploy failed after 3 attempts.");
+                    }
+
+                    // 3. Restart monitor — wait for port after flash reset
+                    wait_for_port(&serial_port, Duration::from_secs(5));
                     if let Ok(mut child_opt) = monitor_child.lock() {
-                        *child_opt = start_monitor(&chip);
+                        *child_opt = start_monitor(&serial_port);
                     }
                 }
             }
