@@ -29,9 +29,9 @@ BIFS
     query?
     date
 type annotations    ✅
-control flow
+control flow        ✅
     if/else         ✅
-    while
+    while           ✅
     for in          ✅
     for index       ✅
 elvis               ✅
