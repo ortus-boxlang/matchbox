@@ -58,8 +58,10 @@ script_test!(vm_switch, "vm_switch.bxs");
 script_test!(vm_while, "vm_while.bxs");
 #[test]
 fn jit_type_guards() {
-    // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
-    let builder = std::thread::Builder::new().name("jit_type_guards".into()).stack_size(8 * 1024 * 1024);
+    // Cranelift JIT requires more stack space than the default 2MB test thread stack.
+    // 32MB is needed on Windows/macOS where MSVC/Apple Clang debug builds have larger
+    // per-frame overhead than Linux, causing stack overflows at 8MB.
+    let builder = std::thread::Builder::new().name("jit_type_guards".into()).stack_size(32 * 1024 * 1024);
     let handler = builder.spawn(|| {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -77,7 +79,7 @@ fn jit_type_guards() {
 #[cfg(feature = "jit")]
 fn jit_iter() {
     // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
-    let builder = std::thread::Builder::new().name("jit_iter".into()).stack_size(8 * 1024 * 1024);
+    let builder = std::thread::Builder::new().name("jit_iter".into()).stack_size(32 * 1024 * 1024);
     let handler = builder.spawn(|| {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -95,7 +97,7 @@ fn jit_iter() {
 #[cfg(feature = "jit")]
 fn jit_hot_fn() {
     // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
-    let builder = std::thread::Builder::new().name("jit_hot_fn".into()).stack_size(8 * 1024 * 1024);
+    let builder = std::thread::Builder::new().name("jit_hot_fn".into()).stack_size(32 * 1024 * 1024);
     let handler = builder.spawn(|| {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -116,7 +118,7 @@ fn jit_osr_loop() {
     // Runs 12,000 iterations (above the 10,000 compile threshold) and verifies the
     // compiled loop produces the correct accumulated sum.
     // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
-    let builder = std::thread::Builder::new().name("jit_osr_loop".into()).stack_size(8 * 1024 * 1024);
+    let builder = std::thread::Builder::new().name("jit_osr_loop".into()).stack_size(32 * 1024 * 1024);
     let handler = builder.spawn(|| {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -137,7 +139,7 @@ fn jit_leaf_call() {
     // direct pointer dispatch. compute(x, fn) takes fn as a parameter (GET_LOCAL),
     // so the CALL instruction is reachable by fn_is_translatable.
     // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
-    let builder = std::thread::Builder::new().name("jit_leaf_call".into()).stack_size(8 * 1024 * 1024);
+    let builder = std::thread::Builder::new().name("jit_leaf_call".into()).stack_size(32 * 1024 * 1024);
     let handler = builder.spawn(|| {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -158,7 +160,7 @@ fn jit_pic_member() {
     // struct shapes, IC promoted to Polymorphic before JIT compilation fires.
     let builder = std::thread::Builder::new()
         .name("jit_pic_member".into())
-        .stack_size(8 * 1024 * 1024);
+        .stack_size(32 * 1024 * 1024);
     let handler = builder.spawn(|| {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -178,7 +180,7 @@ fn jit_concat() {
     // jit_concat helper, which allocates the concatenated string on the GC heap.
     let builder = std::thread::Builder::new()
         .name("jit_concat".into())
-        .stack_size(8 * 1024 * 1024);
+        .stack_size(32 * 1024 * 1024);
     let handler = builder.spawn(|| {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
