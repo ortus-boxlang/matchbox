@@ -45,6 +45,15 @@ pub type GenericJitLoopFn = unsafe extern "C" fn(*mut u64, *const std::ffi::c_vo
 /// Returns 0 = loop completed, 1 = deoptimized (type guard failed).
 pub type ArrayIterJitFn = unsafe extern "C" fn(*mut u64, *const u64, u64) -> u64;
 
+/// Tier-4 (hot function): compiles an entire function body to native code.
+/// fn(locals_ptr, heap_ptr, out_val) -> u64   (0 = ok, 1 = deopt)
+/// - locals_ptr: function's local slots (args at [0..arity], rest are additional locals)
+/// - heap_ptr:   pointer to the GC heap (for future MEMBER support)
+/// - out_val:    write the NaN-boxed return BxValue here on success
+pub type HotFnFn = unsafe extern "C" fn(*mut u64, *const std::ffi::c_void, *mut u64) -> u64;
+
+const JIT_FN_THRESHOLD: u64 = 100;
+
 pub unsafe extern "C" fn jit_ic_member_fallback(
     heap_ptr: *const std::ffi::c_void,
     gc_id: u64,
@@ -104,6 +113,18 @@ pub struct JitState {
     // Tier-3: array iterator body loops
     iter_counts:    HashMap<(usize, usize), u64>,
     compiled_iters: HashMap<(usize, usize), ArrayIterJitFn>,
+
+    // Tier-4: hot function compilation
+    fn_counts:    HashMap<usize, u64>,      // key = Rc::as_ptr(func) as usize
+    compiled_fns: HashMap<usize, HotFnFn>, // same key → compiled function pointer
+
+    // OSR: persistent per-site iteration counters keyed on (fn_id, ip_at_start).
+    // Survive across run_fiber quanta so fiber-scheduled loops can cross time-slice
+    // boundaries and still accumulate enough iterations to trigger compilation.
+    /// Tier-2 loop iteration counts (persists across quanta).
+    loop_profiles: HashMap<(usize, usize), u64>,
+    /// Tier-3 array-iter iteration counts (persists across quanta).
+    iter_profiles: HashMap<(usize, usize), u64>,
 }
 
 impl JitState {
@@ -133,7 +154,29 @@ impl JitState {
             compiled_generic: HashMap::new(),
             iter_counts:    HashMap::new(),
             compiled_iters: HashMap::new(),
+            fn_counts:    HashMap::new(),
+            compiled_fns: HashMap::new(),
+            loop_profiles: HashMap::new(),
+            iter_profiles: HashMap::new(),
         })
+    }
+
+    // ── OSR: persistent profile counters ─────────────────────────────────────
+
+    /// Increment and return the new cumulative count for a Tier-2 loop site.
+    /// Survives across `run_fiber` quanta so long-running loops can cross time-slice
+    /// boundaries and eventually reach the compilation threshold.
+    pub fn inc_loop_profile(&mut self, fn_id: usize, ip: usize) -> u64 {
+        let c = self.loop_profiles.entry((fn_id, ip)).or_insert(0);
+        *c += 1;
+        *c
+    }
+
+    /// Increment and return the new cumulative count for a Tier-3 iter site.
+    pub fn inc_iter_profile(&mut self, fn_id: usize, ip: usize) -> u64 {
+        let c = self.iter_profiles.entry((fn_id, ip)).or_insert(0);
+        *c += 1;
+        *c
     }
 
     // ── Tier-1: empty loop ────────────────────────────────────────────────────
@@ -895,6 +938,498 @@ impl JitState {
             std::mem::transmute(self.module.get_finalized_function(func_id))
         };
         self.compiled_iters.insert((code_ptr, ip), fn_ptr);
+        Ok(())
+    }
+
+    // ── Tier-4: hot function compilation ─────────────────────────────────────
+
+    #[inline]
+    pub fn get_compiled_fn(&self, fn_id: usize) -> Option<HotFnFn> {
+        self.compiled_fns.get(&fn_id).copied()
+    }
+
+    pub fn profile_fn(
+        &mut self,
+        fn_id:  usize,
+        code:   &[u32],
+        consts: &[crate::types::Constant],
+        arity:  u32,
+    ) -> Option<HotFnFn> {
+        let count = self.fn_counts.entry(fn_id).or_insert(0);
+        *count += 1;
+        if *count == JIT_FN_THRESHOLD {
+            if !Self::fn_is_translatable(code) {
+                return None;
+            }
+            match self.compile_hot_fn(fn_id, code, consts, arity) {
+                Ok(_) => {
+                    eprintln!("[JIT] compiled hot fn fn_id=0x{:x}", fn_id);
+                    return self.compiled_fns.get(&fn_id).copied();
+                }
+                Err(e) => eprintln!("[JIT] hot fn compile failed: {}", e),
+            }
+        }
+        None
+    }
+
+    fn fn_is_translatable(code: &[u32]) -> bool {
+        let mut ip = 0usize;
+        while ip < code.len() {
+            let word   = code[ip];
+            let opcode = (word & 0xFF) as u8;
+            let op0    = (word >> 8) as usize;
+
+            // Instruction widths for multi-word instructions
+            let width: usize = match opcode {
+                op::COMPARE_JUMP | op::CALL_NAMED | op::INVOKE => 2,
+                op::LOCAL_COMPARE_JUMP | op::GLOBAL_COMPARE_JUMP | op::INVOKE_NAMED
+                | op::ITER_NEXT | op::LOCAL_JUMP_IF_NE_CONST | op::FOR_LOOP_STEP => 3,
+                _ => 1,
+            };
+
+            match opcode {
+                // Rejected opcodes
+                op::CALL | op::CALL_NAMED | op::INVOKE | op::INVOKE_NAMED | op::NEW
+                | op::ARRAY | op::STRUCT | op::INDEX | op::SET_INDEX
+                | op::MEMBER | op::SET_MEMBER | op::INC_MEMBER | op::STRING_CONCAT
+                | op::ITER_NEXT | op::FOR_LOOP_STEP | op::LOOP
+                | op::PUSH_HANDLER | op::POP_HANDLER | op::THROW
+                | op::PRINT | op::PRINTLN
+                | op::GET_GLOBAL | op::SET_GLOBAL | op::SET_GLOBAL_POP | op::DEFINE_GLOBAL
+                | op::GET_PRIVATE | op::SET_PRIVATE
+                | op::LOCAL_COMPARE_JUMP | op::GLOBAL_COMPARE_JUMP | op::COMPARE_JUMP
+                | op::LOCAL_JUMP_IF_NE_CONST
+                | op::INC | op::DEC | op::INC_LOCAL | op::INC_GLOBAL
+                | op::SWAP | op::OVER | op::JUMP_IF_NULL => return false,
+
+                op::JUMP | op::JUMP_IF_FALSE => {
+                    // Validate forward jump stays in-bounds
+                    let target = ip + 1 + op0;
+                    if target > code.len() {
+                        return false;
+                    }
+                }
+
+                // Accepted opcodes
+                op::GET_LOCAL | op::SET_LOCAL | op::SET_LOCAL_POP
+                | op::CONSTANT
+                | op::ADD | op::ADD_INT | op::ADD_FLOAT
+                | op::SUBTRACT | op::SUB_INT | op::SUB_FLOAT
+                | op::MULTIPLY | op::MUL_INT | op::MUL_FLOAT
+                | op::DIVIDE | op::DIV_FLOAT | op::MODULO
+                | op::EQUAL | op::NOT_EQUAL | op::LESS | op::LESS_EQUAL
+                | op::GREATER | op::GREATER_EQUAL
+                | op::NOT | op::RETURN | op::POP | op::DUP => {}
+
+                _ => return false,
+            }
+
+            ip += width;
+        }
+        true
+    }
+
+    fn compile_hot_fn(
+        &mut self,
+        fn_id:  usize,
+        code:   &[u32],
+        consts: &[crate::types::Constant],
+        _arity: u32,
+    ) -> anyhow::Result<()> {
+        use cranelift_codegen::ir::{Block, StackSlot, StackSlotData, StackSlotKind};
+
+        // ── Pass 1a: collect branch targets ──────────────────────────────────
+        let mut branch_targets: BTreeSet<usize> = BTreeSet::new();
+        {
+            let mut ip = 0usize;
+            while ip < code.len() {
+                let word   = code[ip];
+                let opcode = (word & 0xFF) as u8;
+                let op0    = (word >> 8) as usize;
+                match opcode {
+                    op::JUMP_IF_FALSE => {
+                        branch_targets.insert(ip + 1);           // fallthrough
+                        branch_targets.insert(ip + 1 + op0);     // jump target
+                    }
+                    op::JUMP => {
+                        branch_targets.insert(ip + 1 + op0);
+                    }
+                    _ => {}
+                }
+                ip += 1; // all accepted opcodes are 1-word
+            }
+        }
+
+        // ── Pass 1b: BFS to compute stack depth at each block start ───────────
+        let mut stack_depth_at: HashMap<usize, i32> = HashMap::new();
+        stack_depth_at.insert(0, 0);
+        let mut worklist: Vec<usize> = vec![0];
+        let mut max_stack: usize = 0;
+
+        while let Some(block_start) = worklist.pop() {
+            let mut depth = stack_depth_at[&block_start];
+            let mut ip2 = block_start;
+            loop {
+                if ip2 >= code.len() { break; }
+                // Hit a new block boundary (not our own start)
+                if ip2 != block_start && branch_targets.contains(&ip2) {
+                    if !stack_depth_at.contains_key(&ip2) {
+                        stack_depth_at.insert(ip2, depth);
+                        worklist.push(ip2);
+                    }
+                    break;
+                }
+                let word2   = code[ip2];
+                let opcode2 = (word2 & 0xFF) as u8;
+                let op02    = (word2 >> 8) as usize;
+                match opcode2 {
+                    op::JUMP_IF_FALSE => {
+                        // Peek: stack depth unchanged at both successors
+                        for &target in &[ip2 + 1, ip2 + 1 + op02] {
+                            if !stack_depth_at.contains_key(&target) {
+                                stack_depth_at.insert(target, depth);
+                                worklist.push(target);
+                            }
+                        }
+                        break;
+                    }
+                    op::JUMP => {
+                        let target = ip2 + 1 + op02;
+                        if !stack_depth_at.contains_key(&target) {
+                            stack_depth_at.insert(target, depth);
+                            worklist.push(target);
+                        }
+                        break;
+                    }
+                    op::RETURN => { break; }
+                    op::GET_LOCAL | op::CONSTANT | op::DUP => depth += 1,
+                    op::SET_LOCAL_POP | op::POP => depth -= 1,
+                    op::ADD | op::ADD_INT | op::ADD_FLOAT
+                    | op::SUBTRACT | op::SUB_INT | op::SUB_FLOAT
+                    | op::MULTIPLY | op::MUL_INT | op::MUL_FLOAT
+                    | op::DIVIDE | op::DIV_FLOAT | op::MODULO
+                    | op::EQUAL | op::NOT_EQUAL | op::LESS | op::LESS_EQUAL
+                    | op::GREATER | op::GREATER_EQUAL => depth -= 1,
+                    // SET_LOCAL, NOT: no net stack change
+                    _ => {}
+                }
+                if depth > 0 && depth as usize > max_stack {
+                    max_stack = depth as usize;
+                }
+                ip2 += 1;
+            }
+        }
+
+        // ── Setup Cranelift function ──────────────────────────────────────────
+        let ptr_type = self.module.isa().pointer_type();
+        let mut sig  = self.module.make_signature();
+        sig.params.push(AbiParam::new(ptr_type)); // locals_ptr
+        sig.params.push(AbiParam::new(ptr_type)); // heap_ptr
+        sig.params.push(AbiParam::new(ptr_type)); // out_val_ptr
+        sig.returns.push(AbiParam::new(I64));     // status (0=ok, 1=deopt)
+
+        let func_name = format!("jit_hotfn_x{:x}", fn_id);
+        let func_id   = self.module.declare_function(&func_name, Linkage::Local, &sig)?;
+
+        self.ctx.func.name      = UserFuncName::user(0, self.func_counter);
+        self.func_counter      += 1;
+        self.ctx.func.signature = sig;
+
+        {
+            let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.func_ctx);
+
+            // Create blocks
+            let entry_block = builder.create_block();
+            let normal_exit = builder.create_block();
+            let deopt_exit  = builder.create_block();
+
+            // Only create blocks for branch targets reachable from the BFS (live code).
+            // Dead-code targets (e.g. the implicit `CONSTANT null; RETURN` after
+            // a function whose every path already returns) are excluded so they
+            // don't produce empty Cranelift blocks or trigger spurious deopt paths.
+            let mut target_blocks: HashMap<usize, Block> = HashMap::new();
+            for &target_ip in &branch_targets {
+                if stack_depth_at.contains_key(&target_ip) {
+                    target_blocks.insert(target_ip, builder.create_block());
+                }
+            }
+
+            builder.append_block_params_for_function_params(entry_block);
+            builder.switch_to_block(entry_block);
+            builder.seal_block(entry_block);
+
+            let locals_ptr  = builder.block_params(entry_block)[0];
+            let _heap_ptr   = builder.block_params(entry_block)[1];
+            let out_val_ptr = builder.block_params(entry_block)[2];
+
+            // Allocate spill slots for expression stack (8 bytes each, 8-byte aligned)
+            let spill_slots: Vec<StackSlot> = (0..max_stack.max(1))
+                .map(|_| builder.create_sized_stack_slot(
+                    StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3)
+                ))
+                .collect();
+
+            // If ip=0 is itself a branch target, jump to it from entry
+            if let Some(&t0_block) = target_blocks.get(&0) {
+                builder.ins().jump(t0_block, &[]);
+            }
+
+            // ── Per-instruction translation ───────────────────────────────────
+            let mut vstack: Vec<cranelift_codegen::ir::Value> = Vec::new();
+            let mut slot_val: HashMap<u32, cranelift_codegen::ir::Value> = HashMap::new();
+            let mut block_terminated = target_blocks.contains_key(&0);
+
+            let mut ip = 0usize;
+            while ip < code.len() {
+                // ── Block boundary ────────────────────────────────────────────
+                if let Some(&target_block) = target_blocks.get(&ip) {
+                    if !block_terminated {
+                        // Spill vstack values before the implicit fall-through jump
+                        for (i, &v) in vstack.iter().enumerate() {
+                            builder.ins().stack_store(v, spill_slots[i], 0);
+                        }
+                        builder.ins().jump(target_block, &[]);
+                    }
+                    builder.switch_to_block(target_block);
+
+                    // Reload vstack from spill slots (based on known depth at this ip)
+                    let depth = *stack_depth_at.get(&ip).unwrap_or(&0) as usize;
+                    vstack.clear();
+                    for i in 0..depth {
+                        let v = builder.ins().stack_load(I64, spill_slots[i], 0);
+                        vstack.push(v);
+                    }
+                    slot_val.clear(); // locals_ptr is authoritative after branch
+                    block_terminated = false;
+                }
+
+                if block_terminated {
+                    ip += 1;
+                    continue; // skip dead code after unconditional branches
+                }
+
+                let word   = code[ip];
+                let opcode = (word & 0xFF) as u8;
+                let op0    = (word >> 8) as usize;
+
+                macro_rules! emit_deopt_brif {
+                    ($cond:expr) => {{
+                        let ok_block = builder.create_block();
+                        builder.ins().brif($cond, ok_block, &[], deopt_exit, &[]);
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
+                    }};
+                }
+
+                match opcode {
+                    op::GET_LOCAL => {
+                        let slot = op0 as u32;
+                        let v = if let Some(&cached) = slot_val.get(&slot) {
+                            cached
+                        } else {
+                            builder.ins().load(I64, MemFlags::new(), locals_ptr, (slot * 8) as i32)
+                        };
+                        vstack.push(v);
+                    }
+                    op::SET_LOCAL_POP => {
+                        let slot = op0 as u32;
+                        let v    = vstack.pop().unwrap();
+                        builder.ins().store(MemFlags::new(), v, locals_ptr, (slot * 8) as i32);
+                        slot_val.insert(slot, v);
+                    }
+                    op::SET_LOCAL => {
+                        let slot = op0 as u32;
+                        let v    = *vstack.last().unwrap();
+                        builder.ins().store(MemFlags::new(), v, locals_ptr, (slot * 8) as i32);
+                        slot_val.insert(slot, v);
+                    }
+                    op::CONSTANT => {
+                        let idx = op0;
+                        match consts.get(idx) {
+                            Some(crate::types::Constant::Number(f)) => {
+                                let f_val = builder.ins().f64const(*f);
+                                let i_val = builder.ins().bitcast(I64, MemFlags::new(), f_val);
+                                vstack.push(i_val);
+                            }
+                            _ => return Err(anyhow::anyhow!("non-float constant at idx {}", idx)),
+                        }
+                    }
+                    op::ADD | op::ADD_FLOAT | op::SUBTRACT | op::SUB_FLOAT
+                    | op::MULTIPLY | op::MUL_FLOAT | op::DIVIDE | op::DIV_FLOAT
+                    | op::MODULO => {
+                        let b_i64 = vstack.pop().unwrap();
+                        let a_i64 = vstack.pop().unwrap();
+                        let a_ok = builder.ins().icmp_imm(IntCC::UnsignedLessThan, a_i64,
+                            0xFFF8000000000000_u64 as i64);
+                        let b_ok = builder.ins().icmp_imm(IntCC::UnsignedLessThan, b_i64,
+                            0xFFF8000000000000_u64 as i64);
+                        let both = builder.ins().band(a_ok, b_ok);
+                        emit_deopt_brif!(both);
+                        let a_f64   = builder.ins().bitcast(F64, MemFlags::new(), a_i64);
+                        let b_f64   = builder.ins().bitcast(F64, MemFlags::new(), b_i64);
+                        let res_f64 = match opcode {
+                            op::ADD | op::ADD_FLOAT   => builder.ins().fadd(a_f64, b_f64),
+                            op::SUBTRACT | op::SUB_FLOAT => builder.ins().fsub(a_f64, b_f64),
+                            op::MULTIPLY | op::MUL_FLOAT => builder.ins().fmul(a_f64, b_f64),
+                            op::DIVIDE | op::DIV_FLOAT   => builder.ins().fdiv(a_f64, b_f64),
+                            op::MODULO => {
+                                // a % b = a - b * trunc(a / b)
+                                let div   = builder.ins().fdiv(a_f64, b_f64);
+                                let trunc = builder.ins().trunc(div);
+                                let mul   = builder.ins().fmul(trunc, b_f64);
+                                builder.ins().fsub(a_f64, mul)
+                            }
+                            _ => unreachable!(),
+                        };
+                        let res_i64 = builder.ins().bitcast(I64, MemFlags::new(), res_f64);
+                        vstack.push(res_i64);
+                    }
+                    op::ADD_INT | op::SUB_INT | op::MUL_INT => {
+                        let b_i64 = vstack.pop().unwrap();
+                        let a_i64 = vstack.pop().unwrap();
+                        let mask_imm   = 0xFFFF000000000000_u64 as i64;
+                        let target_imm = 0xFFF8000000000000_u64 as i64;
+                        let a_masked = builder.ins().band_imm(a_i64, mask_imm);
+                        let a_ok     = builder.ins().icmp_imm(IntCC::Equal, a_masked, target_imm);
+                        let b_masked = builder.ins().band_imm(b_i64, mask_imm);
+                        let b_ok     = builder.ins().icmp_imm(IntCC::Equal, b_masked, target_imm);
+                        let both     = builder.ins().band(a_ok, b_ok);
+                        emit_deopt_brif!(both);
+                        let a_payload = builder.ins().band_imm(a_i64, 0x0000FFFFFFFFFFFF_u64 as i64);
+                        let a_32      = builder.ins().ireduce(I32, a_payload);
+                        let b_payload = builder.ins().band_imm(b_i64, 0x0000FFFFFFFFFFFF_u64 as i64);
+                        let b_32      = builder.ins().ireduce(I32, b_payload);
+                        let res_32    = match opcode {
+                            op::ADD_INT => builder.ins().iadd(a_32, b_32),
+                            op::SUB_INT => builder.ins().isub(a_32, b_32),
+                            op::MUL_INT => builder.ins().imul(a_32, b_32),
+                            _ => unreachable!(),
+                        };
+                        let res_64     = builder.ins().uextend(I64, res_32);
+                        let res_tagged = builder.ins().bor_imm(res_64, target_imm);
+                        vstack.push(res_tagged);
+                    }
+                    op::EQUAL | op::NOT_EQUAL | op::LESS | op::LESS_EQUAL
+                    | op::GREATER | op::GREATER_EQUAL => {
+                        let b_i64 = vstack.pop().unwrap();
+                        let a_i64 = vstack.pop().unwrap();
+                        let a_ok  = builder.ins().icmp_imm(IntCC::UnsignedLessThan, a_i64,
+                            0xFFF8000000000000_u64 as i64);
+                        let b_ok  = builder.ins().icmp_imm(IntCC::UnsignedLessThan, b_i64,
+                            0xFFF8000000000000_u64 as i64);
+                        let both  = builder.ins().band(a_ok, b_ok);
+                        emit_deopt_brif!(both);
+                        let a_f64    = builder.ins().bitcast(F64, MemFlags::new(), a_i64);
+                        let b_f64    = builder.ins().bitcast(F64, MemFlags::new(), b_i64);
+                        let float_cc = match opcode {
+                            op::EQUAL         => FloatCC::Equal,
+                            op::NOT_EQUAL     => FloatCC::NotEqual,
+                            op::LESS          => FloatCC::LessThan,
+                            op::LESS_EQUAL    => FloatCC::LessThanOrEqual,
+                            op::GREATER       => FloatCC::GreaterThan,
+                            op::GREATER_EQUAL => FloatCC::GreaterThanOrEqual,
+                            _ => unreachable!(),
+                        };
+                        let cmp        = builder.ins().fcmp(float_cc, a_f64, b_f64);
+                        let true_bits  = builder.ins().iconst(I64, 0xFFF9000000000001_u64 as i64);
+                        let false_bits = builder.ins().iconst(I64, 0xFFF9000000000000_u64 as i64);
+                        let result     = builder.ins().select(cmp, true_bits, false_bits);
+                        vstack.push(result);
+                    }
+                    op::NOT => {
+                        let v = vstack.pop().unwrap();
+                        // Check tag bits == bool tag (0xFFF9...)
+                        let tag    = builder.ins().band_imm(v, 0xFFFF000000000000_u64 as i64);
+                        let is_bool = builder.ins().icmp_imm(IntCC::Equal, tag,
+                            0xFFF9000000000000_u64 as i64);
+                        emit_deopt_brif!(is_bool);
+                        // Invert payload bit 0
+                        let inverted = builder.ins().bxor_imm(v, 1);
+                        vstack.push(inverted);
+                    }
+                    op::JUMP_IF_FALSE => {
+                        let offset       = op0;
+                        let target_ip    = ip + 1 + offset;
+                        let fallthru_ip  = ip + 1;
+
+                        // PEEK condition (don't pop — matches interpreter behavior)
+                        let cond = *vstack.last().unwrap();
+
+                        // Spill entire vstack to spill slots (condition included)
+                        for (i, &v) in vstack.iter().enumerate() {
+                            builder.ins().stack_store(v, spill_slots[i], 0);
+                        }
+
+                        // cond == false → 0xFFF9000000000000 → take jump
+                        let false_val  = 0xFFF9000000000000_u64 as i64;
+                        let is_false   = builder.ins().icmp_imm(IntCC::Equal, cond, false_val);
+
+                        let tgt_block = target_blocks[&target_ip];
+                        let fth_block = target_blocks[&fallthru_ip];
+                        builder.ins().brif(is_false, tgt_block, &[], fth_block, &[]);
+
+                        vstack.clear();
+                        slot_val.clear();
+                        block_terminated = true;
+                    }
+                    op::JUMP => {
+                        let offset    = op0;
+                        let target_ip = ip + 1 + offset;
+
+                        // Spill vstack before unconditional jump
+                        for (i, &v) in vstack.iter().enumerate() {
+                            builder.ins().stack_store(v, spill_slots[i], 0);
+                        }
+
+                        let tgt_block = target_blocks[&target_ip];
+                        builder.ins().jump(tgt_block, &[]);
+
+                        vstack.clear();
+                        slot_val.clear();
+                        block_terminated = true;
+                    }
+                    op::RETURN => {
+                        let ret_val = vstack.pop().unwrap();
+                        builder.ins().store(MemFlags::new(), ret_val, out_val_ptr, 0);
+                        builder.ins().jump(normal_exit, &[]);
+                        block_terminated = true;
+                    }
+                    op::POP => {
+                        vstack.pop();
+                    }
+                    op::DUP => {
+                        let v = *vstack.last().unwrap();
+                        vstack.push(v);
+                    }
+                    _ => return Err(anyhow::anyhow!("unexpected opcode {} in hot fn", opcode)),
+                }
+
+                ip += 1;
+            }
+
+            // ── normal_exit ───────────────────────────────────────────────────
+            builder.switch_to_block(normal_exit);
+            let ret_0 = builder.ins().iconst(I64, 0);
+            builder.ins().return_(&[ret_0]);
+
+            // ── deopt_exit ────────────────────────────────────────────────────
+            builder.switch_to_block(deopt_exit);
+            let zero = builder.ins().iconst(I64, 0);
+            builder.ins().store(MemFlags::new(), zero, out_val_ptr, 0);
+            let ret_1 = builder.ins().iconst(I64, 1);
+            builder.ins().return_(&[ret_1]);
+
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
+
+        self.module.define_function(func_id, &mut self.ctx)?;
+        self.module.clear_context(&mut self.ctx);
+        self.module.finalize_definitions()?;
+        let fn_ptr: HotFnFn = unsafe {
+            std::mem::transmute(self.module.get_finalized_function(func_id))
+        };
+        self.compiled_fns.insert(fn_id, fn_ptr);
         Ok(())
     }
 }

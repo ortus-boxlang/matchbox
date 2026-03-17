@@ -1,0 +1,14 @@
+// OSR (On-Stack Replacement) persistence test.
+// Runs 12,000 iterations — well above the JIT compilation threshold of 10,000.
+// The persistent loop_profiles counter in JitState accumulates across quanta,
+// ensuring the loop compiles even if quantum boundaries interrupt the run.
+// Verifies the compiled path produces the correct numerical result.
+var sum = 0.0;
+for (var i = 1; i <= 12000; i++) {
+    sum = sum + i;
+}
+// Expected: 1 + 2 + ... + 12000 = 12000 * 12001 / 2 = 72006000
+println("OSR loop sum: " & sum);
+if (sum != 72006000.0) {
+    throw "OSR loop produced wrong result: " & sum & " (expected 72006000)";
+}

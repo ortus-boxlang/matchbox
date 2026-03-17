@@ -1,0 +1,28 @@
+// Test Tier-4 hot function JIT compilation.
+// The function add() is called 200 times, crossing the threshold of 100.
+// After the 100th call the JIT compiles it; subsequent calls use native code.
+
+function add(a, b) { return a + b; }
+
+var s = 0.0;
+for (var i = 0; i < 200; i++) {
+    s = add(s, i * 1.0);
+}
+// Expected: 0+1+2+...+199 = 199*200/2 = 19900
+println(s);
+
+// Test 2: conditional branch in hot function
+function max_val(a, b) {
+    if (a > b) {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+var m = 0.0;
+for (var i = 0; i < 200; i++) {
+    m = max_val(m, i * 1.0);
+}
+// Expected: max of 0..199 = 199
+println(m);

@@ -873,17 +873,12 @@ impl VM {
         #[cfg(feature = "jit")]
         let mut jit_active: Option<(usize, jit::JitLoopFn)> = None; // (ip_at_start, fn)
         // Generic body-loop JIT state.
-        #[cfg(feature = "jit")]
-        let mut jit_body_hot_ip: usize = usize::MAX;
-        #[cfg(feature = "jit")]
-        let mut jit_body_hot_count: u64 = 0;
+        // jit_body_active is a quantum-local cache of the compiled fn pointer.
+        // Profiling counters now live in JitState (persistent across quanta).
         #[cfg(feature = "jit")]
         let mut jit_body_active: Option<(usize, jit::GenericJitLoopFn)> = None; // (ip_at_start, fn)
         // Tier-3: array iterator JIT state.
-        #[cfg(feature = "jit")]
-        let mut jit_iter_hot_ip: usize = usize::MAX;
-        #[cfg(feature = "jit")]
-        let mut jit_iter_hot_count: u64 = 0;
+        // jit_iter_active is a quantum-local cache of the compiled fn pointer.
         #[cfg(feature = "jit")]
         let mut jit_iter_active: Option<(usize, jit::ArrayIterJitFn)> = None;
 
@@ -1121,85 +1116,105 @@ impl VM {
                                 // ── Tier-2: generic numeric body ─────────────────────────────
                                 // The JIT translates each body bytecode 1:1 into Cranelift IR
                                 // and emits a real native loop — no mathematical shortcuts.
-                                if let Some((active_ip, compiled)) = jit_body_active {
-                                    if active_ip == ip_at_start {
-                                        // Fast path: call the compiled native loop.
-                                        // The function reads/writes all referenced locals
-                                        // in-place through locals_ptr.
-                                        eprintln!("[JIT] calling compiled loop at ip={}!", ip_at_start);
-                                        let deopt = unsafe { compiled(locals_ptr as *mut u64, &self.heap as *const _ as *const std::ffi::c_void) };
+                                // OSR: 't2 loop lets us activate a freshly compiled fn (or one
+                                // compiled in a prior quantum) and call it in the same dispatch.
+                                't2: loop {
+                                    let fn_id = code_ptr as usize;
 
-                                        if deopt == 1 {
-                                            eprintln!("[JIT] deoptimizing loop at ip={} (type mismatch)!", ip_at_start);
-                                            // The JIT bailed out (e.g. type guard failed).
-                                            // Resume exactly at the start of this iteration.
-                                            ip -= offset as usize;
-                                            jit_body_active = None;
-                                            jit_active = None;
-                                        } else {
-                                            // Do NOT jump back — the loop ran to completion.
-                                            jit_body_active = None;
-                                            jit_active = None;
-                                            if let Some(end) = timeslice_end {
-                                                safe_point_count = safe_point_count.wrapping_add(1);
-                                                if safe_point_count & 1023 == 0 && Instant::now() >= end {
-                                                    break 'quantum;
-                                                }
+                                    // ── OSR check: already compiled (possibly prior quantum) ──
+                                    if jit_body_active.is_none() {
+                                        if let Some(ref mut jit) = self.jit {
+                                            if let Some(f) = jit.get_compiled_generic(fn_id, ip_at_start) {
+                                                jit_body_active = Some((ip_at_start, f));
+                                                continue 't2; // re-enter to call via active path
                                             }
                                         }
-                                    } else {
-                                        ip -= offset as usize;
                                     }
-                                } else {
-                                    if jit_body_hot_ip == ip_at_start {
-                                        jit_body_hot_count += 1;
-                                        const JIT_BODY_THRESHOLD: u64 = 5_000;
-                                        if jit_body_hot_count == JIT_BODY_THRESHOLD {
-                                            let fn_id = code_ptr as usize;
-                                            // Copy body bytes (offset - 3 words before FOR_LOOP_STEP).
-                                            let body_start = ip - offset as usize;
-                                            let body_len   = offset as usize - 3;
-                                            let body_code: Vec<u32> = unsafe {
-                                                std::slice::from_raw_parts(
-                                                    code_ptr.add(body_start), body_len,
-                                                ).to_vec()
-                                            };
-                                            // Extract numeric constants referenced in the body.
-                                            let mut const_map: HashMap<u32, f64> = HashMap::new();
-                                            let ic_entries = {
-                                                let frame = self.fibers[fiber_idx].frames.last().unwrap();
-                                                let c = frame.chunk.borrow();
-                                                c.caches[body_start .. body_start + body_len].to_vec()
-                                            };
-                                            for &word in &body_code {
-                                                if (word & 0xFF) as u8 == op::CONSTANT {
-                                                    let cidx = word >> 8;
-                                                    let cv = self.read_constant(fiber_idx, cidx as usize);
-                                                    if cv.is_number() {
-                                                        const_map.insert(cidx, cv.as_number());
+
+                                    // ── Active path: call the compiled native loop ────────────
+                                    if let Some((active_ip, compiled)) = jit_body_active {
+                                        if active_ip == ip_at_start {
+                                            eprintln!("[JIT] calling compiled loop at ip={}!", ip_at_start);
+                                            let deopt = unsafe { compiled(locals_ptr as *mut u64, &self.heap as *const _ as *const std::ffi::c_void) };
+                                            if deopt == 1 {
+                                                eprintln!("[JIT] deoptimizing loop at ip={} (type mismatch)!", ip_at_start);
+                                                // JIT bailed out — resume at start of this iteration.
+                                                ip -= offset as usize;
+                                                jit_body_active = None;
+                                                jit_active = None;
+                                            } else {
+                                                // Loop ran to completion — do NOT jump back.
+                                                jit_body_active = None;
+                                                jit_active = None;
+                                                if let Some(end) = timeslice_end {
+                                                    safe_point_count = safe_point_count.wrapping_add(1);
+                                                    if safe_point_count & 1023 == 0 && Instant::now() >= end {
+                                                        break 'quantum;
                                                     }
                                                 }
                                             }
-                                            if let Some(ref mut jit) = self.jit {
-                                                jit.profile_generic(
-                                                    fn_id, ip_at_start,
-                                                    jit_body_hot_count,
-                                                    &body_code,
-                                                    &ic_entries,
-                                                    slot,
-                                                    limit.as_number(),
-                                                    &const_map,
-                                                );
-                                                if let Some(f) = jit.get_compiled_generic(fn_id, ip_at_start) {
-                                                    jit_body_active = Some((ip_at_start, f));
+                                            break 't2;
+                                        } else {
+                                            // Different loop site — fall through to back-edge.
+                                        }
+                                    }
+
+                                    // ── Profiling: accumulate count in JitState (survives quanta) ──
+                                    // Fire every JIT_BODY_THRESHOLD iterations so that profile_generic's
+                                    // internal counter (which requires 2×5000 = 10000 total) can be
+                                    // reached across multiple quanta.
+                                    const JIT_BODY_THRESHOLD: u64 = 5_000;
+                                    let reached_threshold = if let Some(ref mut jit) = self.jit {
+                                        let count = jit.inc_loop_profile(fn_id, ip_at_start);
+                                        count % JIT_BODY_THRESHOLD == 0
+                                    } else {
+                                        false
+                                    };
+
+                                    if reached_threshold {
+                                        let fn_id = code_ptr as usize;
+                                        // Copy body bytes (offset - 3 words before FOR_LOOP_STEP).
+                                        let body_start = ip - offset as usize;
+                                        let body_len   = offset as usize - 3;
+                                        let body_code: Vec<u32> = unsafe {
+                                            std::slice::from_raw_parts(
+                                                code_ptr.add(body_start), body_len,
+                                            ).to_vec()
+                                        };
+                                        // Extract numeric constants referenced in the body.
+                                        let mut const_map: HashMap<u32, f64> = HashMap::new();
+                                        let ic_entries = {
+                                            let frame = self.fibers[fiber_idx].frames.last().unwrap();
+                                            let c = frame.chunk.borrow();
+                                            c.caches[body_start .. body_start + body_len].to_vec()
+                                        };
+                                        for &word in &body_code {
+                                            if (word & 0xFF) as u8 == op::CONSTANT {
+                                                let cidx = word >> 8;
+                                                let cv = self.read_constant(fiber_idx, cidx as usize);
+                                                if cv.is_number() {
+                                                    const_map.insert(cidx, cv.as_number());
                                                 }
                                             }
-                                            jit_body_hot_count = 0;
                                         }
-                                    } else {
-                                        jit_body_hot_ip    = ip_at_start;
-                                        jit_body_hot_count = 1;
+                                        if let Some(ref mut jit) = self.jit {
+                                            jit.profile_generic(
+                                                fn_id, ip_at_start,
+                                                JIT_BODY_THRESHOLD,
+                                                &body_code,
+                                                &ic_entries,
+                                                slot,
+                                                limit.as_number(),
+                                                &const_map,
+                                            );
+                                            if let Some(f) = jit.get_compiled_generic(fn_id, ip_at_start) {
+                                                jit_body_active = Some((ip_at_start, f));
+                                                continue 't2; // immediately run the freshly compiled fn
+                                            }
+                                        }
                                     }
+
+                                    // Not compiled yet — back-edge to loop header.
                                     ip -= offset as usize;
                                     if let Some(end) = timeslice_end {
                                         safe_point_count = safe_point_count.wrapping_add(1);
@@ -1207,6 +1222,7 @@ impl VM {
                                             break 'quantum;
                                         }
                                     }
+                                    break 't2;
                                 }
                             } else {
                                 // Non-float or unhandled: plain interpreter.
@@ -2659,6 +2675,8 @@ impl VM {
                         ip += offset as usize;
                     } else {
                         // ── Tier-3 JIT fast-path (numeric arrays, no index push) ──────────
+                        // OSR: 't3 loop lets us activate an already-compiled iter fn (from
+                        // this or a prior quantum) and call it in the same dispatch.
                         #[cfg(feature = "jit")]
                         let handled_by_jit = {
                             let mut handled = false;
@@ -2667,61 +2685,79 @@ impl VM {
                                 if let Some(gc_id) = collection.as_gc_id() {
                                     let is_array = matches!(self.heap.get_opt(gc_id), Some(GcObject::Array(_)));
                                     if is_array {
-                                        if let Some((active_ip, compiled)) = jit_iter_active {
-                                            if active_ip == ip_at_start {
-                                                let (arr_ptr, arr_len) = match self.heap.get(gc_id) {
-                                                    GcObject::Array(arr) => (arr.as_ptr() as *const u64, arr.len() as u64),
-                                                    _ => unreachable!(),
-                                                };
-                                                let deopt = unsafe {
-                                                    compiled(locals_ptr as *mut u64, arr_ptr, arr_len)
-                                                };
-                                                if deopt == 0 {
-                                                    ip += offset as usize; // jump past loop
-                                                } else {
-                                                    eprintln!("[JIT] deopt iter loop ip={}", ip_at_start);
-                                                    jit_iter_active = None;
+                                        let fn_id = code_ptr as usize;
+                                        't3: loop {
+                                            // ── OSR check: compiled fn from prior quantum ──────
+                                            if jit_iter_active.is_none() {
+                                                if let Some(ref mut jit) = self.jit {
+                                                    if let Some(f) = jit.get_compiled_iter(fn_id, ip_at_start) {
+                                                        jit_iter_active = Some((ip_at_start, f));
+                                                        continue 't3;
+                                                    }
                                                 }
-                                                handled = deopt == 0;
                                             }
-                                        } else {
-                                            // Profiling path
-                                            if jit_iter_hot_ip == ip_at_start {
-                                                jit_iter_hot_count += 1;
-                                                const JIT_ITER_THRESHOLD: u64 = 5_000;
-                                                if jit_iter_hot_count == JIT_ITER_THRESHOLD {
-                                                    let fn_id      = code_ptr as usize;
-                                                    let body_start = ip_at_start + 3;
-                                                    let body_len   = offset as usize - 1;
-                                                    let body_code: Vec<u32> = unsafe {
-                                                        std::slice::from_raw_parts(code_ptr.add(body_start), body_len).to_vec()
+
+                                            // ── Active path: call the compiled native iter loop ─
+                                            if let Some((active_ip, compiled)) = jit_iter_active {
+                                                if active_ip == ip_at_start {
+                                                    let (arr_ptr, arr_len) = match self.heap.get(gc_id) {
+                                                        GcObject::Array(arr) => (arr.as_ptr() as *const u64, arr.len() as u64),
+                                                        _ => unreachable!(),
                                                     };
-                                                    let mut const_map: HashMap<u32, f64> = HashMap::new();
-                                                    for &word in &body_code {
-                                                        if (word & 0xFF) as u8 == op::CONSTANT {
-                                                            let cidx = word >> 8;
-                                                            let cv = self.read_constant(fiber_idx, cidx as usize);
-                                                            if cv.is_number() {
-                                                                const_map.insert(cidx, cv.as_number());
-                                                            }
-                                                        }
+                                                    let deopt = unsafe {
+                                                        compiled(locals_ptr as *mut u64, arr_ptr, arr_len)
+                                                    };
+                                                    if deopt == 0 {
+                                                        ip += offset as usize; // jump past loop
+                                                    } else {
+                                                        eprintln!("[JIT] deopt iter loop ip={}", ip_at_start);
+                                                        jit_iter_active = None;
                                                     }
-                                                    if let Some(ref mut jit) = self.jit {
-                                                        jit.profile_iter(
-                                                            fn_id, ip_at_start, cursor_slot,
-                                                            jit_iter_hot_count,
-                                                            &body_code, &const_map,
-                                                        );
-                                                        if let Some(f) = jit.get_compiled_iter(fn_id, ip_at_start) {
-                                                            jit_iter_active = Some((ip_at_start, f));
-                                                        }
-                                                    }
-                                                    jit_iter_hot_count = 0;
+                                                    handled = deopt == 0;
+                                                    break 't3;
                                                 }
-                                            } else {
-                                                jit_iter_hot_ip    = ip_at_start;
-                                                jit_iter_hot_count = 1;
                                             }
+
+                                            // ── Profiling: accumulate count in JitState ────────
+                                            // Fire every JIT_ITER_THRESHOLD iterations so that
+                                            // profile_iter's internal counter can reach 10000 across quanta.
+                                            const JIT_ITER_THRESHOLD: u64 = 5_000;
+                                            let reached_threshold = if let Some(ref mut jit) = self.jit {
+                                                let count = jit.inc_iter_profile(fn_id, ip_at_start);
+                                                count % JIT_ITER_THRESHOLD == 0
+                                            } else {
+                                                false
+                                            };
+
+                                            if reached_threshold {
+                                                let body_start = ip_at_start + 3;
+                                                let body_len   = offset as usize - 1;
+                                                let body_code: Vec<u32> = unsafe {
+                                                    std::slice::from_raw_parts(code_ptr.add(body_start), body_len).to_vec()
+                                                };
+                                                let mut const_map: HashMap<u32, f64> = HashMap::new();
+                                                for &word in &body_code {
+                                                    if (word & 0xFF) as u8 == op::CONSTANT {
+                                                        let cidx = word >> 8;
+                                                        let cv = self.read_constant(fiber_idx, cidx as usize);
+                                                        if cv.is_number() {
+                                                            const_map.insert(cidx, cv.as_number());
+                                                        }
+                                                    }
+                                                }
+                                                if let Some(ref mut jit) = self.jit {
+                                                    jit.profile_iter(
+                                                        fn_id, ip_at_start, cursor_slot,
+                                                        JIT_ITER_THRESHOLD,
+                                                        &body_code, &const_map,
+                                                    );
+                                                    if let Some(f) = jit.get_compiled_iter(fn_id, ip_at_start) {
+                                                        jit_iter_active = Some((ip_at_start, f));
+                                                        continue 't3; // immediately run freshly compiled fn
+                                                    }
+                                                }
+                                            }
+                                            break 't3;
                                         }
                                     }
                                 }
@@ -3065,6 +3101,60 @@ impl VM {
                     for arg in final_args {
                         self.fibers[fiber_idx].stack.push(arg);
                     }
+
+                    // ── Tier-4 hot function fast-path ─────────────────────────
+                    #[cfg(feature = "jit")]
+                    {
+                        let compiled_opt = if let Some(ref jit) = self.jit {
+                            let fn_id = Rc::as_ptr(&func) as usize;
+                            jit.get_compiled_fn(fn_id)
+                        } else {
+                            None
+                        };
+
+                        let compiled = if compiled_opt.is_none() {
+                            if let Some(ref mut jit) = self.jit {
+                                let fn_id  = Rc::as_ptr(&func) as usize;
+                                let code   = func.chunk.code.as_slice();
+                                let consts = func.chunk.constants.as_slice();
+                                jit.profile_fn(fn_id, code, consts, func.arity)
+                            } else {
+                                None
+                            }
+                        } else {
+                            compiled_opt
+                        };
+
+                        if let Some(compiled_fn) = compiled {
+                            let stack_base = self.fibers[fiber_idx].stack.len()
+                                - func.arity as usize;
+                            // Reserve extra space for additional locals the function may use
+                            self.fibers[fiber_idx].stack.reserve(64);
+                            let locals_raw = unsafe {
+                                self.fibers[fiber_idx].stack.as_mut_ptr().add(stack_base)
+                                    as *mut u64
+                            };
+                            let heap_raw = &self.heap as *const _ as *const std::ffi::c_void;
+                            let mut ret_bits: u64 = 0;
+
+                            let status = unsafe {
+                                compiled_fn(locals_raw, heap_raw, &mut ret_bits)
+                            };
+
+                            if status == 0 {
+                                // Success: remove the function object + args, push return value
+                                let func_slot = stack_base - 1;
+                                self.fibers[fiber_idx].stack.truncate(func_slot);
+                                self.fibers[fiber_idx].stack.push(unsafe {
+                                    std::mem::transmute::<u64, BxValue>(ret_bits)
+                                });
+                                return Ok(());
+                            }
+                            // status == 1 → deopt: fall through to normal frame creation
+                            eprintln!("[JIT] Tier-4 deopt fn_id=0x{:x}", Rc::as_ptr(&func) as usize);
+                        }
+                    }
+                    // ── End Tier-4 ────────────────────────────────────────────
 
                     let sub_chunk = func.chunk.clone();
                     let constant_count = sub_chunk.constants.len();

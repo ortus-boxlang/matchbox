@@ -92,6 +92,45 @@ fn jit_iter() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn jit_hot_fn() {
+    // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
+    let builder = std::thread::Builder::new().name("jit_hot_fn".into()).stack_size(8 * 1024 * 1024);
+    let handler = builder.spawn(|| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("scripts")
+            .join("jit_hot_fn.bxs");
+
+        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+            panic!("jit_hot_fn.bxs failed: {}", e);
+        }
+    }).unwrap();
+    handler.join().unwrap();
+}
+
+#[test]
+#[cfg(feature = "jit")]
+fn jit_osr_loop() {
+    // OSR test: persistent JIT profiling counters survive across run_fiber quanta.
+    // Runs 12,000 iterations (above the 10,000 compile threshold) and verifies the
+    // compiled loop produces the correct accumulated sum.
+    // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
+    let builder = std::thread::Builder::new().name("jit_osr_loop".into()).stack_size(8 * 1024 * 1024);
+    let handler = builder.spawn(|| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("scripts")
+            .join("jit_osr_loop.bxs");
+
+        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+            panic!("jit_osr_loop.bxs failed: {}", e);
+        }
+    }).unwrap();
+    handler.join().unwrap();
+}
+
+#[test]
 fn test_vm_interface_fail() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
