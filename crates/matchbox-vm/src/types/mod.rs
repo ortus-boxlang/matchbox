@@ -16,18 +16,17 @@ impl BxValue {
     // ------------------------------------------------------------------------
     // Constants & Masks (NaN-Boxing)
     // ------------------------------------------------------------------------
-    const TAGGED_BASE: u64 = 0xFFF0000000000000;
-    const TAG_SHIFT: u64 = 48;
-    const PAYLOAD_MASK: u64 = 0x0000FFFFFFFFFFFF;
-    
-    const TAG_INT: u64  = 0x8;
-    const TAG_BOOL: u64 = 0x9;
-    const TAG_NULL: u64 = 0xA;
-    const TAG_PTR: u64  = 0xB;
+    pub const TAGGED_BASE: u64 = 0xFFF0000000000000;
+    pub const TAG_SHIFT: u64 = 48;
+    pub const PAYLOAD_MASK: u64 = 0x0000FFFFFFFFFFFF;
+
+    pub const TAG_INT: u64  = 0x8;
+    pub const TAG_BOOL: u64 = 0x9;
+    pub const TAG_NULL: u64 = 0xA;
+    pub const TAG_PTR: u64  = 0xB;
 
     #[inline(always)]
-    fn tag(tag: u64, payload: u64) -> u64 {
-        Self::TAGGED_BASE | (tag << Self::TAG_SHIFT) | payload
+    fn tag(tag: u64, payload: u64) -> u64 {        Self::TAGGED_BASE | (tag << Self::TAG_SHIFT) | payload
     }
 
     // ------------------------------------------------------------------------

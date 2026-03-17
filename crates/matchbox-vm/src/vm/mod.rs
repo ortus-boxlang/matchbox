@@ -1067,8 +1067,8 @@ impl VM {
                         // Uses local counters (no per-iteration HashMap) for near-zero overhead.
                         #[cfg(feature = "jit")]
                         {
-                            if next_val.is_number() && limit.is_number() && offset == 3 {
-                                // ── Tier-1: empty self-loop ──────────────────────────────────
+                            if next_val.is_float() && limit.is_float() && offset == 3 {
+                                // ── Tier-1: empty self-loop (floats only for now) ────────────────
                                 if let Some((active_ip, compiled)) = jit_active {
                                     if active_ip == ip_at_start {
                                         let final_val = unsafe {
@@ -1079,6 +1079,8 @@ impl VM {
                                                 BxValue::new_number(final_val);
                                         }
                                         // Loop complete — do NOT jump back.
+                                        jit_active = None;
+                                        jit_body_active = None;
                                     } else {
                                         ip -= offset as usize;
                                     }
@@ -1117,12 +1119,25 @@ impl VM {
                                         // Fast path: call the compiled native loop.
                                         // The function reads/writes all referenced locals
                                         // in-place through locals_ptr.
-                                        unsafe { compiled(locals_ptr as *mut u64) };
-                                        // Do NOT jump back — the loop ran to completion.
-                                        if let Some(end) = timeslice_end {
-                                            safe_point_count = safe_point_count.wrapping_add(1);
-                                            if safe_point_count & 1023 == 0 && Instant::now() >= end {
-                                                break 'quantum;
+                                        eprintln!("[JIT] calling compiled loop at ip={}!", ip_at_start);
+                                        let deopt = unsafe { compiled(locals_ptr as *mut u64) };
+                                        
+                                        if deopt == 1 {
+                                            eprintln!("[JIT] deoptimizing loop at ip={} (type mismatch)!", ip_at_start);
+                                            // The JIT bailed out (e.g. type guard failed).
+                                            // Resume exactly at the start of this iteration.
+                                            ip -= offset as usize;
+                                            jit_body_active = None;
+                                            jit_active = None;
+                                        } else {
+                                            // Do NOT jump back — the loop ran to completion.
+                                            jit_body_active = None;
+                                            jit_active = None;
+                                            if let Some(end) = timeslice_end {
+                                                safe_point_count = safe_point_count.wrapping_add(1);
+                                                if safe_point_count & 1023 == 0 && Instant::now() >= end {
+                                                    break 'quantum;
+                                                }
                                             }
                                         }
                                     } else {
@@ -1132,7 +1147,7 @@ impl VM {
                                     if jit_body_hot_ip == ip_at_start {
                                         jit_body_hot_count += 1;
                                         const JIT_BODY_THRESHOLD: u64 = 5_000;
-                                        if jit_body_hot_count >= JIT_BODY_THRESHOLD {
+                                        if jit_body_hot_count == JIT_BODY_THRESHOLD {
                                             let fn_id = code_ptr as usize;
                                             // Copy body bytes (offset - 3 words before FOR_LOOP_STEP).
                                             let body_start = ip - offset as usize;

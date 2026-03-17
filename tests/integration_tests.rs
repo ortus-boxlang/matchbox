@@ -56,6 +56,7 @@ script_test!(bvm_features, "bvm_features.bxs");
 script_test!(vm_safe_nav_elvis, "vm_safe_nav_elvis.bxs");
 script_test!(vm_switch, "vm_switch.bxs");
 script_test!(vm_while, "vm_while.bxs");
+script_test!(jit_type_guards, "jit_type_guards.bxs");
 
 #[test]
 fn test_vm_interface_fail() {
