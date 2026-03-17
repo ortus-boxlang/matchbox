@@ -1,0 +1,29 @@
+// Tier-2 JIT 2-entry PIC test.
+// A single function's FOR_LOOP_STEP site sees two struct shapes,
+// promoting the IC to Polymorphic{count:2} before compilation fires.
+
+function sum_x(obj, n) {
+    var total = 0.0;
+    for (var i = 0; i < n; i++) {
+        total = total + obj.x;
+    }
+    return total;
+}
+
+var a = { x: 1.0 };
+var b = { x: 2.0, pad: 0.0 };  // different shape: x at idx 0, pad at idx 1
+
+// Warm-up pass 1: 4000 iters with shape A -> IC = Monomorphic{shapeA, 0}
+sum_x(a, 4000);
+
+// Warm-up pass 2: 4000 iters with shape B -> IC = Polymorphic{count:2, [(shapeA,0),(shapeB,0)]}
+// Total iters at this site: 8000 (below 10k threshold; interpreter only)
+sum_x(b, 4000);
+
+// Hot pass: 2001 more iters with shape A -> total crosses 10000, JIT fires.
+// JIT snapshots Polymorphic{count:2} and emits 2-entry PIC.
+// Remaining iterations run in JIT.
+var result = sum_x(a, 2001);
+
+// 2001 iterations of a.x = 1.0 each -> 2001.0
+println(result);

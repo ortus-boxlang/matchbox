@@ -152,6 +152,26 @@ fn jit_leaf_call() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn jit_pic_member() {
+    // 2-entry PIC: Tier-2 loop over a function called with two different
+    // struct shapes, IC promoted to Polymorphic before JIT compilation fires.
+    let builder = std::thread::Builder::new()
+        .name("jit_pic_member".into())
+        .stack_size(8 * 1024 * 1024);
+    let handler = builder.spawn(|| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("scripts")
+            .join("jit_pic_member.bxs");
+        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+            panic!("jit_pic_member.bxs failed: {}", e);
+        }
+    }).unwrap();
+    handler.join().unwrap();
+}
+
+#[test]
 fn test_vm_interface_fail() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

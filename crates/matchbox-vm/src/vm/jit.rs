@@ -117,6 +117,42 @@ pub unsafe extern "C" fn jit_ic_member_fallback(
     1 // Deopt
 }
 
+pub unsafe extern "C" fn jit_get_shape_id(
+    heap_ptr: *const std::ffi::c_void,
+    gc_id: u64,
+) -> u32 {
+    if (gc_id & !crate::types::BxValue::PAYLOAD_MASK) !=
+        (crate::types::BxValue::TAGGED_BASE | (crate::types::BxValue::TAG_PTR << crate::types::BxValue::TAG_SHIFT)) {
+        return u32::MAX;
+    }
+    let heap = &*(heap_ptr as *const crate::vm::gc::Heap);
+    let id = (gc_id & crate::types::BxValue::PAYLOAD_MASK) as usize;
+    match heap.get_opt(id) {
+        Some(crate::vm::gc::GcObject::Struct(s))   => s.shape_id as u32,
+        Some(crate::vm::gc::GcObject::Instance(i)) => i.shape_id as u32,
+        _ => u32::MAX,
+    }
+}
+
+pub unsafe extern "C" fn jit_load_prop_at(
+    heap_ptr: *const std::ffi::c_void,
+    gc_id: u64,
+    prop_idx: u32,
+    out_val: *mut u64,
+) -> u64 {
+    let heap = &*(heap_ptr as *const crate::vm::gc::Heap);
+    let id = (gc_id & crate::types::BxValue::PAYLOAD_MASK) as usize;
+    let props = match heap.get_opt(id) {
+        Some(crate::vm::gc::GcObject::Struct(s))   => &s.properties,
+        Some(crate::vm::gc::GcObject::Instance(i)) => &i.properties,
+        _ => return 1,
+    };
+    match props.get(prop_idx as usize) {
+        Some(v) => { *out_val = v.to_bits(); 0 }
+        None    => 1,
+    }
+}
+
 // ── JitState ──────────────────────────────────────────────────────────────────
 
 pub struct JitState {
@@ -165,6 +201,8 @@ impl JitState {
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         builder.symbol("jit_ic_member_fallback", jit_ic_member_fallback as *const u8);
         builder.symbol("jit_resolve_fn", jit_resolve_fn as *const u8);
+        builder.symbol("jit_get_shape_id", jit_get_shape_id as *const u8);
+        builder.symbol("jit_load_prop_at", jit_load_prop_at as *const u8);
         let module = JITModule::new(builder);
         let ctx = module.make_context();
 
@@ -329,9 +367,9 @@ impl JitState {
                 op::ADD | op::ADD_FLOAT | op::ADD_INT
                 | op::SUBTRACT | op::MULTIPLY | op::DIVIDE => {}
                 op::MEMBER => {
-                    // Only support Monomorphic ICs
                     match &ic_entries[idx] {
                         Some(crate::vm::chunk::IcEntry::Monomorphic { .. }) => {}
+                        Some(crate::vm::chunk::IcEntry::Polymorphic { count, .. }) if *count <= 2 => {}
                         _ => return false,
                     }
                 }
@@ -411,6 +449,24 @@ impl JitState {
             ext_sig.returns.push(AbiParam::new(I64)); // status
             let ext_func_id = self.module.declare_function("jit_ic_member_fallback", Linkage::Import, &ext_sig).unwrap();
             let ext_func_ref = self.module.declare_func_in_func(ext_func_id, &mut builder.func);
+
+            // jit_get_shape_id(heap_ptr, gc_id) -> u32
+            let mut get_shape_sig = self.module.make_signature();
+            get_shape_sig.params.push(AbiParam::new(ptr_type));
+            get_shape_sig.params.push(AbiParam::new(I64));
+            get_shape_sig.returns.push(AbiParam::new(I32));
+            let get_shape_id = self.module.declare_function("jit_get_shape_id", Linkage::Import, &get_shape_sig).unwrap();
+            let get_shape_ref = self.module.declare_func_in_func(get_shape_id, &mut builder.func);
+
+            // jit_load_prop_at(heap_ptr, gc_id, prop_idx, out_val) -> u64
+            let mut load_prop_sig = self.module.make_signature();
+            load_prop_sig.params.push(AbiParam::new(ptr_type));
+            load_prop_sig.params.push(AbiParam::new(I64));
+            load_prop_sig.params.push(AbiParam::new(I32));
+            load_prop_sig.params.push(AbiParam::new(ptr_type));
+            load_prop_sig.returns.push(AbiParam::new(I64));
+            let load_prop_id = self.module.declare_function("jit_load_prop_at", Linkage::Import, &load_prop_sig).unwrap();
+            let load_prop_ref = self.module.declare_func_in_func(load_prop_id, &mut builder.func);
 
             // ── entry_block ──────────────────────────────────────────────────
             builder.switch_to_block(entry_block);
@@ -540,33 +596,99 @@ impl JitState {
                     }
                     op::MEMBER => {
                         let base_val = vstack.pop().unwrap();
-                        let (expected_shape, prop_idx) = match &ic_entries[idx] {
-                            Some(crate::vm::chunk::IcEntry::Monomorphic { shape_id, index }) => (*shape_id, *index),
-                            _ => unreachable!(),
-                        };
-                        
                         let out_val_slot = builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(cranelift_codegen::ir::StackSlotKind::ExplicitSlot, 8, 3));
                         let out_val_ptr = builder.ins().stack_addr(ptr_type, out_val_slot, 0);
-                        
-                        let shape_arg = builder.ins().iconst(I32, expected_shape as i64);
-                        let idx_arg = builder.ins().iconst(I32, prop_idx as i64);
-                        
-                        let call_inst = builder.ins().call(ext_func_ref, &[heap_ptr, base_val, shape_arg, idx_arg, out_val_ptr]);
-                        let status = builder.inst_results(call_inst)[0];
-                        
-                        let is_deopt = builder.ins().icmp_imm(IntCC::Equal, status, 1);
-                        
-                        let op_block = builder.create_block();
-                        let mut current_header_args: Vec<BlockArg> = vec![BlockArg::from(heap_ptr)];
-                        current_header_args.extend(referenced.iter().map(|s| BlockArg::from(*slot_val.get(s).unwrap())));
-                        
-                        builder.ins().brif(is_deopt, deopt_exit, &current_header_args, op_block, &[]);
-                        
-                        builder.switch_to_block(op_block);
-                        builder.seal_block(op_block);
-                        
-                        let loaded_val = builder.ins().load(I64, MemFlags::new(), out_val_ptr, 0);
-                        vstack.push(loaded_val);
+
+                        match &ic_entries[idx] {
+                            Some(crate::vm::chunk::IcEntry::Monomorphic { shape_id, index }) => {
+                                let expected_shape = *shape_id;
+                                let prop_idx = *index;
+
+                                let shape_arg = builder.ins().iconst(I32, expected_shape as i64);
+                                let idx_arg = builder.ins().iconst(I32, prop_idx as i64);
+
+                                let call_inst = builder.ins().call(ext_func_ref, &[heap_ptr, base_val, shape_arg, idx_arg, out_val_ptr]);
+                                let status = builder.inst_results(call_inst)[0];
+
+                                let is_deopt = builder.ins().icmp_imm(IntCC::Equal, status, 1);
+
+                                let op_block = builder.create_block();
+                                let mut current_header_args: Vec<BlockArg> = vec![BlockArg::from(heap_ptr)];
+                                current_header_args.extend(referenced.iter().map(|s| BlockArg::from(*slot_val.get(s).unwrap())));
+
+                                builder.ins().brif(is_deopt, deopt_exit, &current_header_args, op_block, &[]);
+
+                                builder.switch_to_block(op_block);
+                                builder.seal_block(op_block);
+
+                                let loaded_val = builder.ins().load(I64, MemFlags::new(), out_val_ptr, 0);
+                                vstack.push(loaded_val);
+                            }
+                            Some(crate::vm::chunk::IcEntry::Polymorphic { entries, count }) => {
+                                let (shape0, idx0) = entries[0];
+                                let (shape1, idx1) = if *count >= 2 { entries[1] } else { entries[0] };
+
+                                // get actual shape_id from heap
+                                let get_call = builder.ins().call(get_shape_ref, &[heap_ptr, base_val]);
+                                let actual_shape = builder.inst_results(get_call)[0]; // I32
+
+                                let fast0    = builder.create_block();
+                                let check1   = builder.create_block();
+                                let fast1    = builder.create_block();
+                                let pic_done = builder.create_block();
+                                builder.append_block_param(pic_done, I64); // merged result
+
+                                let mut current_header_args: Vec<BlockArg> = vec![BlockArg::from(heap_ptr)];
+                                current_header_args.extend(referenced.iter().map(|s| BlockArg::from(*slot_val.get(s).unwrap())));
+
+                                // branch: shape0 hit -> fast0, else -> check1
+                                let s0_const = builder.ins().iconst(I32, shape0 as i64);
+                                let hit0 = builder.ins().icmp(IntCC::Equal, actual_shape, s0_const);
+                                builder.ins().brif(hit0, fast0, &[], check1, &[]);
+
+                                // fast0: load prop at idx0
+                                builder.switch_to_block(fast0);
+                                builder.seal_block(fast0);
+                                let i0_arg = builder.ins().iconst(I32, idx0 as i64);
+                                let lp0_call = builder.ins().call(load_prop_ref, &[heap_ptr, base_val, i0_arg, out_val_ptr]);
+                                let lp0_status = builder.inst_results(lp0_call)[0];
+                                let lp0_fail = builder.ins().icmp_imm(IntCC::NotEqual, lp0_status, 0);
+                                let lp0_ok = builder.create_block();
+                                builder.ins().brif(lp0_fail, deopt_exit, &current_header_args, lp0_ok, &[]);
+                                builder.switch_to_block(lp0_ok);
+                                builder.seal_block(lp0_ok);
+                                let v0 = builder.ins().load(I64, MemFlags::new(), out_val_ptr, 0);
+                                builder.ins().jump(pic_done, &[BlockArg::from(v0)]);
+
+                                // check1: compare shape1, deopt on miss
+                                builder.switch_to_block(check1);
+                                builder.seal_block(check1);
+                                let s1_const = builder.ins().iconst(I32, shape1 as i64);
+                                let hit1 = builder.ins().icmp(IntCC::Equal, actual_shape, s1_const);
+                                builder.ins().brif(hit1, fast1, &[], deopt_exit, &current_header_args);
+
+                                // fast1: load prop at idx1
+                                builder.switch_to_block(fast1);
+                                builder.seal_block(fast1);
+                                let i1_arg = builder.ins().iconst(I32, idx1 as i64);
+                                let lp1_call = builder.ins().call(load_prop_ref, &[heap_ptr, base_val, i1_arg, out_val_ptr]);
+                                let lp1_status = builder.inst_results(lp1_call)[0];
+                                let lp1_fail = builder.ins().icmp_imm(IntCC::NotEqual, lp1_status, 0);
+                                let lp1_ok = builder.create_block();
+                                builder.ins().brif(lp1_fail, deopt_exit, &current_header_args, lp1_ok, &[]);
+                                builder.switch_to_block(lp1_ok);
+                                builder.seal_block(lp1_ok);
+                                let v1 = builder.ins().load(I64, MemFlags::new(), out_val_ptr, 0);
+                                builder.ins().jump(pic_done, &[BlockArg::from(v1)]);
+
+                                // pic_done: block param carries merged result
+                                builder.switch_to_block(pic_done);
+                                builder.seal_block(pic_done);
+                                let result = builder.block_params(pic_done)[0];
+                                vstack.push(result);
+                            }
+                            _ => unreachable!("body_is_translatable checked this"),
+                        }
                     }
                     _ => unreachable!("body_is_translatable checked this"),
                 }
