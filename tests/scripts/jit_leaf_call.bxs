@@ -1,0 +1,17 @@
+// Test: Tier-4 JIT compiles functions that call other compiled functions
+// via direct pointer dispatch (no BoxLang CallFrame creation).
+//
+// 'compute(x, fn)' takes the function as a parameter (a local slot), so
+// the bytecode for the body is: GET_LOCAL fn, GET_LOCAL x, CONSTANT 1.0, CALL 2, RETURN
+// — all instructions supported by fn_is_translatable.
+
+function add(a, b) { return a + b; }
+function compute(x, fn) { return fn(x, 1.0); }
+
+// Warm up both functions past JIT_FN_THRESHOLD (100)
+var result = 0.0;
+for (var i = 0; i < 200; i++) {
+    result = compute(i * 1.0, add);
+}
+// compute(199.0, add) = add(199.0, 1.0) = 200.0
+println(result);  // should print 200

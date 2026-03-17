@@ -131,6 +131,27 @@ fn jit_osr_loop() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn jit_leaf_call() {
+    // Test Tier-4 JIT: compiled function calls another compiled function via
+    // direct pointer dispatch. compute(x, fn) takes fn as a parameter (GET_LOCAL),
+    // so the CALL instruction is reachable by fn_is_translatable.
+    // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
+    let builder = std::thread::Builder::new().name("jit_leaf_call".into()).stack_size(8 * 1024 * 1024);
+    let handler = builder.spawn(|| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("scripts")
+            .join("jit_leaf_call.bxs");
+
+        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+            panic!("jit_leaf_call.bxs failed: {}", e);
+        }
+    }).unwrap();
+    handler.join().unwrap();
+}
+
+#[test]
 fn test_vm_interface_fail() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

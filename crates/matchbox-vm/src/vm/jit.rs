@@ -12,6 +12,7 @@
 ///     back to the VM's locals array on exit.  This eliminates interpreter
 ///     dispatch overhead without cheating on the iteration count.
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
 
 use cranelift_codegen::ir::{AbiParam, BlockArg, InstBuilder, MemFlags, UserFuncName};
@@ -53,6 +54,28 @@ pub type ArrayIterJitFn = unsafe extern "C" fn(*mut u64, *const u64, u64) -> u64
 pub type HotFnFn = unsafe extern "C" fn(*mut u64, *const std::ffi::c_void, *mut u64) -> u64;
 
 const JIT_FN_THRESHOLD: u64 = 100;
+
+thread_local! {
+    static JIT_COMPILED_FNS_BY_GCID: Cell<*const HashMap<usize, HotFnFn>>
+        = Cell::new(std::ptr::null());
+}
+
+pub fn set_compiled_fns_ptr(ptr: *const HashMap<usize, HotFnFn>) {
+    JIT_COMPILED_FNS_BY_GCID.with(|p| p.set(ptr));
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn jit_resolve_fn(gc_id: u64) -> u64 {
+    JIT_COMPILED_FNS_BY_GCID.with(|p| {
+        let map = p.get();
+        if map.is_null() { return 0u64; }
+        unsafe {
+            (*map).get(&(gc_id as usize))
+                .map(|&f| f as usize as u64)
+                .unwrap_or(0)
+        }
+    })
+}
 
 pub unsafe extern "C" fn jit_ic_member_fallback(
     heap_ptr: *const std::ffi::c_void,
@@ -115,8 +138,9 @@ pub struct JitState {
     compiled_iters: HashMap<(usize, usize), ArrayIterJitFn>,
 
     // Tier-4: hot function compilation
-    fn_counts:    HashMap<usize, u64>,      // key = Rc::as_ptr(func) as usize
-    compiled_fns: HashMap<usize, HotFnFn>, // same key → compiled function pointer
+    fn_counts:            HashMap<usize, u64>,      // key = Rc::as_ptr(func) as usize
+    compiled_fns:         HashMap<usize, HotFnFn>,  // same key → compiled function pointer
+    pub compiled_fns_by_gcid: HashMap<usize, HotFnFn>, // gc_id → compiled function pointer
 
     // OSR: persistent per-site iteration counters keyed on (fn_id, ip_at_start).
     // Survive across run_fiber quanta so fiber-scheduled loops can cross time-slice
@@ -140,6 +164,7 @@ impl JitState {
 
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         builder.symbol("jit_ic_member_fallback", jit_ic_member_fallback as *const u8);
+        builder.symbol("jit_resolve_fn", jit_resolve_fn as *const u8);
         let module = JITModule::new(builder);
         let ctx = module.make_context();
 
@@ -154,8 +179,9 @@ impl JitState {
             compiled_generic: HashMap::new(),
             iter_counts:    HashMap::new(),
             compiled_iters: HashMap::new(),
-            fn_counts:    HashMap::new(),
-            compiled_fns: HashMap::new(),
+            fn_counts:            HashMap::new(),
+            compiled_fns:         HashMap::new(),
+            compiled_fns_by_gcid: HashMap::new(),
             loop_profiles: HashMap::new(),
             iter_profiles: HashMap::new(),
         })
@@ -951,6 +977,7 @@ impl JitState {
     pub fn profile_fn(
         &mut self,
         fn_id:  usize,
+        gc_id:  usize,
         code:   &[u32],
         consts: &[crate::types::Constant],
         arity:  u32,
@@ -961,7 +988,7 @@ impl JitState {
             if !Self::fn_is_translatable(code) {
                 return None;
             }
-            match self.compile_hot_fn(fn_id, code, consts, arity) {
+            match self.compile_hot_fn(fn_id, gc_id, code, consts, arity) {
                 Ok(_) => {
                     eprintln!("[JIT] compiled hot fn fn_id=0x{:x}", fn_id);
                     return self.compiled_fns.get(&fn_id).copied();
@@ -989,7 +1016,7 @@ impl JitState {
 
             match opcode {
                 // Rejected opcodes
-                op::CALL | op::CALL_NAMED | op::INVOKE | op::INVOKE_NAMED | op::NEW
+                op::CALL_NAMED | op::INVOKE | op::INVOKE_NAMED | op::NEW
                 | op::ARRAY | op::STRUCT | op::INDEX | op::SET_INDEX
                 | op::MEMBER | op::SET_MEMBER | op::INC_MEMBER | op::STRING_CONCAT
                 | op::ITER_NEXT | op::FOR_LOOP_STEP | op::LOOP
@@ -1019,7 +1046,7 @@ impl JitState {
                 | op::DIVIDE | op::DIV_FLOAT | op::MODULO
                 | op::EQUAL | op::NOT_EQUAL | op::LESS | op::LESS_EQUAL
                 | op::GREATER | op::GREATER_EQUAL
-                | op::NOT | op::RETURN | op::POP | op::DUP => {}
+                | op::NOT | op::RETURN | op::POP | op::DUP | op::CALL => {}
 
                 _ => return false,
             }
@@ -1032,11 +1059,24 @@ impl JitState {
     fn compile_hot_fn(
         &mut self,
         fn_id:  usize,
+        gc_id:  usize,
         code:   &[u32],
         consts: &[crate::types::Constant],
         _arity: u32,
     ) -> anyhow::Result<()> {
         use cranelift_codegen::ir::{Block, StackSlot, StackSlotData, StackSlotKind};
+
+        // ── Pre-scan: max callee arg count for CALL instructions ──────────────
+        let max_callee_args = {
+            let mut max = 0usize;
+            for &w in code {
+                if (w & 0xFF) as u8 == op::CALL {
+                    max = max.max((w >> 8) as usize);
+                }
+            }
+            max
+        };
+        let has_calls = max_callee_args > 0 || code.iter().any(|&w| (w & 0xFF) as u8 == op::CALL);
 
         // ── Pass 1a: collect branch targets ──────────────────────────────────
         let mut branch_targets: BTreeSet<usize> = BTreeSet::new();
@@ -1104,6 +1144,10 @@ impl JitState {
                     op::RETURN => { break; }
                     op::GET_LOCAL | op::CONSTANT | op::DUP => depth += 1,
                     op::SET_LOCAL_POP | op::POP => depth -= 1,
+                    op::CALL => {
+                        // pops (op02 + 1) values (args + func), pushes 1 → net -op02
+                        depth -= op02 as i32;
+                    }
                     op::ADD | op::ADD_INT | op::ADD_FLOAT
                     | op::SUBTRACT | op::SUB_INT | op::SUB_FLOAT
                     | op::MULTIPLY | op::MUL_INT | op::MUL_FLOAT
@@ -1159,8 +1203,49 @@ impl JitState {
             builder.seal_block(entry_block);
 
             let locals_ptr  = builder.block_params(entry_block)[0];
-            let _heap_ptr   = builder.block_params(entry_block)[1];
+            let heap_ptr    = builder.block_params(entry_block)[1];
             let out_val_ptr = builder.block_params(entry_block)[2];
+
+            // ── Callee-call infrastructure (only when function has CALL opcodes) ─
+            let callee_locals_slot: Option<StackSlot>;
+            let call_out_val_slot: Option<StackSlot>;
+            let resolve_sig_ref: Option<cranelift_codegen::ir::SigRef>;
+            let hotfn_sig_ref: Option<cranelift_codegen::ir::SigRef>;
+            let resolve_fn_addr_val: Option<cranelift_codegen::ir::Value>;
+
+            if has_calls {
+                let slot_size = (max_callee_args.max(1) + 64) * 8;
+                callee_locals_slot = Some(builder.create_sized_stack_slot(
+                    StackSlotData::new(StackSlotKind::ExplicitSlot, slot_size as u32, 3)
+                ));
+                call_out_val_slot = Some(builder.create_sized_stack_slot(
+                    StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3)
+                ));
+
+                // Signature for jit_resolve_fn(gc_id: i64) -> i64
+                let mut resolve_sig = self.module.make_signature();
+                resolve_sig.params.push(AbiParam::new(I64));
+                resolve_sig.returns.push(AbiParam::new(I64));
+                resolve_sig_ref = Some(builder.import_signature(resolve_sig));
+
+                // Signature for HotFnFn(locals_ptr, heap_ptr, out_val_ptr) -> i64
+                let mut hotfn_sig = self.module.make_signature();
+                hotfn_sig.params.push(AbiParam::new(ptr_type)); // locals_ptr
+                hotfn_sig.params.push(AbiParam::new(ptr_type)); // heap_ptr
+                hotfn_sig.params.push(AbiParam::new(ptr_type)); // out_val_ptr
+                hotfn_sig.returns.push(AbiParam::new(I64));     // status
+                hotfn_sig_ref = Some(builder.import_signature(hotfn_sig));
+
+                // Embed jit_resolve_fn address as an immediate constant
+                let addr = jit_resolve_fn as *const () as usize as i64;
+                resolve_fn_addr_val = Some(builder.ins().iconst(ptr_type, addr));
+            } else {
+                callee_locals_slot = None;
+                call_out_val_slot = None;
+                resolve_sig_ref = None;
+                hotfn_sig_ref = None;
+                resolve_fn_addr_val = None;
+            }
 
             // Allocate spill slots for expression stack (8 bytes each, 8-byte aligned)
             let spill_slots: Vec<StackSlot> = (0..max_stack.max(1))
@@ -1401,6 +1486,72 @@ impl JitState {
                         let v = *vstack.last().unwrap();
                         vstack.push(v);
                     }
+                    op::CALL => {
+                        let arg_count = op0;
+
+                        // Pop args from vstack (top = last arg)
+                        let mut arg_vals: Vec<_> = (0..arg_count)
+                            .map(|_| vstack.pop().unwrap())
+                            .collect();
+                        arg_vals.reverse(); // arg_vals[0] = first arg
+
+                        // Pop function value
+                        let func_bits = vstack.pop().unwrap();
+
+                        // Unwrap callee infrastructure (guaranteed present by has_calls)
+                        let cls = callee_locals_slot.unwrap();
+                        let cov = call_out_val_slot.unwrap();
+                        let rsr = resolve_sig_ref.unwrap();
+                        let hsr = hotfn_sig_ref.unwrap();
+                        let rfa = resolve_fn_addr_val.unwrap();
+
+                        // Type guard: value must be TAG_PTR (tag bits == 0xFFFB000000000000)
+                        let tag_mask = 0xFFFF000000000000_u64 as i64;
+                        let ptr_tag  = 0xFFFB000000000000_u64 as i64;
+                        let tag_bits = builder.ins().band_imm(func_bits, tag_mask);
+                        let is_ptr   = builder.ins().icmp_imm(IntCC::Equal, tag_bits, ptr_tag);
+                        emit_deopt_brif!(is_ptr);
+
+                        // Extract gc_id from payload bits
+                        let gc_id_val = builder.ins().band_imm(func_bits, 0x0000FFFFFFFFFFFF_u64 as i64);
+
+                        // Call jit_resolve_fn(gc_id) → compiled fn ptr or 0
+                        let inst = builder.ins().call_indirect(rsr, rfa, &[gc_id_val]);
+                        let compiled_ptr = builder.inst_results(inst)[0];
+
+                        // Guard: compiled_ptr != 0 (else deopt — callee not yet compiled)
+                        let is_compiled = builder.ins().icmp_imm(IntCC::NotEqual, compiled_ptr, 0);
+                        emit_deopt_brif!(is_compiled);
+
+                        // Store args into callee_locals_slot
+                        for (i, &arg) in arg_vals.iter().enumerate() {
+                            builder.ins().stack_store(arg, cls, (i * 8) as i32);
+                        }
+                        // Zero-fill remaining slots
+                        for i in arg_count..arg_count.max(1) + 64 {
+                            let zero = builder.ins().iconst(I64, 0);
+                            builder.ins().stack_store(zero, cls, (i * 8) as i32);
+                        }
+
+                        // Get pointers for callee call
+                        let callee_locals_ptr = builder.ins().stack_addr(ptr_type, cls, 0);
+                        let call_out_val_ptr  = builder.ins().stack_addr(ptr_type, cov, 0);
+
+                        // Indirect call: compiled_callee(callee_locals_ptr, heap_ptr, out_val_ptr)
+                        let call_inst = builder.ins().call_indirect(
+                            hsr, compiled_ptr,
+                            &[callee_locals_ptr, heap_ptr, call_out_val_ptr]
+                        );
+                        let call_status = builder.inst_results(call_inst)[0];
+
+                        // Guard: status == 0 (else deopt)
+                        let call_ok = builder.ins().icmp_imm(IntCC::Equal, call_status, 0);
+                        emit_deopt_brif!(call_ok);
+
+                        // Load return value and push onto vstack
+                        let ret_bits = builder.ins().stack_load(I64, cov, 0);
+                        vstack.push(ret_bits);
+                    }
                     _ => return Err(anyhow::anyhow!("unexpected opcode {} in hot fn", opcode)),
                 }
 
@@ -1430,6 +1581,7 @@ impl JitState {
             std::mem::transmute(self.module.get_finalized_function(func_id))
         };
         self.compiled_fns.insert(fn_id, fn_ptr);
+        self.compiled_fns_by_gcid.insert(gc_id, fn_ptr);
         Ok(())
     }
 }

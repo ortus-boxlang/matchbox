@@ -3117,13 +3117,21 @@ impl VM {
                                 let fn_id  = Rc::as_ptr(&func) as usize;
                                 let code   = func.chunk.code.as_slice();
                                 let consts = func.chunk.constants.as_slice();
-                                jit.profile_fn(fn_id, code, consts, func.arity)
+                                jit.profile_fn(fn_id, id, code, consts, func.arity)
                             } else {
                                 None
                             }
                         } else {
                             compiled_opt
                         };
+
+                        // Set thread-local pointer so compiled callees can resolve other
+                        // compiled functions via jit_resolve_fn without passing extra state.
+                        if let Some(ref jit) = self.jit {
+                            crate::vm::jit::set_compiled_fns_ptr(
+                                &jit.compiled_fns_by_gcid as *const _
+                            );
+                        }
 
                         if let Some(compiled_fn) = compiled {
                             let stack_base = self.fibers[fiber_idx].stack.len()
