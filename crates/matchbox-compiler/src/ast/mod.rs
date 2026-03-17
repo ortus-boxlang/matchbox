@@ -61,6 +61,10 @@ pub enum StatementKind {
         update: Option<Expression>,
         body: Vec<Statement>,
     },
+    WhileLoop {
+        condition: Expression,
+        body: Vec<Statement>,
+    },
     If {
         condition: Expression,
         then_branch: Vec<Statement>,

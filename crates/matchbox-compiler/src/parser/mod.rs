@@ -323,6 +323,14 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
                 _ => bail!("Unexpected for_loop variant: {:?}", loop_type.as_rule()),
             }
         }
+        Rule::while_loop => {
+            let mut inner_rules = pair.into_inner();
+            let _kw = inner_rules.next().unwrap(); // while_keyword
+            let condition = parse_expression(inner_rules.next().unwrap())?;
+            let body_rule = inner_rules.next().unwrap();
+            let body = parse_block(body_rule)?;
+            Ok(Statement::new(StatementKind::WhileLoop { condition, body }, line))
+        }
         Rule::if_statement => {
             let mut inner_rules = pair.into_inner();
             let _kw = inner_rules.next().unwrap(); // if_keyword

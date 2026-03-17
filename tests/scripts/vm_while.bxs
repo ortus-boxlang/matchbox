@@ -1,0 +1,9 @@
+j = 0;
+while (j < 3) {
+    j = j + 1;
+    println("j=" & j);
+    if (j % 2 == 0) {
+        println("even");
+    }
+}
+println("While loop test passed!");

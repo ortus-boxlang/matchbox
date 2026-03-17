@@ -1233,6 +1233,19 @@ impl VM {
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     self.fibers[fiber_idx].stack.push(BxValue::new_number(a.as_number() / b.as_number()));
                 }
+                op::MODULO => {
+                    let b = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let a = self.fibers[fiber_idx].stack.pop().unwrap();
+                    if a.is_number() && b.is_number() {
+                        let b_n = b.as_number();
+                        if b_n == 0.0 { flush_ip!(); self.throw_error(fiber_idx, "Division by zero (modulo)")?; frame_changed = true; continue 'quantum; }
+                        else { self.fibers[fiber_idx].stack.push(BxValue::new_number(a.as_number() % b_n)); }
+                    } else {
+                        flush_ip!();
+                        self.throw_error(fiber_idx, "Operands must be two numbers for modulo.")?;
+                        frame_changed = true; continue 'quantum;
+                    }
+                }
                 op::POP => {
                     self.fibers[fiber_idx].stack.pop();
                 }

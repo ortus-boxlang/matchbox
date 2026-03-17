@@ -25,6 +25,7 @@ pub struct Compiler {
     current_line: u32,
     pub is_repl: bool,
     continue_patches: Vec<Vec<usize>>,
+    loop_locals: Vec<usize>,
 }
 
 impl Compiler {
@@ -39,6 +40,7 @@ impl Compiler {
             current_line: 0,
             is_repl: false,
             continue_patches: Vec::new(),
+            loop_locals: Vec::new(),
         }
     }
 
@@ -53,6 +55,7 @@ impl Compiler {
             current_line: 0,
             is_repl: false,
             continue_patches: Vec::new(),
+            loop_locals: Vec::new(),
         }
     }
 
@@ -282,6 +285,16 @@ impl Compiler {
                 Ok(())
             }
             StatementKind::Continue => {
+                // Pop any locals added within the loop body
+                if let Some(target_local_count) = self.loop_locals.last() {
+                    let current_local_count = self.locals.len();
+                    if current_local_count > *target_local_count {
+                        for _ in 0..(current_local_count - *target_local_count) {
+                            self.chunk.emit0(op::POP, stmt.line as u32);
+                        }
+                    }
+                }
+
                 let jump_idx = self.chunk.code.len();
                 self.chunk.emit1(op::JUMP, 0, stmt.line as u32);
                 if let Some(patches) = self.continue_patches.last_mut() {
@@ -382,6 +395,8 @@ impl Compiler {
                     self.compile_expression(condition)?;
                     jump_if_false_idx = self.chunk.code.len();
                     self.chunk.emit1(op::JUMP_IF_FALSE, 0, stmt.line as u32);
+                    
+                    // True branch: pop truthy result
                     self.chunk.emit0(op::POP, stmt.line as u32);
                 }
 
@@ -405,6 +420,8 @@ impl Compiler {
                     self.chunk.code[jump_if_false_idx + 2] = offset as u32;
                 } else {
                     self.chunk.code[jump_if_false_idx] = op::JUMP_IF_FALSE as u32 | ((offset as u32) << 8);
+                    
+                    // False branch: pop falsy result
                     self.chunk.emit0(op::POP, stmt.line as u32);
                 }
 
@@ -479,9 +496,11 @@ impl Compiler {
                 let body_start = self.chunk.code.len();
 
                 self.continue_patches.push(Vec::new());
+                self.loop_locals.push(self.locals.len());
                 for stmt in body {
                     self.compile_statement(stmt, false)?;
                 }
+                self.loop_locals.pop();
 
                 // Patch all continue jumps to land here (before the update step)
                 let continue_target = self.chunk.code.len();
@@ -555,6 +574,51 @@ impl Compiler {
 
                 Ok(())
             }
+            StatementKind::WhileLoop { condition, body } => {
+                let loop_start = self.chunk.code.len();
+                
+                // 1. Evaluate condition
+                self.compile_expression(condition)?;
+
+                // 2. Jump to end if false
+                let exit_jump = self.chunk.code.len();
+                self.chunk.emit1(op::JUMP_IF_FALSE, 0, condition.line);
+                
+                // 3. Pop truthy result and execute body
+                self.chunk.emit0(op::POP, condition.line);
+
+                self.begin_scope();
+                self.continue_patches.push(Vec::new());
+                self.loop_locals.push(self.locals.len());
+                for stmt in body {
+                    self.compile_statement(stmt, false)?;
+                }
+                self.loop_locals.pop();
+                self.end_scope();
+
+                // 4. Continue target: where 'continue' jumps to (just before LOOP back)
+                let continue_target = self.chunk.code.len();
+                let continues = self.continue_patches.pop().unwrap();
+                for idx in continues {
+                    let offset = continue_target - idx - 1;
+                    self.chunk.code[idx] = op::JUMP as u32 | ((offset as u32) << 8);
+                }
+
+                // 5. Loop back to evaluate condition again
+                let loop_end = self.chunk.code.len();
+                let offset = loop_end - loop_start + 1;
+                self.chunk.emit1(op::LOOP, offset as u32, condition.line);
+
+                // 6. Exit target: patch exit_jump
+                let exit_target = self.chunk.code.len();
+                let exit_offset = exit_target - exit_jump - 1;
+                self.chunk.code[exit_jump] = op::JUMP_IF_FALSE as u32 | ((exit_offset as u32) << 8);
+                
+                // 7. Pop falsy result
+                self.chunk.emit0(op::POP, condition.line);
+
+                Ok(())
+            }
             StatementKind::FunctionDecl { name, attributes: _, access_modifier: _, return_type: _, params, body } => {
                 let func = self.compile_function(&name, &params, &body)?;
                 let func_idx = self.chunk.add_constant(Constant::CompiledFunction(func));
@@ -590,9 +654,11 @@ impl Compiler {
                 }
 
                 self.continue_patches.push(Vec::new());
+                self.loop_locals.push(self.locals.len());
                 for stmt in body {
                     self.compile_statement(stmt, false)?;
                 }
+                self.loop_locals.pop();
 
                 // Patch continue jumps to land here (before cleanup pops)
                 let continue_target = self.chunk.code.len();
@@ -869,6 +935,7 @@ impl Compiler {
                             self.chunk.emit0(op::DIVIDE, expr.line);
                         }
                     }
+                    "%" => self.chunk.emit0(op::MODULO, expr.line),
                     "&" => self.chunk.emit0(op::STRING_CONCAT, expr.line),
                     "==" => self.chunk.emit0(op::EQUAL, expr.line),
                     "!=" => self.chunk.emit0(op::NOT_EQUAL, expr.line),
@@ -1201,7 +1268,7 @@ impl Compiler {
 
                 let end_target = sub_compiler.chunk.code.len();
                 let end_offset = end_target - end_jump_idx - 1;
-                sub_compiler.chunk.code[end_jump_idx] = op::JUMP as u32 | ((end_offset as u32) << 8);
+                sub_compiler.chunk.code[end_jump_idx] = op::JUMP as u32 | ((offset as u32) << 8);
             }
         }
 
@@ -1431,7 +1498,7 @@ impl Compiler {
         let ast = crate::parser::parse(&source)
             .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", class_path, e))?;
 
-        let filename = file_path.to_str().unwrap_or(class_path);
+        let _filename = file_path.to_str().unwrap_or(class_path);
         let mut sub_compiler = Compiler::with_chunk(self.chunk.new_sub_chunk());
         sub_compiler.imports = self.imports.clone();
         sub_compiler.module_paths = self.module_paths.clone();
@@ -1484,7 +1551,7 @@ impl Compiler {
         let ast = crate::parser::parse(&source)
             .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", iface_path, e))?;
 
-        let filename = file_path.to_str().unwrap_or(iface_path);
+        let _filename = file_path.to_str().unwrap_or(iface_path);
         let mut sub_compiler = Compiler::with_chunk(self.chunk.new_sub_chunk());
         sub_compiler.imports = self.imports.clone();
         sub_compiler.module_paths = self.module_paths.clone();
@@ -1549,6 +1616,10 @@ impl DependencyTracker {
                 if let Some(i) = init { self.track_statement(i); }
                 if let Some(c) = condition { self.track_expression(c); }
                 if let Some(u) = update { self.track_expression(u); }
+                self.track_statements(body);
+            }
+            StatementKind::WhileLoop { condition, body } => {
+                self.track_expression(condition);
                 self.track_statements(body);
             }
             StatementKind::Return(expr) => {
