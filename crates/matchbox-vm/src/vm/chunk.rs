@@ -11,6 +11,7 @@ enum ConstantKey {
     Boolean(bool),
     Null,
     StringArray(Vec<String>),
+    Function(String),
 }
 
 impl ConstantKey {
@@ -21,7 +22,8 @@ impl ConstantKey {
             Constant::Boolean(b) => Some(ConstantKey::Boolean(*b)),
             Constant::Null => Some(ConstantKey::Null),
             Constant::StringArray(v) => Some(ConstantKey::StringArray(v.clone())),
-            Constant::CompiledFunction(_) | Constant::Class(_) | Constant::Interface(_) => None,
+            Constant::CompiledFunction(f) => Some(ConstantKey::Function(f.name.clone())),
+            Constant::Class(_) | Constant::Interface(_) => None,
         }
     }
 }
@@ -76,6 +78,19 @@ impl Chunk {
             constants: Vec::new(),
             lines: Vec::new(),
             filename: filename.to_string(),
+            source: String::new(),
+            caches: Vec::new(),
+            constant_map: HashMap::new(),
+        }
+    }
+
+    /// Create a new sub-chunk.
+    pub fn new_sub_chunk(&self) -> Self {
+        Chunk {
+            code: Vec::new(),
+            constants: Vec::new(),
+            lines: Vec::new(),
+            filename: self.filename.clone(),
             source: String::new(),
             caches: Vec::new(),
             constant_map: HashMap::new(),
@@ -155,5 +170,9 @@ impl Chunk {
         if self.caches.len() < self.code.len() {
             self.caches.resize(self.code.len(), None);
         }
+    }
+
+    pub fn reconstruct_functions(&mut self) {
+        // NO-OP in the flat model.
     }
 }

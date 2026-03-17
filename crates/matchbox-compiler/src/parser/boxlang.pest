@@ -9,11 +9,14 @@ statement = {
     | interface_decl
     | function_decl
     | for_loop
+    | while_loop
     | if_statement
     | try_catch
     | return_stmt
     | continue_stmt
+    | break_stmt
     | throw_stmt
+    | switch_statement
     | variable_decl
     | expression_stmt
     )
@@ -62,6 +65,9 @@ params = { param_decl ~ ("," ~ param_decl)* }
 for_keyword = @{ "for" ~ !ASCII_ALPHANUMERIC }
 for_loop = { for_keyword ~ "(" ~ (for_in | for_classic) ~ ")" ~ block }
 
+while_keyword = @{ "while" ~ !ASCII_ALPHANUMERIC }
+while_loop = { while_keyword ~ "(" ~ expression ~ ")" ~ block }
+
 in_keyword = @{ "in" ~ !ASCII_ALPHANUMERIC }
 for_in = { identifier ~ ("," ~ identifier)? ~ in_keyword ~ expression }
 for_classic = { init? ~ ";" ~ condition? ~ ";" ~ update? }
@@ -71,7 +77,7 @@ update = { expression }
 
 if_keyword = @{ "if" ~ !ASCII_ALPHANUMERIC }
 else_keyword = @{ "else" ~ !ASCII_ALPHANUMERIC }
-if_statement = { if_keyword ~ "(" ~ expression ~ ")" ~ block ~ (else_keyword ~ block)? }
+if_statement = { if_keyword ~ "(" ~ expression ~ ")" ~ block ~ (else_keyword ~ (if_statement | block))? }
 block = { "{" ~ statement* ~ "}" }
 
 try_keyword = @{ "try" ~ !ASCII_ALPHANUMERIC }
@@ -84,6 +90,17 @@ finally_block = { finally_keyword ~ block }
 continue_keyword = @{ "continue" ~ !ASCII_ALPHANUMERIC }
 continue_stmt = { continue_keyword ~ ";"? }
 
+break_keyword = @{ "break" ~ !ASCII_ALPHANUMERIC }
+break_stmt = { break_keyword ~ ";"? }
+
+switch_keyword = @{ "switch" ~ !ASCII_ALPHANUMERIC }
+case_keyword = @{ "case" ~ !ASCII_ALPHANUMERIC }
+default_keyword = @{ "default" ~ !ASCII_ALPHANUMERIC }
+
+switch_statement = { switch_keyword ~ "(" ~ expression ~ ")" ~ "{" ~ switch_case* ~ default_case? ~ "}" }
+switch_case = { case_keyword ~ expression ~ ":" ~ statement* }
+default_case = { default_keyword ~ ":" ~ statement* }
+
 throw_keyword = @{ "throw" ~ !ASCII_ALPHANUMERIC }
 throw_stmt = { throw_keyword ~ expression? ~ ";"? }
 
@@ -94,16 +111,16 @@ expression = {
     | conditional_expr
 }
 
-conditional_expr = { binary_expr ~ ("?" ~ expression ~ ":" ~ expression)? }
+conditional_expr = { binary_expr ~ (("?:" ~ expression) | ("?" ~ expression ~ ":" ~ expression))? }
 
 assignment = { target ~ "=" ~ expression }
 target = { atom ~ (array_access | member_access)* }
 
 binary_expr = { primary ~ (operator ~ primary)* }
 
-operator = { "&&" | "||" | "+" | "-" | "*" | "/" | "==" | "!=" | "<=" | ">=" | "<" | ">" | "&" }
+operator = { "&&" | "||" | "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<=" | ">=" | "<" | ">" | "&" }
 
-primary = { atom ~ (function_call_args | array_access | member_access | postfix_op)* }
+primary = { atom ~ (function_call_args | array_access | member_access | safe_member_access | postfix_op)* }
 
 atom = {
     new_expression
@@ -125,6 +142,7 @@ keyword = {
     | continue_keyword
     | var_keyword
     | for_keyword
+    | while_keyword
     | in_keyword
     | if_keyword
     | else_keyword
@@ -132,6 +150,10 @@ keyword = {
     | catch_keyword
     | finally_keyword
     | throw_keyword
+    | switch_keyword
+    | case_keyword
+    | default_keyword
+    | break_keyword
     | new_keyword
 }
 
@@ -141,6 +163,7 @@ new_expression = { new_keyword ~ import_path ~ "(" ~ args? ~ ")" }
 function_call_args = { "(" ~ args? ~ ")" }
 array_access = { "[" ~ expression ~ "]" }
 member_access = { "." ~ identifier }
+safe_member_access = { "?." ~ identifier }
 postfix_op = { "++" | "--" }
 prefix_op = { ("++" | "--") ~ target }
 

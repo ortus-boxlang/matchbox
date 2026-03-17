@@ -34,7 +34,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            targets: x86_64-unknown-linux-gnu, i686-unknown-linux-gnu, wasm32-wasip1
+            targets: x86_64-unknown-linux-gnu, i686-unknown-linux-gnu, wasm32-wasip1, wasm32-unknown-unknown
             tag: linux-x86
           - os: ubuntu-latest
             targets: aarch64-unknown-linux-gnu, armv7-unknown-linux-gnueabihf
@@ -43,7 +43,7 @@ jobs:
             targets: x86_64-apple-darwin, aarch64-apple-darwin
             tag: macos
           - os: windows-latest
-            targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
+            targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc, x86_64-pc-windows-gnu
             tag: windows
     steps:
       - uses: actions/checkout@v4
@@ -54,16 +54,21 @@ jobs:
       
       - name: Install Cross-Compilers (Linux ARM)
         if: matrix.tag == 'linux-arm'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+          version: 1.0
+
+      - name: Add i386 Architecture
+        if: matrix.tag == 'linux-x86'
+        run: sudo dpkg --add-architecture i386
 
       - name: Install Cross-Compilers (Linux x86)
         if: matrix.tag == 'linux-x86'
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y gcc-multilib libc6-dev-i386
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: gcc-multilib libc6-dev-i386
+          version: 1.0
 
       - name: Build Stubs
         shell: bash
@@ -81,20 +86,24 @@ jobs:
               export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
             elif [[ "$target" == "armv7-unknown-linux-gnueabihf" ]]; then
               export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
+            elif [[ "$target" == "wasm32-unknown-unknown" ]]; then
+              CMD="$CMD --features js"
             fi
-            
+
             $CMD
-            
+
             # Determine source filename
             SRC_NAME="matchbox_runner"
             if [[ "$target" == *"windows"* ]]; then SRC_NAME="matchbox_runner.exe"; fi
             if [[ "$target" == *"wasm"* ]]; then SRC_NAME="matchbox_runner.wasm"; fi
-            
-            # Determine destination filename
+
+            # Determine destination filename (wasm targets need explicit names to avoid collisions)
             DEST_NAME="runner_stub_$target"
-            if [[ "$target" == *"windows"* ]]; then DEST_NAME="$DEST_NAME.exe"; fi
-            if [[ "$target" == *"wasm"* ]]; then DEST_NAME="runner_stub_wasip1.wasm"; fi
-            
+            if [[ "$target" == *"windows"* ]]; then DEST_NAME="${DEST_NAME}.exe"
+            elif [[ "$target" == "wasm32-wasip1" ]]; then DEST_NAME="runner_stub_wasip1.wasm"
+            elif [[ "$target" == *"wasm"* ]]; then DEST_NAME="${DEST_NAME}.wasm"
+            fi
+
             cp "target/$target/release/$SRC_NAME" "$ROOT_DIR/stubs-out/$DEST_NAME"
           done
 
@@ -104,9 +113,48 @@ jobs:
           name: stubs-${{ matrix.tag }}
           path: stubs-out/*
 
+  build-esp32-stubs:
+    name: Build ESP32 Stubs
+    needs: test
+    runs-on: ubuntu-latest
+    container:
+      # espressif/idf-rust: all chip targets, Rust + ESP-IDF pre-installed.
+      # Tag format: espressif/idf-rust:<chips>_<rust_ver> — update when newer versions appear on Docker Hub.
+      image: espressif/idf-rust:all_1.92.0.0
+      options: --user root
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ESP32 Stubs
+        env:
+          BOXLANG_BYTECODE_PATH: ""
+          # Point rustup/cargo at the esp user's pre-installed toolchain directories.
+          # Running as root sets HOME=/github/home, so RUSTUP_HOME/CARGO_HOME would
+          # default to empty paths and rustup can't find the 'esp' toolchain.
+          RUSTUP_HOME: /home/esp/.rustup
+          CARGO_HOME: /home/esp/.cargo
+        shell: bash
+        run: |
+          mkdir -p stubs-out
+          cd crates/matchbox-esp32-runner
+          # rust-toolchain.toml pins channel = "esp", so cargo auto-selects the right toolchain
+          cargo build --release --target xtensa-esp32-espidf
+          cp target/xtensa-esp32-espidf/release/matchbox-esp32-runner ../../stubs-out/runner_stub_esp32.elf
+
+          cargo build --release --target xtensa-esp32s3-espidf
+          cp target/xtensa-esp32s3-espidf/release/matchbox-esp32-runner ../../stubs-out/runner_stub_esp32s3.elf
+
+          cargo build --release --target riscv32imc-esp-espidf
+          cp target/riscv32imc-esp-espidf/release/matchbox-esp32-runner ../../stubs-out/runner_stub_esp32c3.elf
+
+      - name: Upload ESP32 Stubs
+        uses: actions/upload-artifact@v4
+        with:
+          name: stubs-esp32
+          path: stubs-out/*
+
   aggregate-stubs:
     name: Aggregate All Stubs
-    needs: build-stubs
+    needs: [build-stubs, build-esp32-stubs]
     runs-on: ubuntu-latest
     steps:
       - name: Download All Stubs
@@ -153,6 +201,9 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             output_name: matchbox-windows-x64.exe
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            output_name: matchbox-windows-arm64.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -163,16 +214,21 @@ jobs:
       
       - name: Install Cross-Compilers (Linux ARM)
         if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+          version: 1.0
+
+      - name: Add i386 Architecture
+        if: matrix.target == 'i686-unknown-linux-gnu'
+        run: sudo dpkg --add-architecture i386
 
       - name: Install Cross-Compilers (Linux x86)
         if: matrix.target == 'i686-unknown-linux-gnu'
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y gcc-multilib libc6-dev-i386
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: gcc-multilib libc6-dev-i386
+          version: 1.0
 
       - name: Download Aggregated Stubs
         uses: actions/download-artifact@v4

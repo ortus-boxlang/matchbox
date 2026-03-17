@@ -15,3 +15,7 @@ target/
 docs/examples/native_fusion/app
 tests/native_fusion/script
 docs/examples/wasm_browser/todo.js
+docs/examples/esp32/hello_esp32.elf
+tests/modules/greetings/models/Greeter
+camera_stream.elf
+crates/matchbox-esp32-runner/.embuild

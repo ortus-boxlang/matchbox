@@ -45,6 +45,7 @@ fn main() {
     println!("cargo:rerun-if-changed=crates/matchbox-runner/Cargo.toml");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/src/vm/mod.rs");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/src/vm/opcode.rs");
+    println!("cargo:rerun-if-changed=crates/matchbox-vm/src/bifs");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/src/lib.rs");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/Cargo.toml");
     println!("cargo:rerun-if-changed=build.rs");
@@ -53,8 +54,16 @@ fn main() {
     stubs_rs_content.push_str("pub fn get_stub(target: &str) -> Option<&'static [u8]> {\n");
     stubs_rs_content.push_str("    let mut stubs: HashMap<&str, &[u8]> = HashMap::new();\n");
 
+    // Get enabled features to pass to the stub build
+    let mut features = Vec::new();
+    if env::var("CARGO_FEATURE_BIF_IO").is_ok() { features.push("bif-io"); }
+    if env::var("CARGO_FEATURE_BIF_HTTP").is_ok() { features.push("bif-http"); }
+    if env::var("CARGO_FEATURE_BIF_ZIP").is_ok() { features.push("bif-zip"); }
+    if env::var("CARGO_FEATURE_BIF_CRYPTO").is_ok() { features.push("bif-crypto"); }
+    if env::var("CARGO_FEATURE_BIF_CLI").is_ok() { features.push("bif-cli"); }
+
     // Helper closure to build and copy a stub
-    let build_stub = |target: Option<&str>, dest_name: &str, src_name: &str, alias: &str, stubs_rs: &mut String| {
+    let build_stub = |target: Option<&str>, dest_name: &str, src_name: &str, alias: &str, stubs_rs: &mut String, enabled_features: &[&str]| {
         let dest_path = stub_dest_dir.join(dest_name);
 
         // Determine whether we need (re)build: missing stub, zero-length stub,
@@ -64,6 +73,7 @@ fn main() {
             Path::new(&root_dir).join("crates/matchbox-runner/Cargo.toml"),
             Path::new(&root_dir).join("crates/matchbox-vm/src/vm/mod.rs"),
             Path::new(&root_dir).join("crates/matchbox-vm/src/vm/opcode.rs"),
+            Path::new(&root_dir).join("crates/matchbox-vm/src/bifs/mod.rs"),
             Path::new(&root_dir).join("crates/matchbox-vm/src/lib.rs"),
             Path::new(&root_dir).join("crates/matchbox-vm/Cargo.toml"),
         ];
@@ -86,6 +96,10 @@ fn main() {
                .current_dir(&runner_dir)
                .env("CARGO_TARGET_DIR", &stub_target_dir);
                
+            if !enabled_features.is_empty() {
+                cmd.arg("--features").arg(enabled_features.join(","));
+            }
+
             if let Some(t) = target {
                 cmd.arg("--target").arg(t);
             }
@@ -138,7 +152,101 @@ fn main() {
     let host = env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
     
     // Always build WASI if possible
-    build_stub(Some("wasm32-wasip1"), "runner_stub_wasip1.wasm", "matchbox_runner.wasm", "wasi", &mut stubs_rs_content);
+    build_stub(Some("wasm32-wasip1"), "runner_stub_wasip1.wasm", "matchbox_runner.wasm", "wasi", &mut stubs_rs_content, &features);
+
+    // Always build web WASM if possible (requires wasm32-unknown-unknown target + js feature)
+    let mut web_features = features.clone();
+    web_features.push("js");
+    build_stub(Some("wasm32-unknown-unknown"), "runner_stub_wasm32-unknown-unknown.wasm", "matchbox_runner.wasm", "web", &mut stubs_rs_content, &web_features);
+
+    // Build ESP32 stubs if possible
+    let esp32_targets = vec![
+        ("xtensa-esp32-espidf", "runner_stub_esp32.elf"),
+        ("xtensa-esp32s3-espidf", "runner_stub_esp32s3.elf"),
+        ("riscv32imc-esp-espidf", "runner_stub_esp32c3.elf"),
+    ];
+
+    for (target, dest) in esp32_targets {
+        let dest_path = stub_dest_dir.join(dest);
+        
+        // Determine whether we need (re)build: missing stub, zero-length stub,
+        // or any tracked source file is newer than the stub.
+        let sources_to_watch = [
+            Path::new(&root_dir).join("crates/matchbox-esp32-runner/src/main.rs"),
+            Path::new(&root_dir).join("crates/matchbox-esp32-runner/Cargo.toml"),
+            Path::new(&root_dir).join("crates/matchbox-esp32-runner/build.rs"),
+            Path::new(&root_dir).join("crates/matchbox-vm/src/lib.rs"),
+        ];
+        
+        let stub_mtime = dest_path.metadata().and_then(|m| m.modified()).ok();
+        let is_empty = fs::metadata(&dest_path).map(|m| m.len() == 0).unwrap_or(true);
+        
+        let needs_rebuild = stub_mtime.map_or(true, |stub_time| {
+            is_empty || sources_to_watch.iter().any(|src| {
+                src.metadata()
+                    .and_then(|m| m.modified())
+                    .map(|src_time| src_time > stub_time)
+                    .unwrap_or(false)
+            })
+        });
+
+        if needs_rebuild {
+            println!("cargo:warning=Building ESP32 stub for {} (this may take a few minutes)...", target);
+            let mut success = false;
+            
+            // Use a completely independent target directory to avoid any lock contention
+            let independent_target_dir = Path::new(&root_dir).join("target").join("esp32_stubs").join(target);
+            fs::create_dir_all(&independent_target_dir).ok();
+
+            let mut cmd = Command::new("rustup");
+            cmd.arg("run").arg("esp").arg("cargo")
+               .arg("build").arg("--release")
+               .arg("--target").arg(target)
+               .arg("--target-dir").arg(&independent_target_dir)
+               .current_dir(Path::new(&root_dir).join("crates/matchbox-esp32-runner"))
+               .env("BOXLANG_BYTECODE_PATH", "") 
+               .env_remove("CARGO_MAKEFLAGS")   
+               .env_remove("MAKEFLAGS")
+               .env_remove("CARGO_TARGET_DIR")
+               .env_remove("RUSTC")
+               .env_remove("CARGO")
+               .env_remove("RUSTDOC")
+               .env_remove("RUSTFLAGS")
+               .env_remove("CARGO_ENCODED_RUSTFLAGS")
+               .env_remove("RUSTC_WORKSPACE_WRAPPER");
+
+            // We use output() instead of status() to capture the error.
+            match cmd.output() {
+                Ok(output) if output.status.success() => {
+                    let src_path = independent_target_dir.join(target).join("release").join("matchbox-esp32-runner");
+                    if fs::copy(&src_path, &dest_path).is_ok() {
+                        success = true;
+                        println!("cargo:warning=ESP32 stub successfully built for {}", target);
+                    } else {
+                        println!("cargo:warning=Failed to copy ESP32 stub from {} to {}", src_path.display(), dest_path.display());
+                    }
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    println!("cargo:warning=ESP32 build failed for {} with status: {}", target, output.status);
+                    println!("cargo:warning=STDERR: {}", stderr);
+                    if !stdout.is_empty() {
+                        println!("cargo:warning=STDOUT: {}", stdout);
+                    }
+                }
+                Err(e) => {
+                    println!("cargo:warning=Failed to execute cargo build for ESP32 stub {}: {}", target, e);
+                }
+            }
+
+            if !success && !dest_path.exists() {
+                let _ = fs::write(&dest_path, b"");
+            }
+        }
+        
+        stubs_rs_content.push_str(&format!("    stubs.insert(\"{}\", include_bytes!(\"../stubs/{}\"));\n", target, dest));
+    }
 
     if cfg!(feature = "cross-compile") {
         let targets = vec![
@@ -160,7 +268,7 @@ fn main() {
                 continue;
             }
             
-            build_stub(Some(target), dest, src, target, &mut stubs_rs_content);
+            build_stub(Some(target), dest, src, target, &mut stubs_rs_content, &features);
             if target == host {
                 stubs_rs_content.push_str(&format!("    stubs.insert(\"host\", include_bytes!(\"../stubs/{}\"));\n", dest));
             }
@@ -168,7 +276,7 @@ fn main() {
     } else {
         let native_src_name = if cfg!(windows) { "matchbox_runner.exe" } else { "matchbox_runner" };
         let dest_name = format!("runner_stub_{}", host);
-        build_stub(None, &dest_name, native_src_name, "host", &mut stubs_rs_content);
+        build_stub(None, &dest_name, native_src_name, "host", &mut stubs_rs_content, &features);
         stubs_rs_content.push_str(&format!("    stubs.insert(\"{}\", include_bytes!(\"../stubs/{}\"));\n", host, dest_name));
     }
 

@@ -61,14 +61,24 @@ pub enum StatementKind {
         update: Option<Expression>,
         body: Vec<Statement>,
     },
+    WhileLoop {
+        condition: Expression,
+        body: Vec<Statement>,
+    },
     If {
         condition: Expression,
         then_branch: Vec<Statement>,
         else_branch: Option<Vec<Statement>>,
     },
+    Switch {
+        value: Expression,
+        cases: Vec<SwitchCase>,
+        default_case: Option<Vec<Statement>>,
+    },
     Return(Option<Expression>),
     Throw(Option<Expression>),
     Continue,
+    Break,
     TryCatch {
         try_branch: Vec<Statement>,
         catches: Vec<CatchBlock>,
@@ -79,6 +89,12 @@ pub enum StatementKind {
         value: Expression,
     },
     Expression(Expression),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchCase {
+    pub value: Expression,
+    pub body: Vec<Statement>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,6 +148,10 @@ pub enum ExpressionKind {
         then_expr: Box<Expression>,
         else_expr: Box<Expression>,
     },
+    Elvis {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
     FunctionCall {
         base: Box<Expression>,
         args: Vec<Argument>,
@@ -141,6 +161,10 @@ pub enum ExpressionKind {
         index: Box<Expression>,
     },
     MemberAccess {
+        base: Box<Expression>,
+        member: String,
+    },
+    SafeMemberAccess {
         base: Box<Expression>,
         member: String,
     },

@@ -184,7 +184,7 @@ pub fn execute_module_lifecycle(name: &str, path: &Path) -> serde_json::Value {
         }
     };
 
-    let chunk = match matchbox_compiler::compile_with_treeshaking(
+    let mut chunk = match matchbox_compiler::compile_with_treeshaking(
         &descriptor.to_string_lossy(),
         &ast,
         &wrapper,
@@ -200,6 +200,8 @@ pub fn execute_module_lifecycle(name: &str, path: &Path) -> serde_json::Value {
             return empty;
         }
     };
+
+    chunk.reconstruct_functions();
 
     let mut vm = matchbox_vm::vm::VM::new();
     let result = match vm.interpret(chunk) {

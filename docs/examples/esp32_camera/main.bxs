@@ -1,0 +1,18 @@
+// BoxLang Camera Streamer (ESP32)
+println("[boxlang] Starting Camera Streamer...");
+
+if (cameraInit()) {
+    println("[boxlang] Camera ready. Starting stream...");
+    
+    // Capture 10 frames and send them over serial
+    for (var i = 1; i <= 10; i++) {
+        var frame = cameraTake();
+        var bytesWritten = serialWrite(frame);
+        println("[boxlang] Frame #i# sent: #bytesWritten# bytes.");
+        sleep(500); // Wait 0.5s between frames
+    }
+
+    println("[boxlang] Stream finished.");
+} else {
+    println("[boxlang] Failed to initialize camera.");
+}

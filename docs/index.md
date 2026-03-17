@@ -22,6 +22,7 @@ Welcome to the MatchBox documentation. MatchBox is a native Rust implementation 
 | [Native Builds](building-and-deploying/native-builds.md) | Standalone OS binaries, cross-compilation, and Native Fusion (Rust interop). |
 | [JavaScript + WASM](building-and-deploying/javascript-and-wasm.md) | ES modules, raw WASM, and runtime (dynamic) execution in the browser. |
 | [WASM Container](building-and-deploying/wasm-container.md) | Wasmtime, WasmEdge, Docker OCI containers, and edge platforms. |
+| [ESP32 Firmware](building-and-deploying/esp32.md) | Cross-compiling and flashing for ESP32/S3/C3 microcontrollers. |
 
 ---
 
@@ -45,6 +46,7 @@ matchbox --build my_script.bxs    # Compile to .bxb bytecode
 matchbox --target native app.bxs  # Standalone native binary
 matchbox --target js     lib.bxs  # ES module + .wasm
 matchbox --target wasm   app.bxs  # Raw .wasm binary
+matchbox --target esp32  app.bxs  # Build and flash ESP32
 ```
 
 ### Language at a Glance

@@ -34,25 +34,26 @@ control flow
     while
     for in          ✅
     for index       ✅
-elvis
-safe navigation
-ternary
+elvis               ✅
+safe navigation     ✅
+ternary             ✅
 scripts             ✅
 classes             ✅
 string interpolation✅
 try/catch/finally   ✅
-switch statement?
+switch statement?   ✅   
 runAsync            ✅
 javaInterop         ✅
 rustInterop         ✅
-imports
+imports             ✅
 includes?           
 named arguments     ✅
-argumentCollection
+argumentCollection  
+destructuring
 
 ## Undecided
 
-destructuring
+
 match operator
 Metadata
 queryOfQueries?

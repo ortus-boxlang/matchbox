@@ -3,10 +3,24 @@ use crate::types::{BxValue, BxVM, BxNativeFunction};
 use std::time::{SystemTime, UNIX_EPOCH};
 use rand::RngExt;
 use chrono::Local;
-use std::io::{self, Write};
 use uuid::Uuid;
 
+
+#[cfg(feature = "bif-jni")]
 mod jni;
+#[cfg(not(feature = "bif-jni"))]
+mod jni {
+    use crate::types::{BxValue, BxVM};
+    pub fn create_java_object(_vm: &mut dyn BxVM, _class_name: &str, _args: &[BxValue]) -> Result<BxValue, String> {
+        Err("Java interoperability is not enabled in this build.".to_string())
+    }
+}
+mod fs;
+mod http;
+mod json;
+mod zip;
+mod crypto;
+mod cli;
 
 pub fn register_all() -> HashMap<String, BxNativeFunction> {
     let mut bifs = HashMap::new();
@@ -43,6 +57,10 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     bifs.insert("createobject".to_string(), create_object as BxNativeFunction);
     bifs.insert("ucase".to_string(), ucase as BxNativeFunction);
     bifs.insert("lcase".to_string(), lcase as BxNativeFunction);
+    bifs.insert("trim".to_string(), trim_bif as BxNativeFunction);
+    bifs.insert("listtoarray".to_string(), list_to_array as BxNativeFunction);
+    bifs.insert("indexof".to_string(), index_of as BxNativeFunction);
+    bifs.insert("chr".to_string(), chr_bif as BxNativeFunction);
     bifs.insert("futureonerror".to_string(), future_on_error as BxNativeFunction);
 
     // System BIFs
@@ -57,14 +75,55 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     bifs.insert("yield".to_string(), bx_yield as BxNativeFunction);
 
     // CLI BIFs
-    bifs.insert("cliclear".to_string(), cli_clear as BxNativeFunction);
-    bifs.insert("cliexit".to_string(), cli_exit as BxNativeFunction);
-    bifs.insert("cligetargs".to_string(), cli_get_args as BxNativeFunction);
-    bifs.insert("cliread".to_string(), cli_read as BxNativeFunction);
-    bifs.insert("cliconfirm".to_string(), cli_confirm as BxNativeFunction);
+    #[cfg(feature = "bif-cli")]
+    {
+        bifs.insert("cliclear".to_string(), cli::cli_clear as BxNativeFunction);
+        bifs.insert("cliexit".to_string(), cli::cli_exit as BxNativeFunction);
+        bifs.insert("exit".to_string(), cli::cli_exit as BxNativeFunction);
+        bifs.insert("cligetargs".to_string(), cli::cli_get_args as BxNativeFunction);
+        bifs.insert("cliread".to_string(), cli::cli_read as BxNativeFunction);
+        bifs.insert("cliconfirm".to_string(), cli::cli_confirm as BxNativeFunction);
+        #[cfg(feature = "bif-cli")]
+        bifs.insert("cliselect".to_string(), cli::cli_select as BxNativeFunction);
+    }
 
     // Async BIFs
     bifs.insert("runasync".to_string(), run_async as BxNativeFunction);
+
+    // IO BIFs
+    #[cfg(feature = "bif-io")]
+    {
+        bifs.insert("directoryexists".to_string(), fs::directory_exists as BxNativeFunction);
+        bifs.insert("directorycreate".to_string(), fs::directory_create as BxNativeFunction);
+        bifs.insert("directorydelete".to_string(), fs::directory_delete as BxNativeFunction);
+        bifs.insert("directorylist".to_string(), fs::directory_list as BxNativeFunction);
+        bifs.insert("fileexists".to_string(), fs::file_exists as BxNativeFunction);
+        bifs.insert("filedelete".to_string(), fs::file_delete as BxNativeFunction);
+        bifs.insert("filemove".to_string(), fs::file_move as BxNativeFunction);
+        bifs.insert("filecopy".to_string(), fs::file_copy as BxNativeFunction);
+        bifs.insert("fileinfo".to_string(), fs::file_info as BxNativeFunction);
+        bifs.insert("filecreatesymlink".to_string(), fs::file_create_symlink as BxNativeFunction);
+        bifs.insert("filesetexecutable".to_string(), fs::file_set_executable as BxNativeFunction);
+        bifs.insert("fileread".to_string(), fs::file_read as BxNativeFunction);
+        bifs.insert("filewrite".to_string(), fs::file_write as BxNativeFunction);
+    }
+
+    // HTTP BIFs
+    #[cfg(feature = "bif-http")]
+    bifs.insert("http".to_string(), http::http_bif as BxNativeFunction);
+
+    // ZIP BIFs
+    #[cfg(feature = "bif-zip")]
+    bifs.insert("extract".to_string(), zip::zip_extract as BxNativeFunction);
+
+    // JSON BIFs
+    bifs.insert("jsondeserialize".to_string(), json::json_deserialize as BxNativeFunction);
+    bifs.insert("jsonserialize".to_string(), json::json_serialize as BxNativeFunction);
+    bifs.insert("loadproperties".to_string(), json::load_properties as BxNativeFunction);
+
+    // Crypto BIFs
+    #[cfg(feature = "bif-crypto")]
+    bifs.insert("hash".to_string(), crypto::hash_bif as BxNativeFunction);
 
     bifs
 }
@@ -91,6 +150,45 @@ fn lcase(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 { return Err("lcase() expects exactly 1 argument".to_string()); }
     let s = vm.to_string(args[0]).to_lowercase();
     Ok(BxValue::new_ptr(vm.string_new(s)))
+}
+
+fn trim_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 1 { return Err("trim() expects exactly 1 argument".to_string()); }
+    let s = vm.to_string(args[0]).trim().to_string();
+    Ok(BxValue::new_ptr(vm.string_new(s)))
+}
+
+fn list_to_array(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() { return Err("listToArray() expects at least 1 argument".to_string()); }
+    let s = vm.to_string(args[0]);
+    let del = if args.len() > 1 { vm.to_string(args[1]) } else { ",".to_string() };
+    
+    let array_id = vm.array_new();
+    for part in s.split(&del) {
+        let s_id = vm.string_new(part.to_string());
+        vm.array_push(array_id, BxValue::new_ptr(s_id));
+    }
+    
+    Ok(BxValue::new_ptr(array_id))
+}
+
+fn index_of(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 2 { return Err("indexOf() expects 2 arguments: (string, substring)".to_string()); }
+    let s = vm.to_string(args[0]);
+    let sub = vm.to_string(args[1]);
+    
+    match s.find(&sub) {
+        Some(idx) => Ok(BxValue::new_number(idx as f64 + 1.0)), // 1-based index for BoxLang consistency
+        None => Ok(BxValue::new_number(-1.0)),
+    }
+}
+
+fn chr_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() { return Err("chr() expects 1 argument".to_string()); }
+    let code = args[0].as_number() as u32;
+    let c = std::char::from_u32(code).ok_or_else(|| format!("Invalid character code: {}", code))?;
+    let s_id = vm.string_new(c.to_string());
+    Ok(BxValue::new_ptr(s_id))
 }
 
 fn round(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -355,7 +453,8 @@ fn run_async(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     } else {
         0
     };
-    vm.spawn_by_value(&args[0], Vec::new(), priority)
+    let chunk = vm.current_chunk().ok_or_else(|| "No chunk context available".to_string())?;
+    vm.spawn_by_value(&args[0], Vec::new(), priority, chunk)
 }
 
 fn create_object(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -377,132 +476,3 @@ fn create_object(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     }
 }
 
-// --- CLI BIFs ---
-
-fn cli_clear(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        print!("\x1B[2J\x1B[1;1H");
-        let _ = io::stdout().flush();
-    }
-    Ok(BxValue::new_null())
-}
-
-fn cli_exit(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    let code = if args.len() >= 1 && args[0].is_number() {
-        args[0].as_number() as i32
-    } else {
-        0
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    std::process::exit(code);
-    
-    #[cfg(target_arch = "wasm32")]
-    return Err("cliExit not supported in WASM environment".to_string());
-    
-    #[allow(unreachable_code)]
-    Ok(BxValue::new_null())
-}
-
-fn cli_get_args(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
-    let all_args = vm.get_cli_args();
-    let options_id = vm.struct_new();
-    let positionals_id = vm.array_new();
-
-    let mut user_args = Vec::new();
-    let mut skip = true;
-    for arg in all_args {
-        if skip {
-            if arg.ends_with("matchbox") || arg.ends_with("matchbox.exe") || arg.ends_with(".bxs") || arg.ends_with(".bxb") {
-                continue;
-            }
-            skip = false;
-        }
-        user_args.push(arg);
-    }
-
-    for arg in user_args {
-        if arg.starts_with("--") {
-            let part = &arg[2..];
-            if part.starts_with('!') {
-                vm.struct_set(options_id, &part[1..], BxValue::new_bool(false));
-            } else if part.starts_with("no-") {
-                vm.struct_set(options_id, &part[3..], BxValue::new_bool(false));
-            } else if let Some(idx) = part.find('=') {
-                let key = &part[..idx];
-                let val = &part[idx+1..];
-                let val_id = vm.string_new(val.to_string());
-                vm.struct_set(options_id, key, BxValue::new_ptr(val_id));
-            } else {
-                vm.struct_set(options_id, part, BxValue::new_bool(true));
-            }
-        } else if arg.starts_with('-') && arg.len() > 1 {
-            let part = &arg[1..];
-            if let Some(idx) = part.find('=') {
-                let key = &part[..idx];
-                let val = &part[idx+1..];
-                let val_id = vm.string_new(val.to_string());
-                vm.struct_set(options_id, key, BxValue::new_ptr(val_id));
-            } else {
-                vm.struct_set(options_id, part, BxValue::new_bool(true));
-            }
-        } else {
-            let s_id = vm.string_new(arg);
-            vm.array_push(positionals_id, BxValue::new_ptr(s_id));
-        }
-    }
-
-    let result_id = vm.struct_new();
-    vm.struct_set(result_id, "options", BxValue::new_ptr(options_id));
-    vm.struct_set(result_id, "positionals", BxValue::new_ptr(positionals_id));
-    
-    Ok(BxValue::new_ptr(result_id))
-}
-
-fn cli_read(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.len() >= 1 {
-        print!("{}", vm.to_string(args[0]));
-        let _ = io::stdout().flush();
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let mut input = String::new();
-        match io::stdin().read_line(&mut input) {
-            Ok(_) => {
-                let trimmed = input.trim_end_matches(['\r', '\n']).to_string();
-                Ok(BxValue::new_ptr(vm.string_new(trimmed)))
-            }
-            Err(e) => Err(format!("Failed to read from stdin: {}", e)),
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    Err("cliRead not supported in WASM environment without JS interop".to_string())
-}
-
-fn cli_confirm(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    let prompt = if args.len() >= 1 {
-        vm.to_string(args[0])
-    } else {
-        "Confirm?".to_string()
-    };
-    
-    print!("{} (Y/n): ", prompt);
-    let _ = io::stdout().flush();
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let mut input = String::new();
-        match io::stdin().read_line(&mut input) {
-            Ok(_) => {
-                let trimmed = input.trim().to_lowercase();
-                Ok(BxValue::new_bool(trimmed == "y" || trimmed == "yes" || trimmed.is_empty()))
-            }
-            Err(e) => Err(format!("Failed to read from stdin: {}", e)),
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    Err("cliConfirm not supported in WASM environment".to_string())
-}

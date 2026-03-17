@@ -1,0 +1,13 @@
+// hello_esp32.bxs
+// A simple BoxLang script to run on an ESP32
+
+println("[BoxLang] Hello from ESP32!")
+println("[BoxLang] Current Chip Architecture: " & server.os.arch)
+
+// A simple loop to demonstrate execution
+for (i = 1; i <= 10; i++) {
+    println("[BoxLang] Loop iteration: #i#")
+    sleep(1000) // Sleep for 1 second
+}
+
+println("[BoxLang] Script execution finished. Standing by...")

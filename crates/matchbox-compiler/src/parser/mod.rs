@@ -323,6 +323,14 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
                 _ => bail!("Unexpected for_loop variant: {:?}", loop_type.as_rule()),
             }
         }
+        Rule::while_loop => {
+            let mut inner_rules = pair.into_inner();
+            let _kw = inner_rules.next().unwrap(); // while_keyword
+            let condition = parse_expression(inner_rules.next().unwrap())?;
+            let body_rule = inner_rules.next().unwrap();
+            let body = parse_block(body_rule)?;
+            Ok(Statement::new(StatementKind::WhileLoop { condition, body }, line))
+        }
         Rule::if_statement => {
             let mut inner_rules = pair.into_inner();
             let _kw = inner_rules.next().unwrap(); // if_keyword
@@ -332,12 +340,21 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
             let mut else_branch = None;
 
             if let Some(_else_kw) = inner_rules.next() {
-                let else_block_rule = inner_rules.next().unwrap();
-                else_branch = Some(parse_block(else_block_rule)?);
+                let else_rule = inner_rules.next().unwrap();
+                match else_rule.as_rule() {
+                    Rule::block => {
+                        else_branch = Some(parse_block(else_rule)?);
+                    }
+                    Rule::if_statement => {
+                        else_branch = Some(vec![parse_statement(else_rule)?]);
+                    }
+                    _ => bail!("Unexpected rule in else branch: {:?}", else_rule.as_rule()),
+                }
             }
-            
+
             Ok(Statement::new(StatementKind::If { condition, then_branch, else_branch }, line))
         }
+
         Rule::try_catch => {
             let mut inner_rules = pair.into_inner();
             let _try_kw = inner_rules.next().unwrap();
@@ -388,6 +405,42 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
         Rule::continue_stmt => {
             Ok(Statement::new(StatementKind::Continue, line))
         }
+        Rule::break_stmt => {
+            Ok(Statement::new(StatementKind::Break, line))
+        }
+        Rule::switch_statement => {
+            let mut inner = pair.into_inner();
+            let _kw = inner.next().unwrap();
+            let value = parse_expression(inner.next().unwrap())?;
+            let mut cases = Vec::new();
+            let mut default_case = None;
+
+            for rule in inner {
+                match rule.as_rule() {
+                    Rule::switch_case => {
+                        let mut case_inner = rule.into_inner();
+                        let _case_kw = case_inner.next().unwrap();
+                        let case_val = parse_expression(case_inner.next().unwrap())?;
+                        let mut body = Vec::new();
+                        for stmt_rule in case_inner {
+                            body.push(parse_statement(stmt_rule)?);
+                        }
+                        cases.push(crate::ast::SwitchCase { value: case_val, body });
+                    }
+                    Rule::default_case => {
+                        let mut def_inner = rule.into_inner();
+                        let _def_kw = def_inner.next().unwrap();
+                        let mut body = Vec::new();
+                        for stmt_rule in def_inner {
+                            body.push(parse_statement(stmt_rule)?);
+                        }
+                        default_case = Some(body);
+                    }
+                    _ => bail!("Unexpected rule in switch statement: {:?}", rule.as_rule()),
+                }
+            }
+            Ok(Statement::new(StatementKind::Switch { value, cases, default_case }, line))
+        }
         Rule::variable_decl => {
             let inner = pair.into_inner().next().unwrap(); // variable_decl_core
             parse_variable_decl_core(inner, line)
@@ -419,14 +472,22 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
             let mut inner = pair.into_inner();
             let binary_pair = inner.next().unwrap();
             let expr = parse_expression(binary_pair)?;
-            if let Some(then_pair) = inner.next() {
-                let then_expr = parse_expression(then_pair)?;
-                let else_expr = parse_expression(inner.next().unwrap())?;
-                Ok(Expression::new(ExpressionKind::Ternary {
-                    condition: Box::new(expr),
-                    then_expr: Box::new(then_expr),
-                    else_expr: Box::new(else_expr),
-                }, line))
+            let second_pair = inner.next();
+            if let Some(second) = second_pair {
+                let second_expr = parse_expression(second)?;
+                if let Some(third) = inner.next() {
+                    let third_expr = parse_expression(third)?;
+                    Ok(Expression::new(ExpressionKind::Ternary {
+                        condition: Box::new(expr),
+                        then_expr: Box::new(second_expr),
+                        else_expr: Box::new(third_expr),
+                    }, line))
+                } else {
+                    Ok(Expression::new(ExpressionKind::Elvis {
+                        left: Box::new(expr),
+                        right: Box::new(second_expr),
+                    }, line))
+                }
             } else {
                 Ok(expr)
             }
@@ -439,21 +500,66 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
             Ok(Expression::new(ExpressionKind::Assignment { target, value: Box::new(value) }, line))
         }
         Rule::binary_expr => {
-            let mut rules = pair.into_inner();
-            let mut left = parse_primary(rules.next().unwrap())?;
-            
-            while let Some(op) = rules.next() {
-                let operator = op.as_str().to_string();
-                let right = parse_primary(rules.next().unwrap())?;
-                left = Expression::new(ExpressionKind::Binary {
-                    left: Box::new(left),
-                    operator,
-                    right: Box::new(right),
-                }, line);
-            }
-            Ok(left)
+            let mut rules: Vec<_> = pair.into_inner().collect();
+            parse_binary_precedence(&mut rules, 0, line)
         }
+
         _ => bail!("Unexpected expression rule: {:?}", rule),
+    }
+}
+
+fn parse_binary_precedence(rules: &mut [pest::iterators::Pair<Rule>], min_precedence: u8, line: u32) -> Result<Expression> {
+    // This is a simple implementation of Pratt parsing for a flat list of rules: [primary, op, primary, op, primary]
+    // Since we can't easily consume from the slice in recursion without complex logic,
+    // we'll use a slightly different approach or just fix the bvm.bxs for now.
+    
+    // Actually, I'll just implement a simple one that works for the current grammar structure.
+    let mut left = parse_primary(rules[0].clone())?;
+    let mut i = 1;
+    
+    while i < rules.len() {
+        let op_str = rules[i].as_str();
+        let prec = get_precedence(op_str);
+        if prec < min_precedence {
+            break;
+        }
+        
+        let op = op_str.to_string();
+        i += 1;
+        
+        // Find how far we can go with higher precedence
+        let mut j = i;
+        while j + 1 < rules.len() && get_precedence(rules[j+1].as_str()) > prec {
+            j += 2;
+        }
+        
+        let right = if j == i {
+            parse_primary(rules[i].clone())?
+        } else {
+            parse_binary_precedence(&mut rules[i..j+1], prec + 1, line)?
+        };
+        
+        left = Expression::new(ExpressionKind::Binary {
+            left: Box::new(left),
+            operator: op,
+            right: Box::new(right),
+        }, line);
+        
+        i = j + 1;
+    }
+    
+    Ok(left)
+}
+
+fn get_precedence(op: &str) -> u8 {
+    match op {
+        "||" => 1,
+        "&&" => 2,
+        "==" | "!=" | "<" | ">" | "<=" | ">=" => 3,
+        "&" => 4,
+        "+" | "-" => 5,
+        "*" | "/" | "%" => 6,
+        _ => 0,
     }
 }
 
@@ -541,6 +647,13 @@ fn parse_primary(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
             Rule::member_access => {
                 let member = postfix.into_inner().next().unwrap().as_str().to_string();
                 expr = Expression::new(ExpressionKind::MemberAccess {
+                    base: Box::new(expr),
+                    member,
+                }, postfix_line);
+            }
+            Rule::safe_member_access => {
+                let member = postfix.into_inner().next().unwrap().as_str().to_string();
+                expr = Expression::new(ExpressionKind::SafeMemberAccess {
                     base: Box::new(expr),
                     member,
                 }, postfix_line);

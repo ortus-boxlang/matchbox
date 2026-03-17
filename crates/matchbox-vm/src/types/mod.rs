@@ -102,9 +102,10 @@ impl BxValue {
 // ------------------------------------------------------------------------
 
 pub trait BxVM {
-    fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8) -> BxValue;
-    fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, priority: u8) -> Result<BxValue, String>;
-    fn call_function_by_value(&mut self, func: &BxValue, args: Vec<BxValue>) -> Result<BxValue, String>;
+    fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>>;
+    fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue;
+    fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String>;
+    fn call_function_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String>;
     fn yield_fiber(&mut self);
     fn sleep(&mut self, ms: u64);
     fn get_root_shape(&self) -> u32;
@@ -194,9 +195,8 @@ pub struct BxCompiledFunction {
     pub arity: u32,     // Total parameters
     pub min_arity: u32, // Required parameters
     pub params: Vec<String>, // Parameter names
-    pub chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
-    #[serde(skip)]
-    pub promoted_constants: RefCell<Vec<Option<BxValue>>>,
+    /// The actual bytecode for this function.
+    pub chunk: crate::vm::chunk::Chunk,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -204,14 +204,14 @@ pub struct BxClass {
     pub name: String,
     pub extends: Option<String>,
     pub implements: Vec<String>,
-    pub constructor: Rc<BxCompiledFunction>,
-    pub methods: HashMap<String, Rc<BxCompiledFunction>>,
+    pub constructor: BxCompiledFunction,
+    pub methods: Vec<(String, BxCompiledFunction)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BxInterface {
     pub name: String,
-    pub methods: HashMap<String, Option<Rc<BxCompiledFunction>>>,
+    pub methods: Vec<(String, Option<BxCompiledFunction>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
