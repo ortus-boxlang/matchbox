@@ -1242,6 +1242,12 @@ impl VM {
                         ip += offset as usize;
                     }
                 }
+                op::JUMP_IF_NULL => {
+                    let offset = op0;
+                    if self.fibers[fiber_idx].stack.last().unwrap().is_null() {
+                        ip += offset as usize;
+                    }
+                }
                 op::JUMP => {
                     let offset = op0;
                     ip += offset as usize;

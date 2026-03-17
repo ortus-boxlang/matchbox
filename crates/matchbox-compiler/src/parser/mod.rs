@@ -428,14 +428,22 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
             let mut inner = pair.into_inner();
             let binary_pair = inner.next().unwrap();
             let expr = parse_expression(binary_pair)?;
-            if let Some(then_pair) = inner.next() {
-                let then_expr = parse_expression(then_pair)?;
-                let else_expr = parse_expression(inner.next().unwrap())?;
-                Ok(Expression::new(ExpressionKind::Ternary {
-                    condition: Box::new(expr),
-                    then_expr: Box::new(then_expr),
-                    else_expr: Box::new(else_expr),
-                }, line))
+            let second_pair = inner.next();
+            if let Some(second) = second_pair {
+                let second_expr = parse_expression(second)?;
+                if let Some(third) = inner.next() {
+                    let third_expr = parse_expression(third)?;
+                    Ok(Expression::new(ExpressionKind::Ternary {
+                        condition: Box::new(expr),
+                        then_expr: Box::new(second_expr),
+                        else_expr: Box::new(third_expr),
+                    }, line))
+                } else {
+                    Ok(Expression::new(ExpressionKind::Elvis {
+                        left: Box::new(expr),
+                        right: Box::new(second_expr),
+                    }, line))
+                }
             } else {
                 Ok(expr)
             }
@@ -594,6 +602,13 @@ fn parse_primary(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
             Rule::member_access => {
                 let member = postfix.into_inner().next().unwrap().as_str().to_string();
                 expr = Expression::new(ExpressionKind::MemberAccess {
+                    base: Box::new(expr),
+                    member,
+                }, postfix_line);
+            }
+            Rule::safe_member_access => {
+                let member = postfix.into_inner().next().unwrap().as_str().to_string();
+                expr = Expression::new(ExpressionKind::SafeMemberAccess {
                     base: Box::new(expr),
                     member,
                 }, postfix_line);

@@ -907,6 +907,24 @@ impl Compiler {
                 self.chunk.code[jump_idx] = op::JUMP as u32 | (((end_target - jump_idx - 1) as u32) << 8);
                 Ok(())
             }
+            ExpressionKind::Elvis { left, right } => {
+                self.compile_expression(left)?;
+                // If null, skip unconditional jump to land at pop+right
+                let jmp_null_idx = self.chunk.code.len();
+                self.chunk.emit1(op::JUMP_IF_NULL, 0, expr.line);
+                // If not null, jump over the right expression
+                let jmp_end_idx = self.chunk.code.len();
+                self.chunk.emit1(op::JUMP, 0, expr.line);
+                // Null branch
+                let null_target = self.chunk.code.len();
+                self.chunk.code[jmp_null_idx] = op::JUMP_IF_NULL as u32 | (((null_target - jmp_null_idx - 1) as u32) << 8);
+                self.chunk.emit0(op::POP, expr.line); // Pop the null
+                self.compile_expression(right)?;
+                // Patch end jump
+                let end_target = self.chunk.code.len();
+                self.chunk.code[jmp_end_idx] = op::JUMP as u32 | (((end_target - jmp_end_idx - 1) as u32) << 8);
+                Ok(())
+            }
             ExpressionKind::Identifier(name) => {
                 let lower_name = name.to_lowercase();
                 if lower_name == "this" {
@@ -1031,6 +1049,16 @@ impl Compiler {
                 self.compile_expression(base)?;
                 let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
                 self.chunk.emit1(op::MEMBER, name_idx, expr.line);
+                Ok(())
+            }
+            ExpressionKind::SafeMemberAccess { base, member } => {
+                self.compile_expression(base)?;
+                let jmp_null_idx = self.chunk.code.len();
+                self.chunk.emit1(op::JUMP_IF_NULL, 0, expr.line); // if null, leave null on stack and jump over member access
+                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                self.chunk.emit1(op::MEMBER, name_idx, expr.line);
+                let end_target = self.chunk.code.len();
+                self.chunk.code[jmp_null_idx] = op::JUMP_IF_NULL as u32 | (((end_target - jmp_null_idx - 1) as u32) << 8);
                 Ok(())
             }
             ExpressionKind::Prefix { operator, target } => {
@@ -1569,10 +1597,17 @@ impl DependencyTracker {
                 self.track_expression(then_expr);
                 self.track_expression(else_expr);
             }
+            ExpressionKind::Elvis { left, right } => {
+                self.track_expression(left);
+                self.track_expression(right);
+            }
             ExpressionKind::Assignment { value, .. } => {
                 self.track_expression(value);
             }
             ExpressionKind::MemberAccess { base, .. } => {
+                self.track_expression(base);
+            }
+            ExpressionKind::SafeMemberAccess { base, .. } => {
                 self.track_expression(base);
             }
             ExpressionKind::ArrayAccess { base, index } => {

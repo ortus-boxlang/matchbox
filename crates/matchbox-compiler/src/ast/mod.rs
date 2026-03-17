@@ -132,6 +132,10 @@ pub enum ExpressionKind {
         then_expr: Box<Expression>,
         else_expr: Box<Expression>,
     },
+    Elvis {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
     FunctionCall {
         base: Box<Expression>,
         args: Vec<Argument>,
@@ -141,6 +145,10 @@ pub enum ExpressionKind {
         index: Box<Expression>,
     },
     MemberAccess {
+        base: Box<Expression>,
+        member: String,
+    },
+    SafeMemberAccess {
         base: Box<Expression>,
         member: String,
     },

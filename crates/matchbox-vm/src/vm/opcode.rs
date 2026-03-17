@@ -72,6 +72,7 @@ pub mod op {
     pub const PRINT: u8 = 61;
     pub const PRINTLN: u8 = 62;
     pub const FOR_LOOP_STEP: u8 = 63;  // 3-word: op0=slot, w1=const_idx, w2=offset — increment local, compare < const, jump back if true
+    pub const JUMP_IF_NULL: u8 = 64;
 }
 
 pub fn opcode_name(op: u8) -> &'static str {
@@ -140,6 +141,7 @@ pub fn opcode_name(op: u8) -> &'static str {
         op::PRINT                   => "PRINT",
         op::PRINTLN                 => "PRINTLN",
         op::FOR_LOOP_STEP           => "FOR_LOOP_STEP",
+        op::JUMP_IF_NULL            => "JUMP_IF_NULL",
         _                           => "UNKNOWN",
     }
 }

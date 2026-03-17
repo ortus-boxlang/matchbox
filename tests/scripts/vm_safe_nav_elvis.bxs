@@ -1,0 +1,49 @@
+// Test Elvis operator ?:
+val1 = null ?: "default";
+if (val1 != "default") { throw "elvis 1 failed" }
+
+val2 = "set" ?: "default";
+if (val2 != "set") { throw "elvis 2 failed" }
+
+struct_val = { a: 1 };
+val3 = struct_val.b ?: 42;
+if (val3 != 42) { throw "elvis 3 failed" }
+
+// Test Safe Navigation ?.
+myStruct = { name: "Matchbox", child: { age: 10 } };
+nullStruct = null;
+
+// Safe navigation on valid struct
+name = myStruct?.name;
+if (name != "Matchbox") { throw "safe nav 1 failed" }
+
+// Safe navigation on null should return null
+nullAge = nullStruct?.age;
+if (nullAge != null) { throw "safe nav 2 failed" }
+
+// Chained safe navigation
+// Wait, chaining requires parser support for target assignment?
+// No, a?.b?.c is just SafeMemberAccess(SafeMemberAccess(a, b), c)
+nestedAge = myStruct?.child?.age;
+if (nestedAge != 10) { throw "safe nav 3 failed" }
+
+nullNested = nullStruct?.child?.age;
+if (nullNested != null) { throw "safe nav 4 failed" }
+
+// Combine both
+val4 = nullStruct?.child?.age ?: "missing";
+if (val4 != "missing") { throw "elvis + safe nav failed" }
+
+println("Elvis and Safe Navigation tests passed!");
+
+// Test Ternary operator
+val5 = true ? "yes" : "no";
+if (val5 != "yes") { throw "ternary 1 failed" }
+
+val6 = false ? "yes" : "no";
+if (val6 != "no") { throw "ternary 2 failed" }
+
+nested = false ? "1" : true ? "2" : "3";
+if (nested != "2") { throw "ternary 3 failed" }
+
+println("All ternary tests passed!");
