@@ -8,10 +8,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Module System**: Dynamic module discovery from `matchbox.toml` and `--module` CLI flags; new `ModuleInfo` struct encapsulating module metadata.
+- **Native Module Support**: Load native Rust `.so` modules and auto-register exported BIFs without boilerplate.
+- **Module Settings**: Settings support in module lifecycle hooks for configurable modules.
+- **Cranelift JIT Compilation (Tier-1 & Tier-2)**: Initial JIT backend using Cranelift. Tier-1 eliminates dead-code in empty loops; Tier-2 translates numeric loop bodies to Cranelift SSA IR.
+- **JIT Type Guards and Deoptimization**: Type-checked JIT paths that fall back to the interpreter on type mismatch.
+- **JIT Tier-3 — Array Iteration**: `ArrayIterJitFn` for JIT-compiled numeric array iteration.
+- **JIT Tier-3 — Struct Inline Caching**: Per-site polymorphic shape-based caching for struct property access within JIT-compiled code, with deoptimization support.
+- **JIT Hot Function Compilation and OSR**: Persistent profiling counters across quanta, fast-path execution for hot functions, and On-Stack Replacement (OSR) for long-running loops.
+- **JIT Tier-4 — Leaf Function Calls**: JIT compilation for call sites targeting leaf functions.
+- **JIT Shape ID and Property Loading**: Struct property access via JIT using shape IDs and inline caches.
+- **JIT String Concatenation**: JIT-compiled string concatenation via `jit_concat`.
+- **JIT Enabled by Default**: JIT compilation is now active by default; no extra flag required.
+- **File System BIFs**: `directoryExists`, `directoryCreate`, `directoryDelete`, `directoryList`, `fileExists`, `fileDelete`, `fileMove`, `fileCopy`, `fileInfo`, `fileCreateSymlink`, `fileSetExecutable`, `fileRead`, `fileWrite`.
+- **HTTP BIF**: `httpRequest` supporting GET, POST, PUT, and DELETE methods.
+- **JSON BIFs**: `jsonSerialize` and `jsonDeserialize` for encoding and decoding JSON data.
+- **Cryptography BIF**: `hash` for SHA-256 hashing.
+- **String BIFs**: `trim`, `listToArray`, `indexOf`, and `chr`.
+- **ESP32 Firmware Support**: New `matchbox-esp32-runner` crate; CLI flags `--flash`, `--full-flash`, and `--chip` for building and flashing bytecode to ESP32 devices; watch mode for live updates during development.
+- **Web WASM Target**: Stub management extended to support browser/web WASM targets alongside the existing WASM container target.
+- **Elvis Operator (`?:`)**: Null-coalescing Elvis operator for concise null checks.
+- **Safe Member Access (`?.`)**: Null-safe chained member access operator.
+- **`while` Loop**: Full `while` loop support in the parser and compiler.
+- **`switch` Statement**: `switch`/`case` statement with `break` support.
+
+### Changed
+- **Flat Function Representation**: Refactored `Chunk` and VM to use a flat, string-keyed function model instead of nested chunks; `CallFrame` now carries a direct chunk reference for improved dispatch.
+- **Watch Mode**: Platform-specific process handling for more reliable live-reload behavior on Linux, macOS, and Windows.
+
+### Fixed
+- ESP32 binary production logic and serial port handling in watch mode.
+- ESP32 Docker image tagging and `Reflect.set` index usage.
+- Set `RUSTUP_HOME` and `CARGO_HOME` correctly in ESP32 build environment.
+- Regression in `LOCAL_JUMP_IF_NE_CONST` optimization and return propagation.
+
+## [0.3.0] - 2026-03-09
+
+### Added
 - **System BIFs**: Added `createUUID()`, `createGUID()`, and `getSystemSetting()`.
 - **CLI BIFs**: Added `cliGetArgs()` (structured parsing), `cliRead()`, `cliConfirm()`, `cliClear()`, and `cliExit()`.
 - **Expanded Array Library**: 20+ new BIFs including `arraySort`, `arrayFindNoCase`, `arrayAvg`, `arraySum`, `arrayUnique`, etc.
 - **Expanded Struct Library**: 15+ new BIFs including `structAppend`, `structMap`, `structFilter`, `structSort`, `structKeyExists`, etc.
+- **Math BIFs**: `abs`, `min`, and `max`.
 - **`rust:` Imports**: Support for importing native Rust modules and classes using `import rust:path.to.Module`.
 - **MatchBox Macros**: New `matchbox-macros` crate for zero-boilerplate Rust-to-BoxLang interop (automatic BIF and Class registration).
 - **Polymorphic Inline Caches (PIC)**: Enhanced member access performance with support for multiple shapes per call site.
