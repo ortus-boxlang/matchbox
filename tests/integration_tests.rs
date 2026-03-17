@@ -172,6 +172,26 @@ fn jit_pic_member() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn jit_concat() {
+    // Test Tier-4 JIT: functions containing STRING_CONCAT are compiled via
+    // jit_concat helper, which allocates the concatenated string on the GC heap.
+    let builder = std::thread::Builder::new()
+        .name("jit_concat".into())
+        .stack_size(8 * 1024 * 1024);
+    let handler = builder.spawn(|| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("scripts")
+            .join("jit_concat.bxs");
+        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+            panic!("jit_concat.bxs failed: {}", e);
+        }
+    }).unwrap();
+    handler.join().unwrap();
+}
+
+#[test]
 fn test_vm_interface_fail() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

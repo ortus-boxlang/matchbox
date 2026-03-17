@@ -153,6 +153,58 @@ pub unsafe extern "C" fn jit_load_prop_at(
     }
 }
 
+fn bx_val_to_box_string(
+    val_bits: u64,
+    heap: &crate::vm::gc::Heap,
+) -> Option<crate::types::box_string::BoxString> {
+    use crate::types::BxValue;
+    use crate::types::box_string::BoxString;
+    use crate::vm::gc::GcObject;
+
+    // Float: raw bits below the NaN-boxing threshold
+    if val_bits < 0xFFF8000000000000 {
+        return Some(BoxString::new(&f64::from_bits(val_bits).to_string()));
+    }
+
+    let tag     = val_bits & !BxValue::PAYLOAD_MASK;
+    let payload = val_bits &  BxValue::PAYLOAD_MASK;
+    let int_tag  = BxValue::TAGGED_BASE | (BxValue::TAG_INT  << BxValue::TAG_SHIFT);
+    let bool_tag = BxValue::TAGGED_BASE | (BxValue::TAG_BOOL << BxValue::TAG_SHIFT);
+    let null_tag = BxValue::TAGGED_BASE | (BxValue::TAG_NULL << BxValue::TAG_SHIFT);
+    let ptr_tag  = BxValue::TAGGED_BASE | (BxValue::TAG_PTR  << BxValue::TAG_SHIFT);
+
+    if tag == int_tag {
+        Some(BoxString::new(&(payload as u32 as i32).to_string()))
+    } else if tag == bool_tag {
+        Some(BoxString::new(if payload != 0 { "true" } else { "false" }))
+    } else if tag == null_tag {
+        Some(BoxString::new("null"))
+    } else if tag == ptr_tag {
+        let id = payload as usize;
+        if let Some(GcObject::String(s)) = heap.get_opt(id) {
+            Some(s.clone())
+        } else {
+            None // non-string pointer → deopt
+        }
+    } else {
+        None
+    }
+}
+
+pub unsafe extern "C" fn jit_concat(
+    heap_ptr: *mut std::ffi::c_void,
+    val_a: u64,
+    val_b: u64,
+    out_val: *mut u64,
+) -> u64 {
+    let heap = &mut *(heap_ptr as *mut crate::vm::gc::Heap);
+    let a_s = match bx_val_to_box_string(val_a, heap) { Some(s) => s, None => return 1 };
+    let b_s = match bx_val_to_box_string(val_b, heap) { Some(s) => s, None => return 1 };
+    let res_id = heap.alloc(crate::vm::gc::GcObject::String(a_s.concat(&b_s)));
+    *out_val = crate::types::BxValue::new_ptr(res_id).to_bits();
+    0
+}
+
 // ── JitState ──────────────────────────────────────────────────────────────────
 
 pub struct JitState {
@@ -203,6 +255,7 @@ impl JitState {
         builder.symbol("jit_resolve_fn", jit_resolve_fn as *const u8);
         builder.symbol("jit_get_shape_id", jit_get_shape_id as *const u8);
         builder.symbol("jit_load_prop_at", jit_load_prop_at as *const u8);
+        builder.symbol("jit_concat", jit_concat as *const u8);
         let module = JITModule::new(builder);
         let ctx = module.make_context();
 
@@ -1140,7 +1193,7 @@ impl JitState {
                 // Rejected opcodes
                 op::CALL_NAMED | op::INVOKE | op::INVOKE_NAMED | op::NEW
                 | op::ARRAY | op::STRUCT | op::INDEX | op::SET_INDEX
-                | op::MEMBER | op::SET_MEMBER | op::INC_MEMBER | op::STRING_CONCAT
+                | op::MEMBER | op::SET_MEMBER | op::INC_MEMBER
                 | op::ITER_NEXT | op::FOR_LOOP_STEP | op::LOOP
                 | op::PUSH_HANDLER | op::POP_HANDLER | op::THROW
                 | op::PRINT | op::PRINTLN
@@ -1168,7 +1221,8 @@ impl JitState {
                 | op::DIVIDE | op::DIV_FLOAT | op::MODULO
                 | op::EQUAL | op::NOT_EQUAL | op::LESS | op::LESS_EQUAL
                 | op::GREATER | op::GREATER_EQUAL
-                | op::NOT | op::RETURN | op::POP | op::DUP | op::CALL => {}
+                | op::NOT | op::RETURN | op::POP | op::DUP | op::CALL
+                | op::STRING_CONCAT => {}
 
                 _ => return false,
             }
@@ -1275,7 +1329,8 @@ impl JitState {
                     | op::MULTIPLY | op::MUL_INT | op::MUL_FLOAT
                     | op::DIVIDE | op::DIV_FLOAT | op::MODULO
                     | op::EQUAL | op::NOT_EQUAL | op::LESS | op::LESS_EQUAL
-                    | op::GREATER | op::GREATER_EQUAL => depth -= 1,
+                    | op::GREATER | op::GREATER_EQUAL
+                    | op::STRING_CONCAT => depth -= 1,
                     // SET_LOCAL, NOT: no net stack change
                     _ => {}
                 }
@@ -1368,6 +1423,18 @@ impl JitState {
                 hotfn_sig_ref = None;
                 resolve_fn_addr_val = None;
             }
+
+            // Declare jit_concat(heap_ptr, val_a, val_b, out_val_ptr) -> u64
+            let mut sig_concat = self.module.make_signature();
+            sig_concat.params.push(AbiParam::new(ptr_type)); // heap_ptr
+            sig_concat.params.push(AbiParam::new(I64));      // val_a
+            sig_concat.params.push(AbiParam::new(I64));      // val_b
+            sig_concat.params.push(AbiParam::new(ptr_type)); // out_val ptr
+            sig_concat.returns.push(AbiParam::new(I64));     // status
+            let concat_id = self.module
+                .declare_function("jit_concat", Linkage::Import, &sig_concat)
+                .unwrap();
+            let concat_ref = self.module.declare_func_in_func(concat_id, &mut builder.func);
 
             // Allocate spill slots for expression stack (8 bytes each, 8-byte aligned)
             let spill_slots: Vec<StackSlot> = (0..max_stack.max(1))
@@ -1673,6 +1740,21 @@ impl JitState {
                         // Load return value and push onto vstack
                         let ret_bits = builder.ins().stack_load(I64, cov, 0);
                         vstack.push(ret_bits);
+                    }
+                    op::STRING_CONCAT => {
+                        let val_b = vstack.pop().unwrap();
+                        let val_a = vstack.pop().unwrap();
+                        let out_slot = builder.create_sized_stack_slot(
+                            StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3)
+                        );
+                        let out_ptr = builder.ins().stack_addr(ptr_type, out_slot, 0);
+                        let call = builder.ins().call(concat_ref, &[heap_ptr, val_a, val_b, out_ptr]);
+                        let status = builder.inst_results(call)[0];
+                        let zero = builder.ins().iconst(I64, 0);
+                        let is_ok = builder.ins().icmp(IntCC::Equal, status, zero);
+                        emit_deopt_brif!(is_ok);
+                        let result = builder.ins().stack_load(I64, out_slot, 0);
+                        vstack.push(result);
                     }
                     _ => return Err(anyhow::anyhow!("unexpected opcode {} in hot fn", opcode)),
                 }

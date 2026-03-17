@@ -1,0 +1,13 @@
+// Test: Tier-4 JIT compiles functions containing STRING_CONCAT via jit_concat helper.
+// concat_str() is called 200 times, crossing the JIT_FN_THRESHOLD of 100.
+// After compilation, the native code calls jit_concat() which allocates the
+// concatenated string on the GC heap and writes the result pointer out.
+
+function concat_str(a, b) { return a & b; }
+
+var result = "";
+for (var i = 0; i < 200; i++) {
+    result = concat_str("foo", "bar");
+}
+// Expected: "foobar" (last call result)
+println(result);
