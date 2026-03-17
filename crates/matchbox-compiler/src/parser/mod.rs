@@ -405,6 +405,42 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
         Rule::continue_stmt => {
             Ok(Statement::new(StatementKind::Continue, line))
         }
+        Rule::break_stmt => {
+            Ok(Statement::new(StatementKind::Break, line))
+        }
+        Rule::switch_statement => {
+            let mut inner = pair.into_inner();
+            let _kw = inner.next().unwrap();
+            let value = parse_expression(inner.next().unwrap())?;
+            let mut cases = Vec::new();
+            let mut default_case = None;
+
+            for rule in inner {
+                match rule.as_rule() {
+                    Rule::switch_case => {
+                        let mut case_inner = rule.into_inner();
+                        let _case_kw = case_inner.next().unwrap();
+                        let case_val = parse_expression(case_inner.next().unwrap())?;
+                        let mut body = Vec::new();
+                        for stmt_rule in case_inner {
+                            body.push(parse_statement(stmt_rule)?);
+                        }
+                        cases.push(crate::ast::SwitchCase { value: case_val, body });
+                    }
+                    Rule::default_case => {
+                        let mut def_inner = rule.into_inner();
+                        let _def_kw = def_inner.next().unwrap();
+                        let mut body = Vec::new();
+                        for stmt_rule in def_inner {
+                            body.push(parse_statement(stmt_rule)?);
+                        }
+                        default_case = Some(body);
+                    }
+                    _ => bail!("Unexpected rule in switch statement: {:?}", rule.as_rule()),
+                }
+            }
+            Ok(Statement::new(StatementKind::Switch { value, cases, default_case }, line))
+        }
         Rule::variable_decl => {
             let inner = pair.into_inner().next().unwrap(); // variable_decl_core
             parse_variable_decl_core(inner, line)
@@ -520,8 +556,9 @@ fn get_precedence(op: &str) -> u8 {
         "||" => 1,
         "&&" => 2,
         "==" | "!=" | "<" | ">" | "<=" | ">=" => 3,
-        "+" | "-" | "&" => 4,
-        "*" | "/" => 5,
+        "&" => 4,
+        "+" | "-" => 5,
+        "*" | "/" | "%" => 6,
         _ => 0,
     }
 }

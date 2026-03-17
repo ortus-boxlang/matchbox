@@ -14,7 +14,9 @@ statement = {
     | try_catch
     | return_stmt
     | continue_stmt
+    | break_stmt
     | throw_stmt
+    | switch_statement
     | variable_decl
     | expression_stmt
     )
@@ -88,6 +90,17 @@ finally_block = { finally_keyword ~ block }
 continue_keyword = @{ "continue" ~ !ASCII_ALPHANUMERIC }
 continue_stmt = { continue_keyword ~ ";"? }
 
+break_keyword = @{ "break" ~ !ASCII_ALPHANUMERIC }
+break_stmt = { break_keyword ~ ";"? }
+
+switch_keyword = @{ "switch" ~ !ASCII_ALPHANUMERIC }
+case_keyword = @{ "case" ~ !ASCII_ALPHANUMERIC }
+default_keyword = @{ "default" ~ !ASCII_ALPHANUMERIC }
+
+switch_statement = { switch_keyword ~ "(" ~ expression ~ ")" ~ "{" ~ switch_case* ~ default_case? ~ "}" }
+switch_case = { case_keyword ~ expression ~ ":" ~ statement* }
+default_case = { default_keyword ~ ":" ~ statement* }
+
 throw_keyword = @{ "throw" ~ !ASCII_ALPHANUMERIC }
 throw_stmt = { throw_keyword ~ expression? ~ ";"? }
 
@@ -137,6 +150,10 @@ keyword = {
     | catch_keyword
     | finally_keyword
     | throw_keyword
+    | switch_keyword
+    | case_keyword
+    | default_keyword
+    | break_keyword
     | new_keyword
 }
 

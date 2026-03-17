@@ -25,6 +25,7 @@ pub struct Compiler {
     current_line: u32,
     pub is_repl: bool,
     continue_patches: Vec<Vec<usize>>,
+    break_patches: Vec<Vec<usize>>,
     loop_locals: Vec<usize>,
 }
 
@@ -40,6 +41,7 @@ impl Compiler {
             current_line: 0,
             is_repl: false,
             continue_patches: Vec::new(),
+            break_patches: Vec::new(),
             loop_locals: Vec::new(),
         }
     }
@@ -55,6 +57,7 @@ impl Compiler {
             current_line: 0,
             is_repl: false,
             continue_patches: Vec::new(),
+            break_patches: Vec::new(),
             loop_locals: Vec::new(),
         }
     }
@@ -304,6 +307,26 @@ impl Compiler {
                 }
                 Ok(())
             }
+            StatementKind::Break => {
+                // Pop any locals added within the loop/switch body
+                if let Some(target_local_count) = self.loop_locals.last() {
+                    let current_local_count = self.locals.len();
+                    if current_local_count > *target_local_count {
+                        for _ in 0..(current_local_count - *target_local_count) {
+                            self.chunk.emit0(op::POP, stmt.line as u32);
+                        }
+                    }
+                }
+
+                let jump_idx = self.chunk.code.len();
+                self.chunk.emit1(op::JUMP, 0, stmt.line as u32);
+                if let Some(patches) = self.break_patches.last_mut() {
+                    patches.push(jump_idx);
+                } else {
+                    bail!("'break' used outside of a loop or switch");
+                }
+                Ok(())
+            }
             StatementKind::TryCatch { try_branch, catches, finally_branch } => {
                 let push_handler_idx = self.chunk.code.len();
                 self.chunk.emit1(op::PUSH_HANDLER, 0, stmt.line as u32);
@@ -496,6 +519,7 @@ impl Compiler {
                 let body_start = self.chunk.code.len();
 
                 self.continue_patches.push(Vec::new());
+                self.break_patches.push(Vec::new());
                 self.loop_locals.push(self.locals.len());
                 for stmt in body {
                     self.compile_statement(stmt, false)?;
@@ -572,6 +596,15 @@ impl Compiler {
                 }
                 self.end_scope();
 
+                // Patch any break jumps to land at the end of the loop
+                let break_target = self.chunk.code.len();
+                if let Some(breaks) = self.break_patches.pop() {
+                    for idx in breaks {
+                        let offset = break_target - idx - 1;
+                        self.chunk.code[idx] = op::JUMP as u32 | ((offset as u32) << 8);
+                    }
+                }
+
                 Ok(())
             }
             StatementKind::WhileLoop { condition, body } => {
@@ -589,6 +622,7 @@ impl Compiler {
 
                 self.begin_scope();
                 self.continue_patches.push(Vec::new());
+                self.break_patches.push(Vec::new());
                 self.loop_locals.push(self.locals.len());
                 for stmt in body {
                     self.compile_statement(stmt, false)?;
@@ -616,6 +650,101 @@ impl Compiler {
                 
                 // 7. Pop falsy result
                 self.chunk.emit0(op::POP, condition.line);
+
+                // Patch any break jumps to land at the end of the loop
+                let break_target = self.chunk.code.len();
+                if let Some(breaks) = self.break_patches.pop() {
+                    for idx in breaks {
+                        let offset = break_target - idx - 1;
+                        self.chunk.code[idx] = op::JUMP as u32 | ((offset as u32) << 8);
+                    }
+                }
+
+                Ok(())
+            }
+            StatementKind::Switch { value, cases, default_case } => {
+                // 1. Evaluate switch value and leave it on the stack
+                self.compile_expression(value)?;
+
+                self.begin_scope();
+                // Not pushing continue_patches since 'continue' isn't for switch, only 'break'.
+                self.break_patches.push(Vec::new());
+                self.loop_locals.push(self.locals.len());
+
+                let mut jump_to_bodies = Vec::new();
+
+                // 2. Generate case conditions
+                for switch_case in cases {
+                    self.chunk.emit0(op::DUP, stmt.line as u32);
+                    self.compile_expression(&switch_case.value)?;
+                    self.chunk.emit0(op::EQUAL, stmt.line as u32);
+                    
+                    // If equal, jump to the body (we will patch this later)
+                    let jump_idx = self.chunk.code.len();
+                    self.chunk.emit1(op::JUMP_IF_FALSE, 0, stmt.line as u32);
+                    
+                    // Equal: pop the comparison result
+                    self.chunk.emit0(op::POP, stmt.line as u32);
+                    // Also pop the switch value since we found a match
+                    self.chunk.emit0(op::POP, stmt.line as u32);
+                    
+                    // Jump to body start
+                    let body_jump_idx = self.chunk.code.len();
+                    self.chunk.emit1(op::JUMP, 0, stmt.line as u32);
+                    jump_to_bodies.push(body_jump_idx);
+
+                    // Not equal: patch the JUMP_IF_FALSE to here
+                    let next_target = self.chunk.code.len();
+                    let offset = next_target - jump_idx - 1;
+                    self.chunk.code[jump_idx] = op::JUMP_IF_FALSE as u32 | ((offset as u32) << 8);
+                    
+                    // Pop the falsy comparison result, leaving switch value on stack
+                    self.chunk.emit0(op::POP, stmt.line as u32);
+                }
+
+                // 3. Generate default case jump
+                let jump_to_default = self.chunk.code.len();
+                // Pop the switch value as we either match default or fall out
+                self.chunk.emit0(op::POP, stmt.line as u32);
+                self.chunk.emit1(op::JUMP, 0, stmt.line as u32);
+
+                // 4. Generate case bodies
+                let mut i = 0;
+                for switch_case in cases {
+                    // Patch the conditional jump to land at this body
+                    let body_start = self.chunk.code.len();
+                    let offset = body_start - jump_to_bodies[i] - 1;
+                    self.chunk.code[jump_to_bodies[i]] = op::JUMP as u32 | ((offset as u32) << 8);
+                    
+                    for body_stmt in &switch_case.body {
+                        self.compile_statement(body_stmt, false)?;
+                    }
+                    i += 1;
+                }
+
+                // 5. Generate default body
+                let default_start = self.chunk.code.len();
+                let def_offset = default_start - jump_to_default - 1;
+                self.chunk.code[jump_to_default] = op::JUMP as u32 | ((def_offset as u32) << 8);
+
+                if let Some(def_case) = default_case {
+                    for body_stmt in def_case {
+                        self.compile_statement(body_stmt, false)?;
+                    }
+                }
+
+                // Cleanup scope and loop_locals tracking
+                self.loop_locals.pop();
+                self.end_scope();
+
+                // 6. Patch breaks
+                let end_target = self.chunk.code.len();
+                if let Some(breaks) = self.break_patches.pop() {
+                    for idx in breaks {
+                        let offset = end_target - idx - 1;
+                        self.chunk.code[idx] = op::JUMP as u32 | ((offset as u32) << 8);
+                    }
+                }
 
                 Ok(())
             }
@@ -654,6 +783,7 @@ impl Compiler {
                 }
 
                 self.continue_patches.push(Vec::new());
+                self.break_patches.push(Vec::new());
                 self.loop_locals.push(self.locals.len());
                 for stmt in body {
                     self.compile_statement(stmt, false)?;
@@ -683,6 +813,15 @@ impl Compiler {
                 let exit_target = self.chunk.code.len();
                 let offset = exit_target - iter_next_idx - 3;
                 self.chunk.code[iter_next_idx + 2] = offset as u32;
+
+                // Patch any break jumps to land at the end of the loop
+                let break_target = self.chunk.code.len();
+                if let Some(breaks) = self.break_patches.pop() {
+                    for idx in breaks {
+                        let offset = break_target - idx - 1;
+                        self.chunk.code[idx] = op::JUMP as u32 | ((offset as u32) << 8);
+                    }
+                }
 
                 self.end_scope();
                 Ok(())
@@ -1622,9 +1761,23 @@ impl DependencyTracker {
                 self.track_expression(condition);
                 self.track_statements(body);
             }
+            StatementKind::Switch { value, cases, default_case } => {
+                self.track_expression(value);
+                for switch_case in cases {
+                    self.track_expression(&switch_case.value);
+                    self.track_statements(&switch_case.body);
+                }
+                if let Some(def) = default_case {
+                    self.track_statements(def);
+                }
+            }
             StatementKind::Return(expr) => {
                 if let Some(e) = expr { self.track_expression(e); }
             }
+            StatementKind::Throw(expr) => {
+                if let Some(e) = expr { self.track_expression(e); }
+            }
+            StatementKind::Break | StatementKind::Continue => {}
             StatementKind::VariableDecl { value, .. } => {
                 self.track_expression(value);
             }

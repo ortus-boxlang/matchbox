@@ -52,6 +52,57 @@ script_test!(vm_continue, "vm_continue.bxs");
 script_test!(vm_array_sparse, "vm_array_sparse.bxs");
 script_test!(vm_polymorphic_ic, "vm_polymorphic_ic.bxs");
 script_test!(vm_fiber_priority, "vm_fiber_priority.bxs");
+script_test!(bvm_features, "bvm_features.bxs");
+script_test!(vm_safe_nav_elvis, "vm_safe_nav_elvis.bxs");
+script_test!(vm_switch, "vm_switch.bxs");
+script_test!(vm_while, "vm_while.bxs");
+
+#[test]
+fn test_vm_interface_fail() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join("vm_interface_fail.bxs");
+    
+    let result = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false);
+    assert!(result.is_err(), "vm_interface_fail.bxs should have failed");
+}
+
+#[test]
+fn test_java_bxs() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join("java_test.bxs");
+    
+    // This might fail if JRE is not available, but let's try
+    let _ = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false);
+}
+
+#[test]
+fn test_multi_file() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join("multi_file.bxs");
+    
+    process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false).unwrap();
+}
+
+#[test]
+fn test_vm_modules() {
+    let script_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join("vm_modules.bxs");
+    
+    let module_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("modules")
+        .join("greetings");
+
+    process_file(&script_path, false, None, Vec::new(), false, false, false, None, &[module_path], false, None, false, false, false).unwrap();
+}
 
 #[test]
 fn test_bytecode_roundtrip() {

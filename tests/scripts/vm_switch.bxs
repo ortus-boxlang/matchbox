@@ -1,0 +1,65 @@
+// Switch test
+val = 2;
+res = "";
+
+switch (val) {
+    case 1:
+        res = "one";
+        break;
+    case 2:
+        res = "two";
+        break;
+    default:
+        res = "unknown";
+}
+
+if (res != "two") {
+    throw "Switch failed for case 2";
+}
+
+// Fallthrough test
+val2 = 1;
+res2 = "";
+switch (val2) {
+    case 1:
+        res2 = res2 & "a";
+    case 2:
+        res2 = res2 & "b";
+        break;
+    default:
+        res2 = res2 & "c";
+}
+
+if (res2 != "ab") {
+    throw "Switch fallthrough failed";
+}
+
+// Default case test
+val3 = 5;
+res3 = "";
+switch (val3) {
+    case 1:
+        res3 = "one";
+        break;
+    default:
+        res3 = "def";
+        break;
+}
+
+if (res3 != "def") {
+    throw "Switch default failed";
+}
+
+// Loop break test
+i = 0;
+while (i < 10) {
+    i = i + 1;
+    if (i == 5) {
+        break;
+    }
+}
+if (i != 5) {
+    throw "Loop break failed";
+}
+
+println("Switch and break tests passed!");

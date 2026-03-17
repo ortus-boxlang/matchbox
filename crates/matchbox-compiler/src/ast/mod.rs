@@ -70,9 +70,15 @@ pub enum StatementKind {
         then_branch: Vec<Statement>,
         else_branch: Option<Vec<Statement>>,
     },
+    Switch {
+        value: Expression,
+        cases: Vec<SwitchCase>,
+        default_case: Option<Vec<Statement>>,
+    },
     Return(Option<Expression>),
     Throw(Option<Expression>),
     Continue,
+    Break,
     TryCatch {
         try_branch: Vec<Statement>,
         catches: Vec<CatchBlock>,
@@ -83,6 +89,12 @@ pub enum StatementKind {
         value: Expression,
     },
     Expression(Expression),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchCase {
+    pub value: Expression,
+    pub body: Vec<Statement>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
