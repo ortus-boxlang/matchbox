@@ -1,0 +1,29 @@
+// Test script for JIT Type Guards and Integer fast-paths
+
+function run_test() {
+    // 1. Pure float loop (compiles using ADD float fast path)
+    println("Starting Pure Numeric Loop...");
+    var sum_int = 0;
+    for (var i = 0; i < 20000; i++) {
+        sum_int = sum_int + 1; 
+    }
+    println("Sum Numeric: " & sum_int);
+
+    // 2. Mixed loop that triggers deopt
+    println("Starting Mixed Loop (triggers deopt via outer loop variable change)...");
+    var y = 1;
+    var sum_mixed = 0;
+    
+    // First outer iteration: y = 1 (float), JIT compiles float loop at i=10000.
+    // Second outer iteration: y = "5" (string ptr). JIT starts, sees non-float 'y', and immediately deopts!
+    // The interpreter takes over, parses "5" as a number, and correctly finishes the loop.
+    for (var j = 0; j < 2; j++) {
+        for (var i = 0; i < 15000; i++) {
+            sum_mixed = sum_mixed + y;
+        }
+        y = "5";
+    }
+    println("Final Sum Mixed: " & sum_mixed);
+}
+
+run_test();
