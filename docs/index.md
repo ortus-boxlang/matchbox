@@ -23,6 +23,7 @@ Welcome to the MatchBox documentation. MatchBox is a native Rust implementation 
 | [JavaScript + WASM](building-and-deploying/javascript-and-wasm.md) | ES modules, raw WASM, and runtime (dynamic) execution in the browser. |
 | [WASM Container](building-and-deploying/wasm-container.md) | Wasmtime, WasmEdge, Docker OCI containers, and edge platforms. |
 | [ESP32 Firmware](building-and-deploying/esp32.md) | Cross-compiling and flashing for ESP32/S3/C3 microcontrollers. |
+| [JIT Compilation](building-and-deploying/jit.md) | How the four-tier JIT works, where it is active, and how to extend it. |
 
 ---
 

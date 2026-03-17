@@ -434,9 +434,7 @@ pub fn run_chunk(chunk: Chunk, modules: &[modules::ModuleInfo]) -> Result<()> {
     vm.cli_args = args.clone();
 
     #[cfg(feature = "jit")]
-    if args.contains(&"--jit".to_string()) {
-        vm.enable_jit();
-    }
+    vm.enable_jit();
 
     vm.interpret(chunk)?;
     Ok(())
