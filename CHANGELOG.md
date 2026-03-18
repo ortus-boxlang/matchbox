@@ -5,9 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-03-18
 
 ### Added
+- **Built-in Web Server**: Integrated a high-performance native web server based on Axum and Tokio directly into the CLI.
+- **BoxLang Markup (BXM)**: New `.bxm` template support with a pluggable transpiler that converts markup into high-speed VM bytecode.
+- **Web Scopes**: Automatic injection of `url`, `form`, `cookie`, `session`, and `cgi` scopes for web requests.
+- **Integrated Web CLI**: New CLI flags: `--serve`, `--port`, `--host`, and `--webroot` for instant web hosting.
+- **Output Buffering**: Added request-level output buffering to the VM and a new `writeOutput()` BIF.
+- **Easy Install Scripts**: One-liner installation scripts for Linux, macOS (bash), and Windows (PowerShell).
+- **Multiple Release Variants**: CI now produces "Fat" (all-in-one), "Slim" (no stubs), and "Server" (headless runtime) binaries.
 - **Module System**: Dynamic module discovery from `matchbox.toml` and `--module` CLI flags; new `ModuleInfo` struct encapsulating module metadata.
 - **Native Module Support**: Load native Rust `.so` modules and auto-register exported BIFs without boilerplate.
 - **Module Settings**: Settings support in module lifecycle hooks for configurable modules.
@@ -33,10 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`switch` Statement**: `switch`/`case` statement with `break` support.
 
 ### Changed
+- **Weakly Typed Math**: The `ADD` opcode now automatically converts strings to numbers if possible, matching BoxLang behavior.
+- **Escaped Quote Support**: Strings now support BoxLang-style escaping using double-quotes (`""` and `''`).
 - **Flat Function Representation**: Refactored `Chunk` and VM to use a flat, string-keyed function model instead of nested chunks; `CallFrame` now carries a direct chunk reference for improved dispatch.
 - **Watch Mode**: Platform-specific process handling for more reliable live-reload behavior on Linux, macOS, and Windows.
 
 ### Fixed
+- Fixed literal hash (`#`) parsing issues in `bxm` templates by implementing `##` escaping.
 - ESP32 binary production logic and serial port handling in watch mode.
 - ESP32 Docker image tagging and `Reflect.set` index usage.
 - Set `RUSTUP_HOME` and `CARGO_HOME` correctly in ESP32 build environment.
