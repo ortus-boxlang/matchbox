@@ -1,113 +1,89 @@
-# MatchBox
+# MatchBox (BoxLang Rust Implementation)
 
-A high-performance, native Rust implementation of the BoxLang programming language. This project features a stack-based Bytecode Virtual Machine (VM) and a multi-stage compiler, providing a standalone runtime independent of the JVM.
+A high-performance, native Rust implementation of the [BoxLang](https://github.com/ortus-boxlang/BoxLang) programming language. MatchBox provides a fast, JVM-independent runtime targeting native binaries, WebAssembly, and embedded systems (ESP32).
+
+## Quick Install
+
+These scripts will prompt you to choose between the **Latest Release** or **Snapshot** version and will install the full **Fat CLI** (which includes runner stubs for all deployment targets).
+
+**Linux / macOS:**
+```bash
+curl -sSL https://raw.githubusercontent.com/ortus-boxlang/matchbox/master/install/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+iex (Invoke-RestMethod -Uri https://raw.githubusercontent.com/ortus-boxlang/matchbox/master/install/install.ps1)
+```
 
 ## Core Features
 
-- **Bytecode VM**: Fast, stack-based execution engine with support for nested call frames.
+- **Bytecode VM**: Fast, stack-based execution engine with a multi-tier JIT compiler.
+- **Web Server & BXM**: Built-in high-performance web server with support for BoxLang Markup (`.bxm`).
 - **Virtual Threading (Fibers)**: High-concurrency cooperative scheduler supporting `runAsync` and non-blocking `sleep`.
-- **OO Support**: Full support for Classes, Inheritance (`extends`), Interfaces (`implements`), and magic methods like `onMissingMethod`.
-- **Trait-like Interfaces**: Support for default method implementations in interfaces.
-- **Implicit Accessors**: Automatically generated getter and setter methods for class properties.
-- **Modern Syntax**: Support for UDFs, Type Hints, Default Arguments, Closures, Arrow functions (Lambdas), and String Interpolation.
-- **JS Interop (WASM)**: Direct access to JavaScript APIs and DOM manipulation when running in the browser.
-- **Deployment**: Capability to produce ultra-lean (~500KB) standalone native and WASM binaries.
+- **OO & Interfaces**: Full support for Classes, Inheritance, and trait-like Interfaces with default implementations.
+- **Native Fusion**: High-speed interoperability with native Rust code.
+- **Edge Ready**: Capability to produce ultra-lean (~500KB) standalone native and WASM binaries.
 
-## Usage Guide
+## BoxLang Compatibility
 
-The `matchbox` binary is a versatile tool that can interpret source code, compile to portable bytecode, or bundle applications into standalone executables.
+MatchBox aims for high compatibility with the core BoxLang specification. Most standard syntax, including Classes, User Defined Functions (UDFs), Closures, and Async programming, is fully supported. We are actively implementing additional Built-in Functions (BIFs) and expanding compatibility with the broader BoxLang ecosystem every day.
 
-### 1. Running Source Code (Interpreter Mode)
-Run a BoxLang script (`.bxs`) directly from source.
+## Release Variants
 
-```bash
-matchbox my_script.bxs
-```
+MatchBox is distributed in three distinct variants to suit different deployment needs:
 
-### 2. Interactive REPL
+| Variant | Binary Name | Description | Best For... |
+| :--- | :--- | :--- | :--- |
+| **Fat CLI** | `matchbox` | The complete developer tool. Includes the VM, Compiler, REPL, and embedded runner stubs for all targets (Native, WASM, ESP32). | Local development, cross-compiling, and building standalone apps. |
+| **Slim CLI** | `matchbox-slim` | VM, Compiler, and REPL. Excludes embedded cross-compilation stubs to reduce binary size by ~20MB. | CI/CD pipelines and environments where only local execution is needed. |
+| **Server** | `matchbox-server` | An optimized, standalone web runtime. Excludes CLI developer tools and focuses entirely on serving `.bxm` and `.bxs` files. | Production web deployments, Docker containers, and edge hosting. |
+
+## Quick Start
+
+### 1. Interactive REPL
 Start the BoxLang REPL by running the binary without arguments:
-
 ```bash
 matchbox
 ```
 
-### 3. Compiling to Bytecode
-Compile source code into a compact, portable binary format (`.bxb`).
-
+### 2. Running a Web Server
+Start the built-in server to host BoxLang Markup (`.bxm`) and scripts:
 ```bash
-matchbox --build my_script.bxs
+matchbox --serve --port 8080 --webroot ./www
 ```
 
-### 4. Producing Standalone Native Binaries
-Create a single executable file that contains both the BoxLang VM engine and your compiled code. This uses an embedded minimal runner stub to ensure the final binary is ultra-lean (~500KB).
-
+### 3. Compiling to Standalone Native Binary
+Bundle your BoxLang code into a single, zero-dependency executable for your current OS:
 ```bash
-matchbox --target native my_script.bxs
+matchbox --target native my_app.bxs
 ```
 
-## WebAssembly & Browser Support
+## Deployment Targets
 
-`MatchBox` supports running BoxLang directly in the browser via WebAssembly.
-
-### 1. Runtime Integration (JIT-like)
-You can include the BoxLang engine in your page and run source code dynamically.
-
-**Build the runtime:**
+### Native Binaries
+Create zero-dependency, standalone executables for Linux, macOS, and Windows. These binaries bundle the MatchBox VM engine with your compiled BoxLang bytecode for near-instant startup and minimal resource usage.
 ```bash
-cargo build --target wasm32-unknown-unknown --release
-wasm-bindgen --target web --out-dir ./pkg target/wasm32-unknown-unknown/release/matchbox.wasm
+matchbox --target native my_app.bxs
 ```
 
-**Use in HTML:**
-```javascript
-import init, { run_boxlang } from './pkg/matchbox.js';
-await init();
-run_boxlang('println("Hello World")');
-```
-
-### 2. Ahead-of-Time (AOT) Deployment
-For production, you can compile your BoxLang code into a standalone WASM binary that contains your application bytecode in a custom section.
-
-**Compile your app to WASM:**
+### WASM & WASI Containers
+MatchBox is fully compatible with the WebAssembly System Interface (WASI). Compile your BoxLang code into standard `.wasm` files that can run in the browser, edge platforms (like Cloudflare or Vercel), or within WASI-compliant containers (like Docker WASM).
 ```bash
-# 1. Ensure runtime is built
-cargo build --target wasm32-unknown-unknown --release
-
-# 2. Compile your script to a specialized WASM binary
-matchbox --target wasm my_app.bxs
-# Produces: my_app.wasm
+matchbox --target wasm my_app.bxs   # Produces a standalone WASM/WASI binary
+matchbox --target js   my_lib.bxs   # Produces an ES Module wrapper
 ```
 
-### 3. JavaScript Module Generation
-You can compile BoxLang scripts into native JavaScript modules that run in the browser or Node.js via WASM:
-
+### ESP32 Embedded
+MatchBox can flash BoxLang bytecode directly to ESP32 microcontrollers, enabling high-level language features on low-power hardware.
 ```bash
-matchbox --target js my_lib.bxs
+matchbox --target esp32 --chip esp32s3 app.bxs --flash
 ```
-
-## Language Support Matrix
-
-| Feature | Status | Syntax Example |
-| :--- | :--- | :--- |
-| **Variables** | ✅ | `x = 10`, `var y = 20` |
-| **Math** | ✅ | `(10 + 5) * 2 / 3` |
-| **Logic** | ✅ | `if (x > 5) { ... } else { ... }` |
-| **Loops** | ✅ | `for (i=1; i<=10; i++)`, `for (item in arr)` |
-| **Arrays** | ✅ | `arr = [1, 2, "three"]`, `arr[1]` (1-indexed) |
-| **Structs** | ✅ | `s = { key: "val" }`, `s.key` (case-insensitive) |
-| **Functions** | ✅ | `public numeric function add(a=1, b=2) { return a+b }` |
-| **Strings** | ✅ | `"Hello #name#"`, `str1 & str2` |
-| **Classes** | ✅ | `class MyClass extends="Base" accessors="true" { ... }` |
-| **Interfaces**| ✅ | `interface I { function f(); }` |
-| **Exceptions**| ✅ | `try { throw "err"; } catch(e) { ... }` |
-| **Async** | ✅ | `f = runAsync(task); f.get(); sleep(100);` |
-| **JS Interop**| ✅ | `js.window.location.href`, `js.alert("Hi")` |
 
 ## Technical Architecture
 
-1. **Workspace Structure**: Divided into `matchbox-vm` (runtime), `matchbox-compiler` (frontend), and `matchbox-runner` (minimal stub).
-2. **Parser**: Built using [Pest](https://pest.rs/) (PEG Grammar).
-3. **Compiler**: Multi-stage compiler producing opcodes with line-number metadata.
-4. **VM**: Stack-based machine with a cooperative fiber scheduler.
-5. **Serialization**: Uses `bincode` for binary bytecode representation.
-6. **Portability**: Native binaries are produced by appending bytecode to a pre-compiled architecture-specific runner stub.
+1. **Parser**: Built using [Pest](https://pest.rs/) (PEG Grammar).
+2. **Compiler**: Multi-stage compiler producing opcodes with line-number metadata.
+3. **VM**: Stack-based machine with a cooperative fiber scheduler.
+4. **BXM Transpiler**: Ahead-of-time markup transpilation for near-native template rendering.
+5. **Portability**: Native binaries are produced by appending bytecode to pre-compiled architecture-specific runner stubs.
