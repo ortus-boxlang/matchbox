@@ -55,6 +55,7 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
 
     // Core BIFs
     bifs.insert("len".to_string(), len as BxNativeFunction);
+    bifs.insert("writeoutput".to_string(), write_output_bif as BxNativeFunction);
     bifs.insert("createobject".to_string(), create_object as BxNativeFunction);
     bifs.insert("ucase".to_string(), ucase as BxNativeFunction);
     bifs.insert("lcase".to_string(), lcase as BxNativeFunction);
@@ -260,6 +261,14 @@ fn len(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     } else {
         Err("len() expects a string, array, or struct".to_string())
     }
+}
+
+fn write_output_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    for arg in args {
+        let s = vm.to_string(*arg);
+        vm.write_output(&s);
+    }
+    Ok(BxValue::new_bool(true))
 }
 
 // --- System BIFs ---

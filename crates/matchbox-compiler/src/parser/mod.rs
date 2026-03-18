@@ -3,6 +3,15 @@ use pest_derive::Parser;
 use anyhow::{Result, bail, anyhow};
 use crate::ast::{Expression, ExpressionKind, Literal, Statement, StatementKind, ClassMember, AssignmentTarget};
 
+#[cfg(feature = "bxm")]
+pub mod bxm;
+
+#[cfg(feature = "bxm")]
+pub fn parse_bxm(source: &str) -> Result<Vec<Statement>> {
+    let transpiled = bxm::transpile_bxm(source);
+    parse(&transpiled)
+}
+
 #[derive(Parser)]
 #[grammar = "parser/boxlang.pest"]
 pub struct BxParser;
@@ -710,6 +719,12 @@ fn parse_atom(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
                             Rule::string_text_double | Rule::string_text_single => {
                                 parts.push(crate::ast::StringPart::Text(part.as_str().to_string()));
                             }
+                            Rule::escaped_double_quote => {
+                                parts.push(crate::ast::StringPart::Text("\"".to_string()));
+                            }
+                            Rule::escaped_single_quote => {
+                                parts.push(crate::ast::StringPart::Text("'".to_string()));
+                            }
                             Rule::escaped_hash => {
                                 parts.push(crate::ast::StringPart::Text("#".to_string()));
                             }
@@ -754,6 +769,12 @@ fn parse_atom(pair: pest::iterators::Pair<Rule>) -> Result<Expression> {
                                     match part.as_rule() {
                                         Rule::string_text_double | Rule::string_text_single => {
                                             parts.push(crate::ast::StringPart::Text(part.as_str().to_string()));
+                                        }
+                                        Rule::escaped_double_quote => {
+                                            parts.push(crate::ast::StringPart::Text("\"".to_string()));
+                                        }
+                                        Rule::escaped_single_quote => {
+                                            parts.push(crate::ast::StringPart::Text("'".to_string()));
                                         }
                                         Rule::escaped_hash => {
                                             parts.push(crate::ast::StringPart::Text("#".to_string()));

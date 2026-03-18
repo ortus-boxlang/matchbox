@@ -3,6 +3,7 @@ members = [
     "crates/matchbox-vm",
     "crates/matchbox-compiler",
     "crates/matchbox-macros",
+    "crates/matchbox-server",
 ]
 exclude = [
     "crates/matchbox-esp32-runner",

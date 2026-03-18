@@ -141,6 +141,7 @@ pub trait BxVM {
     fn to_string(&self, val: BxValue) -> String;
     fn to_box_string(&self, val: BxValue) -> BoxString;
     fn get_cli_args(&self) -> Vec<String>;
+    fn write_output(&mut self, s: &str);
 }
 
 pub type BxNativeFunction = fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, String>;

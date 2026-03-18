@@ -74,6 +74,7 @@ pub struct VM {
     pub native_classes: HashMap<String, BxNativeFunction>,
     pub interner: StringInterner,
     pub cli_args: Vec<String>,
+    pub output_buffer: Option<String>,
     #[cfg(feature = "jit")]
     pub jit: Option<Box<jit::JitState>>,
 }
@@ -384,6 +385,14 @@ impl BxVM for VM {
     fn get_cli_args(&self) -> Vec<String> {
         self.cli_args.clone()
     }
+
+    fn write_output(&mut self, s: &str) {
+        if let Some(ref mut buffer) = self.output_buffer {
+            buffer.push_str(s);
+        } else {
+            print!("{}", s);
+        }
+    }
 }
 
 impl VM {
@@ -453,6 +462,7 @@ impl VM {
             native_classes: native_classes.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect(),
             interner: StringInterner::new(),
             cli_args: Vec::new(),
+            output_buffer: None,
             #[cfg(feature = "jit")]
             jit: None,
         };
@@ -1383,8 +1393,12 @@ impl VM {
                 op::ADD => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
-                    if a.is_number() && b.is_number() {
-                        self.fibers[fiber_idx].stack.push(BxValue::new_number(a.as_number() + b.as_number()));
+                    
+                    let a_num = if a.is_number() { Some(a.as_number()) } else { self.to_string(a).parse::<f64>().ok() };
+                    let b_num = if b.is_number() { Some(b.as_number()) } else { self.to_string(b).parse::<f64>().ok() };
+
+                    if let (Some(na), Some(nb)) = (a_num, b_num) {
+                        self.fibers[fiber_idx].stack.push(BxValue::new_number(na + nb));
                     } else {
                         let a_s = self.to_box_string(a);
                         let b_s = self.to_box_string(b);
@@ -2824,7 +2838,11 @@ impl VM {
                     }
                     args.reverse();
                     let out = args.iter().map(|a| self.to_string(*a)).collect::<Vec<_>>().join(" ");
-                    print!("{}", out);
+                    if let Some(ref mut buffer) = self.output_buffer {
+                        buffer.push_str(&out);
+                    } else {
+                        print!("{}", out);
+                    }
                 }
                 op::PRINTLN => {
                     let count = op0;
@@ -2834,7 +2852,12 @@ impl VM {
                     }
                     args.reverse();
                     let out = args.iter().map(|a| self.to_string(*a)).collect::<Vec<_>>().join(" ");
-                    println!("{}", out);
+                    if let Some(ref mut buffer) = self.output_buffer {
+                        buffer.push_str(&out);
+                        buffer.push('\n');
+                    } else {
+                        println!("{}", out);
+                    }
                 }
                 _ => {
                     bail!("Unknown opcode: {}", opcode);
