@@ -15,31 +15,32 @@ use matchbox_compiler::{parser, compiler::Compiler};
 use clap::Parser as ClapParser;
 use tokio::fs;
 
-#[derive(ClapParser, Debug)]
+#[derive(ClapParser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
-struct Args {
+pub struct Args {
     /// Port to listen on
     #[arg(short, long, default_value_t = 8080)]
-    port: u16,
+    pub port: u16,
 
     /// Host to bind to
     #[arg(short = 'H', long, default_value = "127.0.0.1")]
-    host: String,
+    pub host: String,
 
     /// Web root directory
     #[arg(short, long, default_value = ".")]
-    webroot: String,
+    pub webroot: String,
 }
 
 struct AppState {
     webroot: PathBuf,
     sessions: Mutex<HashMap<String, HashMap<String, String>>>,
 }
+
 pub async fn run_server(args: Args) {
     tracing_subscriber::fmt::init();
 
     let webroot = PathBuf::from(&args.webroot).canonicalize().unwrap_or_else(|_| PathBuf::from(&args.webroot));
-
+    
     let state = Arc::new(AppState {
         webroot: webroot.clone(),
         sessions: Mutex::new(HashMap::new()),
@@ -58,10 +59,8 @@ pub async fn run_server(args: Args) {
     axum::serve(listener, app).await.unwrap();
 }
 
-#[derive(ClapParser, Debug, Clone)]
-#[command(author, version, about, long_about = None)]
-pub struct Args {
-
+async fn handler(
+    State(state): State<Arc<AppState>>,
     path: Option<AxumPath<String>>,
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
@@ -164,7 +163,7 @@ async fn execute_template(
 
     vm.interpret(chunk)?;
 
-    persist_session(&vm, &state, &sid, scopes.session_id)?;
+    persist_session(&mut vm, &state, &sid, scopes.session_id)?;
 
     Ok((vm.output_buffer.unwrap_or_default(), sid))
 }
@@ -238,7 +237,7 @@ fn setup_scopes(
 }
 
 fn persist_session(
-    vm: &VM,
+    vm: &mut VM,
     state: &AppState,
     session_id: &str,
     scope_id: usize,
