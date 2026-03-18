@@ -1,0 +1,82 @@
+// Test queryNew / queryAddRow / queryColumnList / queryColumnData
+// No database connection required.
+
+cols = arrayNew()
+arrayAppend(cols, "id")
+arrayAppend(cols, "name")
+arrayAppend(cols, "age")
+
+types = arrayNew()
+arrayAppend(types, "integer")
+arrayAppend(types, "varchar")
+arrayAppend(types, "integer")
+
+q = queryNew(cols, types)
+
+if (q.recordCount != 0) {
+    throw "Expected empty query, got recordCount: " & q.recordCount
+}
+
+// Add first row
+row1 = {}
+row1.id = 1
+row1.name = "Alice"
+row1.age = 30
+queryAddRow(q, row1)
+
+if (q.recordCount != 1) {
+    throw "Expected recordCount 1 after first addRow, got: " & q.recordCount
+}
+
+// Add second row
+row2 = {}
+row2.id = 2
+row2.name = "Bob"
+row2.age = 25
+queryAddRow(q, row2)
+
+if (q.recordCount != 2) {
+    throw "Expected recordCount 2 after second addRow, got: " & q.recordCount
+}
+
+// queryColumnList returns a comma-separated string of column names
+colList = queryColumnList(q)
+if (indexof(colList, "id") < 1) {
+    throw "Expected 'id' in columnList, got: " & colList
+}
+if (indexof(colList, "name") < 1) {
+    throw "Expected 'name' in columnList, got: " & colList
+}
+if (indexof(colList, "age") < 1) {
+    throw "Expected 'age' in columnList, got: " & colList
+}
+
+// queryColumnData returns an array of values for a single column
+names = queryColumnData(q, "name")
+if (len(names) != 2) {
+    throw "Expected 2 names, got: " & len(names)
+}
+if (names[1] != "Alice") {
+    throw "Expected names[1] == 'Alice', got: " & names[1]
+}
+if (names[2] != "Bob") {
+    throw "Expected names[2] == 'Bob', got: " & names[2]
+}
+
+ages = queryColumnData(q, "age")
+if (ages[1] != 30) {
+    throw "Expected ages[1] == 30, got: " & ages[1]
+}
+if (ages[2] != 25) {
+    throw "Expected ages[2] == 25, got: " & ages[2]
+}
+
+ids = queryColumnData(q, "id")
+if (ids[1] != 1) {
+    throw "Expected ids[1] == 1, got: " & ids[1]
+}
+if (ids[2] != 2) {
+    throw "Expected ids[2] == 2, got: " & ids[2]
+}
+
+println("datasource_query_new: OK")

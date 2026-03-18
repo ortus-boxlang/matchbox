@@ -320,6 +320,95 @@ fn test_module_loading() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Datasource tests
+//
+// No-DB tests run whenever the `bif-datasource` feature is enabled.
+// DB tests additionally require a running PostgreSQL instance; they are skipped
+// when the MATCHBOX_TEST_DB_HOST environment variable is not set.
+//
+// To run the DB tests locally:
+//   docker compose up -d
+//   MATCHBOX_TEST_DB_HOST=localhost cargo test --features bif-datasource datasource
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Return the DB host from the environment, or None to signal "skip".
+fn db_host() -> Option<String> {
+    std::env::var("MATCHBOX_TEST_DB_HOST").ok()
+}
+
+/// Run a datasource test script.
+/// The script reads MATCHBOX_TEST_DB_HOST via getSystemSetting(); callers must
+/// ensure the env var is set before the test process starts.
+fn run_ds_script(file: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join(file);
+
+    if let Err(e) = process_file(
+        &path, false, None, Vec::new(), false, false, false, None, &[], false, None, false,
+        false, false,
+    ) {
+        panic!("Datasource script '{}' failed: {}", file, e);
+    }
+}
+
+// --- No-DB tests -----------------------------------------------------------
+
+/// queryNew / queryAddRow / queryColumnList / queryColumnData — no database needed.
+#[test]
+#[cfg(feature = "bif-datasource")]
+fn datasource_query_new() {
+    run_ds_script("datasource_query_new.bxs");
+}
+
+// --- Database tests --------------------------------------------------------
+
+/// Basic SELECT 1: verifies round-trip connectivity and recordCount.
+#[test]
+#[cfg(feature = "bif-datasource")]
+fn datasource_select() {
+    if db_host().is_none() {
+        println!("SKIP datasource_select: MATCHBOX_TEST_DB_HOST not set");
+        return;
+    }
+    run_ds_script("datasource_select.bxs");
+}
+
+/// Full table scan: users and products tables with type assertions.
+#[test]
+#[cfg(feature = "bif-datasource")]
+fn datasource_select_table() {
+    if db_host().is_none() {
+        println!("SKIP datasource_select_table: MATCHBOX_TEST_DB_HOST not set");
+        return;
+    }
+    run_ds_script("datasource_select_table.bxs");
+}
+
+/// Parameterized queries: positional ?, CF-style {value,cfsqltype}, multi-param.
+#[test]
+#[cfg(feature = "bif-datasource")]
+fn datasource_params() {
+    if db_host().is_none() {
+        println!("SKIP datasource_params: MATCHBOX_TEST_DB_HOST not set");
+        return;
+    }
+    run_ds_script("datasource_params.bxs");
+}
+
+/// returnType "array" and "struct" conversions.
+#[test]
+#[cfg(feature = "bif-datasource")]
+fn datasource_return_types() {
+    if db_host().is_none() {
+        println!("SKIP datasource_return_types: MATCHBOX_TEST_DB_HOST not set");
+        return;
+    }
+    run_ds_script("datasource_return_types.bxs");
+}
+
 #[test]
 fn test_native_math_module() {
     let script_path = Path::new(env!("CARGO_MANIFEST_DIR"))

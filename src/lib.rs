@@ -249,6 +249,7 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
             source_path.parent().unwrap_or(Path::new(".")).to_path_buf()
         });
         let modules_info = modules::discover_modules(&cwd, extra_module_paths)?;
+
         let module_mappings: Vec<(String, PathBuf)> = modules_info.iter()
             .map(|m| (m.name.clone(), m.path.clone()))
             .collect();
@@ -309,6 +310,10 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
                 target_val => produce_native_binary(&chunk, source_path, target_val, output)?,
             }
         } else {
+            // Register datasources from matchbox.toml only when actually running.
+            #[cfg(all(not(target_arch = "wasm32"), feature = "bif-datasource"))]
+            register_datasources_from_config(&cwd)?;
+
             run_chunk(chunk, &modules_info)?;
         }
 
@@ -408,6 +413,44 @@ fn strip_sources(chunk: &mut Chunk) {
             _ => {}
         }
     }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "bif-datasource"))]
+fn register_datasources_from_config(project_dir: &Path) -> Result<()> {
+    use std::sync::Arc;
+    let configs = modules::read_datasource_configs(project_dir)?;
+    for (name, entry) in configs {
+        let config = matchbox_vm::datasource::traits::DatasourceConfig {
+            driver: entry.driver.clone(),
+            host: entry.host,
+            port: entry.port,
+            database: entry.database,
+            username: entry.username,
+            password: entry.password,
+            max_connections: entry.max_connections,
+        };
+        match entry.driver.to_lowercase().as_str() {
+            "postgresql" | "postgres" => {
+                let driver =
+                    matchbox_vm::datasource::drivers::postgres::PostgresDriver::new(&config)
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "Failed to create datasource '{}': {}",
+                                name,
+                                e
+                            )
+                        })?;
+                matchbox_vm::datasource::registry::register(&name, Arc::new(driver));
+            }
+            other => {
+                eprintln!(
+                    "Warning: datasource '{}' has unknown driver '{}', skipping.",
+                    name, other
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn run_chunk(chunk: Chunk, modules: &[modules::ModuleInfo]) -> Result<()> {

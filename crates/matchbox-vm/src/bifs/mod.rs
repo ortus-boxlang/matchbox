@@ -21,6 +21,7 @@ mod json;
 mod zip;
 mod crypto;
 mod cli;
+mod datasource;
 
 pub fn register_all() -> HashMap<String, BxNativeFunction> {
     let mut bifs = HashMap::new();
@@ -124,6 +125,20 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     // Crypto BIFs
     #[cfg(feature = "bif-crypto")]
     bifs.insert("hash".to_string(), crypto::hash_bif as BxNativeFunction);
+
+    // Datasource BIFs
+    #[cfg(feature = "bif-datasource")]
+    {
+        bifs.insert("datasourceregister".to_string(), datasource::datasource_register as BxNativeFunction);
+        bifs.insert("queryexecute".to_string(), datasource::query_execute as BxNativeFunction);
+        bifs.insert("querynew".to_string(), datasource::query_new as BxNativeFunction);
+        bifs.insert("queryaddrow".to_string(), datasource::query_add_row as BxNativeFunction);
+        bifs.insert("querycolumndata".to_string(), datasource::query_column_data as BxNativeFunction);
+        bifs.insert("querycolumnlist".to_string(), datasource::query_column_list as BxNativeFunction);
+        bifs.insert("transactionbegin".to_string(), datasource::transaction_begin as BxNativeFunction);
+        bifs.insert("transactioncommit".to_string(), datasource::transaction_commit as BxNativeFunction);
+        bifs.insert("transactionrollback".to_string(), datasource::transaction_rollback as BxNativeFunction);
+    }
 
     bifs
 }

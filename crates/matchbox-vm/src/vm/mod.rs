@@ -341,6 +341,15 @@ impl BxVM for VM {
         self.heap.alloc(GcObject::NativeObject(obj))
     }
 
+    fn native_object_call_method(&mut self, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String> {
+        if let GcObject::NativeObject(obj) = self.heap.get(id) {
+            let obj = Rc::clone(obj);
+            obj.borrow_mut().call_method(self, name, args)
+        } else {
+            Err(format!("Value at id {} is not a native object", id))
+        }
+    }
+
     fn construct_native_class(&mut self, class_name: &str, args: &[BxValue]) -> Result<BxValue, String> {
         let class_lower = class_name.to_lowercase();
         // Since we need to borrow `self` mutably in the function call, we must clone the function pointer first

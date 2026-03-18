@@ -1,0 +1,101 @@
+// Test parameterized queries using ? placeholders.
+// Requires: MATCHBOX_TEST_DB_HOST env var.
+
+host = getSystemSetting("MATCHBOX_TEST_DB_HOST", "localhost")
+
+datasourceRegister("ds_params", {
+    driver: "postgresql",
+    host: host,
+    port: 5432,
+    database: "matchbox_test",
+    username: "matchbox",
+    password: "matchbox_test",
+    maxConnections: 2
+})
+
+// --- Positional params: plain array of values ---
+
+params1 = arrayNew()
+arrayAppend(params1, "Alice Johnson")
+
+result1 = queryExecute(
+    "SELECT id, name, age FROM users WHERE name = ?",
+    params1,
+    {datasource: "ds_params"}
+)
+
+if (result1.recordCount != 1) {
+    throw "Positional param: expected 1 row for Alice Johnson, got: " & result1.recordCount
+}
+
+n1 = queryColumnData(result1, "name")
+if (n1[1] != "Alice Johnson") {
+    throw "Positional param: expected 'Alice Johnson', got: " & n1[1]
+}
+
+// --- CF-style params: array of {value, cfsqltype} structs ---
+
+params2 = arrayNew()
+p = {}
+p.value = "Bob Smith"
+p.cfsqltype = "CF_SQL_VARCHAR"
+arrayAppend(params2, p)
+
+result2 = queryExecute(
+    "SELECT id, name FROM users WHERE name = ?",
+    params2,
+    {datasource: "ds_params"}
+)
+
+if (result2.recordCount != 1) {
+    throw "CF param: expected 1 row for Bob Smith, got: " & result2.recordCount
+}
+
+n2 = queryColumnData(result2, "name")
+if (n2[1] != "Bob Smith") {
+    throw "CF param: expected 'Bob Smith', got: " & n2[1]
+}
+
+// --- Multiple positional params ---
+
+params3 = arrayNew()
+arrayAppend(params3, "alice@example.com")
+arrayAppend(params3, "bob@example.com")
+
+result3 = queryExecute(
+    "SELECT name FROM users WHERE email = ? OR email = ? ORDER BY id",
+    params3,
+    {datasource: "ds_params"}
+)
+
+if (result3.recordCount != 2) {
+    throw "Multi-param: expected 2 rows, got: " & result3.recordCount
+}
+
+n3 = queryColumnData(result3, "name")
+if (n3[1] != "Alice Johnson") {
+    throw "Multi-param: expected n3[1] == 'Alice Johnson', got: " & n3[1]
+}
+if (n3[2] != "Bob Smith") {
+    throw "Multi-param: expected n3[2] == 'Bob Smith', got: " & n3[2]
+}
+
+// --- Active-user filter ---
+
+params4 = arrayNew()
+p4 = {}
+p4.value = "true"
+p4.cfsqltype = "CF_SQL_BIT"
+arrayAppend(params4, p4)
+
+result4 = queryExecute(
+    "SELECT COUNT(*) AS cnt FROM users WHERE active = ?",
+    params4,
+    {datasource: "ds_params"}
+)
+
+if (result4.recordCount != 1) {
+    throw "Count query: expected 1 row, got: " & result4.recordCount
+}
+
+println("datasource_params: OK")

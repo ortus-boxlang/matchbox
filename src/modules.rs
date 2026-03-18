@@ -29,12 +29,33 @@ pub struct ModuleInfo {
 struct Manifest {
     #[serde(default)]
     modules: HashMap<String, ManifestEntry>,
+    #[serde(default)]
+    datasources: HashMap<String, DatasourceEntry>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ManifestEntry {
     path: String,
 }
+
+/// A datasource configuration entry from `matchbox.toml`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DatasourceEntry {
+    pub driver: String,
+    #[serde(default = "default_ds_host")]
+    pub host: String,
+    #[serde(default = "default_ds_port")]
+    pub port: u16,
+    pub database: String,
+    pub username: String,
+    pub password: String,
+    #[serde(rename = "maxConnections", default = "default_max_connections")]
+    pub max_connections: u32,
+}
+
+fn default_ds_host() -> String { "localhost".to_string() }
+fn default_ds_port() -> u16 { 5432 }
+fn default_max_connections() -> u32 { 10 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -147,6 +168,23 @@ pub fn discover_modules(
     }
 
     Ok(modules)
+}
+
+/// Read `[datasources.<name>]` sections from `matchbox.toml` in `project_dir`.
+///
+/// Returns a map of `datasource_name → DatasourceEntry`. Returns an empty map
+/// when no matchbox.toml is found or when the file contains no `[datasources]`
+/// section.
+pub fn read_datasource_configs(project_dir: &Path) -> Result<HashMap<String, DatasourceEntry>> {
+    let manifest_path = project_dir.join("matchbox.toml");
+    if !manifest_path.exists() {
+        return Ok(HashMap::new());
+    }
+    let text = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+    let manifest: Manifest = toml::from_str(&text)
+        .with_context(|| format!("Failed to parse {}", manifest_path.display()))?;
+    Ok(manifest.datasources)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

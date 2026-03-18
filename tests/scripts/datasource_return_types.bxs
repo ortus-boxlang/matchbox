@@ -1,0 +1,87 @@
+// Test queryExecute returnType options: "array" and "struct".
+// Requires: MATCHBOX_TEST_DB_HOST env var.
+
+host = getSystemSetting("MATCHBOX_TEST_DB_HOST", "localhost")
+
+datasourceRegister("ds_ret", {
+    driver: "postgresql",
+    host: host,
+    port: 5432,
+    database: "matchbox_test",
+    username: "matchbox",
+    password: "matchbox_test",
+    maxConnections: 2
+})
+
+// --- returnType: "array" → array of row-structs ---
+
+rows = queryExecute(
+    "SELECT id, name, age FROM users ORDER BY id LIMIT 3",
+    null,
+    {datasource: "ds_ret", returnType: "array"}
+)
+
+if (len(rows) != 3) {
+    throw "array return: expected 3 rows, got: " & len(rows)
+}
+
+row1 = rows[1]
+if (row1.name != "Alice Johnson") {
+    throw "array return: rows[1].name expected 'Alice Johnson', got: " & row1.name
+}
+if (row1.age != 30) {
+    throw "array return: rows[1].age expected 30, got: " & row1.age
+}
+
+row2 = rows[2]
+if (row2.name != "Bob Smith") {
+    throw "array return: rows[2].name expected 'Bob Smith', got: " & row2.name
+}
+
+row3 = rows[3]
+if (row3.name != "Carol White") {
+    throw "array return: rows[3].name expected 'Carol White', got: " & row3.name
+}
+
+// --- returnType: "struct" → struct keyed by column name, values are arrays ---
+
+cols = queryExecute(
+    "SELECT id, name, age FROM users ORDER BY id LIMIT 3",
+    null,
+    {datasource: "ds_ret", returnType: "struct"}
+)
+
+nameCol = cols.name
+if (len(nameCol) != 3) {
+    throw "struct return: expected 3 names, got: " & len(nameCol)
+}
+if (nameCol[1] != "Alice Johnson") {
+    throw "struct return: nameCol[1] expected 'Alice Johnson', got: " & nameCol[1]
+}
+if (nameCol[2] != "Bob Smith") {
+    throw "struct return: nameCol[2] expected 'Bob Smith', got: " & nameCol[2]
+}
+
+ageCol = cols.age
+if (ageCol[1] != 30) {
+    throw "struct return: ageCol[1] expected 30, got: " & ageCol[1]
+}
+
+// --- default returnType: BxQuery NativeObject ---
+
+q = queryExecute(
+    "SELECT name FROM users WHERE name = 'Carol White'",
+    null,
+    {datasource: "ds_ret"}
+)
+
+if (q.recordCount != 1) {
+    throw "default return: expected recordCount 1, got: " & q.recordCount
+}
+
+qNames = queryColumnData(q, "name")
+if (qNames[1] != "Carol White") {
+    throw "default return: expected 'Carol White', got: " & qNames[1]
+}
+
+println("datasource_return_types: OK")

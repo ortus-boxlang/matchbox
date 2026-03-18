@@ -1,0 +1,32 @@
+// Test basic queryExecute: SELECT 1
+// Requires: MATCHBOX_TEST_DB_HOST env var pointing at the test postgres instance.
+
+host = getSystemSetting("MATCHBOX_TEST_DB_HOST", "localhost")
+
+datasourceRegister("ds_select", {
+    driver: "postgresql",
+    host: host,
+    port: 5432,
+    database: "matchbox_test",
+    username: "matchbox",
+    password: "matchbox_test",
+    maxConnections: 2
+})
+
+result = queryExecute("SELECT 1 AS val", null, {datasource: "ds_select"})
+
+if (result.recordCount != 1) {
+    throw "SELECT 1: expected recordCount 1, got: " & result.recordCount
+}
+
+colList = queryColumnList(result)
+if (indexof(colList, "val") < 1) {
+    throw "SELECT 1: expected column 'val', columnList was: " & colList
+}
+
+vals = queryColumnData(result, "val")
+if (vals[1] != 1) {
+    throw "SELECT 1: expected val == 1, got: " & vals[1]
+}
+
+println("datasource_select: OK")

@@ -1,0 +1,78 @@
+// Test queryExecute against real tables seeded by docker/postgres/init.sql.
+// Requires: MATCHBOX_TEST_DB_HOST env var.
+
+host = getSystemSetting("MATCHBOX_TEST_DB_HOST", "localhost")
+
+datasourceRegister("ds_table", {
+    driver: "postgresql",
+    host: host,
+    port: 5432,
+    database: "matchbox_test",
+    username: "matchbox",
+    password: "matchbox_test",
+    maxConnections: 2
+})
+
+// --- users table ---
+
+result = queryExecute(
+    "SELECT id, name, email, age, active FROM users ORDER BY id",
+    null,
+    {datasource: "ds_table"}
+)
+
+if (result.recordCount != 5) {
+    throw "Expected 5 users, got: " & result.recordCount
+}
+
+names = queryColumnData(result, "name")
+if (names[1] != "Alice Johnson") {
+    throw "Expected first user 'Alice Johnson', got: " & names[1]
+}
+if (names[2] != "Bob Smith") {
+    throw "Expected second user 'Bob Smith', got: " & names[2]
+}
+
+ages = queryColumnData(result, "age")
+if (ages[1] != 30) {
+    throw "Expected Alice age 30, got: " & ages[1]
+}
+if (ages[2] != 25) {
+    throw "Expected Bob age 25, got: " & ages[2]
+}
+
+// active is a boolean column — should come back as true/false
+actives = queryColumnData(result, "active")
+if (actives[1] != true) {
+    throw "Expected Alice active == true, got: " & actives[1]
+}
+if (actives[4] != false) {
+    throw "Expected David active == false, got: " & actives[4]
+}
+
+// --- products table ---
+
+prod = queryExecute(
+    "SELECT name, price, in_stock FROM products ORDER BY id",
+    null,
+    {datasource: "ds_table"}
+)
+
+if (prod.recordCount != 5) {
+    throw "Expected 5 products, got: " & prod.recordCount
+}
+
+productNames = queryColumnData(prod, "name")
+if (productNames[1] != "BoxLang Pro") {
+    throw "Expected first product 'BoxLang Pro', got: " & productNames[1]
+}
+
+inStock = queryColumnData(prod, "in_stock")
+if (inStock[1] != true) {
+    throw "Expected BoxLang Pro in_stock == true, got: " & inStock[1]
+}
+if (inStock[3] != false) {
+    throw "Expected Legacy Package in_stock == false, got: " & inStock[3]
+}
+
+println("datasource_select_table: OK")

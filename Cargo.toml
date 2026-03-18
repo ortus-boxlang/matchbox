@@ -44,6 +44,7 @@ bif-zip = ["matchbox_vm/bif-zip"]
 bif-crypto = ["matchbox_vm/bif-crypto"]
 bif-cli = ["matchbox_vm/bif-cli"]
 bif-jni = ["matchbox_vm/bif-jni"]
+bif-datasource = ["matchbox_vm/bif-datasource"]
 
 [profile.release]
 opt-level = "z"     # Optimize for size

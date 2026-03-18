@@ -135,6 +135,7 @@ pub trait BxVM {
     fn struct_get_shape(&self, id: usize) -> u32;
     fn future_on_error(&mut self, id: usize, handler: BxValue);
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize;
+    fn native_object_call_method(&mut self, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
     fn construct_native_class(&mut self, class_name: &str, args: &[BxValue]) -> Result<BxValue, String>;
     fn string_new(&mut self, s: String) -> usize;
     fn to_string(&self, val: BxValue) -> String;
