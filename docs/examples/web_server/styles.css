@@ -1,0 +1,5 @@
+body { font-family: sans-serif; line-height: 1.6; max-width: 800px; margin: 40px auto; padding: 0 20px; }
+nav { background: #f4f4f4; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
+nav a { margin-right: 15px; text-decoration: none; color: #333; font-weight: bold; }
+nav a:hover { color: #007bff; }
+.footer { margin-top: 50px; font-size: 0.8em; color: #666; border-top: 1px solid #eee; padding-top: 10px; }

@@ -1,0 +1,19 @@
+<html>
+<head><link rel="stylesheet" href="/styles.css"></head>
+<body>
+    <nav>
+        <a href="/">Home</a>
+        <a href="/about.bxm">About</a>
+        <a href="/contact.bxm">Contact</a>
+    </nav>
+    <h1>Contact Us</h1>
+    <bx:if condition="structKeyExists(url, 'name')">
+        <bx:output>
+            <p>Thank you, <strong>#url.name#</strong>! We've received your inquiry.</p>
+        </bx:output>
+    <bx:else>
+        <p>Try adding a name to the URL: <code>?name=YourName</code></p>
+    </bx:if>
+    <div class="footer">Session ID: <bx:output>#cookie.MBX_SESSION_ID#</bx:output></div>
+</body>
+</html>

@@ -1,0 +1,18 @@
+<html>
+<head><link rel="stylesheet" href="/styles.css"></head>
+<body>
+    <nav>
+        <a href="/">Home</a>
+        <a href="/about.bxm">About</a>
+        <a href="/contact.bxm">Contact</a>
+    </nav>
+    <h1>About MatchBox</h1>
+    <p>MatchBox is a native Rust implementation of BoxLang. It provides:</p>
+    <ul>
+        <li>Zero-JVM overhead</li>
+        <li>Sub-millisecond startup times</li>
+        <li>Built-in High Performance Web Server</li>
+    </ul>
+    <div class="footer">Server Port: <bx:output>#cgi.server_port#</bx:output></div>
+</body>
+</html>

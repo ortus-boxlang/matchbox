@@ -434,6 +434,43 @@ println("Result: " & result)
 
 ---
 
+## Web Runtime & Templates
+
+MatchBox includes a built-in high-performance web server and support for BoxLang Markup (`.bxm`).
+
+### BoxLang Markup (BXM)
+
+`.bxm` files allow you to mix HTML with BoxLang tags and expressions.
+
+```html
+<bx:set name = "MatchBox">
+<html>
+    <body>
+        <bx:if condition="name == 'MatchBox'">
+            <bx:output><h1>Hello, #name#!</h1></bx:output>
+        </bx:if>
+    </body>
+</html>
+```
+
+### Automatic Scopes
+
+When running in web mode, MatchBox automatically populates several global scopes:
+
+*   **`url`**: Access query string parameters (e.g. `url.name`).
+*   **`form`**: Access POST data.
+*   **`cookie`**: Access browser cookies.
+*   **`session`**: Persistent, in-memory data for the current user.
+*   **`cgi`**: Environment variables like `server_port` and `remote_addr`.
+
+### Starting the Server
+
+```bash
+cargo run -p matchbox_server -- --port 8080 --webroot ./www
+```
+
+---
+
 ## Standard Library (Prelude)
 
 MatchBox includes a small standard library of BIFs compiled into every program. A selection:

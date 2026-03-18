@@ -1,0 +1,17 @@
+<bx:set session.visitCount = (session.visitCount ?: 0) + 1>
+<html>
+<head><link rel="stylesheet" href="/styles.css"></head>
+<body>
+    <nav>
+        <a href="/">Home</a>
+        <a href="/about.bxm">About</a>
+        <a href="/contact.bxm">Contact</a>
+    </nav>
+    <h1>Welcome to MatchBox Native Server</h1>
+    <bx:output>
+        <p>This is the home page, rendered at #now()#.</p>
+        <p>You have visited this session <strong>#session.visitCount#</strong> times.</p>
+    </bx:output>
+    <div class="footer">Powered by MatchBox Rust Runtime</div>
+</body>
+</html>
