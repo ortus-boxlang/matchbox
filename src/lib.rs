@@ -152,6 +152,44 @@ pub fn run() -> Result<()> {
     let no_shaking = args.contains(&"--no-shaking".to_string());
     let no_std_lib = args.contains(&"--no-std-lib".to_string());
     let strip_source = args.contains(&"--strip-source".to_string());
+    let is_serve = args.contains(&"--serve".to_string());
+
+    if is_serve {
+        #[cfg(feature = "server")]
+        {
+            let port = if let Some(idx) = args.iter().position(|a| a == "--port") {
+                args.get(idx + 1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(8080)
+            } else {
+                8080
+            };
+            let host = if let Some(idx) = args.iter().position(|a| a == "--host") {
+                args.get(idx + 1).cloned().unwrap_or_else(|| "127.0.0.1".to_string())
+            } else {
+                "127.0.0.1".to_string()
+            };
+            let webroot = if let Some(idx) = args.iter().position(|a| a == "--webroot") {
+                args.get(idx + 1).cloned().unwrap_or_else(|| ".".to_string())
+            } else {
+                ".".to_string()
+            };
+
+            let server_args = matchbox_server::Args {
+                port,
+                host,
+                webroot,
+            };
+
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                matchbox_server::run_server(server_args).await;
+            });
+            return Ok(());
+        }
+        #[cfg(not(feature = "server"))]
+        {
+            bail!("Server feature not enabled in this build.");
+        }
+    }
 
     let mut keep_symbols = Vec::new();
     if let Some(idx) = args.iter().position(|a| a == "--keep") {
@@ -222,6 +260,10 @@ fn print_usage() {
     println!("  --output <path>     Set the output file path for compiled artifacts");
     println!("  --strip-source      Strip embedded source text from compiled output");
     println!("                      Errors still report file:line; native binaries fall back to disk for snippets");
+    println!("  --serve             Start the built-in web server");
+    println!("  --port <number>     Web server port (default: 8080)");
+    println!("  --host <address>    Web server host (default: 127.0.0.1)");
+    println!("  --webroot <path>    Web server root directory (default: .)");
     println!("  --module <path>     Load a BoxLang module directory (may be specified multiple times)");
     println!("\nIf no file is provided, matchbox starts in REPL mode.");
 }

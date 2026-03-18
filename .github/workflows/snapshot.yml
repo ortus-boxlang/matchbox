@@ -234,7 +234,7 @@ jobs:
           name: aggregated-stubs
           path: stubs
 
-      - name: Build Fat CLI
+      - name: Build All CLIs
         shell: bash
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
@@ -242,15 +242,33 @@ jobs:
           elif [[ "${{ matrix.target }}" == "armv7-unknown-linux-gnueabihf" ]]; then
             export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
           fi
+          
+          # 1. Fat CLI (with cross-compile)
           cargo build --release --features cross-compile --target ${{ matrix.target }}
+          
+          # 2. Slim CLI (no cross-compile)
+          cargo build --release --target ${{ matrix.target }}
+          
+          # 3. Server CLI (standalone)
+          cargo build --release -p matchbox_server --target ${{ matrix.target }}
 
-      - name: Prepare Artifact
+      - name: Prepare Artifacts
         shell: bash
         run: |
           mkdir -p dist
-          SRC_PATH="target/${{ matrix.target }}/release/matchbox"
-          if [[ "${{ matrix.target }}" == *"windows"* ]]; then SRC_PATH="$SRC_PATH.exe"; fi
-          cp "$SRC_PATH" "dist/${{ matrix.output_name }}"
+          EXT=""
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then EXT=".exe"; fi
+          
+          # 1. Fat CLI
+          cp "target/${{ matrix.target }}/release/matchbox$EXT" "dist/${{ matrix.output_name }}"
+          
+          # 2. Slim CLI
+          SLIM_NAME=$(echo "${{ matrix.output_name }}" | sed "s/matchbox/matchbox-slim/")
+          cp "target/${{ matrix.target }}/release/matchbox$EXT" "dist/$SLIM_NAME"
+          
+          # 3. Server CLI
+          SERVER_NAME=$(echo "${{ matrix.output_name }}" | sed "s/matchbox/matchbox-server/")
+          cp "target/${{ matrix.target }}/release/matchbox_server$EXT" "dist/$SERVER_NAME"
       
       - name: Upload Fat CLI
         uses: actions/upload-artifact@v4
