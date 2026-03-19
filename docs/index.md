@@ -10,6 +10,7 @@ Welcome to the MatchBox documentation. MatchBox is a native Rust implementation 
 | :--- | :--- |
 | [What is MatchBox?](getting-started/what-is-matchbox.md) | Architecture, goals, and how MatchBox compares to the JVM runtime. |
 | [Installation](getting-started/installation.md) | Build from source or download a pre-built binary. |
+| [Building MatchBox](getting-started/building-matchbox.md) | Clone, build custom variants, and configure build features. |
 | [Building Your First App](getting-started/building.md) | Interpreter, REPL, bytecode, and compiled builds in five minutes. |
 | [Features Overview](getting-started/features-overview.md) | A tour of the supported language features with examples. |
 
