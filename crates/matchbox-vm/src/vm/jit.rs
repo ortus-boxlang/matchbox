@@ -205,6 +205,69 @@ pub unsafe extern "C" fn jit_concat(
     0
 }
 
+macro_rules! jit_fallback_math {
+    ($name:ident, $op:tt) => {
+        pub unsafe extern "C" fn $name(
+            heap_ptr: *mut std::ffi::c_void,
+            val_a: u64,
+            val_b: u64,
+            out_val: *mut u64,
+        ) -> u64 {
+            let heap = &mut *(heap_ptr as *mut crate::vm::gc::Heap);
+            let a = unsafe { std::mem::transmute::<u64, crate::types::BxValue>(val_a) };
+            let b = unsafe { std::mem::transmute::<u64, crate::types::BxValue>(val_b) };
+            
+            let a_num = if a.is_number() { Some(a.as_number()) } else {
+                bx_val_to_box_string(val_a, heap).and_then(|s| s.to_string().parse::<f64>().ok())
+            };
+            let b_num = if b.is_number() { Some(b.as_number()) } else {
+                bx_val_to_box_string(val_b, heap).and_then(|s| s.to_string().parse::<f64>().ok())
+            };
+
+            if let (Some(na), Some(nb)) = (a_num, b_num) {
+                *out_val = crate::types::BxValue::new_number(na $op nb).to_bits();
+                0
+            } else {
+                1 // deopt
+            }
+        }
+    };
+}
+
+pub unsafe extern "C" fn jit_fallback_add(
+    heap_ptr: *mut std::ffi::c_void,
+    val_a: u64,
+    val_b: u64,
+    out_val: *mut u64,
+) -> u64 {
+    let heap = &mut *(heap_ptr as *mut crate::vm::gc::Heap);
+    let a = unsafe { std::mem::transmute::<u64, crate::types::BxValue>(val_a) };
+    let b = unsafe { std::mem::transmute::<u64, crate::types::BxValue>(val_b) };
+    
+    let a_num = if a.is_number() { Some(a.as_number()) } else {
+        bx_val_to_box_string(val_a, heap).and_then(|s| s.to_string().parse::<f64>().ok())
+    };
+    let b_num = if b.is_number() { Some(b.as_number()) } else {
+        bx_val_to_box_string(val_b, heap).and_then(|s| s.to_string().parse::<f64>().ok())
+    };
+
+    if let (Some(na), Some(nb)) = (a_num, b_num) {
+        *out_val = crate::types::BxValue::new_number(na + nb).to_bits();
+        0
+    } else {
+        let a_s = match bx_val_to_box_string(val_a, heap) { Some(s) => s, None => return 1 };
+        let b_s = match bx_val_to_box_string(val_b, heap) { Some(s) => s, None => return 1 };
+        let res_id = heap.alloc(crate::vm::gc::GcObject::String(a_s.concat(&b_s)));
+        *out_val = crate::types::BxValue::new_ptr(res_id).to_bits();
+        0
+    }
+}
+
+jit_fallback_math!(jit_fallback_sub, -);
+jit_fallback_math!(jit_fallback_mul, *);
+jit_fallback_math!(jit_fallback_div, /);
+jit_fallback_math!(jit_fallback_mod, %);
+
 // ── JitState ──────────────────────────────────────────────────────────────────
 
 pub struct JitState {
@@ -229,6 +292,8 @@ pub struct JitState {
     fn_counts:            HashMap<usize, u64>,      // key = Rc::as_ptr(func) as usize
     compiled_fns:         HashMap<usize, HotFnFn>,  // same key → compiled function pointer
     pub compiled_fns_by_gcid: HashMap<usize, HotFnFn>, // gc_id → compiled function pointer
+    pub fn_deopt_counts:  HashMap<usize, u64>,
+    pub fn_recompile_mode: HashMap<usize, u8>,
 
     // OSR: persistent per-site iteration counters keyed on (fn_id, ip_at_start).
     // Survive across run_fiber quanta so fiber-scheduled loops can cross time-slice
@@ -256,6 +321,11 @@ impl JitState {
         builder.symbol("jit_get_shape_id", jit_get_shape_id as *const u8);
         builder.symbol("jit_load_prop_at", jit_load_prop_at as *const u8);
         builder.symbol("jit_concat", jit_concat as *const u8);
+        builder.symbol("jit_fallback_add", jit_fallback_add as *const u8);
+        builder.symbol("jit_fallback_sub", jit_fallback_sub as *const u8);
+        builder.symbol("jit_fallback_mul", jit_fallback_mul as *const u8);
+        builder.symbol("jit_fallback_div", jit_fallback_div as *const u8);
+        builder.symbol("jit_fallback_mod", jit_fallback_mod as *const u8);
         let module = JITModule::new(builder);
         let ctx = module.make_context();
 
@@ -273,6 +343,8 @@ impl JitState {
             fn_counts:            HashMap::new(),
             compiled_fns:         HashMap::new(),
             compiled_fns_by_gcid: HashMap::new(),
+            fn_deopt_counts:      HashMap::new(),
+            fn_recompile_mode:    HashMap::new(),
             loop_profiles: HashMap::new(),
             iter_profiles: HashMap::new(),
         })
@@ -1149,6 +1221,24 @@ impl JitState {
         self.compiled_fns.get(&fn_id).copied()
     }
 
+    pub fn inc_fn_deopt(&mut self, fn_id: usize) {
+        let count = self.fn_deopt_counts.entry(fn_id).or_insert(0);
+        *count += 1;
+        
+        let mode = self.fn_recompile_mode.entry(fn_id).or_insert(0);
+        if *count == 5 && *mode == 0 {
+            eprintln!("[JIT] Tier-4 function 0x{:x} deopted 5 times. Upgrading to Mode 1 (Polymorphic).", fn_id);
+            *mode = 1;
+            self.compiled_fns.remove(&fn_id);
+            self.fn_counts.insert(fn_id, JIT_FN_THRESHOLD - 10);
+        } else if *count == 10 && *mode == 1 {
+            eprintln!("[JIT] Tier-4 function 0x{:x} deopted 10 times. Upgrading to Mode 2 (Relaxed).", fn_id);
+            *mode = 2;
+            self.compiled_fns.remove(&fn_id);
+            self.fn_counts.insert(fn_id, JIT_FN_THRESHOLD - 10);
+        }
+    }
+
     pub fn profile_fn(
         &mut self,
         fn_id:  usize,
@@ -1163,9 +1253,10 @@ impl JitState {
             if !Self::fn_is_translatable(code) {
                 return None;
             }
-            match self.compile_hot_fn(fn_id, gc_id, code, consts, arity) {
+            let mode = *self.fn_recompile_mode.get(&fn_id).unwrap_or(&0);
+            match self.compile_hot_fn(fn_id, gc_id, code, consts, arity, mode) {
                 Ok(_) => {
-                    eprintln!("[JIT] compiled hot fn fn_id=0x{:x}", fn_id);
+                    eprintln!("[JIT] compiled hot fn fn_id=0x{:x} mode={}", fn_id, mode);
                     return self.compiled_fns.get(&fn_id).copied();
                 }
                 Err(e) => eprintln!("[JIT] hot fn compile failed: {}", e),
@@ -1239,6 +1330,7 @@ impl JitState {
         code:   &[u32],
         consts: &[crate::types::Constant],
         _arity: u32,
+        mode:   u8,
     ) -> anyhow::Result<()> {
         use cranelift_codegen::ir::{Block, StackSlot, StackSlotData, StackSlotKind};
 
@@ -1349,7 +1441,7 @@ impl JitState {
         sig.params.push(AbiParam::new(ptr_type)); // out_val_ptr
         sig.returns.push(AbiParam::new(I64));     // status (0=ok, 1=deopt)
 
-        let func_name = format!("jit_hotfn_x{:x}", fn_id);
+        let func_name = format!("jit_hotfn_x{:x}_v{}", fn_id, self.func_counter);
         let func_id   = self.module.declare_function(&func_name, Linkage::Local, &sig)?;
 
         self.ctx.func.name      = UserFuncName::user(0, self.func_counter);
@@ -1435,6 +1527,17 @@ impl JitState {
                 .declare_function("jit_concat", Linkage::Import, &sig_concat)
                 .unwrap();
             let concat_ref = self.module.declare_func_in_func(concat_id, &mut builder.func);
+
+            let fallback_add_id = self.module.declare_function("jit_fallback_add", Linkage::Import, &sig_concat).unwrap();
+            let fallback_add_ref = self.module.declare_func_in_func(fallback_add_id, &mut builder.func);
+            let fallback_sub_id = self.module.declare_function("jit_fallback_sub", Linkage::Import, &sig_concat).unwrap();
+            let fallback_sub_ref = self.module.declare_func_in_func(fallback_sub_id, &mut builder.func);
+            let fallback_mul_id = self.module.declare_function("jit_fallback_mul", Linkage::Import, &sig_concat).unwrap();
+            let fallback_mul_ref = self.module.declare_func_in_func(fallback_mul_id, &mut builder.func);
+            let fallback_div_id = self.module.declare_function("jit_fallback_div", Linkage::Import, &sig_concat).unwrap();
+            let fallback_div_ref = self.module.declare_func_in_func(fallback_div_id, &mut builder.func);
+            let fallback_mod_id = self.module.declare_function("jit_fallback_mod", Linkage::Import, &sig_concat).unwrap();
+            let fallback_mod_ref = self.module.declare_func_in_func(fallback_mod_id, &mut builder.func);
 
             // Allocate spill slots for expression stack (8 bytes each, 8-byte aligned)
             let spill_slots: Vec<StackSlot> = (0..max_stack.max(1))
@@ -1533,30 +1636,104 @@ impl JitState {
                     | op::MODULO => {
                         let b_i64 = vstack.pop().unwrap();
                         let a_i64 = vstack.pop().unwrap();
-                        let a_ok = builder.ins().icmp_imm(IntCC::UnsignedLessThan, a_i64,
-                            0xFFF8000000000000_u64 as i64);
-                        let b_ok = builder.ins().icmp_imm(IntCC::UnsignedLessThan, b_i64,
-                            0xFFF8000000000000_u64 as i64);
-                        let both = builder.ins().band(a_ok, b_ok);
-                        emit_deopt_brif!(both);
-                        let a_f64   = builder.ins().bitcast(F64, MemFlags::new(), a_i64);
-                        let b_f64   = builder.ins().bitcast(F64, MemFlags::new(), b_i64);
-                        let res_f64 = match opcode {
-                            op::ADD | op::ADD_FLOAT   => builder.ins().fadd(a_f64, b_f64),
-                            op::SUBTRACT | op::SUB_FLOAT => builder.ins().fsub(a_f64, b_f64),
-                            op::MULTIPLY | op::MUL_FLOAT => builder.ins().fmul(a_f64, b_f64),
-                            op::DIVIDE | op::DIV_FLOAT   => builder.ins().fdiv(a_f64, b_f64),
-                            op::MODULO => {
-                                // a % b = a - b * trunc(a / b)
-                                let div   = builder.ins().fdiv(a_f64, b_f64);
-                                let trunc = builder.ins().trunc(div);
-                                let mul   = builder.ins().fmul(trunc, b_f64);
-                                builder.ins().fsub(a_f64, mul)
+                        
+                        if mode == 2 {
+                            let helper_ref = match opcode {
+                                op::ADD | op::ADD_FLOAT => fallback_add_ref,
+                                op::SUBTRACT | op::SUB_FLOAT => fallback_sub_ref,
+                                op::MULTIPLY | op::MUL_FLOAT => fallback_mul_ref,
+                                op::DIVIDE | op::DIV_FLOAT => fallback_div_ref,
+                                op::MODULO => fallback_mod_ref,
+                                _ => unreachable!(),
+                            };
+                            let call_inst = builder.ins().call(helper_ref, &[heap_ptr, a_i64, b_i64, out_val_ptr]);
+                            let status = builder.inst_results(call_inst)[0];
+                            let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                            emit_deopt_brif!(is_ok);
+                            let res_val = builder.ins().load(I64, MemFlags::new(), out_val_ptr, 0);
+                            vstack.push(res_val);
+                        } else {
+                            let a_ok = builder.ins().icmp_imm(IntCC::UnsignedLessThan, a_i64,
+                                0xFFF8000000000000_u64 as i64);
+                            let b_ok = builder.ins().icmp_imm(IntCC::UnsignedLessThan, b_i64,
+                                0xFFF8000000000000_u64 as i64);
+                            let both = builder.ins().band(a_ok, b_ok);
+                            
+                            let ok_block = builder.create_block();
+                            if mode == 1 {
+                                let slow_block = builder.create_block();
+                                builder.ins().brif(both, ok_block, &[], slow_block, &[]);
+                                
+                                builder.switch_to_block(slow_block);
+                                builder.seal_block(slow_block);
+                                let helper_ref = match opcode {
+                                    op::ADD | op::ADD_FLOAT => fallback_add_ref,
+                                    op::SUBTRACT | op::SUB_FLOAT => fallback_sub_ref,
+                                    op::MULTIPLY | op::MUL_FLOAT => fallback_mul_ref,
+                                    op::DIVIDE | op::DIV_FLOAT => fallback_div_ref,
+                                    op::MODULO => fallback_mod_ref,
+                                    _ => unreachable!(),
+                                };
+                                let call_inst = builder.ins().call(helper_ref, &[heap_ptr, a_i64, b_i64, out_val_ptr]);
+                                let status = builder.inst_results(call_inst)[0];
+                                let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                                let post_slow_block = builder.create_block();
+                                builder.ins().brif(is_ok, post_slow_block, &[], deopt_exit, &[]);
+                                builder.switch_to_block(post_slow_block);
+                                builder.seal_block(post_slow_block);
+                                let slow_res = builder.ins().load(I64, MemFlags::new(), out_val_ptr, 0);
+                                let merge_block = builder.create_block();
+                                builder.append_block_param(merge_block, I64);
+                                builder.ins().jump(merge_block, &[cranelift_codegen::ir::BlockArg::from(slow_res)]);
+                                
+                                builder.switch_to_block(ok_block);
+                                builder.seal_block(ok_block);
+                                
+                                let a_f64   = builder.ins().bitcast(F64, MemFlags::new(), a_i64);
+                                let b_f64   = builder.ins().bitcast(F64, MemFlags::new(), b_i64);
+                                let res_f64 = match opcode {
+                                    op::ADD | op::ADD_FLOAT   => builder.ins().fadd(a_f64, b_f64),
+                                    op::SUBTRACT | op::SUB_FLOAT => builder.ins().fsub(a_f64, b_f64),
+                                    op::MULTIPLY | op::MUL_FLOAT => builder.ins().fmul(a_f64, b_f64),
+                                    op::DIVIDE | op::DIV_FLOAT   => builder.ins().fdiv(a_f64, b_f64),
+                                    op::MODULO => {
+                                        let div   = builder.ins().fdiv(a_f64, b_f64);
+                                        let trunc = builder.ins().trunc(div);
+                                        let mul   = builder.ins().fmul(trunc, b_f64);
+                                        builder.ins().fsub(a_f64, mul)
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                let res_i64 = builder.ins().bitcast(I64, MemFlags::new(), res_f64);
+                                builder.ins().jump(merge_block, &[cranelift_codegen::ir::BlockArg::from(res_i64)]);
+                                
+                                builder.switch_to_block(merge_block);
+                                builder.seal_block(merge_block);
+                                let final_res = builder.block_params(merge_block)[0];
+                                vstack.push(final_res);
+                            } else {
+                                builder.ins().brif(both, ok_block, &[], deopt_exit, &[]);
+                                builder.switch_to_block(ok_block);
+                                builder.seal_block(ok_block);
+                                let a_f64   = builder.ins().bitcast(F64, MemFlags::new(), a_i64);
+                                let b_f64   = builder.ins().bitcast(F64, MemFlags::new(), b_i64);
+                                let res_f64 = match opcode {
+                                    op::ADD | op::ADD_FLOAT   => builder.ins().fadd(a_f64, b_f64),
+                                    op::SUBTRACT | op::SUB_FLOAT => builder.ins().fsub(a_f64, b_f64),
+                                    op::MULTIPLY | op::MUL_FLOAT => builder.ins().fmul(a_f64, b_f64),
+                                    op::DIVIDE | op::DIV_FLOAT   => builder.ins().fdiv(a_f64, b_f64),
+                                    op::MODULO => {
+                                        let div   = builder.ins().fdiv(a_f64, b_f64);
+                                        let trunc = builder.ins().trunc(div);
+                                        let mul   = builder.ins().fmul(trunc, b_f64);
+                                        builder.ins().fsub(a_f64, mul)
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                let res_i64 = builder.ins().bitcast(I64, MemFlags::new(), res_f64);
+                                vstack.push(res_i64);
                             }
-                            _ => unreachable!(),
-                        };
-                        let res_i64 = builder.ins().bitcast(I64, MemFlags::new(), res_f64);
-                        vstack.push(res_i64);
+                        }
                     }
                     op::ADD_INT | op::SUB_INT | op::MUL_INT => {
                         let b_i64 = vstack.pop().unwrap();

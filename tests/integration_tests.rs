@@ -194,6 +194,26 @@ fn jit_concat() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn jit_deopt_recompile() {
+    // Test Tier-4 JIT: functions deoptimizing multiple times are recompiled with
+    // relaxed guards/polymorphic helpers.
+    let builder = std::thread::Builder::new()
+        .name("jit_deopt_recompile".into())
+        .stack_size(32 * 1024 * 1024);
+    let handler = builder.spawn(|| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("scripts")
+            .join("jit_deopt_recompile.bxs");
+        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+            panic!("jit_deopt_recompile.bxs failed: {}", e);
+        }
+    }).unwrap();
+    handler.join().unwrap();
+}
+
+#[test]
 fn test_vm_interface_fail() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

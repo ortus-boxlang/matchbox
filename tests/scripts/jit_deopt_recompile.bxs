@@ -1,0 +1,43 @@
+// Test script for Tier-4 JIT Deopt Tracking and Recompilation
+// This script contains a hot function that performs math on arguments.
+// It starts with purely numeric inputs to trigger Tier-4 compilation (Mode 0).
+// Later, it switches to string inputs, triggering deoptimizations.
+// Eventually it should recompile into Mode 1 (Polymorphic) or Mode 2 (Relaxed)
+// and continue executing natively.
+
+function mathOp(a, b) {
+    return a + b;
+}
+
+function test() {
+    println("Starting JIT Deopt Recompile Test...");
+    let sum = 0;
+    
+    // Phase 1: Numeric only (compiles as Mode 0)
+    for (i = 0; i < 20000; i++) {
+        sum = mathOp(1, 2);
+    }
+    println("Phase 1 complete. Sum: " & sum);
+
+    // Phase 2: Introduce strings, causing deopts.
+    // We do this enough times to trigger the 5 deopt threshold,
+    // plus extra to allow recompilation in Mode 1.
+    for (i = 0; i < 50; i++) {
+        sum = mathOp("1", "2");
+    }
+    println("Phase 2 complete. Last sum: " & sum);
+
+    // Phase 3: Now run it heavily again. It should have been recompiled!
+    for (i = 0; i < 20000; i++) {
+        sum = mathOp(3, 4);
+    }
+    println("Phase 3 complete. Sum: " & sum);
+
+    // Phase 4: Run again with strings to ensure the relaxed/polymorphic mode doesn't deopt
+    for (i = 0; i < 50; i++) {
+        sum = mathOp("5", "6");
+    }
+    println("Phase 4 complete. Last sum: " & sum);
+}
+
+test();

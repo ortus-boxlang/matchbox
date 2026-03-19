@@ -3192,6 +3192,9 @@ impl VM {
                             }
                             // status == 1 → deopt: fall through to normal frame creation
                             eprintln!("[JIT] Tier-4 deopt fn_id=0x{:x}", Rc::as_ptr(&func) as usize);
+                            if let Some(ref mut jit) = self.jit {
+                                jit.inc_fn_deopt(Rc::as_ptr(&func) as usize);
+                            }
                         }
                     }
                     // ── End Tier-4 ────────────────────────────────────────────
