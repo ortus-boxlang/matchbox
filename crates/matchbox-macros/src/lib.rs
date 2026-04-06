@@ -109,18 +109,40 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
 
                 if let FnArg::Typed(pat_type) = arg {
+                    let arg_type = &pat_type.ty;
+                    let arg_type_str = quote!(#arg_type).to_string();
+
+                    if arg_type_str.contains("BxVM") {
+                        call_args.push(quote!(vm));
+                        continue;
+                    }
+
                     if let Pat::Ident(pat_ident) = &*pat_type.pat {
                         let arg_name = &pat_ident.ident;
-                        let arg_type = &pat_type.ty;
-                        let arg_idx = if skip_first { i - 1 } else { i };
+                        let arg_idx = if skip_first { 
+                            // We need to count how many non-receiver, non-VM arguments we've seen
+                            let mut idx = 0;
+                            for (j, prev_arg) in method.sig.inputs.iter().enumerate() {
+                                if j >= i { break; }
+                                if let FnArg::Typed(pt) = prev_arg {
+                                    let pt_str = quote!(#pt).to_string();
+                                    if !pt_str.contains("BxVM") {
+                                        idx += 1;
+                                    }
+                                }
+                            }
+                            idx
+                        } else { 
+                            i 
+                        };
 
-                        let conversion = if quote!(#arg_type).to_string().contains("f64") {
+                        let conversion = if arg_type_str.contains("f64") {
                             quote! { let #arg_name = args[#arg_idx].as_number(); }
-                        } else if quote!(#arg_type).to_string().contains("i32") {
+                        } else if arg_type_str.contains("i32") {
                             quote! { let #arg_name = args[#arg_idx].as_int(); }
-                        } else if quote!(#arg_type).to_string().contains("bool") {
+                        } else if arg_type_str.contains("bool") {
                             quote! { let #arg_name = args[#arg_idx].as_bool(); }
-                        } else if quote!(#arg_type).to_string().contains("String") {
+                        } else if arg_type_str.contains("String") {
                             quote! { let #arg_name = vm.to_string(args[#arg_idx]); }
                         } else {
                             quote! { let #arg_name = args[#arg_idx]; }
@@ -137,7 +159,15 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 continue;
             }
 
-            let arg_count = call_args.len();
+            let mut arg_count = 0;
+            for arg in method.sig.inputs.iter() {
+                if let FnArg::Typed(pat_type) = arg {
+                    let arg_type_str = quote!(#pat_type).to_string();
+                    if !arg_type_str.contains("BxVM") {
+                        arg_count += 1;
+                    }
+                }
+            }
 
             let return_wrapping = match &method.sig.output {
                 ReturnType::Default => quote! { 
@@ -146,27 +176,39 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 },
                 ReturnType::Type(_, ty) => {
                     let ty_str = quote!(#ty).to_string();
+                    let is_result = ty_str.contains("Result");
+                    let call = if is_result {
+                        quote! { self.#name(#(#call_args),*)? }
+                    } else {
+                        quote! { self.#name(#(#call_args),*) }
+                    };
+
                     if ty_str.contains("& mut Self") || ty_str.contains("& mut self") {
                          quote! { 
-                            self.#name(#(#call_args),*);
+                            #call;
                             Ok(matchbox_vm::types::BxValue::new_ptr(0)) // Placeholder for "self"
                          }
                     } else if ty_str.contains("BxValue") {
-                         quote! { Ok(self.#name(#(#call_args),*)) }
+                         quote! { Ok(#call) }
+                    } else if ty_str.contains("()") {
+                         quote! { 
+                            #call;
+                            Ok(matchbox_vm::types::BxValue::new_null()) 
+                         }
                     } else if ty_str.contains("f64") {
-                         quote! { Ok(matchbox_vm::types::BxValue::new_number(self.#name(#(#call_args),*))) }
+                         quote! { Ok(matchbox_vm::types::BxValue::new_number(#call)) }
                     } else if ty_str.contains("i32") {
-                         quote! { Ok(matchbox_vm::types::BxValue::new_int(self.#name(#(#call_args),*))) }
-                        } else if ty_str.contains("bool") {
-                             quote! { Ok(matchbox_vm::types::BxValue::new_bool(self.#name(#(#call_args),*))) }
+                         quote! { Ok(matchbox_vm::types::BxValue::new_int(#call)) }
+                    } else if ty_str.contains("bool") {
+                         quote! { Ok(matchbox_vm::types::BxValue::new_bool(#call)) }
                     } else if ty_str.contains("String") {
                          quote! { 
-                            let result = self.#name(#(#call_args),*);
+                            let result = #call;
                             Ok(matchbox_vm::types::BxValue::new_ptr(vm.string_new(result))) 
                          }
                     } else {
                          quote! { 
-                            self.#name(#(#call_args),*);
+                            #call;
                             Ok(matchbox_vm::types::BxValue::new_null()) 
                          }
                     }
@@ -175,7 +217,7 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             dispatch_arms.push(quote! {
                 #name_str => {
-                    if args.len() != #arg_count {
+                    if args.len() != #arg_count as usize {
                         return Err(format!("{} requires {} arguments, got {}", #name_str, #arg_count, args.len()));
                     }
                     #(#arg_conversions)*

@@ -3,9 +3,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use matchbox_vm::types::{BxNativeFunction, BxNativeObject, BxVM, BxValue};
+use matchbox_vm::{BxObject, bx_methods};
 
 mod terminal;
 mod widget;
+
+#[cfg(test)]
+mod tui_app_test;
 
 pub use terminal::TUI;
 pub use widget::{
@@ -13,105 +17,58 @@ pub use widget::{
     TableWidget, TextAlignment, TextWidget, WidgetKind, WidgetRegistry,
 };
 
-impl BxNativeObject for TUI {
-    fn get_property(&self, _name: &str) -> BxValue {
-        BxValue::new_null()
-    }
+#[derive(Debug, BxObject)]
+pub struct TUIApp {
+    pub quit: bool,
+}
 
-    fn set_property(&mut self, _name: &str, _value: BxValue) {}
+#[bx_methods]
+impl TUIApp {
+    pub fn run(&mut self, vm: &mut dyn BxVM) -> Result<(), String> {
+        TUI::with_current(|tui| tui.init())?;
 
-    fn call_method(
-        &mut self,
-        vm: &mut dyn BxVM,
-        name: &str,
-        args: &[BxValue],
-    ) -> Result<BxValue, String> {
-        match name.to_lowercase().as_str() {
-            "init" => {
-                self.init()?;
-                Ok(BxValue::new_null())
-            }
-            "beginframe" => {
-                self.begin_frame();
-                Ok(BxValue::new_null())
-            }
-            "endframe" => {
-                self.end_frame()?;
-                Ok(BxValue::new_null())
-            }
-            "print" => {
-                if args.len() < 3 {
-                    return Err("print requires at least 3 arguments: (x, y, text)".to_string());
+        while !self.quit {
+            // 1. Poll for events (non-blocking-ish)
+            let key_res = TUI::with_current(|tui| tui.poll_key(10));
+            if let Ok(key) = key_res {
+                if !key.is_empty() {
+                    // Basic built-in quit
+                    if key == "Ctrl+c" {
+                        self.quit = true;
+                    }
                 }
-                let x = args[0].as_number() as u16;
-                let y = args[1].as_number() as u16;
-                let text = vm.to_string(args[2]);
-                let color = if args.len() > 3 {
-                    vm.to_string(args[3])
-                } else {
-                    "white".to_string()
-                };
-                let bold = if args.len() > 4 {
-                    args[4].as_bool()
-                } else {
-                    false
-                };
-                self.print(x, y, &text, &color, bold)?;
-                Ok(BxValue::new_null())
             }
-            "renderwidget" => {
-                if args.len() != 5 {
-                    return Err(
-                        "renderWidget requires 5 arguments: (widgetId, x, y, width, height)"
-                            .to_string(),
-                    );
-                }
-                let widget_id = args[0].as_number() as usize;
-                let x = args[1].as_number() as u16;
-                let y = args[2].as_number() as u16;
-                let width = args[3].as_number() as u16;
-                let height = args[4].as_number() as u16;
-                self.render_widget(widget_id, x, y, width, height);
-                Ok(BxValue::new_null())
+
+            // 2. Check dirty and render
+            let is_dirty = TUI::with_current(|tui| tui.is_dirty());
+            if is_dirty {
+                TUI::with_current(|tui| {
+                    tui.begin_frame();
+                    // For now, we don't have a root widget, so just end frame
+                    // which renders whatever was added to frame_widgets
+                    let _ = tui.end_frame();
+                    tui.set_dirty_val(false);
+                });
             }
-            "getkey" => {
-                let key = self.get_key()?;
-                Ok(BxValue::new_ptr(vm.string_new(key)))
-            }
-            "pollkey" => {
-                if args.is_empty() {
-                    return Err("pollKey requires 1 argument: (timeoutMs)".to_string());
-                }
-                let timeout = args[0].as_number() as u64;
-                let key = self.poll_key(timeout)?;
-                Ok(BxValue::new_ptr(vm.string_new(key)))
-            }
-            "size" => {
-                let (w, h) = self.size()?;
-                let s = vm.struct_new();
-                vm.struct_set(s, "width", BxValue::new_number(w as f64));
-                vm.struct_set(s, "height", BxValue::new_number(h as f64));
-                Ok(BxValue::new_ptr(s))
-            }
-            "clear" => {
-                self.clear()?;
-                Ok(BxValue::new_null())
-            }
-            "setmouse" => {
-                if args.is_empty() {
-                    return Err("setMouse requires 1 argument: (enabled)".to_string());
-                }
-                let enabled = args[0].as_bool();
-                self.set_mouse(enabled)?;
-                Ok(BxValue::new_null())
-            }
-            "shutdown" => {
-                self.shutdown()?;
-                Ok(BxValue::new_null())
-            }
-            _ => Err(format!("Method {} not found", name)),
+
+            // 3. Yield to other fibers
+            vm.yield_fiber();
         }
+
+        TUI::with_current(|tui| tui.shutdown())?;
+        Ok(())
     }
+
+    pub fn stop(&mut self) {
+        self.quit = true;
+    }
+}
+
+pub fn create_tui_app(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let app = TUIApp { quit: false };
+    Ok(BxValue::new_ptr(
+        matchbox_vm::types::BxVM::native_object_new(_vm, Rc::new(RefCell::new(app))),
+    ))
 }
 
 #[derive(Debug)]
@@ -618,6 +575,7 @@ pub fn create_progress_bar_widget(vm: &mut dyn BxVM, _args: &[BxValue]) -> Resul
 
 pub fn register_classes() -> HashMap<String, BxNativeFunction> {
     let mut map = HashMap::new();
+    map.insert("tui.App".to_string(), create_tui_app as BxNativeFunction);
     map.insert("tui.TUI".to_string(), create_tui as BxNativeFunction);
     map.insert(
         "tui.Text".to_string(),

@@ -56,6 +56,19 @@ script_test!(bvm_features, "bvm_features.bxs");
 script_test!(vm_safe_nav_elvis, "vm_safe_nav_elvis.bxs");
 script_test!(vm_switch, "vm_switch.bxs");
 script_test!(vm_while, "vm_while.bxs");
+
+#[test]
+#[cfg(feature = "bif-tui")]
+fn tui_app_instantiation() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join("tui_app_instantiation.bxs");
+    
+    if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+        panic!("Script test 'tui_app_instantiation.bxs' failed: {}", e);
+    }
+}
 #[test]
 fn jit_type_guards() {
     // Cranelift JIT requires more stack space than the default 2MB test thread stack.
