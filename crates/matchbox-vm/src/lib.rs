@@ -1,3 +1,5 @@
+extern crate self as matchbox_vm;
+
 pub mod bifs;
 pub mod types;
 pub mod vm;

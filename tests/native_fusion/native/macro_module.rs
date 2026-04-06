@@ -1,4 +1,4 @@
-use matchbox_vm::{matchbox_fn, matchbox_class, matchbox_methods, types::{BxValue, BxVM, BxNativeFunction, BxNativeObject}};
+use matchbox_vm::{matchbox_fn, BxObject, bx_methods, types::{BxValue, BxVM, BxNativeFunction, BxNativeObject}};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -8,13 +8,12 @@ pub fn macro_add(a: f64, b: f64) -> f64 {
     a + b
 }
 
-#[matchbox_class]
-#[derive(Debug)]
+#[derive(Debug, BxObject)]
 pub struct NativeCalc {
     pub base: f64,
 }
 
-#[matchbox_methods]
+#[bx_methods]
 impl NativeCalc {
     pub fn add(&self, value: f64) -> f64 {
         self.base + value

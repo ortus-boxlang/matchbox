@@ -1,6 +1,9 @@
 pub mod box_string;
 pub mod value;
 
+#[cfg(test)]
+mod macros_test;
+
 use std::fmt;
 use std::collections::HashMap;
 use std::rc::Rc;

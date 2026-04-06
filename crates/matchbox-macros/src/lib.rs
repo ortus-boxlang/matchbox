@@ -1,7 +1,7 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::{quote, format_ident};
-use syn::{parse_macro_input, ItemFn, FnArg, Pat, ItemStruct, ItemImpl, ImplItem};
+use syn::{parse_macro_input, ItemFn, FnArg, Pat, ItemStruct, ItemImpl, ImplItem, ReturnType};
 
 #[proc_macro_attribute]
 pub fn matchbox_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -57,18 +57,25 @@ pub fn matchbox_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn matchbox_class(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as ItemStruct);
+    let mut expanded = item.clone();
+    expanded.extend(bx_object_derive(item));
+    expanded
+}
+
+#[proc_macro_derive(BxObject)]
+pub fn bx_object_derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as ItemStruct);
     let name = &input.ident;
 
     let expanded = quote! {
-        #input
-
         impl matchbox_vm::types::BxNativeObject for #name {
             fn get_property(&self, _name: &str) -> matchbox_vm::types::BxValue {
                 matchbox_vm::types::BxValue::new_null()
             }
 
-            fn set_property(&mut self, _name: &str, _value: matchbox_vm::types::BxValue) {}
+            fn set_property(&mut self, _name: &str, _value: matchbox_vm::types::BxValue) {
+                // To be implemented: automate field mapping
+            }
 
             fn call_method(&mut self, vm: &mut dyn matchbox_vm::types::BxVM, name: &str, args: &[matchbox_vm::types::BxValue]) -> Result<matchbox_vm::types::BxValue, String> {
                 self.dispatch_method(vm, name, args)
@@ -80,7 +87,7 @@ pub fn matchbox_class(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn matchbox_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemImpl);
     let self_ty = &input.self_ty;
     
@@ -111,6 +118,8 @@ pub fn matchbox_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             quote! { let #arg_name = args[#arg_idx].as_number(); }
                         } else if quote!(#arg_type).to_string().contains("i32") {
                             quote! { let #arg_name = args[#arg_idx].as_int(); }
+                        } else if quote!(#arg_type).to_string().contains("bool") {
+                            quote! { let #arg_name = args[#arg_idx].as_bool(); }
                         } else if quote!(#arg_type).to_string().contains("String") {
                             quote! { let #arg_name = vm.to_string(args[#arg_idx]); }
                         } else {
@@ -123,7 +132,46 @@ pub fn matchbox_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
 
+            if !skip_first {
+                // Static method, skip for dispatch
+                continue;
+            }
+
             let arg_count = call_args.len();
+
+            let return_wrapping = match &method.sig.output {
+                ReturnType::Default => quote! { 
+                    self.#name(#(#call_args),*);
+                    Ok(matchbox_vm::types::BxValue::new_null()) 
+                },
+                ReturnType::Type(_, ty) => {
+                    let ty_str = quote!(#ty).to_string();
+                    if ty_str.contains("& mut Self") || ty_str.contains("& mut self") {
+                         quote! { 
+                            self.#name(#(#call_args),*);
+                            Ok(matchbox_vm::types::BxValue::new_ptr(0)) // Placeholder for "self"
+                         }
+                    } else if ty_str.contains("BxValue") {
+                         quote! { Ok(self.#name(#(#call_args),*)) }
+                    } else if ty_str.contains("f64") {
+                         quote! { Ok(matchbox_vm::types::BxValue::new_number(self.#name(#(#call_args),*))) }
+                    } else if ty_str.contains("i32") {
+                         quote! { Ok(matchbox_vm::types::BxValue::new_int(self.#name(#(#call_args),*))) }
+                        } else if ty_str.contains("bool") {
+                             quote! { Ok(matchbox_vm::types::BxValue::new_bool(self.#name(#(#call_args),*))) }
+                    } else if ty_str.contains("String") {
+                         quote! { 
+                            let result = self.#name(#(#call_args),*);
+                            Ok(matchbox_vm::types::BxValue::new_ptr(vm.string_new(result))) 
+                         }
+                    } else {
+                         quote! { 
+                            self.#name(#(#call_args),*);
+                            Ok(matchbox_vm::types::BxValue::new_null()) 
+                         }
+                    }
+                }
+            };
 
             dispatch_arms.push(quote! {
                 #name_str => {
@@ -131,9 +179,7 @@ pub fn matchbox_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         return Err(format!("{} requires {} arguments, got {}", #name_str, #arg_count, args.len()));
                     }
                     #(#arg_conversions)*
-                    let result = self.#name(#(#call_args),*);
-                    // Check if result is already BxValue or needs wrapping
-                    Ok(matchbox_vm::types::BxValue::new_number(result as f64))
+                    #return_wrapping
                 }
             });
         }
@@ -143,7 +189,7 @@ pub fn matchbox_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #input
 
         impl #self_ty {
-            fn dispatch_method(&mut self, vm: &mut dyn matchbox_vm::types::BxVM, name: &str, args: &[matchbox_vm::types::BxValue]) -> Result<matchbox_vm::types::BxValue, String> {
+            pub fn dispatch_method(&mut self, vm: &mut dyn matchbox_vm::types::BxVM, name: &str, args: &[matchbox_vm::types::BxValue]) -> Result<matchbox_vm::types::BxValue, String> {
                 match name.to_lowercase().as_str() {
                     #(#dispatch_arms)*
                     _ => Err(format!("Method {} not found", name)),
@@ -153,6 +199,11 @@ pub fn matchbox_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+#[proc_macro_attribute]
+pub fn matchbox_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    bx_methods(_attr, item)
 }
 
 #[proc_macro_attribute]
