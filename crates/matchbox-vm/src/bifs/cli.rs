@@ -1,5 +1,5 @@
 #[cfg(feature = "bif-cli")]
-use crate::types::{BxValue, BxVM};
+use crate::types::{BxVM, BxValue};
 #[cfg(feature = "bif-cli")]
 use std::io::{self, Write};
 
@@ -22,10 +22,10 @@ pub fn cli_exit(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     };
     #[cfg(not(target_arch = "wasm32"))]
     std::process::exit(code);
-    
+
     #[cfg(target_arch = "wasm32")]
     return Err("cliExit not supported in WASM environment".to_string());
-    
+
     #[allow(unreachable_code)]
     Ok(BxValue::new_null())
 }
@@ -58,7 +58,7 @@ pub fn cli_get_args(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, Str
                 vm.struct_set(options_id, &part[3..], BxValue::new_bool(false));
             } else if let Some(idx) = part.find('=') {
                 let key = &part[..idx];
-                let val = &part[idx+1..];
+                let val = &part[idx + 1..];
                 let val_id = vm.string_new(val.to_string());
                 vm.struct_set(options_id, key, BxValue::new_ptr(val_id));
             } else {
@@ -68,7 +68,7 @@ pub fn cli_get_args(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, Str
             let part = &arg[1..];
             if let Some(idx) = part.find('=') {
                 let key = &part[..idx];
-                let val = &part[idx+1..];
+                let val = &part[idx + 1..];
                 let val_id = vm.string_new(val.to_string());
                 vm.struct_set(options_id, key, BxValue::new_ptr(val_id));
             } else {
@@ -83,7 +83,7 @@ pub fn cli_get_args(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, Str
     let result_id = vm.struct_new();
     vm.struct_set(result_id, "options", BxValue::new_ptr(options_id));
     vm.struct_set(result_id, "positionals", BxValue::new_ptr(positionals_id));
-    
+
     Ok(BxValue::new_ptr(result_id))
 }
 
@@ -117,7 +117,7 @@ pub fn cli_confirm(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
     } else {
         "Confirm?".to_string()
     };
-    
+
     print!("{} (Y/n): ", prompt);
     let _ = io::stdout().flush();
 
@@ -127,7 +127,9 @@ pub fn cli_confirm(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
         match io::stdin().read_line(&mut input) {
             Ok(_) => {
                 let trimmed = input.trim().to_lowercase();
-                Ok(BxValue::new_bool(trimmed == "y" || trimmed == "yes" || trimmed.is_empty()))
+                Ok(BxValue::new_bool(
+                    trimmed == "y" || trimmed == "yes" || trimmed.is_empty(),
+                ))
             }
             Err(e) => Err(format!("Failed to read from stdin: {}", e)),
         }
@@ -139,22 +141,28 @@ pub fn cli_confirm(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
 
 #[cfg(feature = "bif-cli")]
 pub fn cli_select(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.len() < 2 { return Err("cliSelect() expects 2 arguments: (title, options_array)".to_string()); }
+    if args.len() < 2 {
+        return Err("cliSelect() expects 2 arguments: (title, options_array)".to_string());
+    }
     let title = vm.to_string(args[0]);
-    let options_id = args[1].as_gc_id().ok_or("Second argument must be an array of options")?;
+    let options_id = args[1]
+        .as_gc_id()
+        .ok_or("Second argument must be an array of options")?;
     let len = vm.array_len(options_id);
     let mut options = Vec::with_capacity(len);
     for i in 0..len {
         options.push(vm.to_string(vm.array_get(options_id, i)));
     }
 
-    if options.is_empty() { return Ok(BxValue::new_ptr(vm.string_new("".to_string()))); }
+    if options.is_empty() {
+        return Ok(BxValue::new_ptr(vm.string_new("".to_string())));
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     {
         use crossterm::{
-            cursor::{Hide, Show, MoveToColumn, MoveUp},
-            event::{self, Event, KeyCode, KeyEvent, KeyModifiers, KeyEventKind},
+            cursor::{Hide, MoveToColumn, MoveUp, Show},
+            event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
             execute,
             style::{Color, Print, ResetColor, SetForegroundColor},
             terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
@@ -170,13 +178,22 @@ pub fn cli_select(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String
         let result = (|| -> Result<String, String> {
             loop {
                 // Render
-                execute!(stdout, Clear(ClearType::CurrentLine), MoveToColumn(0)).map_err(|e| e.to_string())?;
+                execute!(stdout, Clear(ClearType::CurrentLine), MoveToColumn(0))
+                    .map_err(|e| e.to_string())?;
                 println!("{} (Arrows to navigate, Enter to select):", title);
-                
+
                 for (i, opt) in options.iter().enumerate() {
-                    execute!(stdout, Clear(ClearType::CurrentLine), MoveToColumn(0)).map_err(|e| e.to_string())?;
+                    execute!(stdout, Clear(ClearType::CurrentLine), MoveToColumn(0))
+                        .map_err(|e| e.to_string())?;
                     if i == selected {
-                        execute!(stdout, SetForegroundColor(Color::Cyan), Print("> "), Print(opt), ResetColor).map_err(|e| e.to_string())?;
+                        execute!(
+                            stdout,
+                            SetForegroundColor(Color::Cyan),
+                            Print("> "),
+                            Print(opt),
+                            ResetColor
+                        )
+                        .map_err(|e| e.to_string())?;
                     } else {
                         print!("  {}", opt);
                     }
@@ -184,32 +201,50 @@ pub fn cli_select(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String
                 }
 
                 // Input
-                if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = event::read().map_err(|e| e.to_string())? {
-                    if kind == KeyEventKind::Release { continue; }
+                if let Event::Key(KeyEvent {
+                    code,
+                    modifiers,
+                    kind,
+                    ..
+                }) = event::read().map_err(|e| e.to_string())?
+                {
+                    if kind == KeyEventKind::Release {
+                        continue;
+                    }
                     match code {
                         KeyCode::Up => {
-                            if selected > 0 { selected -= 1; }
-                            execute!(stdout, MoveUp((options.len() + 1) as u16)).map_err(|e| e.to_string())?;
+                            if selected > 0 {
+                                selected -= 1;
+                            }
+                            execute!(stdout, MoveUp((options.len() + 1) as u16))
+                                .map_err(|e| e.to_string())?;
                         }
                         KeyCode::Down => {
-                            if selected < options.len() - 1 { selected += 1; }
-                            execute!(stdout, MoveUp((options.len() + 1) as u16)).map_err(|e| e.to_string())?;
+                            if selected < options.len() - 1 {
+                                selected += 1;
+                            }
+                            execute!(stdout, MoveUp((options.len() + 1) as u16))
+                                .map_err(|e| e.to_string())?;
                         }
                         KeyCode::Enter => {
                             // Clear the menu before returning
-                            execute!(stdout, MoveUp((options.len() + 1) as u16)).map_err(|e| e.to_string())?;
+                            execute!(stdout, MoveUp((options.len() + 1) as u16))
+                                .map_err(|e| e.to_string())?;
                             for _ in 0..=options.len() {
-                                execute!(stdout, Clear(ClearType::CurrentLine)).map_err(|e| e.to_string())?;
+                                execute!(stdout, Clear(ClearType::CurrentLine))
+                                    .map_err(|e| e.to_string())?;
                                 println!();
                             }
-                            execute!(stdout, MoveUp((options.len() + 1) as u16)).map_err(|e| e.to_string())?;
+                            execute!(stdout, MoveUp((options.len() + 1) as u16))
+                                .map_err(|e| e.to_string())?;
                             return Ok(options[selected].clone());
                         }
                         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                                return Err("Selection cancelled".to_string());
+                            return Err("Selection cancelled".to_string());
                         }
                         _ => {
-                            execute!(stdout, MoveUp((options.len() + 1) as u16)).map_err(|e| e.to_string())?;
+                            execute!(stdout, MoveUp((options.len() + 1) as u16))
+                                .map_err(|e| e.to_string())?;
                         }
                     }
                 }

@@ -1,0 +1,9 @@
+[package]
+name = "matchbox_tui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+matchbox_vm = { path = "../matchbox-vm" }
+ratatui = "0.29"
+crossterm = "0.28"

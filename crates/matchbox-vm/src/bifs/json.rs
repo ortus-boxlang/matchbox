@@ -1,38 +1,44 @@
-use crate::types::{BxValue, BxVM};
+use crate::types::{BxVM, BxValue};
 use serde_json::Value as JsonValue;
 
 pub fn json_deserialize(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.is_empty() { return Err("JSONdeserialize() expects 1 argument".to_string()); }
+    if args.is_empty() {
+        return Err("JSONdeserialize() expects 1 argument".to_string());
+    }
     let json_str = vm.to_string(args[0]);
-    
-    let json_val: JsonValue = serde_json::from_str(&json_str)
-        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
-    
+
+    let json_val: JsonValue =
+        serde_json::from_str(&json_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
     Ok(json_to_bx(vm, json_val))
 }
 
 pub fn json_serialize(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.is_empty() { return Err("JSONserialize() expects 1 argument".to_string()); }
+    if args.is_empty() {
+        return Err("JSONserialize() expects 1 argument".to_string());
+    }
     let json_val = bx_to_json(vm, args[0]);
-    
+
     let json_str = serde_json::to_string(&json_val)
         .map_err(|e| format!("Failed to serialize to JSON: {}", e))?;
-    
+
     let s_id = vm.string_new(json_str);
     Ok(BxValue::new_ptr(s_id))
 }
 
 pub fn load_properties(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.is_empty() { return Err("loadProperties() expects 1 argument".to_string()); }
+    if args.is_empty() {
+        return Err("loadProperties() expects 1 argument".to_string());
+    }
     let content = vm.to_string(args[0]);
-    
+
     let struct_id = vm.struct_new();
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
             continue;
         }
-        
+
         if let Some((key, value)) = trimmed.split_once('=') {
             let k = key.trim();
             let v = value.trim();
@@ -40,7 +46,7 @@ pub fn load_properties(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, S
             vm.struct_set(struct_id, k, BxValue::new_ptr(v_id));
         }
     }
-    
+
     Ok(BxValue::new_ptr(struct_id))
 }
 
@@ -80,20 +86,20 @@ fn bx_to_json(vm: &dyn BxVM, val: BxValue) -> JsonValue {
         // This is a bit tricky as BxVM doesn't expose a way to check object type easily
         // We assume to_string() works for strings, and we might need to handle arrays/structs
         // For now, let's use a heuristic or just to_string for non-containers
-        
+
         let s = vm.to_string(val);
         // If it looks like a container, we might have a problem here without better VM introspection
         // But BxVM trait has array_len/struct_len
-        
+
         // Let's try to detect if it's a struct or array
         let struct_len = vm.struct_len(id);
         if struct_len > 0 || vm.struct_get_shape(id) != vm.get_root_shape() {
-             let mut map = serde_json::Map::new();
-             for key in vm.struct_key_array(id) {
-                 let item = vm.struct_get(id, &key);
-                 map.insert(key, bx_to_json(vm, item));
-             }
-             return JsonValue::Object(map);
+            let mut map = serde_json::Map::new();
+            for key in vm.struct_key_array(id) {
+                let item = vm.struct_get(id, &key);
+                map.insert(key, bx_to_json(vm, item));
+            }
+            return JsonValue::Object(map);
         }
 
         let array_len = vm.array_len(id);

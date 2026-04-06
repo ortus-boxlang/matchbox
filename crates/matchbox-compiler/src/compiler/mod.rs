@@ -1396,7 +1396,7 @@ impl Compiler {
                 min_arity = (i + 1) as u32;
             }
             sub_compiler.locals.push(Local {
-                name: param.name.clone(),
+                name: param.name.to_lowercase(),
                 depth: 1,
             });
         }

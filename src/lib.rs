@@ -177,6 +177,7 @@ pub fn run() -> Result<()> {
                 port,
                 host,
                 webroot,
+                config: None,
             };
 
             let rt = tokio::runtime::Runtime::new().unwrap();
@@ -499,7 +500,12 @@ pub fn run_chunk(chunk: Chunk, modules: &[modules::ModuleInfo]) -> Result<()> {
     let args: Vec<String> = std_env::args().collect();
     
     let mut external_bifs = HashMap::new();
-    let native_classes = HashMap::new();
+    let mut native_classes = HashMap::new();
+
+    #[cfg(feature = "bif-tui")]
+    {
+        native_classes.extend(matchbox_tui::register_classes());
+    }
 
     // In a real implementation with dynamic loading, we would load .so/.dll here.
     for m in modules {

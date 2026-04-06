@@ -1,0 +1,309 @@
+// MatchBox Todo TUI App with Gradient Progress Bar
+// Run with: cargo run --features bif-tui -- tests/todo.bxs
+
+todos = []
+completed = []
+selected = 1
+inputMode = false
+inputChars = []
+statusMsg = "Press 'a' to add, 'd' to delete, 'space' to toggle, 'q' to quit"
+
+function getInputText() {
+    result = ""
+    for (ci = 1; ci <= len(inputChars); ci = ci + 1) {
+        result = result & inputChars[ci]
+    }
+    return result
+}
+
+function countCompleted() {
+    count = 0
+    for (i = 1; i <= len(completed); i = i + 1) {
+        if (completed[i]) {
+            count = count + 1
+        }
+    }
+    return count
+}
+
+// Pad a string on the right with spaces to exactly targetLen characters.
+function padRight(str, targetLen) {
+    s = str
+    currentLen = len(s)
+    if (currentLen >= targetLen) {
+        return s
+    }
+    spacesNeeded = targetLen - currentLen
+    padding = ""
+    for (p = 1; p <= spacesNeeded; p = p + 1) {
+        padding = padding & " "
+    }
+    return s & padding
+}
+
+// Initialize TUI
+tui = new rust:tui.TUI()
+tui.init()
+
+function render() {
+    tui.beginFrame()
+
+    done = countCompleted()
+    total = len(todos)
+    listHeight = total
+    if (listHeight < 1) { listHeight = 1 }
+    if (listHeight > 12) { listHeight = 12 }
+
+    // Outer border top
+    borderTop = new rust:tui.Text()
+    borderTop.setText("+-----------------------------------------------------------+")
+    borderTop.setColor("cyan")
+    borderTopId = borderTop.build()
+    tui.renderWidget(borderTopId, 0, 0, 61, 1)
+
+    // Title bar
+    title = new rust:tui.Text()
+    title.setText("| Todo List                                               |")
+    title.setColor("cyan")
+    title.setBold(true)
+    titleId = title.build()
+    tui.renderWidget(titleId, 0, 1, 61, 1)
+
+    // Separator
+    sep1 = new rust:tui.Text()
+    sep1.setText("+--------------------------------------+---------------------+")
+    sep1.setColor("cyan")
+    sep1Id = sep1.build()
+    tui.renderWidget(sep1Id, 0, 2, 61, 1)
+
+    // Todo list
+    for (i = 1; i <= listHeight; i = i + 1) {
+        if (i <= total) {
+            if (i == selected) {
+                selector = "> "
+            } else {
+                selector = "  "
+            }
+            if (completed[i]) {
+                checkbox = "[x] "
+            } else {
+                checkbox = "[ ] "
+            }
+            taskText = todos[i]
+            // selector=2, checkbox=4, total row width=37 → task+padding=31
+            row = padRight(selector & checkbox & taskText, 37) & " |"
+        } else {
+            row = "                                      |"
+        }
+
+        rowWidget = new rust:tui.Text()
+        rowWidget.setText(row)
+        if (i == selected) {
+            rowWidget.setColor("cyan")
+            rowWidget.setBold(true)
+        } else {
+            rowWidget.setColor("white")
+        }
+        rowId = rowWidget.build()
+        tui.renderWidget(rowId, 0, 2 + i, 61, 1)
+    }
+
+    // Vertical divider for remaining rows
+    for (vrow = 2 + listHeight + 1; vrow <= 15; vrow = vrow + 1) {
+        vline = new rust:tui.Text()
+        vline.setText("|")
+        vline.setColor("cyan")
+        vlineId = vline.build()
+        tui.renderWidget(vlineId, 38, vrow, 1, 1)
+    }
+
+    // Right panel: Progress label
+    pLabel = new rust:tui.Text()
+    pLabel.setText(" Progress            ")
+    pLabel.setColor("white")
+    pLabel.setBold(true)
+    pLabelId = pLabel.build()
+    tui.renderWidget(pLabelId, 39, 3, 21, 1)
+
+    // Gradient progress bar
+    bar = new rust:tui.ProgressBar()
+    bar.setCompleted(done)
+    bar.setTotal(total)
+    bar.setStartColor("cyan")
+    bar.setEndColor("green")
+    bar.setEmptyColor("darkgray")
+    bar.setShowLabel(true)
+    barId = bar.build()
+    tui.renderWidget(barId, 39, 4, 21, 3)
+
+    // Stats
+    stats = new rust:tui.Text()
+    if (total > 0) {
+        stats.setText(" " & done & " of " & total & " done     ")
+    } else {
+        stats.setText(" No tasks yet         ")
+    }
+    stats.setColor("gray")
+    statsId = stats.build()
+    tui.renderWidget(statsId, 39, 8, 21, 1)
+
+    // Divider between progress and tips
+    sep2 = new rust:tui.Text()
+    sep2.setText("                     ")
+    sep2.setColor("gray")
+    sep2Id = sep2.build()
+    tui.renderWidget(sep2Id, 39, 9, 21, 1)
+
+    // Tips header
+    tipsHeader = new rust:tui.Text()
+    tipsHeader.setText(" Tips                ")
+    tipsHeader.setColor("white")
+    tipsHeader.setBold(true)
+    tipsHeaderId = tipsHeader.build()
+    tui.renderWidget(tipsHeaderId, 39, 10, 21, 1)
+
+    tip1 = new rust:tui.Text()
+    tip1.setText(" Space  toggle done  ")
+    tip1.setColor("gray")
+    tip1Id = tip1.build()
+    tui.renderWidget(tip1Id, 39, 11, 21, 1)
+
+    tip2 = new rust:tui.Text()
+    tip2.setText(" a      add task     ")
+    tip2.setColor("gray")
+    tip2Id = tip2.build()
+    tui.renderWidget(tip2Id, 39, 12, 21, 1)
+
+    tip3 = new rust:tui.Text()
+    tip3.setText(" d      delete task  ")
+    tip3.setColor("gray")
+    tip3Id = tip3.build()
+    tui.renderWidget(tip3Id, 39, 13, 21, 1)
+
+    tip4 = new rust:tui.Text()
+    tip4.setText(" Up/Down  navigate   ")
+    tip4.setColor("gray")
+    tip4Id = tip4.build()
+    tui.renderWidget(tip4Id, 39, 14, 21, 1)
+
+    // Bottom border
+    bottomBorder = new rust:tui.Text()
+    bottomBorder.setText("+-----------------------------------------------------------+")
+    bottomBorder.setColor("cyan")
+    bottomBorderId = bottomBorder.build()
+    tui.renderWidget(bottomBorderId, 0, 16, 61, 1)
+
+    // Input mode
+    if (inputMode) {
+        inputWidget = new rust:tui.Input()
+        inputWidget.setPrompt(" New todo: ")
+        inputWidget.setValue(getInputText())
+        inputWidget.setPlaceholder("Type todo and press Enter...")
+        inputId = inputWidget.build()
+        tui.renderWidget(inputId, 1, 17, 59, 3)
+    }
+
+    // Status bar
+    status = new rust:tui.Text()
+    status.setText(" " & statusMsg)
+    status.setColor("yellow")
+    statusId = status.build()
+    tui.renderWidget(statusId, 0, 20, 61, 1)
+
+    // Footer
+    footer = new rust:tui.Text()
+    footer.setText(" q quit                                                      ")
+    footer.setColor("gray")
+    footerId = footer.build()
+    tui.renderWidget(footerId, 0, 21, 61, 1)
+
+    // Outer border bottom
+    borderBottom = new rust:tui.Text()
+    borderBottom.setText("+-----------------------------------------------------------+")
+    borderBottom.setColor("cyan")
+    borderBottomId = borderBottom.build()
+    tui.renderWidget(borderBottomId, 0, 22, 61, 1)
+
+    tui.endFrame()
+}
+
+render()
+
+while (true) {
+    key = tui.getKey()
+
+    if (inputMode) {
+        if (key == "Enter") {
+            text = getInputText()
+            if (len(inputChars) > 0) {
+                arrayAppend(todos, text)
+                arrayAppend(completed, false)
+                statusMsg = "Added: " & text
+            } else {
+                statusMsg = "Empty input, nothing added"
+            }
+            inputMode = false
+            inputChars = []
+            render()
+        } else if (key == "Escape") {
+            inputMode = false
+            inputChars = []
+            statusMsg = "Cancelled"
+            render()
+        } else if (key == "Backspace") {
+            if (len(inputChars) > 0) {
+                arrayPop(inputChars)
+            }
+            render()
+        } else if (len(key) == 1) {
+            arrayAppend(inputChars, key)
+            render()
+        }
+    } else {
+        if (key == "q") {
+            tui.shutdown()
+            break
+        } else if (key == "Up") {
+            if (selected > 1) {
+                selected = selected - 1
+                render()
+            }
+        } else if (key == "Down") {
+            if (selected < len(todos)) {
+                selected = selected + 1
+                render()
+            }
+        } else if (key == " ") {
+            if (selected >= 1 && selected <= len(todos)) {
+                if (completed[selected]) {
+                    completed[selected] = false
+                    statusMsg = "Unchecked: " & todos[selected]
+                } else {
+                    completed[selected] = true
+                    statusMsg = "Completed: " & todos[selected]
+                }
+                render()
+            }
+        } else if (key == "a") {
+            inputMode = true
+            inputChars = []
+            statusMsg = "Type your todo, Enter to confirm, Esc to cancel"
+            render()
+        } else if (key == "d") {
+            if (len(todos) > 0) {
+                removed = todos[selected]
+                arrayDeleteAt(todos, selected)
+                arrayDeleteAt(completed, selected)
+                if (selected > len(todos)) {
+                    selected = len(todos)
+                }
+                if (selected < 1) { selected = 1 }
+                statusMsg = "Deleted: " & removed
+                render()
+            } else {
+                statusMsg = "Nothing to delete"
+                render()
+            }
+        }
+    }
+}

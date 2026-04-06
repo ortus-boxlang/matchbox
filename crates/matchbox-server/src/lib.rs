@@ -14,6 +14,7 @@ use matchbox_vm::types::BxVM;
 use matchbox_compiler::{parser, compiler::Compiler};
 use clap::Parser as ClapParser;
 use tokio::fs;
+use serde::{Deserialize, Serialize};
 
 #[derive(ClapParser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -29,10 +30,36 @@ pub struct Args {
     /// Web root directory
     #[arg(short, long, default_value = ".")]
     pub webroot: String,
+
+    /// Config file path (defaults to boxlang.json in webroot)
+    #[arg(short, long)]
+    pub config: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Config {
+    #[serde(default = "default_rewrites")]
+    pub rewrites: bool,
+    #[serde(default = "default_rewrite_file_name")]
+    pub rewrite_file_name: String,
+}
+
+fn default_rewrites() -> bool { false }
+fn default_rewrite_file_name() -> String { "index.bxm".to_string() }
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            rewrites: default_rewrites(),
+            rewrite_file_name: default_rewrite_file_name(),
+        }
+    }
 }
 
 struct AppState {
     webroot: PathBuf,
+    config: Config,
     sessions: Mutex<HashMap<String, HashMap<String, String>>>,
 }
 
@@ -41,19 +68,38 @@ pub async fn run_server(args: Args) {
 
     let webroot = PathBuf::from(&args.webroot).canonicalize().unwrap_or_else(|_| PathBuf::from(&args.webroot));
     
+    let config_path = args.config.map(PathBuf::from).unwrap_or_else(|| webroot.join("boxlang.json"));
+    let config = if config_path.exists() {
+        match fs::read_to_string(&config_path).await {
+            Ok(content) => {
+                let mut c: Config = serde_json::from_str(&content).unwrap_or_default();
+                // Sanitize rewrite_file_name
+                if c.rewrite_file_name.contains("..") || c.rewrite_file_name.starts_with('/') {
+                    c.rewrite_file_name = default_rewrite_file_name();
+                }
+                c
+            },
+            Err(_) => Config::default(),
+        }
+    } else {
+        Config::default()
+    };
+
     let state = Arc::new(AppState {
         webroot: webroot.clone(),
+        config,
         sessions: Mutex::new(HashMap::new()),
     });
 
     let app = Router::new()
         .route("/", get(handler).post(handler))
         .route("/*path", get(handler).post(handler))
-        .with_state(state);
+        .with_state(state.clone());
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse().unwrap();
     println!("MatchBox Server listening on http://{}", addr);
     println!("Web root: {}", webroot.display());
+    println!("Rewrites: {}", if state.config.rewrites { "Enabled" } else { "Disabled" });
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -67,22 +113,48 @@ async fn handler(
     form_data: Option<Form<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     let path_str = path.map(|AxumPath(p)| p).unwrap_or_default();
+    
+    // Security: Block hidden files or directories starting with a dot
+    if path_str.split('/').any(|s| s.starts_with('.')) {
+        return (StatusCode::FORBIDDEN, "Forbidden: Access to hidden files is denied.").into_response();
+    }
+
     let mut full_path = state.webroot.join(path_str.trim_start_matches('/'));
     
+    // Directory Traversal Protection: Ensure the path is within the webroot
+    if let Ok(abs_path) = full_path.canonicalize() {
+        if !abs_path.starts_with(&state.webroot) {
+            return (StatusCode::FORBIDDEN, "Forbidden: Directory traversal attempt.").into_response();
+        }
+        full_path = abs_path;
+    } else if !state.config.rewrites {
+        return (StatusCode::NOT_FOUND, "Not Found").into_response();
+    }
+
+    // Handle directory index
     if full_path.is_dir() {
-        let bxm = full_path.join("index.bxm");
-        if bxm.exists() {
-            full_path = bxm;
-        } else {
-            let bxs = full_path.join("index.bxs");
-            if bxs.exists() {
-                full_path = bxs;
+        let index_files = ["index.bxm", "index.bxs"];
+        for index in index_files {
+            let index_path = full_path.join(index);
+            if index_path.exists() {
+                full_path = index_path;
+                break;
             }
         }
     }
 
+    // URL Rewrites logic
     if !full_path.exists() {
-        return (StatusCode::NOT_FOUND, "Not Found").into_response();
+        if state.config.rewrites {
+            let rewrite_path = state.webroot.join(&state.config.rewrite_file_name);
+            if rewrite_path.exists() {
+                full_path = rewrite_path;
+            } else {
+                return (StatusCode::NOT_FOUND, "Not Found").into_response();
+            }
+        } else {
+            return (StatusCode::NOT_FOUND, "Not Found").into_response();
+        }
     }
 
     let ext = full_path.extension().and_then(|s| s.to_str()).unwrap_or("");
@@ -117,6 +189,124 @@ async fn handler(
             }
             Err(_) => (StatusCode::NOT_FOUND, "Not Found").into_response(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    fn setup_test_state(webroot: PathBuf) -> Arc<AppState> {
+        Arc::new(AppState {
+            webroot,
+            config: Config::default(),
+            sessions: Mutex::new(HashMap::new()),
+        })
+    }
+
+    #[tokio::test]
+    async fn test_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = setup_test_state(temp.path().to_path_buf());
+        
+        let res = handler(
+            State(state),
+            Some(AxumPath("non-existent.txt".to_string())),
+            Query(HashMap::new()),
+            HeaderMap::new(),
+            None,
+        ).await.into_response();
+
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_directory_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().to_path_buf();
+        // Canonicalize the temp path to match what run_server does
+        let webroot = webroot.canonicalize().unwrap();
+        std::fs::write(webroot.join("index.bxm"), "<h1>Index</h1>").unwrap();
+        
+        let state = setup_test_state(webroot);
+        
+        let res = handler(
+            State(state),
+            None, // root path
+            Query(HashMap::new()),
+            HeaderMap::new(),
+            None,
+        ).await.into_response();
+
+        // This SHOULD be OK (Green)
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_hidden_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().to_path_buf().canonicalize().unwrap();
+        std::fs::write(webroot.join(".env"), "SECRET=123").unwrap();
+        
+        let state = setup_test_state(webroot);
+        
+        let res = handler(
+            State(state),
+            Some(AxumPath(".env".to_string())),
+            Query(HashMap::new()),
+            HeaderMap::new(),
+            None,
+        ).await.into_response();
+
+        // Should be 403 Forbidden
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_directory_traversal() {
+        let temp_root = tempfile::tempdir().unwrap();
+        let webroot = temp_root.path().join("webroot");
+        std::fs::create_dir(&webroot).unwrap();
+        let webroot = webroot.canonicalize().unwrap();
+        
+        // File outside webroot
+        std::fs::write(temp_root.path().join("outside.txt"), "outside").unwrap();
+        
+        let state = setup_test_state(webroot);
+        
+        let res = handler(
+            State(state),
+            Some(AxumPath("../outside.txt".to_string())),
+            Query(HashMap::new()),
+            HeaderMap::new(),
+            None,
+        ).await.into_response();
+
+        // Should be 403 Forbidden
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_url_rewrites() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().to_path_buf().canonicalize().unwrap();
+        std::fs::write(webroot.join("index.bxm"), "<h1>Index</h1>").unwrap();
+        
+        let mut state = setup_test_state(webroot);
+        let mut arc_state = Arc::get_mut(&mut state).unwrap();
+        arc_state.config.rewrites = true;
+        arc_state.config.rewrite_file_name = "index.bxm".to_string();
+        
+        let res = handler(
+            State(state),
+            Some(AxumPath("non-existent".to_string())),
+            Query(HashMap::new()),
+            HeaderMap::new(),
+            None,
+        ).await.into_response();
+
+        // Should be 200 OK because of rewrite
+        assert_eq!(res.status(), StatusCode::OK);
     }
 }
 

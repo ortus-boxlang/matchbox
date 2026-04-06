@@ -4,6 +4,7 @@ members = [
     "crates/matchbox-compiler",
     "crates/matchbox-macros",
     "crates/matchbox-server",
+    "crates/matchbox-tui",
 ]
 exclude = [
     "crates/matchbox-esp32-runner",
@@ -25,6 +26,7 @@ bincode = "1.3.3"
 matchbox_vm = { path = "crates/matchbox-vm" }
 matchbox_compiler = { path = "crates/matchbox-compiler" }
 matchbox_server = { path = "crates/matchbox-server", optional = true }
+matchbox_tui = { path = "crates/matchbox-tui", optional = true }
 tokio = { version = "1.0", features = ["rt-multi-thread"], optional = true }
 wasm-encoder = "0.245.1"
 wasmparser = "0.245.1"
@@ -49,6 +51,7 @@ bif-crypto = ["matchbox_vm/bif-crypto"]
 bif-cli = ["matchbox_vm/bif-cli"]
 bif-jni = ["matchbox_vm/bif-jni"]
 bif-datasource = ["matchbox_vm/bif-datasource"]
+bif-tui = ["matchbox_tui"]
 
 [profile.release]
 opt-level = "z"     # Optimize for size
