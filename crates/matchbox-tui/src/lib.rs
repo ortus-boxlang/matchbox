@@ -7,6 +7,7 @@ use matchbox_vm::{BxObject, bx_methods};
 
 mod terminal;
 mod widget;
+pub mod rendering_context;
 
 #[cfg(test)]
 mod tui_app_test;
@@ -46,7 +47,7 @@ impl TUIApp {
                     tui.begin_frame();
                     // For now, we don't have a root widget, so just end frame
                     // which renders whatever was added to frame_widgets
-                    let _ = tui.end_frame();
+                    let _ = tui.end_frame(vm);
                     tui.set_dirty_val(false);
                 });
             }
@@ -470,6 +471,15 @@ pub fn create_input_widget(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxVal
     Ok(BxValue::new_ptr(id))
 }
 
+pub fn create_custom_widget(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() {
+        return Err("Custom widget requires an object".to_string());
+    }
+    let widget = WidgetKind::Custom(args[0]);
+    let id = WidgetRegistry::with_current(|r| r.insert(widget));
+    Ok(BxValue::new_number(id as f64))
+}
+
 #[derive(Debug)]
 pub struct ProgressBarWidgetNative {
     pub widget: ProgressBarWidget,
@@ -596,6 +606,10 @@ pub fn register_classes() -> HashMap<String, BxNativeFunction> {
     map.insert(
         "tui.Input".to_string(),
         create_input_widget as BxNativeFunction,
+    );
+    map.insert(
+        "tui.Custom".to_string(),
+        create_custom_widget as BxNativeFunction,
     );
     map.insert(
         "tui.ProgressBar".to_string(),

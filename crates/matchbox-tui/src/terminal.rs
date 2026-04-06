@@ -47,8 +47,8 @@ impl TUI {
         self.begin_frame();
     }
 
-    pub fn bx_end_frame(&mut self) -> Result<(), String> {
-        self.end_frame()
+    pub fn bx_end_frame(&mut self, vm: &mut dyn BxVM) -> Result<(), String> {
+        self.end_frame(vm)
     }
 
     pub fn bx_print(
@@ -65,7 +65,7 @@ impl TUI {
 
     pub fn bx_render_widget(
         &mut self,
-        _vm: &mut dyn BxVM,
+        vm: &mut dyn BxVM,
         widget_id: f64,
         x: f64,
         y: f64,
@@ -156,7 +156,7 @@ impl TUI {
         self.frame_widgets.clear();
     }
 
-    pub fn end_frame(&mut self) -> Result<(), String> {
+    pub fn end_frame(&mut self, vm: &mut dyn BxVM) -> Result<(), String> {
         let terminal = self.terminal.as_mut().ok_or("Terminal not initialized")?;
 
         let widgets_to_render: Vec<(usize, u16, u16, u16, u16)> = self.frame_widgets.clone();
@@ -167,7 +167,7 @@ impl TUI {
                     let area = ratatui::layout::Rect::new(*x, *y, *width, *height);
                     WidgetRegistry::with_current(|registry| {
                         if let Some(widget) = registry.get(*widget_id) {
-                            widget.render_in_area(frame, area, registry);
+                            widget.render_in_area(vm, frame, area, registry);
                         }
                     });
                 }

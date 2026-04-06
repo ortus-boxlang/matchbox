@@ -86,6 +86,8 @@ pub struct ProgressBarWidget {
     pub empty_char: Option<String>,
 }
 
+use matchbox_vm::types::{BxVM, BxValue};
+
 pub enum WidgetKind {
     Text(TextWidget),
     List(ListWidget),
@@ -93,17 +95,45 @@ pub enum WidgetKind {
     Block(BlockWidget),
     Input(InputWidget),
     ProgressBar(ProgressBarWidget),
+    Custom(BxValue),
 }
 
 impl WidgetKind {
-    pub fn render_in_area(&self, frame: &mut Frame, area: Rect, widget_registry: &WidgetRegistry) {
+    pub fn render_in_area(&self, vm: &mut dyn BxVM, frame: &mut Frame, area: Rect, widget_registry: &WidgetRegistry) {
         match self {
             WidgetKind::Text(text) => text.render_in_area(frame, area),
             WidgetKind::List(list) => list.render_in_area(frame, area),
             WidgetKind::Table(table) => table.render_in_area(frame, area),
-            WidgetKind::Block(block) => block.render_in_area(frame, area, widget_registry),
+            WidgetKind::Block(block) => block.render_in_area(vm, frame, area, widget_registry),
             WidgetKind::Input(input) => input.render_in_area(frame, area),
             WidgetKind::ProgressBar(bar) => bar.render_in_area(frame, area),
+            WidgetKind::Custom(obj) => {
+                use crate::rendering_context::RenderingContext;
+                use std::rc::Rc;
+                
+                // 1. Create area struct in BoxLang
+                let area_id = vm.struct_new();
+                vm.struct_set(area_id, "x", BxValue::new_number(area.x as f64));
+                vm.struct_set(area_id, "y", BxValue::new_number(area.y as f64));
+                vm.struct_set(area_id, "w", BxValue::new_number(area.width as f64));
+                vm.struct_set(area_id, "h", BxValue::new_number(area.height as f64));
+                
+                // 2. Create RenderingContext
+                let ctx = Rc::new(RefCell::new(RenderingContext::new()));
+                // Set initial origin to widget area
+                ctx.borrow_mut().current_origin = (area.x, area.y);
+                
+                // 3. Wrap ctx in BxNativeObject
+                let ctx_obj_id = vm.native_object_new(ctx.clone());
+                
+                // 4. Call __render(ctx, area)
+                if let Some(obj_id) = obj.as_gc_id() {
+                    let _ = vm.native_object_call_method(obj_id, "__render", &[BxValue::new_ptr(ctx_obj_id), BxValue::new_ptr(area_id)]);
+                }
+                
+                // 5. Playback commands
+                ctx.borrow().playback(frame);
+            }
         }
     }
 }
@@ -113,7 +143,7 @@ pub trait RenderInArea {
 }
 
 pub trait RenderInAreaWithRegistry {
-    fn render_in_area(&self, frame: &mut Frame, area: Rect, widget_registry: &WidgetRegistry);
+    fn render_in_area(&self, vm: &mut dyn BxVM, frame: &mut Frame, area: Rect, widget_registry: &WidgetRegistry);
 }
 
 impl RenderInArea for TextWidget {
@@ -244,7 +274,7 @@ impl TableWidget {
 }
 
 impl RenderInAreaWithRegistry for BlockWidget {
-    fn render_in_area(&self, frame: &mut Frame, area: Rect, widget_registry: &WidgetRegistry) {
+    fn render_in_area(&self, vm: &mut dyn BxVM, frame: &mut Frame, area: Rect, widget_registry: &WidgetRegistry) {
         use ratatui::widgets::{Block, BorderType as RatatuiBorderType, Widget};
 
         let mut block = Block::bordered();
@@ -263,7 +293,7 @@ impl RenderInAreaWithRegistry for BlockWidget {
             if let Some(inner_widget) = widget_registry.get(inner_id) {
                 let inner_area = block.inner(area);
                 block.render(area, frame.buffer_mut());
-                inner_widget.render_in_area(frame, inner_area, widget_registry);
+                inner_widget.render_in_area(vm, frame, inner_area, widget_registry);
                 return;
             }
         }
