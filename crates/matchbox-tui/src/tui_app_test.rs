@@ -11,6 +11,7 @@ mod tests {
     struct MockVM {
         pub last_method_called: String,
         pub last_args: Vec<BxValue>,
+        pub strings: Vec<String>,
     }
     
     impl MockVM {
@@ -18,6 +19,7 @@ mod tests {
             Self {
                 last_method_called: String::new(),
                 last_args: Vec::new(),
+                strings: Vec::new(),
             }
         }
     }
@@ -55,23 +57,74 @@ mod tests {
         fn native_object_call_method(&mut self, _: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String> { 
             self.last_method_called = name.to_string();
             self.last_args = args.to_vec();
-            
-            // If it's __render, simulate calling ctx.drawText
-            if name == "__render" {
-                let ctx_ptr = args[0].as_gc_id().unwrap();
-                // In this mock, we don't have the actual registry of native objects,
-                // but we know it's a RenderingContext.
-                // This is hard to test without a real VM or a better mock.
-            }
-            
             Ok(BxValue::new_null()) 
         }
         fn construct_native_class(&mut self, _: &str, _: &[BxValue]) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
-        fn string_new(&mut self, _: String) -> usize { 0 }
-        fn to_string(&self, _: BxValue) -> String { "".to_string() }
+        fn string_new(&mut self, s: String) -> usize { 
+            let id = self.strings.len();
+            self.strings.push(s);
+            id
+        }
+        fn to_string(&self, v: BxValue) -> String { 
+            if let Some(id) = v.as_gc_id() {
+                if id < self.strings.len() {
+                    return self.strings[id].clone();
+                }
+            }
+            "".to_string() 
+        }
         fn to_box_string(&self, _: BxValue) -> box_string::BoxString { box_string::BoxString::new("") }
         fn get_cli_args(&self) -> Vec<String> { vec![] }
         fn write_output(&mut self, _: &str) {}
+    }
+
+    #[test]
+    fn test_text_widget_fluent_api() {
+        let mut vm = MockVM::new();
+        let mut widget = crate::TextWidget {
+            text: String::new(),
+            alignment: crate::widget::TextAlignment::Left,
+            wrap: false,
+            fg_color: None,
+            bold: false,
+            italic: false,
+            underline: false,
+        };
+        
+        // Test fluent methods via Rust directly first
+        widget.text("Hello".to_string())
+              .color("red".to_string())
+              .bold(true);
+              
+        assert_eq!(widget.text, "Hello");
+        assert_eq!(widget.fg_color, Some("red".to_string()));
+        assert!(widget.bold);
+        
+        // Test via call_method (as BoxLang would)
+        let world_id = vm.string_new("World".to_string());
+        widget.call_method(&mut vm, 0, "text", &[BxValue::new_ptr(world_id)]).unwrap();
+        assert_eq!(widget.text, "World");
+    }
+
+    #[test]
+    fn test_text_widget_render() {
+        let mut vm = MockVM::new();
+        let mut widget = crate::TextWidget {
+            text: "Hello".to_string(),
+            alignment: crate::widget::TextAlignment::Left,
+            wrap: false,
+            fg_color: None,
+            bold: false,
+            italic: false,
+            underline: false,
+        };
+        
+        let ctx_id = 42;
+        widget.__render(&mut vm, BxValue::new_ptr(ctx_id)).unwrap();
+        
+        assert_eq!(vm.last_method_called, "drawText");
+        assert_eq!(vm.last_args.len(), 3);
+        assert_eq!(vm.to_string(vm.last_args[2]), "Hello");
     }
 
     #[test]

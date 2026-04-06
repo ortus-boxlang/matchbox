@@ -73,75 +73,6 @@ pub fn create_tui_app(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, 
 }
 
 #[derive(Debug)]
-pub struct TextWidgetNative {
-    pub widget: TextWidget,
-}
-
-impl BxNativeObject for TextWidgetNative {
-    fn get_property(&self, _name: &str) -> BxValue {
-        BxValue::new_null()
-    }
-
-    fn set_property(&mut self, _name: &str, _value: BxValue) {}
-
-    fn call_method(
-        &mut self,
-        vm: &mut dyn BxVM,
-        name: &str,
-        args: &[BxValue],
-    ) -> Result<BxValue, String> {
-        match name.to_lowercase().as_str() {
-            "settext" => {
-                if args.is_empty() {
-                    return Err("setText requires 1 argument: (text)".to_string());
-                }
-                self.widget.text = vm.to_string(args[0]);
-                Ok(BxValue::new_null())
-            }
-            "setalignment" => {
-                if args.is_empty() {
-                    return Err("setAlignment requires 1 argument: (alignment)".to_string());
-                }
-                let align = vm.to_string(args[0]).to_lowercase();
-                self.widget.alignment = match align.as_str() {
-                    "center" => TextAlignment::Center,
-                    "right" => TextAlignment::Right,
-                    _ => TextAlignment::Left,
-                };
-                Ok(BxValue::new_null())
-            }
-            "setwrap" => {
-                if args.is_empty() {
-                    return Err("setWrap requires 1 argument: (wrap)".to_string());
-                }
-                self.widget.wrap = args[0].as_bool();
-                Ok(BxValue::new_null())
-            }
-            "setcolor" => {
-                if args.is_empty() {
-                    return Err("setColor requires 1 argument: (color)".to_string());
-                }
-                self.widget.fg_color = Some(vm.to_string(args[0]));
-                Ok(BxValue::new_null())
-            }
-            "setbold" => {
-                if args.is_empty() {
-                    return Err("setBold requires 1 argument: (bold)".to_string());
-                }
-                self.widget.bold = args[0].as_bool();
-                Ok(BxValue::new_null())
-            }
-            "build" => {
-                let widget = WidgetKind::Text(self.widget.clone());
-                let id = WidgetRegistry::with_current(|r| r.insert(widget));
-                Ok(BxValue::new_number(id as f64))
-            }
-            _ => Err(format!("Method {} not found", name)),
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct ListWidgetNative {
     pub widget: ListWidget,
 }
@@ -156,6 +87,7 @@ impl BxNativeObject for ListWidgetNative {
     fn call_method(
         &mut self,
         vm: &mut dyn BxVM,
+        _id: usize,
         name: &str,
         args: &[BxValue],
     ) -> Result<BxValue, String> {
@@ -232,6 +164,7 @@ impl BxNativeObject for TableWidgetNative {
     fn call_method(
         &mut self,
         vm: &mut dyn BxVM,
+        _id: usize,
         name: &str,
         args: &[BxValue],
     ) -> Result<BxValue, String> {
@@ -306,6 +239,7 @@ impl BxNativeObject for BlockWidgetNative {
     fn call_method(
         &mut self,
         vm: &mut dyn BxVM,
+        _id: usize,
         name: &str,
         args: &[BxValue],
     ) -> Result<BxValue, String> {
@@ -362,6 +296,7 @@ impl BxNativeObject for InputWidgetNative {
     fn call_method(
         &mut self,
         vm: &mut dyn BxVM,
+        _id: usize,
         name: &str,
         args: &[BxValue],
     ) -> Result<BxValue, String> {
@@ -405,16 +340,14 @@ pub fn create_tui(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, Strin
 }
 
 pub fn create_text_widget(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
-    let widget = TextWidgetNative {
-        widget: TextWidget {
-            text: String::new(),
-            alignment: TextAlignment::Left,
-            wrap: false,
-            fg_color: None,
-            bold: false,
-            italic: false,
-            underline: false,
-        },
+    let widget = TextWidget {
+        text: String::new(),
+        alignment: TextAlignment::Left,
+        wrap: false,
+        fg_color: None,
+        bold: false,
+        italic: false,
+        underline: false,
     };
     let id = vm.native_object_new(Rc::new(RefCell::new(widget)));
     Ok(BxValue::new_ptr(id))
@@ -495,6 +428,7 @@ impl BxNativeObject for ProgressBarWidgetNative {
     fn call_method(
         &mut self,
         vm: &mut dyn BxVM,
+        _id: usize,
         name: &str,
         args: &[BxValue],
     ) -> Result<BxValue, String> {

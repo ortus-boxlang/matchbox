@@ -345,7 +345,7 @@ impl BxVM for VM {
     fn native_object_call_method(&mut self, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String> {
         if let GcObject::NativeObject(obj) = self.heap.get(id) {
             let obj = Rc::clone(obj);
-            obj.borrow_mut().call_method(self, name, args)
+            obj.borrow_mut().call_method(self, id, name, args)
         } else {
             Err(format!("Value at id {} is not a native object", id))
         }
@@ -3368,7 +3368,7 @@ impl VM {
                     self.fibers[fiber_idx].stack.pop(); // receiver
 
                     let mut obj_borrow = obj.borrow_mut();
-                    match obj_borrow.call_method(self, &name, &args) {
+                    match obj_borrow.call_method(self, id, &name, &args) {
                         Ok(res) => {
                             self.fibers[fiber_idx].stack.push(res);
                             return Ok(());

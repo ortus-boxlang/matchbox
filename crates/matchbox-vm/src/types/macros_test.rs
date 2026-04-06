@@ -88,28 +88,28 @@ mod tests {
         let mut vm = MockVM;
         
         // Test getter
-        let val = obj.call_method(&mut vm, "get_value", &[]).unwrap();
+        let val = obj.call_method(&mut vm, 0, "get_value", &[]).unwrap();
         assert_eq!(val.as_number(), 10.0);
 
         // Test setter
-        obj.call_method(&mut vm, "set_value", &[BxValue::new_number(20.0)]).unwrap();
+        obj.call_method(&mut vm, 0, "set_value", &[BxValue::new_number(20.0)]).unwrap();
         assert_eq!(obj.value, 20.0);
 
         // Test fluent chaining
-        let result = obj.call_method(&mut vm, "add", &[BxValue::new_number(5.0)]).unwrap();
+        let result = obj.call_method(&mut vm, 0, "add", &[BxValue::new_number(5.0)]).unwrap();
         assert!(result.is_ptr());
         assert_eq!(obj.value, 25.0);
 
         // Test i32 conversion
-        obj.call_method(&mut vm, "set_int", &[BxValue::new_int(42)]).unwrap();
+        obj.call_method(&mut vm, 0, "set_int", &[BxValue::new_int(42)]).unwrap();
         assert_eq!(obj.value, 42.0);
 
         // Test bool conversion
-        obj.call_method(&mut vm, "set_bool", &[BxValue::new_bool(true)]).unwrap();
+        obj.call_method(&mut vm, 0, "set_bool", &[BxValue::new_bool(true)]).unwrap();
         assert_eq!(obj.value, 1.0);
 
         // Test String conversion and return
-        let result = obj.call_method(&mut vm, "describe", &[BxValue::new_ptr(0)]).unwrap();
+        let result = obj.call_method(&mut vm, 0, "describe", &[BxValue::new_ptr(0)]).unwrap();
         assert!(result.is_ptr()); // Should be a pointer to the new string
     }
 }

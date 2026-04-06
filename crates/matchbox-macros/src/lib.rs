@@ -77,8 +77,8 @@ pub fn bx_object_derive(input: TokenStream) -> TokenStream {
                 // To be implemented: automate field mapping
             }
 
-            fn call_method(&mut self, vm: &mut dyn matchbox_vm::types::BxVM, name: &str, args: &[matchbox_vm::types::BxValue]) -> Result<matchbox_vm::types::BxValue, String> {
-                self.dispatch_method(vm, name, args)
+            fn call_method(&mut self, vm: &mut dyn matchbox_vm::types::BxVM, id: usize, name: &str, args: &[matchbox_vm::types::BxValue]) -> Result<matchbox_vm::types::BxValue, String> {
+                self.dispatch_method(vm, id, name, args)
             }
         }
     };
@@ -186,7 +186,7 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     if ty_str.contains("& mut Self") || ty_str.contains("& mut self") {
                          quote! { 
                             #call;
-                            Ok(matchbox_vm::types::BxValue::new_ptr(0)) // Placeholder for "self"
+                            Ok(matchbox_vm::types::BxValue::new_ptr(id))
                          }
                     } else if ty_str.contains("BxValue") {
                          quote! { Ok(#call) }
@@ -231,7 +231,7 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #input
 
         impl #self_ty {
-            pub fn dispatch_method(&mut self, vm: &mut dyn matchbox_vm::types::BxVM, name: &str, args: &[matchbox_vm::types::BxValue]) -> Result<matchbox_vm::types::BxValue, String> {
+            pub fn dispatch_method(&mut self, vm: &mut dyn matchbox_vm::types::BxVM, id: usize, name: &str, args: &[matchbox_vm::types::BxValue]) -> Result<matchbox_vm::types::BxValue, String> {
                 match name.to_lowercase().as_str() {
                     #(#dispatch_arms)*
                     _ => Err(format!("Method {} not found", name)),

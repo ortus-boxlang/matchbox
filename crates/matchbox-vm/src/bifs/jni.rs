@@ -267,6 +267,7 @@ impl BxNativeObject for JniObject {
     fn call_method(
         &mut self,
         vm: &mut dyn BxVM,
+        _id: usize,
         name: &str,
         args: &[BxValue],
     ) -> Result<BxValue, String> {

@@ -3,6 +3,10 @@ use ratatui::Frame;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use matchbox_vm::{BxObject, bx_methods};
+use matchbox_vm::types::{BxVM, BxValue};
+use crate::terminal::TUI;
+
 #[derive(Clone, Debug)]
 pub enum TextAlignment {
     Left,
@@ -25,7 +29,7 @@ pub enum ListStyle {
     Numbered,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, BxObject)]
 pub struct TextWidget {
     pub text: String,
     pub alignment: TextAlignment,
@@ -34,6 +38,55 @@ pub struct TextWidget {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+}
+
+#[bx_methods]
+impl TextWidget {
+    pub fn text(&mut self, text: String) -> &mut Self {
+        self.text = text;
+        TUI::with_current(|tui| tui.set_dirty());
+        self
+    }
+
+    pub fn color(&mut self, color: String) -> &mut Self {
+        self.fg_color = Some(color);
+        TUI::with_current(|tui| tui.set_dirty());
+        self
+    }
+
+    pub fn align(&mut self, align: String) -> &mut Self {
+        self.alignment = match align.to_lowercase().as_str() {
+            "center" => TextAlignment::Center,
+            "right" => TextAlignment::Right,
+            _ => TextAlignment::Left,
+        };
+        TUI::with_current(|tui| tui.set_dirty());
+        self
+    }
+
+    pub fn bold(&mut self, bold: bool) -> &mut Self {
+        self.bold = bold;
+        TUI::with_current(|tui| tui.set_dirty());
+        self
+    }
+
+    #[allow(non_snake_case)]
+    pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue) -> Result<(), String> {
+        if let Some(ctx_id) = ctx.as_gc_id() {
+            let text_id = vm.string_new(self.text.clone());
+            vm.native_object_call_method(ctx_id, "drawText", &[
+                BxValue::new_number(0.0),
+                BxValue::new_number(0.0),
+                BxValue::new_ptr(text_id),
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn build(&self) -> f64 {
+        let widget = WidgetKind::Text(self.clone());
+        WidgetRegistry::with_current(|r| r.insert(widget)) as f64
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -85,8 +138,6 @@ pub struct ProgressBarWidget {
     pub fill_char: Option<String>,
     pub empty_char: Option<String>,
 }
-
-use matchbox_vm::types::{BxVM, BxValue};
 
 pub enum WidgetKind {
     Text(TextWidget),
@@ -360,7 +411,7 @@ impl RenderInArea for ProgressBarWidget {
 
         let mut lines: Vec<Line> = Vec::new();
 
-        for row in 0..area.height {
+        for _row in 0..area.height {
             let mut spans: Vec<Span> = Vec::new();
 
             for col in 0..bar_width {

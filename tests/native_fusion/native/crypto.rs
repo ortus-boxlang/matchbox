@@ -15,7 +15,13 @@ impl BxNativeObject for Vault {
 
     fn set_property(&mut self, _name: &str, _value: BxValue) {}
 
-    fn call_method(&mut self, vm: &mut dyn BxVM, name: &str, args: &[BxValue]) -> Result<BxValue, String> {
+    fn call_method(
+        &mut self,
+        vm: &mut dyn BxVM,
+        _id: usize,
+        name: &str,
+        args: &[BxValue],
+    ) -> Result<BxValue, String> {
         let name_lower = name.to_lowercase();
         match name_lower.as_str() {
             "encrypt" => {
