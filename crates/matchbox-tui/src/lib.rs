@@ -16,6 +16,7 @@ pub use terminal::TUI;
 pub use widget::{
     BlockWidget, BorderType, InputWidget, ListStyle, ListWidget, ProgressBarWidget, TableColumn,
     TableWidget, TextAlignment, TextWidget, WidgetKind, WidgetRegistry,
+    VBoxWidget, HBoxWidget
 };
 
 #[derive(Debug, BxObject)]
@@ -413,6 +414,22 @@ pub fn create_custom_widget(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxVal
     Ok(BxValue::new_number(id as f64))
 }
 
+pub fn create_vbox_widget(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let widget = crate::widget::VBoxWidget {
+        children: Vec::new(),
+    };
+    let id = vm.native_object_new(Rc::new(RefCell::new(widget)));
+    Ok(BxValue::new_ptr(id))
+}
+
+pub fn create_hbox_widget(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let widget = crate::widget::HBoxWidget {
+        children: Vec::new(),
+    };
+    let id = vm.native_object_new(Rc::new(RefCell::new(widget)));
+    Ok(BxValue::new_ptr(id))
+}
+
 #[derive(Debug)]
 pub struct ProgressBarWidgetNative {
     pub widget: ProgressBarWidget,
@@ -544,6 +561,14 @@ pub fn register_classes() -> HashMap<String, BxNativeFunction> {
     map.insert(
         "tui.Custom".to_string(),
         create_custom_widget as BxNativeFunction,
+    );
+    map.insert(
+        "tui.VBox".to_string(),
+        create_vbox_widget as BxNativeFunction,
+    );
+    map.insert(
+        "tui.HBox".to_string(),
+        create_hbox_widget as BxNativeFunction,
     );
     map.insert(
         "tui.ProgressBar".to_string(),

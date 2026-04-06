@@ -71,7 +71,7 @@ impl TextWidget {
     }
 
     #[allow(non_snake_case)]
-    pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue) -> Result<(), String> {
+    pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue, _area: BxValue) -> Result<(), String> {
         if let Some(ctx_id) = ctx.as_gc_id() {
             let text_id = vm.string_new(self.text.clone());
             vm.native_object_call_method(ctx_id, "drawText", &[
@@ -85,6 +85,96 @@ impl TextWidget {
 
     pub fn build(&self) -> f64 {
         let widget = WidgetKind::Text(self.clone());
+        WidgetRegistry::with_current(|r| r.insert(widget)) as f64
+    }
+}
+
+#[derive(Clone, Debug, BxObject)]
+pub struct VBoxWidget {
+    pub children: Vec<BxValue>,
+}
+
+#[bx_methods]
+impl VBoxWidget {
+    pub fn add(&mut self, child: BxValue) -> &mut Self {
+        self.children.push(child);
+        TUI::with_current(|tui| tui.set_dirty());
+        self
+    }
+
+    #[allow(non_snake_case)]
+    pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue, area: BxValue) -> Result<(), String> {
+        if self.children.is_empty() { return Ok(()); }
+        
+        let area_id = area.as_gc_id().ok_or("Invalid area")?;
+        let x = vm.struct_get(area_id, "x").as_number();
+        let y = vm.struct_get(area_id, "y").as_number();
+        let w = vm.struct_get(area_id, "w").as_number();
+        let h = vm.struct_get(area_id, "h").as_number();
+        
+        let child_h = h / self.children.len() as f64;
+        
+        for (i, child) in self.children.iter().enumerate() {
+            let child_area_id = vm.struct_new();
+            vm.struct_set(child_area_id, "x", BxValue::new_number(x));
+            vm.struct_set(child_area_id, "y", BxValue::new_number(y + i as f64 * child_h));
+            vm.struct_set(child_area_id, "w", BxValue::new_number(w));
+            vm.struct_set(child_area_id, "h", BxValue::new_number(child_h));
+            
+            if let Some(child_obj_id) = child.as_gc_id() {
+                let _ = vm.native_object_call_method(child_obj_id, "__render", &[ctx, BxValue::new_ptr(child_area_id)]);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn build(&self) -> f64 {
+        let widget = WidgetKind::VBox(self.clone());
+        WidgetRegistry::with_current(|r| r.insert(widget)) as f64
+    }
+}
+
+#[derive(Clone, Debug, BxObject)]
+pub struct HBoxWidget {
+    pub children: Vec<BxValue>,
+}
+
+#[bx_methods]
+impl HBoxWidget {
+    pub fn add(&mut self, child: BxValue) -> &mut Self {
+        self.children.push(child);
+        TUI::with_current(|tui| tui.set_dirty());
+        self
+    }
+
+    #[allow(non_snake_case)]
+    pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue, area: BxValue) -> Result<(), String> {
+        if self.children.is_empty() { return Ok(()); }
+        
+        let area_id = area.as_gc_id().ok_or("Invalid area")?;
+        let x = vm.struct_get(area_id, "x").as_number();
+        let y = vm.struct_get(area_id, "y").as_number();
+        let w = vm.struct_get(area_id, "w").as_number();
+        let h = vm.struct_get(area_id, "h").as_number();
+        
+        let child_w = w / self.children.len() as f64;
+        
+        for (i, child) in self.children.iter().enumerate() {
+            let child_area_id = vm.struct_new();
+            vm.struct_set(child_area_id, "x", BxValue::new_number(x + i as f64 * child_w));
+            vm.struct_set(child_area_id, "y", BxValue::new_number(y));
+            vm.struct_set(child_area_id, "w", BxValue::new_number(child_w));
+            vm.struct_set(child_area_id, "h", BxValue::new_number(h));
+            
+            if let Some(child_obj_id) = child.as_gc_id() {
+                let _ = vm.native_object_call_method(child_obj_id, "__render", &[ctx, BxValue::new_ptr(child_area_id)]);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn build(&self) -> f64 {
+        let widget = WidgetKind::HBox(self.clone());
         WidgetRegistry::with_current(|r| r.insert(widget)) as f64
     }
 }
@@ -147,6 +237,8 @@ pub enum WidgetKind {
     Input(InputWidget),
     ProgressBar(ProgressBarWidget),
     Custom(BxValue),
+    VBox(VBoxWidget),
+    HBox(HBoxWidget),
 }
 
 impl WidgetKind {
@@ -159,33 +251,77 @@ impl WidgetKind {
             WidgetKind::Input(input) => input.render_in_area(frame, area),
             WidgetKind::ProgressBar(bar) => bar.render_in_area(frame, area),
             WidgetKind::Custom(obj) => {
-                use crate::rendering_context::RenderingContext;
-                use std::rc::Rc;
-                
-                // 1. Create area struct in BoxLang
-                let area_id = vm.struct_new();
-                vm.struct_set(area_id, "x", BxValue::new_number(area.x as f64));
-                vm.struct_set(area_id, "y", BxValue::new_number(area.y as f64));
-                vm.struct_set(area_id, "w", BxValue::new_number(area.width as f64));
-                vm.struct_set(area_id, "h", BxValue::new_number(area.height as f64));
-                
-                // 2. Create RenderingContext
-                let ctx = Rc::new(RefCell::new(RenderingContext::new()));
-                // Set initial origin to widget area
-                ctx.borrow_mut().current_origin = (area.x, area.y);
-                
-                // 3. Wrap ctx in BxNativeObject
-                let ctx_obj_id = vm.native_object_new(ctx.clone());
-                
-                // 4. Call __render(ctx, area)
-                if let Some(obj_id) = obj.as_gc_id() {
-                    let _ = vm.native_object_call_method(obj_id, "__render", &[BxValue::new_ptr(ctx_obj_id), BxValue::new_ptr(area_id)]);
-                }
-                
-                // 5. Playback commands
-                ctx.borrow().playback(frame);
+                let _ = self.render_with_double_dispatch(vm, *obj, frame, area);
+            }
+            WidgetKind::VBox(vbox) => {
+                let _ = self.render_vbox(vm, vbox, frame, area);
+            }
+            WidgetKind::HBox(hbox) => {
+                let _ = self.render_hbox(vm, hbox, frame, area);
             }
         }
+    }
+
+    fn render_vbox(&self, vm: &mut dyn BxVM, vbox: &VBoxWidget, frame: &mut Frame, area: Rect) -> Result<(), String> {
+        use crate::rendering_context::RenderingContext;
+        use std::rc::Rc;
+        let ctx = Rc::new(RefCell::new(RenderingContext::new()));
+        ctx.borrow_mut().current_origin = (area.x, area.y);
+        let ctx_obj_id = vm.native_object_new(ctx.clone());
+        let area_id = self.create_area_struct(vm, area);
+        
+        vbox.__render(vm, BxValue::new_ptr(ctx_obj_id), BxValue::new_ptr(area_id))?;
+        
+        ctx.borrow().playback(frame);
+        Ok(())
+    }
+
+    fn render_hbox(&self, vm: &mut dyn BxVM, hbox: &HBoxWidget, frame: &mut Frame, area: Rect) -> Result<(), String> {
+        use crate::rendering_context::RenderingContext;
+        use std::rc::Rc;
+        let ctx = Rc::new(RefCell::new(RenderingContext::new()));
+        ctx.borrow_mut().current_origin = (area.x, area.y);
+        let ctx_obj_id = vm.native_object_new(ctx.clone());
+        let area_id = self.create_area_struct(vm, area);
+        
+        hbox.__render(vm, BxValue::new_ptr(ctx_obj_id), BxValue::new_ptr(area_id))?;
+        
+        ctx.borrow().playback(frame);
+        Ok(())
+    }
+
+    fn render_with_double_dispatch(&self, vm: &mut dyn BxVM, obj: BxValue, frame: &mut Frame, area: Rect) -> Result<(), String> {
+        use crate::rendering_context::RenderingContext;
+        use std::rc::Rc;
+        
+        // 1. Create area struct in BoxLang
+        let area_id = self.create_area_struct(vm, area);
+        
+        // 2. Create RenderingContext
+        let ctx = Rc::new(RefCell::new(RenderingContext::new()));
+        // Set initial origin to widget area
+        ctx.borrow_mut().current_origin = (area.x, area.y);
+        
+        // 3. Wrap ctx in BxNativeObject
+        let ctx_obj_id = vm.native_object_new(ctx.clone());
+        
+        // 4. Call __render(ctx, area)
+        if let Some(obj_id) = obj.as_gc_id() {
+            let _ = vm.native_object_call_method(obj_id, "__render", &[BxValue::new_ptr(ctx_obj_id), BxValue::new_ptr(area_id)]);
+        }
+        
+        // 5. Playback commands
+        ctx.borrow().playback(frame);
+        Ok(())
+    }
+
+    fn create_area_struct(&self, vm: &mut dyn BxVM, area: Rect) -> usize {
+        let area_id = vm.struct_new();
+        vm.struct_set(area_id, "x", BxValue::new_number(area.x as f64));
+        vm.struct_set(area_id, "y", BxValue::new_number(area.y as f64));
+        vm.struct_set(area_id, "w", BxValue::new_number(area.width as f64));
+        vm.struct_set(area_id, "h", BxValue::new_number(area.height as f64));
+        area_id
     }
 }
 

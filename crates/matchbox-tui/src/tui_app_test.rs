@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn test_text_widget_render() {
         let mut vm = MockVM::new();
-        let mut widget = crate::TextWidget {
+        let widget = crate::TextWidget {
             text: "Hello".to_string(),
             alignment: crate::widget::TextAlignment::Left,
             wrap: false,
@@ -120,7 +120,8 @@ mod tests {
         };
         
         let ctx_id = 42;
-        widget.__render(&mut vm, BxValue::new_ptr(ctx_id)).unwrap();
+        let area_id = vm.struct_new();
+        widget.__render(&mut vm, BxValue::new_ptr(ctx_id), BxValue::new_ptr(area_id)).unwrap();
         
         assert_eq!(vm.last_method_called, "drawText");
         assert_eq!(vm.last_args.len(), 3);
@@ -146,6 +147,50 @@ mod tests {
         assert_eq!(vm.last_args.len(), 2);
         assert!(vm.last_args[0].is_ptr()); // ctx
         assert!(vm.last_args[1].is_ptr()); // area
+    }
+
+    #[test]
+    fn test_vbox_layout() {
+        let mut vm = MockVM::new();
+        let mut vbox = crate::widget::VBoxWidget {
+            children: Vec::new(),
+        };
+        
+        // Add two dummy children (just IDs)
+        vbox.add(BxValue::new_ptr(101))
+            .add(BxValue::new_ptr(102));
+            
+        let ctx_id = 42;
+        let area_id = vm.struct_new();
+        vm.struct_set(area_id, "x", BxValue::new_number(0.0));
+        vm.struct_set(area_id, "y", BxValue::new_number(0.0));
+        vm.struct_set(area_id, "w", BxValue::new_number(10.0));
+        vm.struct_set(area_id, "h", BxValue::new_number(10.0));
+        
+        vbox.__render(&mut vm, BxValue::new_ptr(ctx_id), BxValue::new_ptr(area_id)).unwrap();
+        
+        assert_eq!(vm.last_method_called, "__render");
+    }
+
+    #[test]
+    fn test_hbox_layout() {
+        let mut vm = MockVM::new();
+        let mut hbox = crate::widget::HBoxWidget {
+            children: Vec::new(),
+        };
+        
+        hbox.add(BxValue::new_ptr(101));
+            
+        let ctx_id = 42;
+        let area_id = vm.struct_new();
+        vm.struct_set(area_id, "x", BxValue::new_number(0.0));
+        vm.struct_set(area_id, "y", BxValue::new_number(0.0));
+        vm.struct_set(area_id, "w", BxValue::new_number(10.0));
+        vm.struct_set(area_id, "h", BxValue::new_number(10.0));
+        
+        hbox.__render(&mut vm, BxValue::new_ptr(ctx_id), BxValue::new_ptr(area_id)).unwrap();
+        
+        assert_eq!(vm.last_method_called, "__render");
     }
 
     #[test]
