@@ -53,6 +53,12 @@ mod tests {
         fn get_root_shape(&self) -> u32 { 0 }
         fn get_shape_index(&self, _: u32, _: &str) -> Option<u32> { None }
         fn get_len(&self, _: usize) -> usize { 0 }
+        fn is_bytes(&self, _: BxValue) -> bool { false }
+        fn bytes_new(&mut self, _: Vec<u8>) -> usize { 0 }
+        fn bytes_len(&self, _: usize) -> usize { 0 }
+        fn bytes_get(&self, _: usize, _: usize) -> Result<u8, String> { Err("not implemented".to_string()) }
+        fn bytes_set(&mut self, _: usize, _: usize, _: u8) -> Result<(), String> { Err("not implemented".to_string()) }
+        fn to_bytes(&self, _: BxValue) -> Result<Vec<u8>, String> { Err("not implemented".to_string()) }
         fn array_len(&self, _: usize) -> usize { 0 }
         fn array_push(&mut self, _: usize, _: BxValue) {}
         fn array_pop(&mut self, _: usize) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
@@ -71,6 +77,15 @@ mod tests {
         fn struct_key_array(&self, _: usize) -> Vec<String> { vec![] }
         fn struct_clear(&mut self, _: usize) {}
         fn struct_get_shape(&self, _: usize) -> u32 { 0 }
+        fn future_new(&mut self) -> BxValue { BxValue::new_null() }
+        fn future_resolve(&mut self, _: BxValue, _: BxValue) -> Result<(), String> { Ok(()) }
+        fn future_reject(&mut self, _: BxValue, _: BxValue) -> Result<(), String> { Ok(()) }
+        fn future_schedule_resolve(&mut self, _: BxValue, _: BxValue) -> Result<(), String> { Ok(()) }
+        fn future_schedule_reject(&mut self, _: BxValue, _: BxValue) -> Result<(), String> { Ok(()) }
+        fn native_future_new(&mut self) -> NativeFutureHandle {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            NativeFutureHandle::new(BxValue::new_null(), tx)
+        }
         fn future_on_error(&mut self, _: usize, _: BxValue) {}
         fn native_object_new(&mut self, _: Rc<RefCell<dyn BxNativeObject>>) -> usize { 0 }
         fn native_object_call_method(&mut self, _: usize, _: &str, _: &[BxValue]) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
@@ -80,6 +95,10 @@ mod tests {
         fn to_box_string(&self, _: BxValue) -> box_string::BoxString { box_string::BoxString::new("") }
         fn get_cli_args(&self) -> Vec<String> { vec![] }
         fn write_output(&mut self, _: &str) {}
+        fn suspend_gc(&mut self) {}
+        fn resume_gc(&mut self) {}
+        fn push_root(&mut self, _: BxValue) {}
+        fn pop_root(&mut self) {}
     }
 
     #[test]

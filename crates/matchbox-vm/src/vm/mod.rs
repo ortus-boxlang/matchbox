@@ -6,16 +6,17 @@ pub mod intern;
 #[cfg(feature = "jit")]
 pub mod jit;
 
-use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, BxNativeFunction, Tracer, box_string::BoxString};
+use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, BxNativeFunction, NativeFutureHandle, NativeFutureMessage, NativeFutureValue, Tracer, box_string::BoxString};
 use self::chunk::{Chunk, IcEntry};
 use self::opcode::op;
 use self::gc::{Heap, GcObject};
 use self::shape::ShapeRegistry;
 use self::intern::StringInterner;
 use anyhow::{Result, bail};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Instant, Duration};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::vec;
@@ -97,6 +98,11 @@ pub struct BxFiber {
     pub root_stack: Vec<BxValue>,
 }
 
+enum NativeCompletion {
+    Resolve { future: BxValue, value: BxValue },
+    Reject { future: BxValue, error: BxValue },
+}
+
 pub struct VM {
     pub fibers: Vec<BxFiber>,
     pub global_names: HashMap<u32, usize>,
@@ -109,6 +115,10 @@ pub struct VM {
     pub cli_args: Vec<String>,
     pub output_buffer: Option<String>,
     pub gc_suspended: bool,
+    native_completions: VecDeque<NativeCompletion>,
+    native_future_tx: Sender<NativeFutureMessage>,
+    native_future_rx: Receiver<NativeFutureMessage>,
+    pending_native_futures: HashMap<usize, usize>,
     #[cfg(feature = "jit")]
     pub jit: Option<Box<jit::JitState>>,
 }
@@ -177,8 +187,62 @@ impl BxVM for VM {
             GcObject::Array(arr) => arr.len(),
             GcObject::Struct(s) => s.properties.len(),
             GcObject::String(s) => s.len(),
+            GcObject::Bytes(bytes) => bytes.len(),
             _ => 0,
         }
+    }
+
+    fn is_bytes(&self, val: BxValue) -> bool {
+        if let Some(id) = val.as_gc_id() {
+            matches!(self.heap.get(id), GcObject::Bytes(_))
+        } else {
+            false
+        }
+    }
+
+    fn bytes_new(&mut self, data: Vec<u8>) -> usize {
+        self.heap.alloc(GcObject::Bytes(data))
+    }
+
+    fn bytes_len(&self, id: usize) -> usize {
+        if let GcObject::Bytes(bytes) = self.heap.get(id) {
+            bytes.len()
+        } else {
+            0
+        }
+    }
+
+    fn bytes_get(&self, id: usize, idx: usize) -> Result<u8, String> {
+        if let GcObject::Bytes(bytes) = self.heap.get(id) {
+            bytes
+                .get(idx)
+                .copied()
+                .ok_or_else(|| format!("Index {} out of bounds", idx))
+        } else {
+            Err("Not bytes".to_string())
+        }
+    }
+
+    fn bytes_set(&mut self, id: usize, idx: usize, value: u8) -> Result<(), String> {
+        if let GcObject::Bytes(bytes) = self.heap.get_mut(id) {
+            if idx < bytes.len() {
+                bytes[idx] = value;
+                Ok(())
+            } else {
+                Err(format!("Index {} out of bounds", idx))
+            }
+        } else {
+            Err("Not bytes".to_string())
+        }
+    }
+
+    fn to_bytes(&self, val: BxValue) -> Result<Vec<u8>, String> {
+        if let Some(id) = val.as_gc_id() {
+            if let GcObject::Bytes(bytes) = self.heap.get(id) {
+                return Ok(bytes.clone());
+            }
+        }
+        Err("Value is not bytes".to_string())
     }
 
     fn array_len(&self, id: usize) -> usize {
@@ -366,6 +430,69 @@ impl BxVM for VM {
         } else { 0 }
     }
 
+    fn future_new(&mut self) -> BxValue {
+        BxValue::new_ptr(self.heap.alloc(GcObject::Future(BxFuture {
+            value: BxValue::new_null(),
+            status: FutureStatus::Pending,
+            error_handler: None,
+        })))
+    }
+
+    fn future_resolve(&mut self, future: BxValue, value: BxValue) -> Result<(), String> {
+        let id = future.as_gc_id().ok_or_else(|| "Value is not a future".to_string())?;
+        if let GcObject::Future(f) = self.heap.get_mut(id) {
+            if !matches!(f.status, FutureStatus::Pending) {
+                return Err("Future is already settled".to_string());
+            }
+            f.value = value;
+            f.status = FutureStatus::Completed;
+            Ok(())
+        } else {
+            Err("Value is not a future".to_string())
+        }
+    }
+
+    fn future_reject(&mut self, future: BxValue, error: BxValue) -> Result<(), String> {
+        let id = future.as_gc_id().ok_or_else(|| "Value is not a future".to_string())?;
+        if let GcObject::Future(f) = self.heap.get_mut(id) {
+            if !matches!(f.status, FutureStatus::Pending) {
+                return Err("Future is already settled".to_string());
+            }
+            f.status = FutureStatus::Failed(error);
+            Ok(())
+        } else {
+            Err("Value is not a future".to_string())
+        }
+    }
+
+    fn future_schedule_resolve(&mut self, future: BxValue, value: BxValue) -> Result<(), String> {
+        let id = future.as_gc_id().ok_or_else(|| "Value is not a future".to_string())?;
+        if matches!(self.heap.get(id), GcObject::Future(_)) {
+            self.native_completions.push_back(NativeCompletion::Resolve { future, value });
+            Ok(())
+        } else {
+            Err("Value is not a future".to_string())
+        }
+    }
+
+    fn future_schedule_reject(&mut self, future: BxValue, error: BxValue) -> Result<(), String> {
+        let id = future.as_gc_id().ok_or_else(|| "Value is not a future".to_string())?;
+        if matches!(self.heap.get(id), GcObject::Future(_)) {
+            self.native_completions.push_back(NativeCompletion::Reject { future, error });
+            Ok(())
+        } else {
+            Err("Value is not a future".to_string())
+        }
+    }
+
+    fn native_future_new(&mut self) -> NativeFutureHandle {
+        let future = self.future_new();
+        if let Some(id) = future.as_gc_id() {
+            *self.pending_native_futures.entry(id).or_insert(0) += 1;
+        }
+        NativeFutureHandle::new(future, self.native_future_tx.clone())
+    }
+
     fn future_on_error(&mut self, id: usize, handler: BxValue) {
         if let GcObject::Future(f) = self.heap.get_mut(id) {
             f.error_handler = Some(handler);
@@ -456,6 +583,65 @@ impl BxVM for VM {
 }
 
 impl VM {
+    fn native_future_value_to_bx(&mut self, value: NativeFutureValue) -> BxValue {
+        match value {
+            NativeFutureValue::Null => BxValue::new_null(),
+            NativeFutureValue::Bool(v) => BxValue::new_bool(v),
+            NativeFutureValue::Int(v) => BxValue::new_int(v),
+            NativeFutureValue::Number(v) => BxValue::new_number(v),
+            NativeFutureValue::String(v) => BxValue::new_ptr(self.string_new(v)),
+            NativeFutureValue::Bytes(v) => BxValue::new_ptr(self.bytes_new(v)),
+            NativeFutureValue::Error { message } => {
+                let struct_id = self.struct_new();
+                let message_id = self.string_new(message);
+                self.struct_set(struct_id, "message", BxValue::new_ptr(message_id));
+                BxValue::new_ptr(struct_id)
+            }
+        }
+    }
+
+    fn release_pending_native_future(&mut self, future: BxValue) {
+        if let Some(id) = future.as_gc_id() {
+            if let Some(count) = self.pending_native_futures.get_mut(&id) {
+                if *count <= 1 {
+                    self.pending_native_futures.remove(&id);
+                } else {
+                    *count -= 1;
+                }
+            }
+        }
+    }
+
+    fn drain_native_completions(&mut self) {
+        while let Ok(message) = self.native_future_rx.try_recv() {
+            match message {
+                NativeFutureMessage::Resolve { future, value } => {
+                    let value = self.native_future_value_to_bx(value);
+                    let _ = self.future_resolve(future, value);
+                    self.release_pending_native_future(future);
+                }
+                NativeFutureMessage::Reject { future, error } => {
+                    let error = self.native_future_value_to_bx(error);
+                    let _ = self.future_reject(future, error);
+                    self.release_pending_native_future(future);
+                }
+                NativeFutureMessage::Abandon { future } => {
+                    self.release_pending_native_future(future);
+                }
+            }
+        }
+        while let Some(completion) = self.native_completions.pop_front() {
+            match completion {
+                NativeCompletion::Resolve { future, value } => {
+                    let _ = self.future_resolve(future, value);
+                }
+                NativeCompletion::Reject { future, error } => {
+                    let _ = self.future_reject(future, error);
+                }
+            }
+        }
+    }
+
     fn to_string_internal(&self, val: BxValue) -> String {
         if val.is_number() {
             val.as_number().to_string()
@@ -468,6 +654,7 @@ impl VM {
         } else if let Some(id) = val.as_gc_id() {
             match self.heap.get(id) {
                 GcObject::String(s) => s.to_string(),
+                GcObject::Bytes(bytes) => format!("<bytes len:{}>", bytes.len()),
                 GcObject::Array(_) => format!("<array id:{}>", id),
                 GcObject::Struct(_) => format!("<struct id:{}>", id),
                 GcObject::Instance(inst) => format!("<instance of {}>", inst.class.borrow().name),
@@ -494,6 +681,7 @@ impl VM {
                 (GcObject::String(s1), GcObject::String(s2)) => {
                     s1.to_string().to_lowercase() == s2.to_string().to_lowercase()
                 }
+                (GcObject::Bytes(a), GcObject::Bytes(b)) => a == b,
                 _ => false,
             }
         } else {
@@ -512,6 +700,7 @@ impl VM {
     }
 
     pub fn new_with_bifs(external_bifs: HashMap<String, BxNativeFunction>, native_classes: HashMap<String, BxNativeFunction>) -> Self {
+        let (native_future_tx, native_future_rx) = mpsc::channel();
         let mut vm = VM {
             fibers: Vec::new(),
             global_names: HashMap::new(),
@@ -524,6 +713,10 @@ impl VM {
             cli_args: Vec::new(),
             output_buffer: None,
             gc_suspended: false,
+            native_completions: VecDeque::new(),
+            native_future_tx,
+            native_future_rx,
+            pending_native_futures: HashMap::new(),
             #[cfg(feature = "jit")]
             jit: None,
         };
@@ -817,6 +1010,7 @@ impl VM {
         let mut last_result = BxValue::new_null();
         
         while !self.fibers.is_empty() {
+            self.drain_native_completions();
             let mut i = 0;
             let mut all_waiting = true;
             let mut earliest_wait: Option<Instant> = None;
@@ -882,13 +1076,14 @@ impl VM {
                     Err(e) => {
                         let fiber = self.fibers.swap_remove(i);
                         let mut handler = None;
+                        let err_val = BxValue::new_ptr(self.heap.alloc(GcObject::String(BoxString::new(&e.to_string()))));
                         if let GcObject::Future(f) = self.heap.get_mut(fiber.future_id) {
-                            f.status = FutureStatus::Failed(e.to_string());
+                            f.status = FutureStatus::Failed(err_val);
                             handler = f.error_handler;
                         }
                         
                         if let Some(h) = handler {
-                            self.spawn_error_handler(h, e.to_string());
+                            self.spawn_error_handler(h, err_val);
                             // Since we spawned a new fiber, it will be at the end of the list.
                             // The swap_removed fiber is gone, index i now has a different fiber.
                         } else {
@@ -967,6 +1162,7 @@ impl VM {
         let mut jit_iter_active: Option<(usize, jit::ArrayIterJitFn)> = None;
 
         'quantum: loop {
+            self.drain_native_completions();
             if fiber_idx >= self.fibers.len() {
                 return Ok(None);
             }
@@ -3126,10 +3322,7 @@ impl VM {
         final_args
     }
 
-    fn spawn_error_handler(&mut self, handler: BxValue, error_msg: String) {
-        let err_id = self.heap.alloc(GcObject::String(BoxString::new(&error_msg)));
-        let err_val = BxValue::new_ptr(err_id);
-
+    fn spawn_error_handler(&mut self, handler: BxValue, err_val: BxValue) {
         if let Some(id) = handler.as_gc_id() {
             match self.heap.get(id) {
                 GcObject::CompiledFunction(f) => {
@@ -3416,8 +3609,9 @@ impl VM {
                     if name == "get" {
                         match status {
                             FutureStatus::Pending => {
-                                self.fibers[fiber_idx].frames.last_mut().unwrap().ip -= 1;
-                                self.fibers[fiber_idx].yield_requested = true;
+                                let fiber = &mut self.fibers[fiber_idx];
+                                fiber.frames.last_mut().unwrap().ip = ip_at_start;
+                                fiber.yield_requested = true;
                                 return Ok(());
                             }
                             FutureStatus::Completed => {
@@ -3427,7 +3621,7 @@ impl VM {
                                 return Ok(());
                             }
                             FutureStatus::Failed(e) => {
-                                return self.throw_error(fiber_idx, &format!("Async operation failed: {}", e));
+                                return self.throw_value(fiber_idx, e);
                             }
                         }
                     } else if let Some(bif_name) = self.resolve_member_method(&receiver_val, &name) {
@@ -3814,6 +4008,21 @@ impl VM {
         }
         // 2. Globals
         roots.extend(self.global_values.iter().cloned());
+        for completion in &self.native_completions {
+            match completion {
+                NativeCompletion::Resolve { future, value } => {
+                    roots.push(*future);
+                    roots.push(*value);
+                }
+                NativeCompletion::Reject { future, error } => {
+                    roots.push(*future);
+                    roots.push(*error);
+                }
+            }
+        }
+        for future_id in self.pending_native_futures.keys() {
+            roots.push(BxValue::new_ptr(*future_id));
+        }
 
         self.heap.collect(&roots);
     }

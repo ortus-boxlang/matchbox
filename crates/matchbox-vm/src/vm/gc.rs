@@ -7,6 +7,7 @@ pub type GcId = usize;
 #[derive(Debug, Clone)]
 pub enum GcObject {
     String(BoxString),
+    Bytes(Vec<u8>),
     Array(Vec<BxValue>),
     Struct(BxStruct),
     Instance(BxInstance),
@@ -187,7 +188,7 @@ impl Heap {
 
     fn push_children(&self, id: GcId, worklist: &mut Vec<GcId>) {
         match self.objects[id].as_ref().unwrap() {
-            GcObject::String(_) | GcObject::NativeFunction(_) | GcObject::Class(_) | GcObject::Interface(_) | GcObject::CompiledFunction(_) => {}
+            GcObject::String(_) | GcObject::Bytes(_) | GcObject::NativeFunction(_) | GcObject::Class(_) | GcObject::Interface(_) | GcObject::CompiledFunction(_) => {}
             GcObject::NativeObject(obj) => {
                 let mut tracer = WorklistTracer { worklist, heap: self };
                 // Use unsafe to bypass RefCell borrow check during tracing.
@@ -232,7 +233,7 @@ impl Heap {
 
     fn push_children_young(&self, id: GcId, worklist: &mut Vec<GcId>) {
         match self.objects[id].as_ref().unwrap() {
-            GcObject::String(_) | GcObject::NativeFunction(_) | GcObject::Class(_) | GcObject::Interface(_) | GcObject::CompiledFunction(_) => {}
+            GcObject::String(_) | GcObject::Bytes(_) | GcObject::NativeFunction(_) | GcObject::Class(_) | GcObject::Interface(_) | GcObject::CompiledFunction(_) => {}
             GcObject::NativeObject(obj) => {
                 let mut tracer = YoungWorklistTracer { worklist, heap: self };
                 unsafe {

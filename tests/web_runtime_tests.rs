@@ -1,6 +1,8 @@
 use matchbox_compiler::{parser, compiler::Compiler};
 use matchbox_vm::vm::VM;
-use matchbox_vm::types::{BxVM, BxValue};
+use matchbox_vm::types::{BxNativeFunction, BxVM, BxValue, NativeFutureValue};
+use std::collections::HashMap;
+use std::time::Duration;
 
 #[test]
 fn test_bxm_transpilation() {
@@ -79,4 +81,208 @@ fn test_nested_bxm_interpolation() {
     
     let output = vm.output_buffer.unwrap();
     assert_eq!(output, "2 is 2 and # is literal");
+}
+
+fn rejected_future(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let future = vm.future_new();
+    let err_id = vm.struct_new();
+    let msg_id = vm.string_new("boom".to_string());
+    vm.struct_set(err_id, "message", BxValue::new_ptr(msg_id));
+    vm.future_reject(future, BxValue::new_ptr(err_id))?;
+    Ok(future)
+}
+
+fn resolved_future(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let future = vm.future_new();
+    let value_id = vm.string_new("done".to_string());
+    vm.future_resolve(future, BxValue::new_ptr(value_id))?;
+    Ok(future)
+}
+
+fn queued_resolved_future(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let future = vm.future_new();
+    let value_id = vm.string_new("queued".to_string());
+    vm.future_schedule_resolve(future, BxValue::new_ptr(value_id))?;
+    Ok(future)
+}
+
+fn queued_rejected_future(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let future = vm.future_new();
+    let err_id = vm.struct_new();
+    let msg_id = vm.string_new("queued-boom".to_string());
+    vm.struct_set(err_id, "message", BxValue::new_ptr(msg_id));
+    vm.future_schedule_reject(future, BxValue::new_ptr(err_id))?;
+    Ok(future)
+}
+
+fn threaded_resolved_future(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let handle = vm.native_future_new();
+    let future = handle.future();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(5));
+        let _ = handle.resolve(NativeFutureValue::String("threaded".to_string()));
+    });
+    Ok(future)
+}
+
+fn threaded_rejected_future(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    let handle = vm.native_future_new();
+    let future = handle.future();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(5));
+        let _ = handle.reject(NativeFutureValue::Error {
+            message: "threaded-boom".to_string(),
+        });
+    });
+    Ok(future)
+}
+
+#[test]
+fn test_native_future_rejection_propagates_value_to_catch() {
+    let mut bifs = HashMap::new();
+    bifs.insert("rejectedfuture".to_string(), rejected_future as BxNativeFunction);
+
+    let mut vm = VM::new_with_bifs(bifs, HashMap::new());
+    vm.output_buffer = Some(String::new());
+
+    let source = r#"
+        try {
+            rejectedFuture().get();
+            throw "expected rejection";
+        } catch (err) {
+            if (err.message != "boom") {
+                throw "unexpected rejection payload: " & err.message;
+            }
+            writeOutput("ok");
+        }
+    "#;
+
+    let ast = parser::parse(source).unwrap();
+    let compiler = Compiler::new("test");
+    let chunk = compiler.compile(&ast, source).unwrap();
+
+    vm.interpret(chunk).unwrap();
+
+    let output = vm.output_buffer.unwrap();
+    assert_eq!(output, "ok");
+}
+
+#[test]
+fn test_native_future_resolution_returns_value_from_get() {
+    let mut bifs = HashMap::new();
+    bifs.insert("resolvedfuture".to_string(), resolved_future as BxNativeFunction);
+
+    let mut vm = VM::new_with_bifs(bifs, HashMap::new());
+    vm.output_buffer = Some(String::new());
+
+    let source = r#"
+        writeOutput(resolvedFuture().get());
+    "#;
+
+    let ast = parser::parse(source).unwrap();
+    let compiler = Compiler::new("test");
+    let chunk = compiler.compile(&ast, source).unwrap();
+
+    vm.interpret(chunk).unwrap();
+
+    let output = vm.output_buffer.unwrap();
+    assert_eq!(output, "done");
+}
+
+#[test]
+fn test_queued_future_resolution_is_applied_by_scheduler() {
+    let mut bifs = HashMap::new();
+    bifs.insert("queuedresolvedfuture".to_string(), queued_resolved_future as BxNativeFunction);
+
+    let mut vm = VM::new_with_bifs(bifs, HashMap::new());
+    vm.output_buffer = Some(String::new());
+
+    let source = r#"
+        writeOutput(queuedResolvedFuture().get());
+    "#;
+
+    let ast = parser::parse(source).unwrap();
+    let compiler = Compiler::new("test");
+    let chunk = compiler.compile(&ast, source).unwrap();
+
+    vm.interpret(chunk).unwrap();
+
+    let output = vm.output_buffer.unwrap();
+    assert_eq!(output, "queued");
+}
+
+#[test]
+fn test_queued_future_rejection_is_applied_by_scheduler() {
+    let mut bifs = HashMap::new();
+    bifs.insert("queuedrejectedfuture".to_string(), queued_rejected_future as BxNativeFunction);
+
+    let mut vm = VM::new_with_bifs(bifs, HashMap::new());
+    vm.output_buffer = Some(String::new());
+
+    let source = r#"
+        try {
+            queuedRejectedFuture().get();
+            throw "expected queued rejection";
+        } catch (err) {
+            writeOutput(err.message);
+        }
+    "#;
+
+    let ast = parser::parse(source).unwrap();
+    let compiler = Compiler::new("test");
+    let chunk = compiler.compile(&ast, source).unwrap();
+
+    vm.interpret(chunk).unwrap();
+
+    let output = vm.output_buffer.unwrap();
+    assert_eq!(output, "queued-boom");
+}
+
+#[test]
+fn test_threaded_future_resolution_is_applied_by_scheduler() {
+    let mut bifs = HashMap::new();
+    bifs.insert("threadedresolvedfuture".to_string(), threaded_resolved_future as BxNativeFunction);
+
+    let mut vm = VM::new_with_bifs(bifs, HashMap::new());
+    vm.output_buffer = Some(String::new());
+
+    let source = r#"
+        writeOutput(threadedResolvedFuture().get());
+    "#;
+
+    let ast = parser::parse(source).unwrap();
+    let compiler = Compiler::new("test");
+    let chunk = compiler.compile(&ast, source).unwrap();
+
+    vm.interpret(chunk).unwrap();
+
+    let output = vm.output_buffer.unwrap();
+    assert_eq!(output, "threaded");
+}
+
+#[test]
+fn test_threaded_future_rejection_is_applied_by_scheduler() {
+    let mut bifs = HashMap::new();
+    bifs.insert("threadedrejectedfuture".to_string(), threaded_rejected_future as BxNativeFunction);
+
+    let mut vm = VM::new_with_bifs(bifs, HashMap::new());
+    vm.output_buffer = Some(String::new());
+
+    let source = r#"
+        try {
+            threadedRejectedFuture().get();
+            throw "expected threaded rejection";
+        } catch (err) {
+            writeOutput(err.message);
+        }
+    "#;
+
+    let ast = parser::parse(source).unwrap();
+    let compiler = Compiler::new("test");
+    let chunk = compiler.compile(&ast, source).unwrap();
+
+    vm.interpret(chunk).unwrap();
+
+    let output = vm.output_buffer.unwrap();
+    assert_eq!(output, "threaded-boom");
 }

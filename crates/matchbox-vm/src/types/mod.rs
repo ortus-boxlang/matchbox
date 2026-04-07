@@ -8,6 +8,7 @@ use std::fmt;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::sync::mpsc::Sender;
 use serde::{Serialize, Deserialize};
 
 use self::box_string::BoxString;
@@ -118,6 +119,12 @@ pub trait BxVM {
     fn get_root_shape(&self) -> u32;
     fn get_shape_index(&self, shape_id: u32, field_name: &str) -> Option<u32>;
     fn get_len(&self, id: usize) -> usize;
+    fn is_bytes(&self, val: BxValue) -> bool;
+    fn bytes_new(&mut self, data: Vec<u8>) -> usize;
+    fn bytes_len(&self, id: usize) -> usize;
+    fn bytes_get(&self, id: usize, idx: usize) -> Result<u8, String>;
+    fn bytes_set(&mut self, id: usize, idx: usize, value: u8) -> Result<(), String>;
+    fn to_bytes(&self, val: BxValue) -> Result<Vec<u8>, String>;
     fn array_len(&self, id: usize) -> usize;
     fn array_push(&mut self, id: usize, val: BxValue);
     fn array_pop(&mut self, id: usize) -> Result<BxValue, String>;
@@ -136,6 +143,12 @@ pub trait BxVM {
     fn struct_key_array(&self, id: usize) -> Vec<String>;
     fn struct_clear(&mut self, id: usize);
     fn struct_get_shape(&self, id: usize) -> u32;
+    fn future_new(&mut self) -> BxValue;
+    fn future_resolve(&mut self, future: BxValue, value: BxValue) -> Result<(), String>;
+    fn future_reject(&mut self, future: BxValue, error: BxValue) -> Result<(), String>;
+    fn future_schedule_resolve(&mut self, future: BxValue, value: BxValue) -> Result<(), String>;
+    fn future_schedule_reject(&mut self, future: BxValue, error: BxValue) -> Result<(), String>;
+    fn native_future_new(&mut self) -> NativeFutureHandle;
     fn future_on_error(&mut self, id: usize, handler: BxValue);
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize;
     fn native_object_call_method(&mut self, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
@@ -152,6 +165,81 @@ pub trait BxVM {
 }
 
 pub type BxNativeFunction = fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, String>;
+
+#[derive(Debug, Clone)]
+pub enum NativeFutureValue {
+    Null,
+    Bool(bool),
+    Int(i32),
+    Number(f64),
+    String(String),
+    Bytes(Vec<u8>),
+    Error { message: String },
+}
+
+pub enum NativeFutureMessage {
+    Resolve {
+        future: BxValue,
+        value: NativeFutureValue,
+    },
+    Reject {
+        future: BxValue,
+        error: NativeFutureValue,
+    },
+    Abandon {
+        future: BxValue,
+    },
+}
+
+pub struct NativeFutureHandle {
+    future: BxValue,
+    sender: Sender<NativeFutureMessage>,
+    completed: bool,
+}
+
+impl NativeFutureHandle {
+    pub fn new(future: BxValue, sender: Sender<NativeFutureMessage>) -> Self {
+        Self {
+            future,
+            sender,
+            completed: false,
+        }
+    }
+
+    pub fn future(&self) -> BxValue {
+        self.future
+    }
+
+    pub fn resolve(mut self, value: NativeFutureValue) -> Result<(), String> {
+        self.completed = true;
+        self.sender
+            .send(NativeFutureMessage::Resolve {
+                future: self.future,
+                value,
+            })
+            .map_err(|_| "VM completion channel is closed".to_string())
+    }
+
+    pub fn reject(mut self, error: NativeFutureValue) -> Result<(), String> {
+        self.completed = true;
+        self.sender
+            .send(NativeFutureMessage::Reject {
+                future: self.future,
+                error,
+            })
+            .map_err(|_| "VM completion channel is closed".to_string())
+    }
+}
+
+impl Drop for NativeFutureHandle {
+    fn drop(&mut self) {
+        if !self.completed {
+            let _ = self.sender.send(NativeFutureMessage::Abandon {
+                future: self.future,
+            });
+        }
+    }
+}
 
 pub trait BxNativeObject: fmt::Debug {
     fn get_property(&self, name: &str) -> BxValue;
@@ -258,5 +346,5 @@ pub struct BxFuture {
 pub enum FutureStatus {
     Pending,
     Completed,
-    Failed(String),
+    Failed(BxValue),
 }

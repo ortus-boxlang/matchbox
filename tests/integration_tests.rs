@@ -20,6 +20,7 @@ macro_rules! script_test {
 
 script_test!(arrays, "arrays.bxs");
 script_test!(bifs, "bifs.bxs");
+script_test!(bytes_bifs, "bytes_bifs.bxs");
 script_test!(for_in_loops, "for_in_loops.bxs");
 script_test!(for_loop, "for_loop.bxs");
 script_test!(functions, "functions.bxs");
@@ -248,6 +249,17 @@ fn test_vm_interface_fail() {
     
     let result = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false);
     assert!(result.is_err(), "vm_interface_fail.bxs should have failed");
+}
+
+#[test]
+fn test_bytes_bifs_invalid() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join("bytes_bifs_invalid.bxs");
+
+    let result = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false);
+    assert!(result.is_err(), "bytes_bifs_invalid.bxs should have failed");
 }
 
 #[test]

@@ -54,6 +54,11 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
         array_clear_bif as BxNativeFunction,
     );
     bifs.insert("arrayset".to_string(), array_set_bif as BxNativeFunction);
+    bifs.insert("bytesnew".to_string(), bytes_new as BxNativeFunction);
+    bifs.insert("byteslen".to_string(), bytes_len_bif as BxNativeFunction);
+    bifs.insert("bytesget".to_string(), bytes_get_bif as BxNativeFunction);
+    bifs.insert("bytesset".to_string(), bytes_set_bif as BxNativeFunction);
+    bifs.insert("isbinary".to_string(), is_bytes_bif as BxNativeFunction);
 
     // Struct BIFs
     bifs.insert("structnew".to_string(), struct_new as BxNativeFunction);
@@ -538,6 +543,86 @@ fn array_set_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     } else {
         Err("arraySet() expects an array as the first argument".to_string())
     }
+}
+
+fn bytes_new(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 1 {
+        return Err("bytesNew() expects 1 argument: (array)".to_string());
+    }
+    if let Some(id) = args[0].as_gc_id() {
+        let len = vm.array_len(id);
+        let mut out = Vec::with_capacity(len);
+        for idx in 0..len {
+            let value = vm.array_get(id, idx);
+            if !value.is_number() {
+                return Err("bytesNew() expects an array of byte values".to_string());
+            }
+            let byte = value.as_number();
+            if !(0.0..=255.0).contains(&byte) || byte.fract() != 0.0 {
+                return Err("bytesNew() byte values must be integers in the range 0..255".to_string());
+            }
+            out.push(byte as u8);
+        }
+        Ok(BxValue::new_ptr(vm.bytes_new(out)))
+    } else {
+        Err("bytesNew() expects an array".to_string())
+    }
+}
+
+fn bytes_len_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 1 {
+        return Err("bytesLen() expects 1 argument".to_string());
+    }
+    if let Some(id) = args[0].as_gc_id() {
+        Ok(BxValue::new_number(vm.bytes_len(id) as f64))
+    } else {
+        Err("bytesLen() expects bytes".to_string())
+    }
+}
+
+fn bytes_get_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 2 {
+        return Err("bytesGet() expects 2 arguments: (bytes, index)".to_string());
+    }
+    if let Some(id) = args[0].as_gc_id() {
+        let idx = args[1].as_number() as usize;
+        if idx == 0 {
+            return Err("Byte index must be 1-based".to_string());
+        }
+        Ok(BxValue::new_number(vm.bytes_get(id, idx - 1)? as f64))
+    } else {
+        Err("bytesGet() expects bytes as the first argument".to_string())
+    }
+}
+
+fn bytes_set_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 3 {
+        return Err("bytesSet() expects 3 arguments: (bytes, index, value)".to_string());
+    }
+    if let Some(id) = args[0].as_gc_id() {
+        let idx = args[1].as_number() as usize;
+        if idx == 0 {
+            return Err("Byte index must be 1-based".to_string());
+        }
+        if !args[2].is_number() {
+            return Err("bytesSet() expects a numeric byte value".to_string());
+        }
+        let value = args[2].as_number();
+        if !(0.0..=255.0).contains(&value) || value.fract() != 0.0 {
+            return Err("bytesSet() byte values must be integers in the range 0..255".to_string());
+        }
+        vm.bytes_set(id, idx - 1, value as u8)?;
+        Ok(args[0])
+    } else {
+        Err("bytesSet() expects bytes as the first argument".to_string())
+    }
+}
+
+fn is_bytes_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() {
+        return Ok(BxValue::new_bool(false));
+    }
+    Ok(BxValue::new_bool(vm.is_bytes(args[0])))
 }
 
 // --- Struct BIFs ---

@@ -1,0 +1,35 @@
+buf = bytesNew([1, 2, 3])
+
+if (!isBinary(buf)) {
+    throw "bytesNew() should create a bytes value"
+}
+
+if (isBinary([1, 2, 3])) {
+    throw "Array should not be treated as bytes"
+}
+
+if (isBinary("abc")) {
+    throw "String should not be treated as bytes"
+}
+
+if (bytesLen(buf) != 3) {
+    throw "bytesLen() should return 3, got " & bytesLen(buf)
+}
+
+if (bytesGet(buf, 1) != 1) {
+    throw "bytesGet(buf, 1) should return 1"
+}
+
+if (len(buf) != 3) {
+    throw "len(bytes) should return 3, got " & len(buf)
+}
+
+bytesSet(buf, 2, 255)
+
+if (bytesGet(buf, 2) != 255) {
+    throw "bytesSet() should update the byte value"
+}
+
+if (bytesLen(buf) != 3) {
+    throw "bytes mutation should not change length"
+}
