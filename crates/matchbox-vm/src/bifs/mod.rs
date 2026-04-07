@@ -38,6 +38,7 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
 
     // Array BIFs
     bifs.insert("arrayappend".to_string(), array_append as BxNativeFunction);
+    bifs.insert("arraylen".to_string(), len as BxNativeFunction);
     bifs.insert("arraynew".to_string(), array_new as BxNativeFunction);
     bifs.insert("arraypop".to_string(), array_pop_bif as BxNativeFunction);
     bifs.insert(
@@ -93,6 +94,7 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
         "createobject".to_string(),
         create_object as BxNativeFunction,
     );
+    bifs.insert("isnull".to_string(), is_null_bif as BxNativeFunction);
     bifs.insert("ucase".to_string(), ucase as BxNativeFunction);
     bifs.insert("lcase".to_string(), lcase as BxNativeFunction);
     bifs.insert("trim".to_string(), trim_bif as BxNativeFunction);
@@ -683,4 +685,11 @@ fn create_object(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
         "native" => Err("Use 'rust' type for native objects".to_string()),
         _ => Err(format!("Unknown object type: {}", obj_type)),
     }
+}
+
+fn is_null_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() {
+        return Ok(BxValue::new_bool(true));
+    }
+    Ok(BxValue::new_bool(args[0].is_null()))
 }

@@ -103,6 +103,10 @@ impl BoxLangVM {
 }
 
 pub fn run() -> Result<()> {
+    std::panic::set_hook(Box::new(|info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let _ = std::fs::write("panic_debug.txt", format!("{:#?}\n\n{backtrace}", info));
+    }));
     // 1. Check for WASM custom section first
     #[cfg(target_arch = "wasm32")]
     if let Ok(chunk) = load_wasm_custom_section() {
@@ -750,6 +754,10 @@ strip = true
     }
 
     fs::write(build_dir.join("Cargo.toml"), cargo_toml)?;
+    let workspace_lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock");
+    if workspace_lock.exists() {
+        fs::copy(workspace_lock, build_dir.join("Cargo.lock"))?;
+    }
 
     // 2. Prepare user modules
     let mut mod_decls = String::new();
@@ -946,6 +954,9 @@ impl BoxLangVM {
         let cargo_bin = std_env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
         let mut c = std::process::Command::new(cargo_bin);
         c.arg("build").arg("--release");
+        if build_dir.join("Cargo.lock").exists() {
+            c.arg("--offline");
+        }
         c
     };
 

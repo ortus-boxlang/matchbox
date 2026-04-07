@@ -2,6 +2,7 @@
 mod tests {
     use crate::{TUIApp, TUI};
     use matchbox_vm::types::*;
+    use std::collections::HashMap;
     use std::rc::Rc;
     use std::cell::RefCell;
     use crate::widget::{WidgetRegistry, WidgetKind};
@@ -10,24 +11,40 @@ mod tests {
 
     struct MockVM {
         pub last_method_called: String,
+        pub method_calls: Vec<String>,
         pub last_args: Vec<BxValue>,
         pub strings: Vec<String>,
+        pub spawn_called: bool,
+        pub structs: HashMap<usize, HashMap<String, BxValue>>,
+        pub next_id: usize,
     }
     
     impl MockVM {
         fn new() -> Self {
             Self {
                 last_method_called: String::new(),
+                method_calls: Vec::new(),
                 last_args: Vec::new(),
                 strings: Vec::new(),
+                spawn_called: false,
+                structs: HashMap::new(),
+                next_id: 1,
             }
         }
     }
 
     impl BxVM for MockVM {
-        fn current_chunk(&self) -> Option<Rc<RefCell<matchbox_vm::Chunk>>> { None }
-        fn spawn(&mut self, _: Rc<BxCompiledFunction>, _: Vec<BxValue>, _: u8, _: Rc<RefCell<matchbox_vm::Chunk>>) -> BxValue { BxValue::new_null() }
-        fn spawn_by_value(&mut self, _: &BxValue, _: Vec<BxValue>, _: u8, _: Rc<RefCell<matchbox_vm::Chunk>>) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
+        fn current_chunk(&self) -> Option<Rc<RefCell<matchbox_vm::Chunk>>> { 
+            Some(Rc::new(RefCell::new(matchbox_vm::Chunk::new("test.bxs")))) 
+        }
+        fn spawn(&mut self, _: Rc<BxCompiledFunction>, _: Vec<BxValue>, _: u8, _: Rc<RefCell<matchbox_vm::Chunk>>) -> BxValue { 
+            self.spawn_called = true;
+            BxValue::new_null() 
+        }
+        fn spawn_by_value(&mut self, _: &BxValue, _: Vec<BxValue>, _: u8, _: Rc<RefCell<matchbox_vm::Chunk>>) -> Result<BxValue, String> { 
+            self.spawn_called = true;
+            Ok(BxValue::new_null()) 
+        }
         fn call_function_by_value(&mut self, _: &BxValue, _: Vec<BxValue>, _: Rc<RefCell<matchbox_vm::Chunk>>) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
         fn yield_fiber(&mut self) {}
         fn sleep(&mut self, _: u64) {}
@@ -43,10 +60,22 @@ mod tests {
         fn array_insert_at(&mut self, _: usize, _: usize, _: BxValue) -> Result<(), String> { Ok(()) }
         fn array_clear(&mut self, _: usize) -> Result<(), String> { Ok(()) }
         fn array_new(&mut self) -> usize { 0 }
-        fn struct_len(&self, _: usize) -> usize { 0 }
-        fn struct_new(&mut self) -> usize { 0 }
-        fn struct_set(&mut self, _: usize, _: &str, _: BxValue) {}
-        fn struct_get(&self, _: usize, _: &str) -> BxValue { BxValue::new_null() }
+        fn struct_len(&self, id: usize) -> usize { self.structs.get(&id).map(|s| s.len()).unwrap_or(0) }
+        fn struct_new(&mut self) -> usize {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.structs.insert(id, HashMap::new());
+            id
+        }
+        fn struct_set(&mut self, id: usize, key: &str, val: BxValue) {
+            self.structs.entry(id).or_default().insert(key.to_string(), val);
+        }
+        fn struct_get(&self, id: usize, key: &str) -> BxValue {
+            self.structs
+                .get(&id)
+                .and_then(|s| s.get(key).copied())
+                .unwrap_or(BxValue::new_null())
+        }
         fn struct_delete(&mut self, _: usize, _: &str) -> bool { false }
         fn struct_key_exists(&self, _: usize, _: &str) -> bool { false }
         fn struct_key_array(&self, _: usize) -> Vec<String> { vec![] }
@@ -56,6 +85,7 @@ mod tests {
         fn native_object_new(&mut self, _: Rc<RefCell<dyn BxNativeObject>>) -> usize { 42 }
         fn native_object_call_method(&mut self, _: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String> { 
             self.last_method_called = name.to_string();
+            self.method_calls.push(name.to_string());
             self.last_args = args.to_vec();
             Ok(BxValue::new_null()) 
         }
@@ -76,6 +106,10 @@ mod tests {
         fn to_box_string(&self, _: BxValue) -> box_string::BoxString { box_string::BoxString::new("") }
         fn get_cli_args(&self) -> Vec<String> { vec![] }
         fn write_output(&mut self, _: &str) {}
+        fn suspend_gc(&mut self) {}
+        fn resume_gc(&mut self) {}
+        fn push_root(&mut self, _: BxValue) {}
+        fn pop_root(&mut self) {}
     }
 
     #[test]
@@ -89,6 +123,7 @@ mod tests {
             bold: false,
             italic: false,
             underline: false,
+            z_index: 0,
         };
         
         // Test fluent methods via Rust directly first
@@ -117,6 +152,7 @@ mod tests {
             bold: false,
             italic: false,
             underline: false,
+            z_index: 0,
         };
         
         let ctx_id = 42;
@@ -133,14 +169,13 @@ mod tests {
         let mut vm = MockVM::new();
         let custom_obj = BxValue::new_ptr(123);
         let widget = WidgetKind::Custom(custom_obj);
-        let registry = WidgetRegistry::new();
         
         let backend = TestBackend::new(20, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         
         terminal.draw(|frame| {
             let area = ratatui::layout::Rect::new(0, 0, 10, 5);
-            widget.render_in_area(&mut vm, frame, area, &registry);
+            widget.render_in_area(&mut vm, frame, area, &WidgetRegistry);
         }).unwrap();
         
         assert_eq!(vm.last_method_called, "__render");
@@ -154,6 +189,7 @@ mod tests {
         let mut vm = MockVM::new();
         let mut vbox = crate::widget::VBoxWidget {
             children: Vec::new(),
+            z_index: 0,
         };
         
         // Add two dummy children (just IDs)
@@ -169,7 +205,7 @@ mod tests {
         
         vbox.__render(&mut vm, BxValue::new_ptr(ctx_id), BxValue::new_ptr(area_id)).unwrap();
         
-        assert_eq!(vm.last_method_called, "__render");
+        assert!(vm.method_calls.iter().any(|name| name == "__render"));
     }
 
     #[test]
@@ -177,6 +213,7 @@ mod tests {
         let mut vm = MockVM::new();
         let mut hbox = crate::widget::HBoxWidget {
             children: Vec::new(),
+            z_index: 0,
         };
         
         hbox.add(BxValue::new_ptr(101));
@@ -190,7 +227,47 @@ mod tests {
         
         hbox.__render(&mut vm, BxValue::new_ptr(ctx_id), BxValue::new_ptr(area_id)).unwrap();
         
-        assert_eq!(vm.last_method_called, "__render");
+        assert!(vm.method_calls.iter().any(|name| name == "__render"));
+    }
+
+    #[test]
+    fn test_button_click_event() {
+        let button = crate::widget::ButtonWidget {
+            label: "Click Me".to_string(),
+            on_click: Some(BxValue::new_ptr(999)),
+            z_index: 0,
+        };
+        
+        let id = WidgetRegistry::insert(WidgetKind::Button(button.clone()));
+        
+        TUI::with_current(|tui| {
+            tui.begin_frame();
+            // Simulate that the button was rendered at (0,0,10,1)
+            tui.render_widget(id, 0, 0, 10, 1, 0);
+            
+            // Hit test
+            assert_eq!(tui.hit_test(5, 0), Some(id));
+        });
+        
+        assert!(button.on_click.is_some());
+    }
+
+    #[test]
+    fn test_z_index_sorting() {
+        TUI::with_current(|tui| {
+            tui.bx_begin_frame();
+            // Add a background widget at Z=0
+            let w_bg = 1;
+            tui.render_widget(w_bg, 0, 0, 10, 10, 0);
+            
+            // Add an overlay widget at Z=10
+            let w_fg = 2;
+            tui.render_widget(w_fg, 0, 0, 10, 10, 10);
+            
+            // Hit test at (5,5) should return w_fg (the overlay)
+            // because hit_test sorts by Z-index descending.
+            assert_eq!(tui.hit_test(5, 5), Some(w_fg));
+        });
     }
 
     #[test]

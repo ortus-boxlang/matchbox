@@ -1,0 +1,22 @@
+// tests/todo_no_tui.bxs
+class App {
+    property todos;
+    property completed;
+
+    function init() {
+        this.todos = ["A", "B"];
+        this.completed = [true, false];
+        return this;
+    }
+
+    function run() {
+        print("Todos: " & arrayLen(this.todos));
+        for (i = 1; i <= len(this.todos); i = i + 1) {
+            print(i & ": " & this.todos[i] & " [" & this.completed[i] & "]");
+        }
+    }
+}
+
+app = new App().init();
+app.run();
+print("Done.");

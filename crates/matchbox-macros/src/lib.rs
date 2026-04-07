@@ -67,6 +67,40 @@ pub fn bx_object_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as ItemStruct);
     let name = &input.ident;
 
+    let fields = if let syn::Fields::Named(fields) = &input.fields {
+        &fields.named
+    } else {
+        panic!("BxObject only supports named fields");
+    };
+
+    let trace_marks = fields.iter().map(|f| {
+        let name = &f.ident;
+        let ty = &f.ty;
+        let ty_str = quote!(#ty).to_string().replace(" ", "");
+        
+        if ty_str.contains("BxValue") {
+            if ty_str.contains("Vec<") {
+                quote! {
+                    for val in &self.#name {
+                        _tracer.mark(val);
+                    }
+                }
+            } else if ty_str.contains("Option<") {
+                quote! {
+                    if let Some(val) = &self.#name {
+                        _tracer.mark(val);
+                    }
+                }
+            } else {
+                quote! {
+                    _tracer.mark(&self.#name);
+                }
+            }
+        } else {
+            quote! {}
+        }
+    });
+
     let expanded = quote! {
         impl matchbox_vm::types::BxNativeObject for #name {
             fn get_property(&self, _name: &str) -> matchbox_vm::types::BxValue {
@@ -79,6 +113,10 @@ pub fn bx_object_derive(input: TokenStream) -> TokenStream {
 
             fn call_method(&mut self, vm: &mut dyn matchbox_vm::types::BxVM, id: usize, name: &str, args: &[matchbox_vm::types::BxValue]) -> Result<matchbox_vm::types::BxValue, String> {
                 self.dispatch_method(vm, id, name, args)
+            }
+
+            fn trace(&self, _tracer: &mut dyn matchbox_vm::types::Tracer) {
+                #(#trace_marks)*
             }
         }
     };
@@ -96,7 +134,11 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
     for item in &input.items {
         if let ImplItem::Fn(method) = item {
             let name = &method.sig.ident;
-            let name_str = name.to_string().to_lowercase();
+            let mut name_str = name.to_string().to_lowercase();
+            
+            if name_str.starts_with("bx_") {
+                name_str = name_str[3..].to_string();
+            }
             
             let mut arg_conversions = Vec::new();
             let mut call_args = Vec::new();
@@ -139,7 +181,7 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         let conversion = if arg_type_str.contains("f64") {
                             quote! { let #arg_name = args[#arg_idx].as_number(); }
                         } else if arg_type_str.contains("i32") {
-                            quote! { let #arg_name = args[#arg_idx].as_int(); }
+                            quote! { let #arg_name = args[#arg_idx].as_number() as i32; }
                         } else if arg_type_str.contains("bool") {
                             quote! { let #arg_name = args[#arg_idx].as_bool(); }
                         } else if arg_type_str.contains("String") {

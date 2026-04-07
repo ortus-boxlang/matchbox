@@ -1,0 +1,31 @@
+// tests/tui_test_no_init.bxs
+print("Starting simple TUI test (NO INIT)...");
+
+try {
+    tui = createObject("rust", "tui.TUI");
+    print("TUI object created.");
+    
+    txt = createObject("rust", "tui.Text")
+        .text("Hello Border")
+        .color("green");
+    
+    block = createObject("rust", "tui.Block")
+        .title("Box")
+        .border("rounded")
+        .setWidget(txt);
+
+    print("Widget tree created, building...");
+    id = block.build();
+    print("Widget built with ID: " & id);
+    
+    tui.begin_frame();
+    tui.render_widget(id, 2, 2, 20, 5);
+    print("Widget registered for rendering.");
+    
+    // We can't really end_frame without init, it might crash if it expects terminal.
+    // But let's see if we get this far.
+    print("Test successful up to build.");
+
+} catch (e) {
+    print("Error: " & e);
+}

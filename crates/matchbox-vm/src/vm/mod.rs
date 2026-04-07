@@ -6,7 +6,7 @@ pub mod intern;
 #[cfg(feature = "jit")]
 pub mod jit;
 
-use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, BxNativeFunction, box_string::BoxString};
+use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, BxNativeFunction, Tracer, box_string::BoxString};
 use self::chunk::{Chunk, IcEntry};
 use self::opcode::op;
 use self::gc::{Heap, GcObject};
@@ -17,7 +17,39 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::time::{Instant, Duration};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::vec;
+
+pub static INTERRUPT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug)]
+struct VariablesScopeProxy {
+    variables: Rc<RefCell<HashMap<String, BxValue>>>,
+}
+
+impl BxNativeObject for VariablesScopeProxy {
+    fn get_property(&self, name: &str) -> BxValue {
+        self.variables
+            .borrow()
+            .get(&name.to_lowercase())
+            .copied()
+            .unwrap_or(BxValue::new_null())
+    }
+
+    fn set_property(&mut self, name: &str, value: BxValue) {
+        self.variables.borrow_mut().insert(name.to_lowercase(), value);
+    }
+
+    fn call_method(&mut self, _vm: &mut dyn BxVM, _id: usize, name: &str, _args: &[BxValue]) -> Result<BxValue, String> {
+        Err(format!("Method {} not found on variables scope.", name))
+    }
+
+    fn trace(&self, tracer: &mut dyn Tracer) {
+        for value in self.variables.borrow().values() {
+            tracer.mark(value);
+        }
+    }
+}
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use wasm_bindgen::prelude::*;
@@ -62,6 +94,7 @@ pub struct BxFiber {
     pub wait_until: Option<Instant>,
     pub yield_requested: bool,
     pub priority: u8,
+    pub root_stack: Vec<BxValue>,
 }
 
 pub struct VM {
@@ -75,6 +108,7 @@ pub struct VM {
     pub interner: StringInterner,
     pub cli_args: Vec<String>,
     pub output_buffer: Option<String>,
+    pub gc_suspended: bool,
     #[cfg(feature = "jit")]
     pub jit: Option<Box<jit::JitState>>,
 }
@@ -343,12 +377,18 @@ impl BxVM for VM {
     }
 
     fn native_object_call_method(&mut self, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String> {
-        if let GcObject::NativeObject(obj) = self.heap.get(id) {
-            let obj = Rc::clone(obj);
-            obj.borrow_mut().call_method(self, id, name, args)
+        self.gc_suspended = true;
+        // Clone the Rc to release the heap borrow immediately
+        let obj_rc = if let GcObject::NativeObject(obj) = self.heap.get_mut(id) {
+            Rc::clone(obj)
         } else {
-            Err(format!("Value at id {} is not a native object", id))
-        }
+            self.gc_suspended = false;
+            return Err(format!("Value at id {} is not a native object", id));
+        };
+        
+        let res = obj_rc.borrow_mut().call_method(self, id, name, args);
+        self.gc_suspended = false;
+        res
     }
 
     fn construct_native_class(&mut self, class_name: &str, args: &[BxValue]) -> Result<BxValue, String> {
@@ -391,6 +431,26 @@ impl BxVM for VM {
             buffer.push_str(s);
         } else {
             print!("{}", s);
+        }
+    }
+
+    fn suspend_gc(&mut self) {
+        self.gc_suspended = true;
+    }
+
+    fn resume_gc(&mut self) {
+        self.gc_suspended = false;
+    }
+
+    fn push_root(&mut self, val: BxValue) {
+        if let Some(idx) = self.current_fiber_idx {
+            self.fibers[idx].root_stack.push(val);
+        }
+    }
+
+    fn pop_root(&mut self) {
+        if let Some(idx) = self.current_fiber_idx {
+            self.fibers[idx].root_stack.pop();
         }
     }
 }
@@ -463,6 +523,7 @@ impl VM {
             interner: StringInterner::new(),
             cli_args: Vec::new(),
             output_buffer: None,
+            gc_suspended: false,
             #[cfg(feature = "jit")]
             jit: None,
         };
@@ -573,7 +634,8 @@ impl VM {
     }
 
     pub fn insert_global(&mut self, name: String, val: BxValue) {
-        let name_id = self.interner.intern(&name);
+        let name_lower = name.to_lowercase();
+        let name_id = self.interner.intern(&name_lower);
         self.insert_global_interned(name_id, val);
     }
 
@@ -588,7 +650,8 @@ impl VM {
     }
 
     pub fn get_global(&self, name: &str) -> Option<BxValue> {
-        if let Some(name_id) = self.interner.get_id(name) {
+        let name_lower = name.to_lowercase();
+        if let Some(name_id) = self.interner.get_id(&name_lower) {
             self.global_names.get(&name_id).map(|&idx| self.global_values[idx])
         } else {
             None
@@ -701,6 +764,7 @@ impl VM {
             wait_until: None,
             yield_requested: false,
             priority: 0,
+            root_stack: Vec::new(),
         };
         
         self.fibers.push(fiber);
@@ -742,6 +806,7 @@ impl VM {
             wait_until: None,
             yield_requested: false,
             priority,
+            root_stack: Vec::new(),
         };
 
         self.fibers.push(fiber);
@@ -1008,6 +1073,10 @@ impl VM {
                     frame_changed = true;
                     continue 'quantum;
                 }};
+            }
+
+            if INTERRUPT_REQUESTED.load(Ordering::Relaxed) {
+                vm_throw!("Force Quit (Ctrl+C)");
             }
 
             match opcode {
@@ -1636,44 +1705,46 @@ impl VM {
                 op::GET_PRIVATE => {
                     let idx = op0;
                     let name_id = self.read_intern_id(fiber_idx, idx as usize);
-                    let name = self.interner.resolve(name_id).to_string();
-                    let val = if let Some(receiver) = self.fibers[fiber_idx].frames.last().unwrap().receiver {
-                        if let Some(id) = receiver.as_gc_id() {
-                            if name == "this" {
-                                Some(receiver)
-                            } else if name == "variables" {
-                                if let GcObject::Instance(inst) = self.heap.get(id) {
-                                    let _vars = Rc::clone(&inst.variables);
-                                    // Should we return the actual variables scope as a struct/native object?
-                                    // For now just return a virtual struct that points to it.
-                                    Some(BxValue::new_ptr(self.heap.alloc(GcObject::Struct(BxStruct {
-                                        shape_id: self.shapes.get_root(),
-                                        properties: Vec::new(),
-                                    }))))
-                                } else { None }
-                            } else {
-                                if let GcObject::Instance(inst) = self.heap.get(id) {
-                                    let val = inst.variables.borrow().get(&name).copied().unwrap_or(BxValue::new_null());
-                                    Some(val)
-                                } else { None }
+                    let name = self.interner.resolve(name_id).to_string().to_lowercase();
+                    let val = {
+                        let mut found = None;
+                        if let Some(receiver) = self.fibers[fiber_idx].frames.last().unwrap().receiver {
+                            if let Some(id) = receiver.as_gc_id() {
+                                if name == "this" {
+                                    found = Some(receiver);
+                                } else if name == "variables" {
+                                    if let GcObject::Instance(inst) = self.heap.get(id) {
+                                        let proxy = VariablesScopeProxy {
+                                            variables: Rc::clone(&inst.variables),
+                                        };
+                                        found = Some(BxValue::new_ptr(
+                                            self.heap.alloc(GcObject::NativeObject(Rc::new(RefCell::new(proxy))))
+                                        ));
+                                    }
+                                } else if let GcObject::Instance(inst) = self.heap.get(id) {
+                                    found = inst.variables.borrow().get(&name).copied();
+                                }
                             }
-                        } else { None }
-                    } else {
-                        None
+                        }
+                        
+                        if found.is_none() {
+                            found = self.get_global(&name);
+                        }
+                        found
                     };
 
                     if let Some(v) = val {
                         self.fibers[fiber_idx].stack.push(v);
                     } else {
                         flush_ip!();
-                        self.throw_error(fiber_idx, &format!("'variables' scope only available in classes. Tried to access '{}'", name))?;
+                        self.throw_error(fiber_idx, &format!("Variable '{}' not found in class or global scope.", name))?;
                         frame_changed = true; continue 'quantum;
                     }
                 }
                 op::SET_PRIVATE => {
                     let idx = op0;
                     let name_id = self.read_intern_id(fiber_idx, idx as usize);
-                    let name = self.interner.resolve(name_id).to_string();
+                    let name = self.interner.resolve(name_id).to_string().to_lowercase();
                     let val = *self.fibers[fiber_idx].stack.last().unwrap();
                     if let Some(receiver) = self.fibers[fiber_idx].frames.last().unwrap().receiver {
                         if let Some(id) = receiver.as_gc_id() {
@@ -2049,7 +2120,7 @@ impl VM {
                                 }
                             }
                             GcObject::NativeObject(obj) => {
-                                let name = self.interner.resolve(name_id).to_string();
+                                let name = self.interner.resolve(name_id).to_string().to_lowercase();
                                 let val = obj.borrow().get_property(&name);
                                 self.fibers[fiber_idx].stack.push(val);
                             }
@@ -2247,7 +2318,7 @@ impl VM {
                                 self.fibers[fiber_idx].stack.push(val);
                             }
                             GcObject::NativeObject(obj) => {
-                                let name = self.interner.resolve(name_id).to_string();
+                                let name = self.interner.resolve(name_id).to_string().to_lowercase();
                                 obj.borrow_mut().set_property(&name, val);
                                 self.fibers[fiber_idx].stack.push(val);
                             }
@@ -2976,6 +3047,7 @@ impl VM {
                         wait_until: None,
                         yield_requested: false,
                         priority: 0,
+                        root_stack: Vec::new(),
                     };
                     self.fibers.push(fiber);
                     let fiber_idx = self.fibers.len() - 1;
@@ -2991,10 +3063,14 @@ impl VM {
                     self.current_fiber_idx = None;
                     result
                 }
-                GcObject::NativeFunction(func) => {
-                    let func = *func;
-                    func(self, &args).map_err(|e| anyhow::anyhow!(e))
+                GcObject::NativeFunction(f) => {
+                    let f = *f;
+                    self.gc_suspended = true;
+                    let res = f(self, &args).map_err(|e| anyhow::anyhow!(e));
+                    self.gc_suspended = false;
+                    res
                 }
+
                 _ => anyhow::bail!("Value is not a callable function"),
             }
         } else {
@@ -3720,14 +3796,19 @@ impl VM {
     }
 
     fn collect_garbage(&mut self) {
+        if self.gc_suspended {
+            return;
+        }
         let mut roots = Vec::new();
         // 1. Fiber stacks and frames
         for fiber in &self.fibers {
             roots.extend(fiber.stack.iter().cloned());
+            roots.extend(fiber.root_stack.iter().cloned());
             for frame in &fiber.frames {
                 if let Some(recv) = &frame.receiver {
                     roots.push(*recv);
                 }
+                roots.extend(frame.promoted_constants.iter().flatten().copied());
             }
             roots.push(BxValue::new_ptr(fiber.future_id));
         }

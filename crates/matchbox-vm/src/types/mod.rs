@@ -145,6 +145,10 @@ pub trait BxVM {
     fn to_box_string(&self, val: BxValue) -> BoxString;
     fn get_cli_args(&self) -> Vec<String>;
     fn write_output(&mut self, s: &str);
+    fn suspend_gc(&mut self);
+    fn resume_gc(&mut self);
+    fn push_root(&mut self, val: BxValue);
+    fn pop_root(&mut self);
 }
 
 pub type BxNativeFunction = fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, String>;
@@ -153,6 +157,11 @@ pub trait BxNativeObject: fmt::Debug {
     fn get_property(&self, name: &str) -> BxValue;
     fn set_property(&mut self, name: &str, value: BxValue);
     fn call_method(&mut self, vm: &mut dyn BxVM, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
+    fn trace(&self, _tracer: &mut dyn Tracer) {}
+}
+
+pub trait Tracer {
+    fn mark(&mut self, val: &BxValue);
 }
 
 impl PartialEq for dyn BxNativeObject {

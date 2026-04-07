@@ -1,0 +1,44 @@
+// tests/tui_test_simple.bxs
+print("Starting simple TUI test...");
+
+try {
+    tui = createObject("rust", "tui.TUI");
+    print("TUI object created.");
+    
+    tui.init();
+    print("TUI initialized.");
+    
+    try {
+        txt = createObject("rust", "tui.Text")
+            .text("Hello Border")
+            .color("green");
+        
+        block = createObject("rust", "tui.Block")
+            .title("Box")
+            .border("rounded")
+            .setWidget(txt);
+
+        print("Widget tree created, building...");
+        id = block.build();
+        print("Widget built with ID: " & id);
+        
+        tui.begin_frame();
+        tui.render_widget(id, 2, 2, 20, 5);
+        print("Widget registered for rendering.");
+        
+        tui.end_frame();
+        print("Frame ended. You should see a box with Hello Border briefly.");
+        
+        // Wait a bit
+        start = getTickCount();
+        while (getTickCount() - start < 2000) {
+            // spin
+        }
+        
+    } finally {
+        tui.shutdown();
+        print("TUI shutdown.");
+    }
+} catch (e) {
+    print("Error: " & e);
+}

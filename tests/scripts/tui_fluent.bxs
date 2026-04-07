@@ -1,0 +1,56 @@
+// tests/scripts/tui_fluent.bxs
+
+print("Starting complex TUI fluent test...");
+
+try {
+    app = createObject("rust", "tui.App");
+    tui = createObject("rust", "tui.TUI");
+
+    // 1. Create a Text widget with fluent API
+    title = createObject("rust", "tui.Text")
+        .text("Fluent TUI Test")
+        .color("green")
+        .bold(true)
+        .zIndex(5);
+
+    // 2. Create a Button with an event handler
+    exitButton = createObject("rust", "tui.Button")
+        .label("Exit App")
+        .onClick(() -> {
+            print("Exit button clicked!");
+            app.stop();
+        });
+
+    // 3. Create a VBox and add children
+    vbox = createObject("rust", "tui.VBox")
+        .add(title)
+        .add(
+            createObject("rust", "tui.Text")
+                .text("Sub-content 1")
+        )
+        .add(exitButton);
+
+    // 4. Create an HBox for a sidebar layout
+    rootLayout = createObject("rust", "tui.HBox")
+        .add(
+            createObject("rust", "tui.Text")
+                .text("Sidebar")
+                .color("blue")
+        )
+        .add(vbox);
+
+    // 5. Build the root layout
+    rootId = rootLayout.build();
+
+    // 6. Register it for rendering
+    tui.bx_render_widget(rootId, 0, 0, 40, 20);
+
+    // 7. Stop immediately since we can't run a real terminal in test
+    app.stop();
+    // app.run(); 
+
+    print("Fluent TUI tree built and registered successfully");
+
+} catch ( e ) {
+    print("Error during TUI test: " & e);
+}

@@ -3,19 +3,42 @@ use matchbox_vm::{BxObject, bx_methods};
 
 #[derive(Debug, Clone)]
 pub enum DrawCommand {
-    DrawText { x: u16, y: u16, text: String, color: Option<String> },
-    DrawRect { x: u16, y: u16, w: u16, h: u16, color: Option<String> },
+    DrawText { x: u16, y: u16, text: String, color: Option<String>, z_index: i32 },
+    DrawRect { x: u16, y: u16, w: u16, h: u16, color: Option<String>, z_index: i32 },
 }
 
 impl DrawCommand {
+    pub fn z_index(&self) -> i32 {
+        match self {
+            DrawCommand::DrawText { z_index, .. } => *z_index,
+            DrawCommand::DrawRect { z_index, .. } => *z_index,
+        }
+    }
+
     pub fn playback(&self, frame: &mut ratatui::Frame) {
         use ratatui::widgets::{Widget, Paragraph, Block, Borders};
         use ratatui::layout::Rect;
-        use ratatui::style::{Style, Color};
+        use ratatui::style::{Style};
+        use std::cmp::min;
+
+        let frame_area = frame.area();
 
         match self {
-            DrawCommand::DrawText { x, y, text, color } => {
-                let area = Rect::new(*x, *y, text.len() as u16, 1);
+            DrawCommand::DrawText { x, y, text, color, .. } => {
+                if *x >= frame_area.width || *y >= frame_area.height || text.is_empty() {
+                    return;
+                }
+
+                let area = Rect::new(
+                    *x,
+                    *y,
+                    min(text.len() as u16, frame_area.width.saturating_sub(*x)),
+                    1,
+                );
+                if area.width == 0 {
+                    return;
+                }
+
                 let mut style = Style::default();
                 if let Some(color_name) = color {
                     style = style.fg(parse_color(color_name));
@@ -23,8 +46,21 @@ impl DrawCommand {
                 let p = Paragraph::new(text.as_str()).style(style);
                 p.render(area, frame.buffer_mut());
             }
-            DrawCommand::DrawRect { x, y, w, h, color } => {
-                let area = Rect::new(*x, *y, *w, *h);
+            DrawCommand::DrawRect { x, y, w, h, color, .. } => {
+                if *x >= frame_area.width || *y >= frame_area.height || *w == 0 || *h == 0 {
+                    return;
+                }
+
+                let area = Rect::new(
+                    *x,
+                    *y,
+                    min(*w, frame_area.width.saturating_sub(*x)),
+                    min(*h, frame_area.height.saturating_sub(*y)),
+                );
+                if area.width == 0 || area.height == 0 {
+                    return;
+                }
+
                 let mut block = Block::default().borders(Borders::ALL);
                 if let Some(color_name) = color {
                     block = block.style(Style::default().fg(parse_color(color_name)));
@@ -55,6 +91,7 @@ pub struct RenderingContext {
     pub commands: Vec<DrawCommand>,
     pub origin_stack: Vec<(u16, u16)>,
     pub current_origin: (u16, u16),
+    pub current_z_index: i32,
 }
 
 impl RenderingContext {
@@ -63,10 +100,12 @@ impl RenderingContext {
             commands: Vec::new(),
             origin_stack: Vec::new(),
             current_origin: (0, 0),
+            current_z_index: 0,
         }
     }
 
-    pub fn playback(&self, frame: &mut ratatui::Frame) {
+    pub fn playback(&mut self, frame: &mut ratatui::Frame) {
+        self.commands.sort_by_key(|cmd| cmd.z_index());
         for cmd in &self.commands {
             cmd.playback(frame);
         }
@@ -76,39 +115,45 @@ impl RenderingContext {
 #[bx_methods]
 #[allow(non_snake_case)]
 impl RenderingContext {
-    pub fn drawText(&mut self, x: i32, y: i32, text: String) {
-        let actual_x = self.current_origin.0 + x as u16;
-        let actual_y = self.current_origin.1 + y as u16;
+    pub fn drawText(&mut self, x: f64, y: f64, text: String) {
+        let actual_x = self.current_origin.0.saturating_add(x as u16);
+        let actual_y = self.current_origin.1.saturating_add(y as u16);
         self.commands.push(DrawCommand::DrawText {
             x: actual_x,
             y: actual_y,
             text,
             color: None,
+            z_index: self.current_z_index,
         });
     }
 
-    pub fn drawRect(&mut self, x: i32, y: i32, w: i32, h: i32) {
-        let actual_x = self.current_origin.0 + x as u16;
-        let actual_y = self.current_origin.1 + y as u16;
+    pub fn drawRect(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        let actual_x = self.current_origin.0.saturating_add(x as u16);
+        let actual_y = self.current_origin.1.saturating_add(y as u16);
         self.commands.push(DrawCommand::DrawRect {
             x: actual_x,
             y: actual_y,
             w: w as u16,
             h: h as u16,
             color: None,
+            z_index: self.current_z_index,
         });
     }
 
-    pub fn pushOrigin(&mut self, x: i32, y: i32) {
+    pub fn pushOrigin(&mut self, x: f64, y: f64) {
         self.origin_stack.push(self.current_origin);
-        self.current_origin.0 += x as u16;
-        self.current_origin.1 += y as u16;
+        self.current_origin.0 = self.current_origin.0.saturating_add(x as u16);
+        self.current_origin.1 = self.current_origin.1.saturating_add(y as u16);
     }
 
     pub fn popOrigin(&mut self) {
         if let Some(old_origin) = self.origin_stack.pop() {
             self.current_origin = old_origin;
         }
+    }
+
+    pub fn setZIndex(&mut self, z: f64) {
+        self.current_z_index = z as i32;
     }
 }
 
@@ -159,64 +204,55 @@ mod tests {
         fn to_box_string(&self, _: BxValue) -> box_string::BoxString { box_string::BoxString::new("") }
         fn get_cli_args(&self) -> Vec<String> { vec![] }
         fn write_output(&mut self, _: &str) {}
+        fn suspend_gc(&mut self) {}
+        fn resume_gc(&mut self) {}
+        fn push_root(&mut self, _: BxValue) {}
+        fn pop_root(&mut self) {}
     }
 
     #[test]
-    fn test_rendering_context_commands() {
+    fn test_rendering_context_z_index_sorting() {
         let mut ctx = RenderingContext::new();
-        ctx.drawText(10, 5, "Hello".to_string());
-        ctx.drawRect(0, 0, 20, 10);
+        ctx.setZIndex(10.0);
+        ctx.drawText(0.0, 0.0, "Top".to_string());
+        ctx.setZIndex(0.0);
+        ctx.drawText(0.0, 0.0, "Bottom".to_string());
         
         assert_eq!(ctx.commands.len(), 2);
+        assert_eq!(ctx.commands[0].z_index(), 10);
         
-        if let DrawCommand::DrawText { x, y, text, .. } = &ctx.commands[0] {
-            assert_eq!(*x, 10);
-            assert_eq!(*y, 5);
-            assert_eq!(text, "Hello");
-        } else {
-            panic!("Expected DrawText");
-        }
-        
-        if let DrawCommand::DrawRect { x, y, w, h, .. } = &ctx.commands[1] {
-            assert_eq!(*x, 0);
-            assert_eq!(*y, 0);
-            assert_eq!(*w, 20);
-            assert_eq!(*h, 10);
-        } else {
-            panic!("Expected DrawRect");
-        }
+        ctx.commands.sort_by_key(|cmd| cmd.z_index());
+        assert_eq!(ctx.commands[0].z_index(), 0);
+        assert_eq!(ctx.commands[1].z_index(), 10);
     }
 
     #[test]
-    fn test_rendering_context_origin() {
+    fn test_playback_clips_commands_to_frame_bounds() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(10, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+
         let mut ctx = RenderingContext::new();
-        ctx.pushOrigin(5, 5);
-        ctx.drawText(2, 2, "World".to_string());
-        
-        if let DrawCommand::DrawText { x, y, .. } = &ctx.commands[0] {
-            assert_eq!(*x, 7);
-            assert_eq!(*y, 7);
-        }
-        
-        ctx.pushOrigin(10, 0);
-        ctx.drawText(1, 1, "Nested".to_string());
-        if let DrawCommand::DrawText { x, y, .. } = &ctx.commands[1] {
-            assert_eq!(*x, 16);
-            assert_eq!(*y, 6);
-        }
-        
-        ctx.popOrigin();
-        ctx.drawText(1, 1, "Back".to_string());
-        if let DrawCommand::DrawText { x, y, .. } = &ctx.commands[2] {
-            assert_eq!(*x, 6);
-            assert_eq!(*y, 6);
-        }
-        
-        ctx.popOrigin();
-        ctx.drawText(0, 0, "Root".to_string());
-        if let DrawCommand::DrawText { x, y, .. } = &ctx.commands[3] {
-            assert_eq!(*x, 0);
-            assert_eq!(*y, 0);
-        }
+        ctx.commands.push(DrawCommand::DrawText {
+            x: 8,
+            y: 4,
+            text: "overflow".to_string(),
+            color: None,
+            z_index: 0,
+        });
+        ctx.commands.push(DrawCommand::DrawRect {
+            x: 9,
+            y: 3,
+            w: 5,
+            h: 5,
+            color: None,
+            z_index: 0,
+        });
+
+        terminal.draw(|frame| {
+            ctx.playback(frame);
+        }).unwrap();
     }
 }

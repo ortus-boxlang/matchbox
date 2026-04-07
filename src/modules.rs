@@ -38,6 +38,15 @@ struct ManifestEntry {
     path: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct BoxJson {
+    #[serde(default)]
+    dependencies: HashMap<String, String>,
+    #[serde(default)]
+    #[serde(rename = "devDependencies")]
+    dev_dependencies: HashMap<String, String>,
+}
+
 /// A datasource configuration entry from `matchbox.toml`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatasourceEntry {
@@ -65,8 +74,10 @@ fn default_max_connections() -> u32 { 10 }
 ///
 /// Sources (in priority order — CLI `--module` flags override manifest entries with the same
 /// directory name):
-/// 1. `matchbox.toml` in `project_dir`
-/// 2. `extra_module_paths` collected from `--module <path>` CLI flags
+/// 1. `box.json` dependencies (following CommandBox conventions)
+/// 2. `matchbox.toml` in `project_dir`
+/// 3. `modules/` and `boxlang_modules/` directory scanning
+/// 4. `extra_module_paths` collected from `--module <path>` CLI flags
 ///
 /// Returns an empty `Vec` when neither source provides any modules, so callers can always
 /// call this unconditionally.
@@ -77,7 +88,47 @@ pub fn discover_modules(
     // Collect (name, raw_path) pairs.  Later entries for the same name replace earlier ones.
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
 
-    // 1. Read matchbox.toml if present.
+    // 1. Read box.json if present (CommandBox convention)
+    let box_json_path = project_dir.join("box.json");
+    if box_json_path.exists() {
+        let text = std::fs::read_to_string(&box_json_path)
+            .with_context(|| format!("Failed to read {}", box_json_path.display()))?;
+        let box_json: BoxJson = serde_json::from_str(&text)
+            .with_context(|| format!("Failed to parse {}", box_json_path.display()))?;
+        
+        // Merge dependencies and devDependencies
+        let mut all_deps = box_json.dependencies;
+        all_deps.extend(box_json.dev_dependencies);
+
+        for (name, value) in all_deps {
+            // If value looks like a relative path (starts with . or contains /)
+            if value.starts_with('.') || value.contains('/') || value.contains('\\') {
+                let raw = Path::new(&value);
+                let path = if raw.is_absolute() {
+                    raw.to_path_buf()
+                } else {
+                    project_dir.join(raw)
+                };
+                if path.exists() {
+                    entries.push((name, path));
+                    continue;
+                }
+            }
+
+            // Otherwise, look in modules/ or boxlang_modules/
+            let mod_path = project_dir.join("modules").join(&name);
+            if mod_path.exists() {
+                entries.push((name, mod_path));
+            } else {
+                let bx_mod_path = project_dir.join("boxlang_modules").join(&name);
+                if bx_mod_path.exists() {
+                    entries.push((name, bx_mod_path));
+                }
+            }
+        }
+    }
+
+    // 2. Read matchbox.toml if present.
     let manifest_path = project_dir.join("matchbox.toml");
     if manifest_path.exists() {
         let text = std::fs::read_to_string(&manifest_path)
@@ -91,11 +142,30 @@ pub fn discover_modules(
             } else {
                 project_dir.join(raw)
             };
+            entries.retain(|(n, _)| n != &name);
             entries.push((name, path));
         }
     }
 
-    // 2. --module CLI overrides: derive name from the directory name, replace manifest entry
+    // 3. Scan modules/ and boxlang_modules/ for any folders with ModuleConfig.bx not already added
+    for dir_name in &["modules", "boxlang_modules"] {
+        let dir_path = project_dir.join(dir_name);
+        if dir_path.is_dir() {
+            if let Ok(dir_entries) = std::fs::read_dir(dir_path) {
+                for entry in dir_entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() && path.join("ModuleConfig.bx").exists() {
+                        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
+                        if !entries.iter().any(|(n, _)| n == &name) {
+                            entries.push((name, path));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. --module CLI overrides: derive name from the directory name, replace manifest entry
     //    with the same name so CLI always wins.
     for raw in extra_module_paths {
         let path = if raw.is_absolute() {

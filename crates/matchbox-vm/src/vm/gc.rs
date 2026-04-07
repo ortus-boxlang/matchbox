@@ -187,7 +187,18 @@ impl Heap {
 
     fn push_children(&self, id: GcId, worklist: &mut Vec<GcId>) {
         match self.objects[id].as_ref().unwrap() {
-            GcObject::String(_) | GcObject::NativeFunction(_) | GcObject::Class(_) | GcObject::Interface(_) | GcObject::CompiledFunction(_) | GcObject::NativeObject(_) => {}
+            GcObject::String(_) | GcObject::NativeFunction(_) | GcObject::Class(_) | GcObject::Interface(_) | GcObject::CompiledFunction(_) => {}
+            GcObject::NativeObject(obj) => {
+                let mut tracer = WorklistTracer { worklist, heap: self };
+                // Use unsafe to bypass RefCell borrow check during tracing.
+                // This is safe because GC is stop-the-world and we are only reading.
+                // This is necessary because the object might be borrowed by the VM
+                // during a native method call that triggered GC.
+                unsafe {
+                    let ptr = obj.as_ptr();
+                    (*ptr).trace(&mut tracer);
+                }
+            }
             #[cfg(all(target_arch = "wasm32", feature = "js"))]
             GcObject::JsValue(_) => {}
             #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
@@ -221,7 +232,14 @@ impl Heap {
 
     fn push_children_young(&self, id: GcId, worklist: &mut Vec<GcId>) {
         match self.objects[id].as_ref().unwrap() {
-            GcObject::String(_) | GcObject::NativeFunction(_) | GcObject::Class(_) | GcObject::Interface(_) | GcObject::CompiledFunction(_) | GcObject::NativeObject(_) => {}
+            GcObject::String(_) | GcObject::NativeFunction(_) | GcObject::Class(_) | GcObject::Interface(_) | GcObject::CompiledFunction(_) => {}
+            GcObject::NativeObject(obj) => {
+                let mut tracer = YoungWorklistTracer { worklist, heap: self };
+                unsafe {
+                    let ptr = obj.as_ptr();
+                    (*ptr).trace(&mut tracer);
+                }
+            }
             #[cfg(all(target_arch = "wasm32", feature = "js"))]
             GcObject::JsValue(_) => {}
             #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
@@ -252,6 +270,31 @@ impl Heap {
             }
         };
     }
+}
+
+struct WorklistTracer<'a> {
+    worklist: &'a mut Vec<GcId>,
+    heap: &'a Heap,
+}
+
+impl<'a> crate::types::Tracer for WorklistTracer<'a> {
+    fn mark(&mut self, val: &BxValue) {
+        self.heap.add_to_worklist(val, self.worklist);
+    }
+}
+
+struct YoungWorklistTracer<'a> {
+    worklist: &'a mut Vec<GcId>,
+    heap: &'a Heap,
+}
+
+impl<'a> crate::types::Tracer for YoungWorklistTracer<'a> {
+    fn mark(&mut self, val: &BxValue) {
+        self.heap.add_to_worklist_young(val, self.worklist);
+    }
+}
+
+impl Heap {
 
     fn add_to_worklist(&self, val: &BxValue, worklist: &mut Vec<GcId>) {
         if let Some(id) = val.as_gc_id() {

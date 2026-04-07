@@ -1751,6 +1751,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "crossterm",
+ "ctrlc",
  "fs_extra",
  "getrandom 0.4.2",
  "jni",
