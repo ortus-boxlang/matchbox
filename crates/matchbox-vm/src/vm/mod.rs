@@ -7,6 +7,8 @@ pub mod intern;
 pub mod jit;
 
 use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, BxNativeFunction, NativeFutureHandle, NativeFutureMessage, NativeFutureValue, Tracer, box_string::BoxString};
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+use crate::types::take_wasm_future_thunk;
 use self::chunk::{Chunk, IcEntry};
 use self::opcode::op;
 use self::gc::{Heap, GcObject};
@@ -623,6 +625,23 @@ impl VM {
                 NativeFutureMessage::Reject { future, error } => {
                     let error = self.native_future_value_to_bx(error);
                     let _ = self.future_reject(future, error);
+                    self.release_pending_native_future(future);
+                }
+                #[cfg(all(target_arch = "wasm32", feature = "js"))]
+                NativeFutureMessage::ResolveWasmThunk { future, thunk_id } => {
+                    let result = take_wasm_future_thunk(thunk_id)
+                        .ok_or_else(|| "WASM future thunk not found".to_string())
+                        .and_then(|thunk| thunk(self));
+
+                    match result {
+                        Ok(value) => {
+                            let _ = self.future_resolve(future, value);
+                        }
+                        Err(message) => {
+                            let error = self.native_future_value_to_bx(NativeFutureValue::Error { message });
+                            let _ = self.future_reject(future, error);
+                        }
+                    }
                     self.release_pending_native_future(future);
                 }
                 NativeFutureMessage::Abandon { future } => {

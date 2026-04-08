@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::mpsc::Sender;
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Serialize, Deserialize};
 
 use self::box_string::BoxString;
@@ -186,6 +188,11 @@ pub enum NativeFutureMessage {
         future: BxValue,
         error: NativeFutureValue,
     },
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    ResolveWasmThunk {
+        future: BxValue,
+        thunk_id: u64,
+    },
     Abandon {
         future: BxValue,
     },
@@ -229,6 +236,17 @@ impl NativeFutureHandle {
             })
             .map_err(|_| "VM completion channel is closed".to_string())
     }
+
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    pub fn resolve_wasm_thunk(mut self, thunk_id: u64) -> Result<(), String> {
+        self.completed = true;
+        self.sender
+            .send(NativeFutureMessage::ResolveWasmThunk {
+                future: self.future,
+                thunk_id,
+            })
+            .map_err(|_| "VM completion channel is closed".to_string())
+    }
 }
 
 impl Drop for NativeFutureHandle {
@@ -239,6 +257,31 @@ impl Drop for NativeFutureHandle {
             });
         }
     }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+pub type WasmFutureThunk = Box<dyn FnOnce(&mut dyn BxVM) -> Result<BxValue, String>>;
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+thread_local! {
+    static WASM_FUTURE_THUNKS: RefCell<HashMap<u64, WasmFutureThunk>> = RefCell::new(HashMap::new());
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+static NEXT_WASM_FUTURE_THUNK_ID: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+pub fn register_wasm_future_thunk(thunk: WasmFutureThunk) -> u64 {
+    let id = NEXT_WASM_FUTURE_THUNK_ID.fetch_add(1, Ordering::Relaxed);
+    WASM_FUTURE_THUNKS.with(|registry| {
+        registry.borrow_mut().insert(id, thunk);
+    });
+    id
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+pub(crate) fn take_wasm_future_thunk(id: u64) -> Option<WasmFutureThunk> {
+    WASM_FUTURE_THUNKS.with(|registry| registry.borrow_mut().remove(&id))
 }
 
 pub trait BxNativeObject: fmt::Debug {
