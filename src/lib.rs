@@ -1,17 +1,20 @@
 use matchbox_compiler::{ast, compiler, parser};
 use matchbox_vm::{types, vm, Chunk};
 
+use std::collections::HashMap;
 use std::env as std_env;
 use std::fs;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use anyhow::{Result, bail, Context};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
 const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
+const ESP32_PARTITIONS_CSV: &str =
+    include_str!("../crates/matchbox-esp32-runner/partitions.csv");
 
 mod stubs;
 mod modules;
@@ -270,6 +273,10 @@ pub fn run() -> Result<()> {
     }
 
     let args: Vec<String> = std_env::args().collect();
+    if args.get(1).map(|s| s.as_str()) == Some("esp32-doctor") {
+        run_esp32_doctor()?;
+        return Ok(());
+    }
     if args.contains(&"--help".to_string()) || args.contains(&"-h".to_string()) {
         print_usage();
         return Ok(());
@@ -397,6 +404,7 @@ pub fn run() -> Result<()> {
 
 fn print_usage() {
     println!("Usage: matchbox [options] [file.bxs|file.bxb|directory]");
+    println!("       matchbox esp32-doctor");
     println!("\nOptions:");
     println!("  -h, --help          Show this help message");
     println!("  -v, --version       Show version information");
@@ -421,6 +429,8 @@ fn print_usage() {
     println!("  --host <address>    Web server host (default: 127.0.0.1)");
     println!("  --webroot <path>    Web server root directory (default: .)");
     println!("  --module <path>     Load a BoxLang module directory (may be specified multiple times)");
+    println!("\nCommands:");
+    println!("  esp32-doctor        Check ESP32 build/flash prerequisites and print fixes");
     println!("\nIf no file is provided, matchbox starts in REPL mode.");
 }
 
@@ -431,6 +441,328 @@ fn print_version() {
     println!("matchbox version {}", version);
     println!("commit: {}", commit);
     println!("built on: {}", date);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DoctorLevel {
+    Ok,
+    Warn,
+    Fail,
+}
+
+impl DoctorLevel {
+    fn label(self) -> &'static str {
+        match self {
+            DoctorLevel::Ok => "ok",
+            DoctorLevel::Warn => "warning",
+            DoctorLevel::Fail => "fail",
+        }
+    }
+}
+
+fn run_esp32_doctor() -> Result<()> {
+    let mut worst = DoctorLevel::Ok;
+
+    println!("MatchBox ESP32 doctor");
+    println!();
+
+    let idf_path = std_env::var("IDF_PATH").ok();
+    match &idf_path {
+        Some(path) => {
+            let toolchain = Path::new(path).join("tools/cmake/toolchain-esp32s3.cmake");
+            if toolchain.exists() {
+                doctor_report(&mut worst, DoctorLevel::Ok, format!("IDF_PATH={path}"));
+            } else {
+                doctor_report(
+                    &mut worst,
+                    DoctorLevel::Fail,
+                    format!(
+                        "IDF_PATH is set to {path}, but {}/tools/cmake/toolchain-esp32s3.cmake is missing.",
+                        path
+                    ),
+                );
+            }
+        }
+        None => doctor_report(
+            &mut worst,
+            DoctorLevel::Fail,
+            "IDF_PATH is not set. Run `source <esp-idf>/export.sh` before `matchbox --target esp32`.",
+        ),
+    }
+
+    let idf_version = command_output("idf.py", &["--version"]);
+    match idf_version {
+        Some(version) => doctor_report(&mut worst, DoctorLevel::Ok, format!("idf.py --version => {version}")),
+        None => doctor_report(
+            &mut worst,
+            DoctorLevel::Fail,
+            "`idf.py` is not runnable in this shell. Activate ESP-IDF first with `source <esp-idf>/export.sh`.",
+        ),
+    }
+
+    match std_env::var("RUSTUP_TOOLCHAIN") {
+        Ok(toolchain) if toolchain == "esp" => doctor_report(&mut worst, DoctorLevel::Ok, "RUSTUP_TOOLCHAIN=esp"),
+        Ok(toolchain) => doctor_report(
+            &mut worst,
+            DoctorLevel::Warn,
+            format!(
+                "RUSTUP_TOOLCHAIN={toolchain}. For `matchbox --target esp32`, use `export RUSTUP_TOOLCHAIN=esp`."
+            ),
+        ),
+        Err(_) => doctor_report(
+            &mut worst,
+            DoctorLevel::Warn,
+            "RUSTUP_TOOLCHAIN is not set. This is fine for rebuilding MatchBox itself, but ESP32 builds should run with `export RUSTUP_TOOLCHAIN=esp`.",
+        ),
+    }
+
+    for tool in ["cargo", "cmake", "ninja", "ldproxy", "espflash"] {
+        match find_in_path(tool) {
+            Some(path) => doctor_report(&mut worst, DoctorLevel::Ok, format!("{tool} => {}", path.display())),
+            None => doctor_report(
+                &mut worst,
+                if tool == "ldproxy" || tool == "espflash" {
+                    DoctorLevel::Fail
+                } else {
+                    DoctorLevel::Warn
+                },
+                format!("{tool} is not on PATH."),
+            ),
+        }
+    }
+
+    match std_env::var("LIBCLANG_PATH") {
+        Ok(value) => doctor_report(&mut worst, DoctorLevel::Ok, format!("LIBCLANG_PATH={value}")),
+        Err(_) => doctor_report(
+            &mut worst,
+            DoctorLevel::Warn,
+            "LIBCLANG_PATH is not set. On Linux, `export LIBCLANG_PATH=/usr/lib64` may be required if bindgen picks the wrong libclang.",
+        ),
+    }
+
+    match std_env::var("ESP_IDF_ESPUP_CLANG_SYMLINK") {
+        Ok(value) if value == "ignore" => {
+            doctor_report(&mut worst, DoctorLevel::Ok, "ESP_IDF_ESPUP_CLANG_SYMLINK=ignore")
+        }
+        Ok(value) => doctor_report(
+            &mut worst,
+            DoctorLevel::Warn,
+            format!(
+                "ESP_IDF_ESPUP_CLANG_SYMLINK={value}. If bindgen/header parsing fails, try `export ESP_IDF_ESPUP_CLANG_SYMLINK=ignore`."
+            ),
+        ),
+        Err(_) => doctor_report(
+            &mut worst,
+            DoctorLevel::Warn,
+            "ESP_IDF_ESPUP_CLANG_SYMLINK is not set. If bindgen/header parsing fails, try `export ESP_IDF_ESPUP_CLANG_SYMLINK=ignore`.",
+        ),
+    }
+
+    let stubs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("stubs");
+    for (label, filename) in [
+        ("ESP32 stub", "runner_stub_esp32.elf"),
+        ("ESP32-S3 stub", "runner_stub_esp32s3.elf"),
+        ("ESP32-C3 stub", "runner_stub_esp32c3.elf"),
+    ] {
+        let path = stubs_dir.join(filename);
+        match fs::metadata(&path) {
+            Ok(meta) if meta.len() > 0 => doctor_report(
+                &mut worst,
+                DoctorLevel::Ok,
+                format!("{label} is present: {} bytes", meta.len()),
+            ),
+            Ok(_) => doctor_report(
+                &mut worst,
+                DoctorLevel::Warn,
+                format!(
+                    "{label} exists but is empty at {}. MatchBox will fall back to a local build.",
+                    path.display()
+                ),
+            ),
+            Err(_) => doctor_report(
+                &mut worst,
+                DoctorLevel::Warn,
+                format!(
+                    "{label} is missing at {}. MatchBox will fall back to a local build.",
+                    path.display()
+                ),
+            ),
+        }
+    }
+
+    if let Ok(cwd) = std_env::current_dir() {
+        let cargo_config = cwd.join(".cargo/config.toml");
+        if cargo_config.exists() {
+            match fs::read_to_string(&cargo_config) {
+                Ok(contents)
+                    if contents.contains("xtensa-esp32")
+                        || contents.contains("riscv32imc-esp-espidf")
+                        || contents.contains("target = \"esp\"") =>
+                {
+                    doctor_report(
+                        &mut worst,
+                        DoctorLevel::Warn,
+                        format!(
+                            "{} forces an ESP target. Build the MatchBox CLI from a neutral directory or pass `--target x86_64-unknown-linux-gnu`.",
+                            cargo_config.display()
+                        ),
+                    );
+                }
+                Ok(_) => doctor_report(
+                    &mut worst,
+                    DoctorLevel::Ok,
+                    format!("{} found, but it does not force an ESP target.", cargo_config.display()),
+                ),
+                Err(error) => doctor_report(
+                    &mut worst,
+                    DoctorLevel::Warn,
+                    format!("Could not read {}: {}", cargo_config.display(), error),
+                ),
+            }
+        }
+    }
+
+    report_serial_devices(&mut |level, message| doctor_report(&mut worst, level, message));
+
+    println!();
+    match worst {
+        DoctorLevel::Ok => println!("ESP32 doctor found no blocking issues."),
+        DoctorLevel::Warn => println!("ESP32 doctor found warnings. Builds may still work, but the shell setup is not ideal."),
+        DoctorLevel::Fail => println!("ESP32 doctor found blocking issues. Fix the failing items above before using `--target esp32`."),
+    }
+
+    Ok(())
+}
+
+fn doctor_report(worst: &mut DoctorLevel, level: DoctorLevel, message: impl AsRef<str>) {
+    if matches!(level, DoctorLevel::Fail)
+        || (matches!(level, DoctorLevel::Warn) && matches!(*worst, DoctorLevel::Ok))
+    {
+        *worst = level;
+    }
+    println!("[{}] {}", level.label(), message.as_ref());
+}
+
+fn find_in_path(binary: &str) -> Option<PathBuf> {
+    let path = std_env::var_os("PATH")?;
+    for dir in std_env::split_paths(&path) {
+        let candidate = dir.join(binary);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            let candidate_exe = dir.join(format!("{binary}.exe"));
+            if candidate_exe.is_file() {
+                return Some(candidate_exe);
+            }
+        }
+    }
+    None
+}
+
+fn command_output(binary: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(binary).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            None
+        } else {
+            Some(stderr)
+        }
+    } else {
+        Some(stdout)
+    }
+}
+
+fn report_serial_devices(report: &mut impl FnMut(DoctorLevel, String)) {
+    let devices = serial_devices();
+    if devices.is_empty() {
+        report(
+            DoctorLevel::Warn,
+            "No common serial devices were found under /dev (ttyACM*, ttyUSB*, cu.usb*).".to_string(),
+        );
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let current_uid = command_output("id", &["-u"]).and_then(|s| s.parse::<u32>().ok());
+        let groups = command_output("id", &["-G"])
+            .map(|s| {
+                s.split_whitespace()
+                    .filter_map(|part| part.parse::<u32>().ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        for device in devices {
+            match fs::metadata(&device) {
+                Ok(meta) => {
+                    let mode = meta.mode();
+                    let uid = meta.uid();
+                    let gid = meta.gid();
+                    let has_access = current_uid
+                        .map(|user| {
+                            if user == uid {
+                                mode & 0o600 == 0o600
+                            } else if groups.contains(&gid) {
+                                mode & 0o060 == 0o060
+                            } else {
+                                mode & 0o006 == 0o006
+                            }
+                        })
+                        .unwrap_or(false);
+                    if has_access {
+                        report(DoctorLevel::Ok, format!("Serial device {} is readable/writable in this shell.", device.display()));
+                    } else {
+                        report(
+                            DoctorLevel::Warn,
+                            format!(
+                                "Serial device {} exists but this shell probably cannot open it. Add your user to the owning serial group or flash with `sudo espflash ...` as a fallback.",
+                                device.display()
+                            ),
+                        );
+                    }
+                }
+                Err(error) => report(
+                    DoctorLevel::Warn,
+                    format!("Could not inspect serial device {}: {}", device.display(), error),
+                ),
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    for device in devices {
+        report(DoctorLevel::Ok, format!("Detected serial device {}", device.display()));
+    }
+}
+
+fn serial_devices() -> Vec<PathBuf> {
+    let mut devices = Vec::new();
+    #[cfg(unix)]
+    if let Ok(entries) = fs::read_dir("/dev") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                if name.starts_with("ttyACM")
+                    || name.starts_with("ttyUSB")
+                    || name.starts_with("cu.usb")
+                {
+                    devices.push(path);
+                }
+            }
+        }
+    }
+    devices.sort();
+    devices
 }
 
 pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str>, keep_symbols: Vec<String>, no_shaking: bool, no_std_lib: bool, strip_source: bool, output: Option<&Path>, extra_module_paths: &[PathBuf], is_flash: bool, orig_chip: Option<&str>, is_fast_deploy: bool, is_watch: bool, is_full_flash: bool) -> Result<()> {
@@ -841,9 +1173,13 @@ fn produce_fusion_artifact(chunk: &Chunk, source_path: &Path, native_dir: &Path,
         let dep_path = module.path.join("matchbox");
         let dep_str = dep_path.to_str().unwrap_or("").replace('\\', "/");
         let dep_str = dep_str.strip_prefix("//?/").unwrap_or(&dep_str);
+        let cargo_toml_path = dep_path.join("Cargo.toml");
+        let crate_name = read_crate_name(&cargo_toml_path)?;
+        let rust_name = crate_name.replace('-', "_");
         extra_dep_lines.push_str(&format!(
-            "{} = {{ path = \"{}\" }}\n",
-            module.name,
+            "{} = {{ package = \"{}\", path = \"{}\" }}\n",
+            rust_name,
+            crate_name,
             dep_str,
         ));
     }
@@ -864,8 +1200,9 @@ anyhow = "1.0"
 "#);
 
     if is_esp32 {
-        cargo_toml.push_str("esp-idf-svc = { version = \"0.52\", features = [\"binstart\"] }\n");
+        cargo_toml.push_str("esp-idf-svc = { version = \"0.52\", features = [\"binstart\", \"critical-section\", \"embassy-time-driver\"] }\n");
         cargo_toml.push_str("esp-idf-sys = \"0.37\"\n");
+        cargo_toml.push_str("embassy-time = { version = \"0.5\", features = [\"generic-queue-8\"] }\n");
         cargo_toml.push_str("log = \"0.4\"\n");
         cargo_toml.push_str("\n[build-dependencies]\nembuild = { version = \"0.33\", features = [\"espidf\"] }\n");
         
@@ -903,6 +1240,24 @@ fn main() {
     embuild::espidf::sysenv::output();
 }
 "#)?;
+
+        let mut sdkconfig_defaults = String::new();
+        for module in modules.iter().filter(|m| m.has_native) {
+            let sdkconfig_path = module.path.join("matchbox").join("sdkconfig.defaults");
+            if sdkconfig_path.exists() {
+                let contents = fs::read_to_string(&sdkconfig_path)?;
+                if !sdkconfig_defaults.is_empty() && !sdkconfig_defaults.ends_with('\n') {
+                    sdkconfig_defaults.push('\n');
+                }
+                sdkconfig_defaults.push_str(&contents);
+                if !sdkconfig_defaults.ends_with('\n') {
+                    sdkconfig_defaults.push('\n');
+                }
+            }
+        }
+        if !sdkconfig_defaults.is_empty() {
+            fs::write(build_dir.join("sdkconfig.defaults"), sdkconfig_defaults)?;
+        }
     }
 
     cargo_toml.push_str(r#"
@@ -1039,11 +1394,7 @@ use std::collections::HashMap;
 
     if is_esp32 {
         code.push_str(&format!(r#"
-fn main() -> anyhow::Result<()> {{
-    esp_idf_sys::link_patches();
-    EspLogger::initialize_default();
-    println!("[matchbox] ESP32 Fusion Runner Starting...");
-
+fn run_vm() -> anyhow::Result<()> {{
     let mut chunk = match load_from_flash() {{
         Ok(c) => c,
         Err(_) => {{
@@ -1059,7 +1410,47 @@ fn main() -> anyhow::Result<()> {{
 {}
     let mut vm = VM::new_with_bifs(bifs, classes);
     vm.interpret(chunk)?;
-    loop {{ std::thread::sleep(std::time::Duration::from_secs(10)); }}
+    Ok(())
+}}
+
+fn main() -> anyhow::Result<()> {{
+    esp_idf_sys::link_patches();
+    EspLogger::initialize_default();
+    println!("[matchbox] ESP32 Fusion Runner Starting...");
+
+    const STACK_SIZE: u32 = 48 * 1024;
+
+    extern "C" fn task_wrapper(_: *mut std::ffi::c_void) {{
+        if let Err(error) = run_vm() {{
+            eprintln!("[matchbox] Fusion VM Task failed: {{}}", error);
+        }}
+        println!("[matchbox] Fusion VM Task finished. Standing by...");
+        loop {{
+            unsafe {{ esp_idf_sys::vTaskDelay(100); }}
+        }}
+    }}
+
+    unsafe {{
+        let name = std::ffi::CString::new("matchbox_fusion_vm").unwrap();
+        let res = esp_idf_sys::xTaskCreatePinnedToCore(
+            Some(task_wrapper),
+            name.as_ptr(),
+            STACK_SIZE,
+            std::ptr::null_mut(),
+            5,
+            std::ptr::null_mut(),
+            0,
+        );
+
+        if res != 1 {{
+            anyhow::bail!("Failed to create fusion VM task (error {{}})", res);
+        }}
+    }}
+
+    println!("[matchbox] Main task standing by...");
+    loop {{
+        unsafe {{ esp_idf_sys::vTaskDelay(1000); }}
+    }}
 }}
 "#, registration_calls));
     } else if target == "js" {
@@ -1141,6 +1532,10 @@ impl BoxLangVM {
         let bytecode_path = build_dir.join("bytecode.bxb");
         fs::write(&bytecode_path, bytecode)?;
         cmd.env("BOXLANG_BYTECODE_PATH", bytecode_path.to_str().unwrap());
+        let sdkconfig_defaults_path = build_dir.join("sdkconfig.defaults");
+        if sdkconfig_defaults_path.exists() {
+            cmd.env("ESP_IDF_SDKCONFIG_DEFAULTS", sdkconfig_defaults_path.to_str().unwrap());
+        }
     }
 
     let status = cmd.status()?;
@@ -1267,6 +1662,12 @@ fn produce_wasm_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>)
 }
 
 fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>, is_flash: bool, chip: Option<&str>, is_fast_deploy: bool, is_full_flash: bool) -> Result<()> {
+    fn write_embedded_esp32_partitions_csv() -> Result<PathBuf> {
+        let path = std_env::temp_dir().join("matchbox_esp32_partitions.csv");
+        fs::write(&path, ESP32_PARTITIONS_CSV)?;
+        Ok(path)
+    }
+
     let chip = chip.unwrap_or("esp32");
     let bytecode_bytes = postcard::to_stdvec(chunk)?;
 
@@ -1337,8 +1738,7 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
             
             if is_flash {
                 println!("Flashing stub and then bytecode...");
-                let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-                let partition_csv = project_root.join("crates/matchbox-esp32-runner/partitions.csv");
+                let partition_csv = write_embedded_esp32_partitions_csv()?;
                 
                 // 1. Flash the stub firmware with the partition table
                 let mut flash_cmd = std::process::Command::new("espflash");
@@ -1362,6 +1762,7 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
     }
 
     println!("Building custom ESP32 firmware for chip: {} (no stub found)...", chip);
+    println!("Using activated ESP-IDF environment (`ESP_IDF_TOOLS_INSTALL_DIR=fromenv`) for ESP32 runner build.");
     let temp_dir = std_env::temp_dir().join("matchbox_esp32_build");
     if temp_dir.exists() {
         fs::remove_dir_all(&temp_dir)?;
@@ -1380,11 +1781,17 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
         .arg("--release")
         .arg("--target").arg(target)
         .current_dir(&runner_path)
-        .env("BOXLANG_BYTECODE_PATH", bytecode_path.to_str().unwrap());
+        .env("BOXLANG_BYTECODE_PATH", bytecode_path.to_str().unwrap())
+        .env("ESP_IDF_TOOLS_INSTALL_DIR", "fromenv")
+        .env("MCU", chip);
 
     let status = cmd.status()?;
     if !status.success() {
-        bail!("Failed to compile ESP32 runner. Ensure the ESP32 Rust toolchain is installed.");
+        bail!(
+            "Failed to compile ESP32 runner. Ensure the ESP32 Rust toolchain is installed, \
+             a real ESP-IDF environment has been activated (for example `source <esp-idf>/export.sh`), \
+             and `RUSTUP_TOOLCHAIN=esp` is set before invoking MatchBox."
+        );
     }
 
     let elf_path = runner_path.join("target").join(target).join("release").join("matchbox-esp32-runner");
@@ -1395,8 +1802,7 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
 
     if is_flash {
         println!("Flashing to device...");
-        let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let partition_csv = project_root.join("crates/matchbox-esp32-runner/partitions.csv");
+        let partition_csv = write_embedded_esp32_partitions_csv()?;
 
         let mut flash_cmd = std::process::Command::new("espflash");
         flash_cmd.arg("flash")
@@ -1409,6 +1815,11 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
             bail!("Failed to flash to ESP32 device.");
         }
         println!("Flash successful!");
+
+        if is_full_flash {
+            println!("Full flash complete. Sending fresh bytecode to the 'storage' partition...");
+            return produce_esp32_binary(chunk, source_path, output, false, Some(chip), true, is_full_flash);
+        }
     }
 
     Ok(())

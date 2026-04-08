@@ -144,15 +144,62 @@ jobs:
           cargo build --release --target riscv32imc-esp-espidf
           cp target/riscv32imc-esp-espidf/release/matchbox-esp32-runner ../../stubs-out/runner_stub_esp32c3.elf
 
+          for stub in runner_stub_esp32.elf runner_stub_esp32s3.elf runner_stub_esp32c3.elf; do
+            test -s "../../stubs-out/$stub" || { echo "Stub $stub is empty"; exit 1; }
+          done
+
       - name: Upload ESP32 Stubs
         uses: actions/upload-artifact@v4
         with:
           name: stubs-esp32
           path: stubs-out/*
 
+  esp32-fusion-smoke:
+    name: ESP32 Fusion Smoke
+    needs: test
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf-rust:all_1.92.0.0
+      options: --user root
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show ESP tool versions
+        env:
+          RUSTUP_HOME: /home/esp/.rustup
+          CARGO_HOME: /home/esp/.cargo
+        shell: bash
+        run: |
+          rustc -V
+          cargo -V
+          python3 --version
+          idf.py --version
+
+      - name: Build MatchBox host CLI
+        env:
+          RUSTUP_HOME: /home/esp/.rustup
+          CARGO_HOME: /home/esp/.cargo
+        shell: bash
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Build ESP32 fusion example
+        env:
+          RUSTUP_HOME: /home/esp/.rustup
+          CARGO_HOME: /home/esp/.cargo
+          RUSTUP_TOOLCHAIN: esp
+          ESP_IDF_TOOLS_INSTALL_DIR: fromenv
+        shell: bash
+        run: |
+          ./target/x86_64-unknown-linux-gnu/release/matchbox \
+            docs/examples/native_fusion/app.bxs \
+            --target esp32 \
+            --chip esp32s3
+
+          test -s target/fusion/app/target/xtensa-esp32s3-espidf/release/fusion_build \
+            || { echo "ESP32 fusion smoke artifact is missing or empty"; exit 1; }
+
   aggregate-stubs:
     name: Aggregate All Stubs
-    needs: [build-stubs, build-esp32-stubs]
+    needs: [build-stubs, build-esp32-stubs, esp32-fusion-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Download All Stubs

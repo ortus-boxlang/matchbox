@@ -28,6 +28,10 @@ To build MatchBox, you need the [Rust toolchain](https://rustup.rs/).
 ### ESP32 Build (Optional)
 - **Toolchain**: [Espressif Rust Toolchain](https://github.com/esp-rs/rust-build) (Xtensa)
 - **Command**: `espup install`
+- **ESP-IDF**: Install a full ESP-IDF environment and activate it with `source <esp-idf>/export.sh`
+- **Shell**: Export `RUSTUP_TOOLCHAIN=esp` before building ESP32 artifacts
+- **Linker Wrapper**: `cargo install ldproxy`
+- **Flashing Tool**: `espflash` 3.3.0+
 
 ---
 
@@ -79,7 +83,7 @@ cargo build --release
 
 ### 2. Fat CLI (All targets)
 Builds the full developer tool, including runner stubs for Native, WASM, and ESP32.
-> **Note**: Requires all cross-compilation toolchains to be installed.
+> **Note**: Requires all cross-compilation toolchains to be installed. ESP32-S3 may still fall back to a local runner build if no healthy pre-built stub is available.
 ```bash
 cargo build --release --features cross-compile
 ```
@@ -101,9 +105,14 @@ wasm-bindgen --target web --out-dir ./pkg target/wasm32-unknown-unknown/release/
 ### 5. ESP32 Stub (Directly)
 To build just the ESP32 runner for a specific chip:
 ```bash
+source /path/to/esp-idf/export.sh
+export RUSTUP_TOOLCHAIN=esp
 cd crates/matchbox-esp32-runner
-rustup run esp cargo build --release --target xtensa-esp32s3-espidf
+cargo build --release --target xtensa-esp32s3-espidf
 ```
+
+MatchBox's `--target esp32` path assumes the same environment is active and now prefers the activated ESP-IDF
+toolchain over the managed per-project tool installation flow. Run MatchBox from that activated shell rather than mixing it with other ESP export scripts.
 
 ---
 
