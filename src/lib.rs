@@ -20,6 +20,157 @@ const JS_GLUE_TEMPLATE: &str = include_str!("js_bundle_template.js");
 
 use postcard;
 
+fn exported_function_names(ast: &[ast::Statement]) -> Vec<String> {
+    let mut functions = Vec::new();
+    for stmt in ast {
+        if let ast::StatementKind::FunctionDecl { name, .. } = &stmt.kind {
+            functions.push(name.clone());
+        }
+    }
+    functions
+}
+
+fn render_pure_js_bootstrap(functions: &[String], b64_wasm: &str, b64_bytecode: &str) -> String {
+    let mut bootstrap = String::new();
+    bootstrap.push_str(&format!("const wasmBase64 = \"{}\";\n", b64_wasm));
+    bootstrap.push_str(&format!("const bytecodeBase64 = \"{}\";\n\n", b64_bytecode));
+
+    bootstrap.push_str("let vm = null;\n");
+    bootstrap.push_str("async function ensureInit() {\n");
+    bootstrap.push_str("    if (vm) return;\n");
+    bootstrap.push_str("    const wasmBinary = Uint8Array.from(atob(wasmBase64), c => c.charCodeAt(0));\n");
+    bootstrap.push_str("    await init(wasmBinary);\n");
+    bootstrap.push_str("    vm = new BoxLangVM();\n");
+    bootstrap.push_str("    const bytecodeBinary = Uint8Array.from(atob(bytecodeBase64), c => c.charCodeAt(0));\n");
+    bootstrap.push_str("    vm.load_bytecode(bytecodeBinary);\n");
+    bootstrap.push_str("}\n\n");
+
+    for func in functions {
+        bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
+        bootstrap.push_str("    await ensureInit();\n");
+        bootstrap.push_str(&format!("    return vm.call(\"{}\", args);\n", func));
+        bootstrap.push_str("}\n\n");
+    }
+
+    bootstrap
+}
+
+fn render_fusion_js_bootstrap(functions: &[String]) -> String {
+    let mut bootstrap = String::new();
+    bootstrap.push_str("\nlet vm = null;\n");
+    bootstrap.push_str("async function ensureInit() {\n");
+    bootstrap.push_str("    await init();\n");
+    bootstrap.push_str("    if (!vm) {\n");
+    bootstrap.push_str("        vm = new BoxLangVM();\n");
+    bootstrap.push_str("    }\n");
+    bootstrap.push_str("    return vm;\n");
+    bootstrap.push_str("}\n\n");
+
+    for func in functions {
+        bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
+        bootstrap.push_str("    const vm = await ensureInit();\n");
+        bootstrap.push_str(&format!("    return await vm.call(\"{}\", args);\n", func));
+        bootstrap.push_str("}\n\n");
+    }
+
+    bootstrap
+}
+
+fn render_fusion_web_host_source(registration_calls: &str, bytecode: &[u8]) -> String {
+    format!(r#"
+use matchbox_vm::{{vm::{{HostFutureState, VM}}, types::{{BxNativeFunction, BxValue}}, Chunk}};
+use std::collections::HashMap;
+use console_error_panic_hook;
+use js_sys::{{Array, Promise}};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
+use web_sys::window;
+
+fn as_js_error(message: impl Into<String>) -> JsValue {{
+    JsValue::from_str(&message.into())
+}}
+
+async fn yield_to_host() -> Result<(), JsValue> {{
+    let promise = Promise::new(&mut |resolve, reject| {{
+        let Some(win) = window() else {{
+            let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("window is unavailable"));
+            return;
+        }};
+
+        if let Err(err) = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0) {{
+            let _ = reject.call1(&JsValue::NULL, &err);
+        }}
+    }});
+
+    let _ = JsFuture::from(promise).await?;
+    Ok(())
+}}
+
+fn new_vm() -> VM {{
+    let mut bifs = HashMap::new();
+    let mut classes = HashMap::new();
+{registration_calls}    VM::new_with_bifs(bifs, classes)
+}}
+
+fn embedded_chunk() -> Result<Chunk, String> {{
+    let bytecode: Vec<u8> = vec!{bytecode:?};
+    let mut chunk: Chunk = postcard::from_bytes(&bytecode).map_err(|e| e.to_string())?;
+    chunk.reconstruct_functions();
+    Ok(chunk)
+}}
+
+#[wasm_bindgen]
+pub struct BoxLangVM {{
+    vm: VM,
+}}
+
+#[wasm_bindgen]
+impl BoxLangVM {{
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Result<BoxLangVM, JsValue> {{
+        console_error_panic_hook::set_once();
+        let mut vm = new_vm();
+        let chunk = embedded_chunk().map_err(as_js_error)?;
+        vm.interpret_sync(chunk)
+            .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))?;
+        Ok(BoxLangVM {{ vm }})
+    }}
+
+    pub async fn call(&mut self, name: &str, args: Array) -> Result<JsValue, JsValue> {{
+        let func = self
+            .vm
+            .get_global(name)
+            .ok_or_else(|| as_js_error(format!("Function {{}} not found", name)))?;
+
+        let mut bx_args = Vec::new();
+        for idx in 0..args.length() {{
+            bx_args.push(self.vm.js_to_bx(args.get(idx)));
+        }}
+
+        let future = self
+            .vm
+            .start_call_function_value(func, bx_args)
+            .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))?;
+
+        loop {{
+            self.vm
+                .pump_until_blocked()
+                .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))?;
+
+            match self
+                .vm
+                .future_state(future)
+                .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))? {{
+                HostFutureState::Pending => yield_to_host().await?,
+                HostFutureState::Completed(value) => return Ok(self.vm.bx_to_js(&value)),
+                HostFutureState::Failed(error) => return Err(self.vm.bx_to_js(&error)),
+            }}
+        }}
+    }}
+}}
+"#)
+}
+
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn run_boxlang_bytecode(bytes: &[u8]) -> String {
@@ -385,40 +536,56 @@ fn produce_js_bundle(chunk: &Chunk, source_path: &Path, ast: &[ast::Statement], 
         bail!("WASI runner stub is empty. The matchbox CLI must be rebuilt with the wasm32-wasip1 target installed.");
     }
     let b64_wasm = base64_simd::STANDARD.encode_to_string(&wasm_bytes);
-
-    let mut functions = Vec::new();
-    for stmt in ast {
-        if let ast::StatementKind::FunctionDecl { name, .. } = &stmt.kind {
-            functions.push(name.clone());
-        }
-    }
-
-    let mut bootstrap = String::new();
-    bootstrap.push_str(&format!("const wasmBase64 = \"{}\";\n", b64_wasm));
-    bootstrap.push_str(&format!("const bytecodeBase64 = \"{}\";\n\n", b64_bytecode));
-    
-    bootstrap.push_str("let vm = null;\n");
-    bootstrap.push_str("async function ensureInit() {\n");
-    bootstrap.push_str("    if (vm) return;\n");
-    bootstrap.push_str("    const wasmBinary = Uint8Array.from(atob(wasmBase64), c => c.charCodeAt(0));\n");
-    bootstrap.push_str("    await init(wasmBinary);\n");
-    bootstrap.push_str("    vm = new BoxLangVM();\n");
-    bootstrap.push_str("    const bytecodeBinary = Uint8Array.from(atob(bytecodeBase64), c => c.charCodeAt(0));\n");
-    bootstrap.push_str("    vm.load_bytecode(bytecodeBinary);\n");
-    bootstrap.push_str("}\n\n");
-
-    for func in functions {
-        bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
-        bootstrap.push_str("    await ensureInit();\n");
-        bootstrap.push_str(&format!("    return vm.call(\"{}\", args);\n", func));
-        bootstrap.push_str("}\n\n");
-    }
+    let functions = exported_function_names(ast);
+    let bootstrap = render_pure_js_bootstrap(&functions, &b64_wasm, &b64_bytecode);
 
     let final_js = JS_GLUE_TEMPLATE.replace("/* __REPLACE_ME__ */", &bootstrap);
 
     let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("js"));
     fs::write(&out_path, final_js)?;
     println!("Standalone JS module produced: {}", out_path.display());
+    Ok(())
+}
+
+fn produce_fusion_js_bundle(
+    wasm_artifact: &Path,
+    source_path: &Path,
+    ast: &[ast::Statement],
+    output: Option<&Path>,
+) -> Result<()> {
+    let out_path = output
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| source_path.with_extension("js"));
+    let out_dir = out_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    fs::create_dir_all(&out_dir)?;
+
+    let stem = out_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("app")
+        .to_string();
+
+    let wasm_bindgen_bin = std_env::var("WASM_BINDGEN").unwrap_or_else(|_| "wasm-bindgen".to_string());
+    let status = std::process::Command::new(wasm_bindgen_bin)
+        .arg("--target").arg("web")
+        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-name").arg(&stem)
+        .arg(wasm_artifact)
+        .status()?;
+
+    if !status.success() {
+        bail!("Failed to run wasm-bindgen for JS fusion bundle");
+    }
+
+    let generated_js_path = out_dir.join(format!("{}.js", stem));
+    let generated_js = fs::read_to_string(&generated_js_path)?;
+    let bootstrap = render_fusion_js_bootstrap(&exported_function_names(ast));
+    fs::write(&generated_js_path, format!("{}\n{}", generated_js, bootstrap))?;
+
+    println!("Fusion JS module produced: {}", generated_js_path.display());
     Ok(())
 }
 
@@ -750,7 +917,10 @@ strip = true
     if is_wasm {
         cargo_toml.push_str("\n[lib]\ncrate-type = [\"cdylib\", \"rlib\"]\n\n");
         cargo_toml.push_str("wasm-bindgen = \"0.2\"\n");
+        cargo_toml.push_str("wasm-bindgen-futures = \"0.4\"\n");
+        cargo_toml.push_str("console_error_panic_hook = \"0.1\"\n");
         cargo_toml.push_str("js-sys = \"0.3\"\n");
+        cargo_toml.push_str("web-sys = { version = \"0.3\", features = [\"Window\"] }\n");
     }
 
     fs::write(build_dir.join("Cargo.toml"), cargo_toml)?;
@@ -892,6 +1062,8 @@ fn main() -> anyhow::Result<()> {{
     loop {{ std::thread::sleep(std::time::Duration::from_secs(10)); }}
 }}
 "#, registration_calls));
+    } else if target == "js" {
+        code.push_str(&render_fusion_web_host_source(&registration_calls, &bytecode));
     } else {
         code.push_str(&format!(r#"
 fn run_interpreted() -> anyhow::Result<()> {{
@@ -908,7 +1080,7 @@ fn run_interpreted() -> anyhow::Result<()> {{
 "#, registration_calls, bytecode));
     }
 
-    if is_wasm {
+    if is_wasm && target != "js" {
         code.push_str(r#"
 use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
@@ -935,6 +1107,8 @@ impl BoxLangVM {
     }
 }
 "#);
+        fs::write(build_dir.join("src").join("lib.rs"), code)?;
+    } else if target == "js" {
         fs::write(build_dir.join("src").join("lib.rs"), code)?;
     } else if !is_esp32 {
         code.push_str("fn main() -> anyhow::Result<()> { run_interpreted() }\n");
@@ -999,8 +1173,7 @@ impl BoxLangVM {
         println!("{} Fusion binary produced: {}", target.to_uppercase(), out_path.display());
     } else if target == "js" {
         let artifact = build_dir.join("target").join("wasm32-unknown-unknown").join("release").join("fusion_build.wasm");
-        fs::copy(artifact, source_path.with_extension("wasm"))?;
-        produce_js_bundle(chunk, source_path, ast, output)?;
+        produce_fusion_js_bundle(&artifact, source_path, ast, output)?;
     }
     Ok(())
 }
@@ -1434,5 +1607,62 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool) -> 
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exported_function_names_collects_top_level_functions() {
+        let source = r#"
+            function alpha() {}
+            x = 1
+            function beta(a) { return a; }
+        "#;
+        let ast = parser::parse(source).unwrap();
+        assert_eq!(exported_function_names(&ast), vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn pure_js_bootstrap_keeps_stub_loader_shape() {
+        let bootstrap = render_pure_js_bootstrap(
+            &vec!["hello".to_string()],
+            "stub-wasm",
+            "stub-bytecode",
+        );
+
+        assert!(bootstrap.contains("const wasmBase64 = \"stub-wasm\";"));
+        assert!(bootstrap.contains("const bytecodeBase64 = \"stub-bytecode\";"));
+        assert!(bootstrap.contains("vm.load_bytecode(bytecodeBinary);"));
+        assert!(bootstrap.contains("return vm.call(\"hello\", args);"));
+    }
+
+    #[test]
+    fn fusion_js_bootstrap_uses_async_vm_call_without_bytecode_loader() {
+        let bootstrap = render_fusion_js_bootstrap(&vec!["hello".to_string()]);
+
+        assert!(bootstrap.contains("await init();"));
+        assert!(bootstrap.contains("vm = new BoxLangVM();"));
+        assert!(bootstrap.contains("return await vm.call(\"hello\", args);"));
+        assert!(!bootstrap.contains("load_bytecode"));
+        assert!(!bootstrap.contains("wasmBase64"));
+    }
+
+    #[test]
+    fn fusion_web_host_source_registers_modules_and_uses_scheduler_api() {
+        let source = render_fusion_web_host_source(
+            "    for (name, val) in demo::register_bifs() { bifs.insert(name, val); }\n",
+            &[1, 2, 3],
+        );
+
+        assert!(source.contains("demo::register_bifs()"));
+        assert!(source.contains("VM::new_with_bifs(bifs, classes)"));
+        assert!(source.contains("vm.interpret_sync(chunk)"));
+        assert!(source.contains("start_call_function_value"));
+        assert!(source.contains("pump_until_blocked"));
+        assert!(source.contains("future_state"));
+        assert!(source.contains("HostFutureState::Pending"));
     }
 }
