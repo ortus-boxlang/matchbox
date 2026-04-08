@@ -105,6 +105,13 @@ enum NativeCompletion {
     Reject { future: BxValue, error: BxValue },
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum HostFutureState {
+    Pending,
+    Completed(BxValue),
+    Failed(BxValue),
+}
+
 pub struct VM {
     pub fibers: Vec<BxFiber>,
     pub global_names: HashMap<u32, usize>,
@@ -585,6 +592,67 @@ impl BxVM for VM {
 }
 
 impl VM {
+    pub fn interpret_sync(&mut self, mut chunk: Chunk) -> Result<BxValue> {
+        chunk.ensure_caches();
+        let chunk_for_func = chunk.clone();
+        let function = Rc::new(BxCompiledFunction {
+            name: "script".to_string(),
+            arity: 0,
+            min_arity: 0,
+            params: Vec::new(),
+            chunk: chunk_for_func,
+        });
+
+        let future = self.spawn(function, Vec::new(), 0, Rc::new(RefCell::new(Chunk::default())));
+        self.run_future_to_completion(future)
+    }
+
+    fn enqueue_function_call(
+        &mut self,
+        func: BxValue,
+        function: Rc<BxCompiledFunction>,
+        args: Vec<BxValue>,
+        priority: u8,
+    ) -> BxValue {
+        let future_id = self.heap.alloc(GcObject::Future(BxFuture {
+            value: BxValue::new_null(),
+            status: FutureStatus::Pending,
+            error_handler: None,
+        }));
+
+        let mut stack = Vec::with_capacity(function.arity as usize + 1);
+        stack.push(func);
+        for arg in args {
+            stack.push(arg);
+        }
+        while stack.len() < (function.arity + 1) as usize {
+            stack.push(BxValue::new_null());
+        }
+
+        let chunk = Rc::new(RefCell::new(function.chunk.clone()));
+
+        let fiber = BxFiber {
+            stack,
+            frames: vec![CallFrame {
+                function,
+                chunk,
+                ip: 0,
+                stack_base: 1,
+                receiver: None,
+                handlers: Vec::new(),
+                promoted_constants: Vec::new(),
+            }],
+            future_id,
+            wait_until: None,
+            yield_requested: false,
+            priority,
+            root_stack: Vec::new(),
+        };
+
+        self.fibers.push(fiber);
+        BxValue::new_ptr(future_id)
+    }
+
     fn native_future_value_to_bx(&mut self, value: NativeFutureValue) -> BxValue {
         match value {
             NativeFutureValue::Null => BxValue::new_null(),
@@ -983,6 +1051,100 @@ impl VM {
         let res = self.run_all();
         self.current_fiber_idx = None;
         res
+    }
+
+    pub fn start_call_function_value(&mut self, func: BxValue, args: Vec<BxValue>) -> Result<BxValue> {
+        if let Some(id) = func.as_gc_id() {
+            match self.heap.get(id) {
+                GcObject::CompiledFunction(f) => {
+                    let f = Rc::clone(f);
+                    if args.len() < f.min_arity as usize || args.len() > f.arity as usize {
+                        anyhow::bail!("Expected {}-{} arguments but got {}", f.min_arity, f.arity, args.len());
+                    }
+                    Ok(self.enqueue_function_call(func, f, args, 0))
+                }
+                GcObject::NativeFunction(f) => {
+                    let f = *f;
+                    self.gc_suspended = true;
+                    let res = f(self, &args).map_err(|e| anyhow::anyhow!(e));
+                    self.gc_suspended = false;
+                    let future = self.future_new();
+                    match res {
+                        Ok(value) => {
+                            let _ = self.future_resolve(future, value);
+                            Ok(future)
+                        }
+                        Err(err) => {
+                            let error_id = self.string_new(err.to_string());
+                            let _ = self.future_reject(future, BxValue::new_ptr(error_id));
+                            Ok(future)
+                        }
+                    }
+                }
+                _ => anyhow::bail!("Value is not a callable function"),
+            }
+        } else {
+            anyhow::bail!("Value is not a callable function")
+        }
+    }
+
+    pub fn pump_until_blocked(&mut self) -> Result<()> {
+        self.drain_native_completions();
+        let mut i = 0;
+
+        while i < self.fibers.len() {
+            self.current_fiber_idx = Some(i);
+            match self.run_fiber(i, None) {
+                Ok(Some(result)) => {
+                    let fiber = self.fibers.swap_remove(i);
+                    if let GcObject::Future(f) = self.heap.get_mut(fiber.future_id) {
+                        f.value = result;
+                        f.status = FutureStatus::Completed;
+                    }
+                }
+                Ok(None) => {
+                    i += 1;
+                }
+                Err(err) => {
+                    let err_str = err.to_string();
+                    let err_id = self.string_new(err_str);
+                    let err_val = BxValue::new_ptr(err_id);
+                    let fiber = self.fibers.swap_remove(i);
+                    if let GcObject::Future(f) = self.heap.get_mut(fiber.future_id) {
+                        f.status = FutureStatus::Failed(err_val);
+                    }
+                }
+            }
+        }
+
+        self.current_fiber_idx = None;
+        Ok(())
+    }
+
+    pub fn future_state(&self, future: BxValue) -> Result<HostFutureState> {
+        let id = future.as_gc_id().ok_or_else(|| anyhow::anyhow!("Value is not a future"))?;
+        match self.heap.get(id) {
+            GcObject::Future(f) => match &f.status {
+                FutureStatus::Pending => Ok(HostFutureState::Pending),
+                FutureStatus::Completed => Ok(HostFutureState::Completed(f.value)),
+                FutureStatus::Failed(error) => Ok(HostFutureState::Failed(*error)),
+            },
+            _ => anyhow::bail!("Value is not a future"),
+        }
+    }
+
+    pub fn run_future_to_completion(&mut self, future: BxValue) -> Result<BxValue> {
+        loop {
+            self.pump_until_blocked()?;
+            match self.future_state(future)? {
+                HostFutureState::Pending => continue,
+                HostFutureState::Completed(value) => return Ok(value),
+                HostFutureState::Failed(err) => {
+                    let message = self.to_string(err);
+                    anyhow::bail!("{}", message);
+                }
+            }
+        }
     }
 
     pub fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue {
@@ -3221,7 +3383,7 @@ impl VM {
         anyhow::bail!("Function {} not found", name)
     }
 
-    pub fn call_function_value(&mut self, func: BxValue, args: Vec<BxValue>, chunk: Option<Rc<RefCell<Chunk>>>) -> Result<BxValue> {
+    pub fn call_function_value(&mut self, func: BxValue, args: Vec<BxValue>, _chunk: Option<Rc<RefCell<Chunk>>>) -> Result<BxValue> {
         if let Some(id) = func.as_gc_id() {
             match self.heap.get(id) {
                 GcObject::CompiledFunction(f) => {
@@ -3229,42 +3391,7 @@ impl VM {
                     if args.len() < f.min_arity as usize || args.len() > f.arity as usize {
                         anyhow::bail!("Expected {}-{} arguments but got {}", f.min_arity, f.arity, args.len());
                     }
-                    
-                    let future_id = self.heap.alloc(GcObject::Future(BxFuture {
-                        value: BxValue::new_null(),
-                        status: FutureStatus::Pending,
-                        error_handler: None,
-                    }));
-
-                    let mut stack = Vec::with_capacity(f.arity as usize + 1);
-                    stack.push(func); // function itself at base
-                    for arg in args {
-                        stack.push(arg);
-                    }
-                    while stack.len() < (f.arity + 1) as usize {
-                        stack.push(BxValue::new_null());
-                    }
-
-                    let chunk = Rc::new(RefCell::new(f.chunk.clone()));
-
-                    let fiber = BxFiber {
-                        stack,
-                        frames: vec![CallFrame {
-                            function: f,
-                            chunk,
-                            ip: 0,
-                            stack_base: 1,
-                            receiver: None,
-                            handlers: Vec::new(),
-                            promoted_constants: Vec::new(),
-                        }],
-                        future_id,
-                        wait_until: None,
-                        yield_requested: false,
-                        priority: 0,
-                        root_stack: Vec::new(),
-                    };
-                    self.fibers.push(fiber);
+                    let _future = self.enqueue_function_call(func, f, args, 0);
                     let fiber_idx = self.fibers.len() - 1;
                     self.current_fiber_idx = Some(fiber_idx);
                     // Loop until the fiber completes — this is a synchronous blocking call.
