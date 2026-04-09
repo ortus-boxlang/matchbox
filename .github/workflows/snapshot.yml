@@ -169,7 +169,16 @@ jobs:
           CARGO_HOME: /home/esp/.cargo
         shell: bash
         run: |
-          source /opt/esp/idf/export.sh
+          if ! command -v idf.py >/dev/null 2>&1; then
+            for script in /opt/esp/idf/export.sh /opt/esp-idf/export.sh /home/esp/export-esp.sh /root/export-esp.sh; do
+              if [[ -f "$script" ]]; then
+                source "$script"
+                break
+              fi
+            done
+          fi
+
+          command -v idf.py >/dev/null 2>&1 || { echo "idf.py not found after ESP-IDF environment setup"; exit 1; }
           rustc -V
           cargo -V
           python3 --version
@@ -190,7 +199,16 @@ jobs:
           ESP_IDF_TOOLS_INSTALL_DIR: fromenv
         shell: bash
         run: |
-          source /opt/esp/idf/export.sh
+          if ! command -v idf.py >/dev/null 2>&1; then
+            for script in /opt/esp/idf/export.sh /opt/esp-idf/export.sh /home/esp/export-esp.sh /root/export-esp.sh; do
+              if [[ -f "$script" ]]; then
+                source "$script"
+                break
+              fi
+            done
+          fi
+
+          command -v idf.py >/dev/null 2>&1 || { echo "idf.py not found after ESP-IDF environment setup"; exit 1; }
           ./target/x86_64-unknown-linux-gnu/release/matchbox \
             docs/examples/native_fusion/app.bxs \
             --target esp32 \
