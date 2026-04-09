@@ -1,5 +1,40 @@
 use std::path::Path;
-use matchbox::process_file;
+use matchbox::process_file as process_file_impl;
+
+fn process_file(
+    source_path: &Path,
+    is_build: bool,
+    orig_target: Option<&str>,
+    keep_symbols: Vec<String>,
+    no_shaking: bool,
+    no_std_lib: bool,
+    strip_source: bool,
+    output: Option<&Path>,
+    extra_module_paths: &[std::path::PathBuf],
+    is_flash: bool,
+    orig_chip: Option<&str>,
+    is_fast_deploy: bool,
+    is_watch: bool,
+    is_full_flash: bool,
+) -> anyhow::Result<()> {
+    process_file_impl(
+        source_path,
+        is_build,
+        orig_target,
+        keep_symbols,
+        no_shaking,
+        no_std_lib,
+        strip_source,
+        output,
+        extra_module_paths,
+        is_flash,
+        orig_chip,
+        is_fast_deploy,
+        is_watch,
+        is_full_flash,
+        false,
+    )
+}
 
 macro_rules! script_test {
     ($name:ident, $file:expr) => {

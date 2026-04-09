@@ -976,6 +976,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "ctrlc",
  "matchbox_vm",
  "postcard",
  "serde",

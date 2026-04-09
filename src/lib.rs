@@ -269,7 +269,7 @@ fn collect_esp32_unsupported_features_in_expr(
             Literal::String(parts) => {
                 for part in parts {
                     if let StringPart::Expression(inner) = part {
-                        collect_esp32_unsupported_features_in_expr(inner, findings);
+                        collect_esp32_unsupported_features_in_expr(inner, findings, embedded_web_enabled);
                     }
                 }
             }
