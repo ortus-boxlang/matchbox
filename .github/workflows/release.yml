@@ -195,6 +195,25 @@ jobs:
           ESP_IDF_TOOLS_INSTALL_DIR: fromenv
         shell: bash
         run: |
+          if [[ -z "${IDF_PATH:-}" ]]; then
+            for candidate in /opt/esp/idf /opt/esp-idf /home/esp/esp-idf /esp-idf; do
+              if [[ -f "$candidate/tools/cmake/toolchain-esp32s3.cmake" ]]; then
+                export IDF_PATH="$candidate"
+                break
+              fi
+            done
+          fi
+
+          if [[ -z "${IDF_PATH:-}" ]]; then
+            toolchain_file="$(find / -path '*/tools/cmake/toolchain-esp32s3.cmake' 2>/dev/null | head -n1)"
+            if [[ -n "$toolchain_file" ]]; then
+              export IDF_PATH="${toolchain_file%/tools/cmake/toolchain-esp32s3.cmake}"
+            fi
+          fi
+
+          [[ -n "${IDF_PATH:-}" ]] || { echo "Could not determine IDF_PATH inside the ESP32 smoke container"; exit 1; }
+          echo "Using IDF_PATH=$IDF_PATH"
+
           ./target/x86_64-unknown-linux-gnu/release/matchbox \
             docs/examples/native_fusion/app.bxs \
             --target esp32 \
