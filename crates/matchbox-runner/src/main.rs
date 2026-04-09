@@ -68,10 +68,12 @@ fn main() {}
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn main() -> Result<()> {
-    // Setup Ctrl+C handler
-    ctrlc::set_handler(move || {
-        matchbox_vm::vm::INTERRUPT_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    #[cfg(not(target_family = "wasm"))]
+    {
+        ctrlc::set_handler(move || {
+            matchbox_vm::vm::INTERRUPT_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        }).expect("Error setting Ctrl-C handler");
+    }
 
     // 1. Try to load embedded bytecode from the executable itself
     let chunk = match load_embedded_bytecode() {

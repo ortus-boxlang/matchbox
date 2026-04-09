@@ -169,6 +169,7 @@ jobs:
           CARGO_HOME: /home/esp/.cargo
         shell: bash
         run: |
+          source /opt/esp/idf/export.sh
           rustc -V
           cargo -V
           python3 --version
@@ -189,6 +190,7 @@ jobs:
           ESP_IDF_TOOLS_INSTALL_DIR: fromenv
         shell: bash
         run: |
+          source /opt/esp/idf/export.sh
           ./target/x86_64-unknown-linux-gnu/release/matchbox \
             docs/examples/native_fusion/app.bxs \
             --target esp32 \
