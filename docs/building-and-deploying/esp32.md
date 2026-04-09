@@ -2,6 +2,31 @@
 
 MatchBox supports building and flashing BoxLang scripts directly to ESP32 microcontrollers. This is achieved by cross-compiling a specialized MatchBox runner for the Xtensa or RISC-V architectures and deploying your compiled bytecode to a dedicated flash partition.
 
+## Current Web Runtime Support
+
+ESP32 does not yet ship the full native app-server runtime from `matchbox-server`.
+
+Today, the intended `web.server()` direction for ESP32 is the lean subset:
+
+* route registration
+* middleware definitions
+* request/response helpers once the embedded HTTP transport lands
+
+To opt into that build flavor, add `--esp32-web` when compiling for ESP32.
+
+Without `--esp32-web`, `web.server()` usage is rejected at compile time for `--target esp32`.
+
+Even with `--esp32-web`, the following app-server features currently fail at compile time:
+
+* `app.listen()`
+* `event.setView()` / `event.renderTemplate()`
+* `app.middleware.buildStaticFiles( mount, dir )`
+* webhook helpers such as `app.buildWebhook()` and `app.webhook(...)`
+* cookie helpers
+* session helpers
+
+This is intentional. MatchBox now rejects those features early instead of producing firmware that implies support the ESP32 runner does not yet provide.
+
 ## Prerequisites
 
 To build for ESP32, you must have the following installed on your development machine:
@@ -88,6 +113,12 @@ Once the Runner is on the device, you only need to update the BoxLang bytecode. 
 matchbox app.bxs --target esp32 --chip esp32s3 --flash
 ```
 
+If the script uses the embedded routed web subset, opt in explicitly:
+
+```bash
+matchbox app.bxs --target esp32 --chip esp32s3 --esp32-web --full-flash
+```
+
 ## Watch Mode (Live Coding)
 
 MatchBox features a built-in watch mode that provides a "Hot Reload" experience for physical hardware.
@@ -107,6 +138,14 @@ matchbox app.bxs --target esp32 --chip esp32s3 --watch
 2.  **Partitioning**: MatchBox uses a custom partition table (`partitions.csv`) that reserves a 1MB `storage` partition at offset `0x110000` for bytecode.
 3.  **Runtime**: The ESP32 Runner starts a dedicated FreeRTOS task with a **48KB stack** to host the MatchBox VM.
 4.  **Environment Awareness**: The BoxLang `server` scope is automatically populated with hardware information (e.g., `server.os.arch` will return `xtensa` or `riscv`).
+
+## App Server Roadmap
+
+The embedded app-server plan is to keep the BoxLang programming model aligned with the native routed server, but ship it in capability tiers:
+
+* ESP32 first: routed handlers and middleware
+* later: websockets
+* not planned for the first embedded slice: filesystem-backed static assets, template rendering from disk, native webhook helpers, and session-heavy server features
 
 ## Memory and Performance
 

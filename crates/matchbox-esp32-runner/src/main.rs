@@ -146,6 +146,8 @@ fn main() -> Result<()> {
     EspLogger::initialize_default();
 
     println!("[matchbox] ESP32 MatchBox Runner Starting...");
+    #[cfg(feature = "embedded-web")]
+    println!("[matchbox] Embedded web runtime flavor enabled.");
 
     // We use a high-priority task with a LARGE stack (48KB) to avoid stack overflow.
     const STACK_SIZE: u32 = 48 * 1024;

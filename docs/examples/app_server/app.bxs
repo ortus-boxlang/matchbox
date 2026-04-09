@@ -1,0 +1,47 @@
+import boxlang.web;
+
+app = web.server();
+
+app.use( app.middleware.buildStaticFiles( "/assets", "public" ) );
+
+app.use( function( event, rc, prc, next ) {
+    prc.requestId = createUUID();
+    next.run();
+} );
+
+app.get( "/", function( event, rc, prc ) {
+    session.visitCount = ( session.visitCount ?: 0 ) + 1;
+    event.setHTTPCookie( "theme", "light", "/", true );
+    event.setView( "views/home.bxm", {
+        "title": "MatchBox App Server",
+        "visitCount": session.visitCount
+    } );
+} );
+
+api = app.group( "/api" );
+
+api.get( "/hello/:name", function( event, rc, prc ) {
+    event.renderJson( {
+        "message": "Hello " & rc.name,
+        "requestId": prc.requestId,
+        "currentRoute": event.getCurrentRoute()
+    } );
+} );
+
+app.webhook(
+    app.buildWebhook()
+        .path( "/webhooks/example" )
+        .secret( "topsecret" )
+        .signatureHeader( "x-signature" )
+        .prefix( "sha256=" )
+        .replayHeader( "x-delivery-id" )
+        .replayTtlSeconds( 300 ),
+    function( event, rc, prc ) {
+        event.renderJson( {
+            "ok": true,
+            "requestId": prc.requestId
+        } );
+    }
+);
+
+app.listen( 8090 );

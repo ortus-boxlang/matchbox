@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "ws"] }
 tokio = { version = "1.0", features = ["full"] }
 tower-http = { version = "0.5", features = ["fs"] }
 matchbox_vm = { path = "../matchbox-vm", features = ["bif-io", "bif-http", "bif-zip", "bif-crypto", "bif-cli", "bif-jni", "bif-datasource", "jit"] }
@@ -18,7 +18,12 @@ tracing-subscriber = "0.3"
 tower = "0.4"
 mime_guess = "2.0"
 uuid = { version = "1.0", features = ["v4"] }
+url = "2.5"
+hmac = "0.12"
+sha2 = "0.10"
+futures-util = "0.3"
 
 [dev-dependencies]
 tempfile = "3.10"
 tokio = { version = "1.0", features = ["full"] }
+tokio-tungstenite = "0.24"

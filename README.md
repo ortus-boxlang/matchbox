@@ -19,7 +19,7 @@ iex (Invoke-RestMethod -Uri https://raw.githubusercontent.com/ortus-boxlang/matc
 ## Core Features
 
 - **Bytecode VM**: Fast, stack-based execution engine with a multi-tier JIT compiler.
-- **Web Server & BXM**: Built-in high-performance web server with support for BoxLang Markup (`.bxm`).
+- **Web Runtime**: Built-in static webroot server for `.bxm` plus a routed app server built around `web.server()`, middleware, static asset mounts, and ColdBox-style handlers.
 - **Virtual Threading (Fibers)**: High-concurrency cooperative scheduler supporting `runAsync` and non-blocking `sleep`.
 - **OO & Interfaces**: Full support for Classes, Inheritance, and trait-like Interfaces with default implementations.
 - **Native Fusion**: High-speed interoperability with native Rust code.
@@ -37,7 +37,7 @@ MatchBox is distributed in three distinct variants to suit different deployment 
 | :--- | :--- | :--- | :--- |
 | **Fat CLI** | `matchbox` | The complete developer tool. Includes the VM, Compiler, REPL, and embedded runner stubs for all targets (Native, WASM, ESP32). | Local development, cross-compiling, and building standalone apps. |
 | **Slim CLI** | `matchbox-slim` | VM, Compiler, and REPL. Excludes embedded cross-compilation stubs to reduce binary size by ~20MB. | CI/CD pipelines and environments where only local execution is needed. |
-| **Server** | `matchbox-server` | An optimized, standalone web runtime. Excludes CLI developer tools and focuses entirely on serving `.bxm` and `.bxs` files. | Production web deployments, Docker containers, and edge hosting. |
+| **Server** | `matchbox-server` | An optimized, standalone web runtime for both webroot/BXM serving and routed app-server workloads. | Production web deployments, Docker containers, APIs, and edge hosting. |
 
 ## Quick Start
 
@@ -47,13 +47,24 @@ Start the BoxLang REPL by running the binary without arguments:
 matchbox
 ```
 
-### 2. Running a Web Server
-Start the built-in server to host BoxLang Markup (`.bxm`) and scripts:
+### 2. Running the Webroot Server
+Start the built-in server to host BoxLang Markup (`.bxm`) and static assets:
 ```bash
 matchbox --serve --port 8080 --webroot ./www
 ```
 
-### 3. Compiling to Standalone Native Binary
+### 3. Running the App Server
+Start a routed HTTP app built with `web.server()`:
+```bash
+cargo run -p matchbox_server -- --app docs/examples/app_server/app.bxs
+```
+
+For a websocket example:
+```bash
+cargo run -p matchbox_server -- --app docs/examples/websocket_counter/app.bxs
+```
+
+### 4. Compiling to Standalone Native Binary
 Bundle your BoxLang code into a single, zero-dependency executable for your current OS:
 ```bash
 matchbox --target native my_app.bxs

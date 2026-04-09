@@ -203,6 +203,7 @@ fn main() {
                .arg("build").arg("--release")
                .arg("--target").arg(target)
                .arg("--target-dir").arg(&independent_target_dir)
+               .arg("--features").arg("embedded-web")
                .current_dir(Path::new(&root_dir).join("crates/matchbox-esp32-runner"))
                .env("BOXLANG_BYTECODE_PATH", "") 
                .env_remove("CARGO_MAKEFLAGS")   

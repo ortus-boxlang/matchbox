@@ -45,6 +45,7 @@ mod tests {
     struct MockVM;
     impl BxVM for MockVM {
         fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>> { None }
+        fn interpret_chunk(&mut self, _: crate::vm::chunk::Chunk) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
         fn spawn(&mut self, _: Rc<BxCompiledFunction>, _: Vec<BxValue>, _: u8, _: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue { BxValue::new_null() }
         fn spawn_by_value(&mut self, _: &BxValue, _: Vec<BxValue>, _: u8, _: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
         fn call_function_by_value(&mut self, _: &BxValue, _: Vec<BxValue>, _: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
@@ -53,6 +54,9 @@ mod tests {
         fn get_root_shape(&self) -> u32 { 0 }
         fn get_shape_index(&self, _: u32, _: &str) -> Option<u32> { None }
         fn get_len(&self, _: usize) -> usize { 0 }
+        fn is_array_value(&self, _: BxValue) -> bool { false }
+        fn is_struct_value(&self, _: BxValue) -> bool { false }
+        fn is_string_value(&self, _: BxValue) -> bool { false }
         fn is_bytes(&self, _: BxValue) -> bool { false }
         fn bytes_new(&mut self, _: Vec<u8>) -> usize { 0 }
         fn bytes_len(&self, _: usize) -> usize { 0 }
@@ -90,11 +94,16 @@ mod tests {
         fn native_object_new(&mut self, _: Rc<RefCell<dyn BxNativeObject>>) -> usize { 0 }
         fn native_object_call_method(&mut self, _: usize, _: &str, _: &[BxValue]) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
         fn construct_native_class(&mut self, _: &str, _: &[BxValue]) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
+        fn instance_class_name(&self, _: BxValue) -> Result<String, String> { Ok("Mock".to_string()) }
+        fn instance_variables_json(&self, _: BxValue) -> Result<serde_json::Value, String> { Ok(serde_json::json!({})) }
         fn string_new(&mut self, s: String) -> usize { 1234 } // Mock string ID
         fn to_string(&self, _: BxValue) -> String { "prefix".to_string() }
         fn to_box_string(&self, _: BxValue) -> box_string::BoxString { box_string::BoxString::new("") }
+        fn insert_global(&mut self, _: String, _: BxValue) {}
         fn get_cli_args(&self) -> Vec<String> { vec![] }
         fn write_output(&mut self, _: &str) {}
+        fn begin_output_capture(&mut self) {}
+        fn end_output_capture(&mut self) -> Option<String> { Some(String::new()) }
         fn suspend_gc(&mut self) {}
         fn resume_gc(&mut self) {}
         fn push_root(&mut self, _: BxValue) {}

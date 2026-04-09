@@ -997,7 +997,8 @@ impl Compiler {
                     Ok(())
                 }
                 Literal::Function { params, body } => {
-                    let func = self.compile_function("anonymous", &params, &body)?;
+                    let anon_name = format!("anonymous@{}@{}", expr.line, self.chunk.code.len());
+                    let func = self.compile_function(&anon_name, &params, &body)?;
                     let func_idx = self.chunk.add_constant(Constant::CompiledFunction(func));
                     self.chunk.emit1(op::CONSTANT, func_idx, expr.line);
                     Ok(())

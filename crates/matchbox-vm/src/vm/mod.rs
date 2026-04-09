@@ -141,6 +141,10 @@ impl BxVM for VM {
         }
     }
 
+    fn interpret_chunk(&mut self, chunk: Chunk) -> Result<BxValue, String> {
+        self.interpret(chunk).map_err(|e| e.to_string())
+    }
+
     fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue {
         let dummy = Rc::new(RefCell::new(Chunk::default()));
         self.spawn(func, args, priority, dummy)
@@ -199,6 +203,24 @@ impl BxVM for VM {
             GcObject::Bytes(bytes) => bytes.len(),
             _ => 0,
         }
+    }
+
+    fn is_array_value(&self, val: BxValue) -> bool {
+        val.as_gc_id()
+            .map(|id| matches!(self.heap.get(id), GcObject::Array(_)))
+            .unwrap_or(false)
+    }
+
+    fn is_struct_value(&self, val: BxValue) -> bool {
+        val.as_gc_id()
+            .map(|id| matches!(self.heap.get(id), GcObject::Struct(_)))
+            .unwrap_or(false)
+    }
+
+    fn is_string_value(&self, val: BxValue) -> bool {
+        val.as_gc_id()
+            .map(|id| matches!(self.heap.get(id), GcObject::String(_)))
+            .unwrap_or(false)
     }
 
     fn is_bytes(&self, val: BxValue) -> bool {
@@ -541,6 +563,14 @@ impl BxVM for VM {
         }
     }
 
+    fn instance_class_name(&self, receiver: BxValue) -> Result<String, String> {
+        self.instance_class_name(receiver).map_err(|e| e.to_string())
+    }
+
+    fn instance_variables_json(&self, receiver: BxValue) -> Result<serde_json::Value, String> {
+        self.instance_variables_json(receiver).map_err(|e| e.to_string())
+    }
+
     fn string_new(&mut self, s: String) -> usize {
         self.heap.alloc(GcObject::String(BoxString::new(&s)))
     }
@@ -558,6 +588,10 @@ impl BxVM for VM {
         BoxString::new(&self.to_string_internal(val))
     }
 
+    fn insert_global(&mut self, name: String, val: BxValue) {
+        VM::insert_global(self, name, val);
+    }
+
     fn get_cli_args(&self) -> Vec<String> {
         self.cli_args.clone()
     }
@@ -568,6 +602,14 @@ impl BxVM for VM {
         } else {
             print!("{}", s);
         }
+    }
+
+    fn begin_output_capture(&mut self) {
+        self.output_buffer = Some(String::new());
+    }
+
+    fn end_output_capture(&mut self) -> Option<String> {
+        self.output_buffer.take()
     }
 
     fn suspend_gc(&mut self) {
@@ -3417,6 +3459,237 @@ impl VM {
             }
         } else {
             anyhow::bail!("Value is not a callable function")
+        }
+    }
+
+    pub fn call_method_value(
+        &mut self,
+        receiver: BxValue,
+        name: &str,
+        args: Vec<BxValue>,
+    ) -> Result<BxValue> {
+        let id = receiver
+            .as_gc_id()
+            .ok_or_else(|| anyhow::anyhow!("Value is not an object instance"))?;
+        let method_name = name.to_lowercase();
+
+        match self.heap.get(id) {
+            GcObject::NativeObject(_) => {
+                return self
+                    .native_object_call_method(id, &method_name, &args)
+                    .map_err(|e| anyhow::anyhow!(e));
+            }
+            GcObject::Instance(inst) => {
+                let class = Rc::clone(&inst.class);
+                if let Some(func) = self.resolve_method(class, &method_name) {
+                    let mut final_args = args;
+                    for _ in 0..(func.arity as usize).saturating_sub(final_args.len()) {
+                        final_args.push(BxValue::new_null());
+                    }
+                    if final_args.len() < func.min_arity as usize || final_args.len() > func.arity as usize {
+                        anyhow::bail!(
+                            "Expected {}-{} arguments but got {}",
+                            func.min_arity,
+                            func.arity,
+                            final_args.len()
+                        );
+                    }
+
+                    let sub_chunk = func.chunk.clone();
+                    let constant_count = sub_chunk.constants.len();
+                    let future_id = self.future_new().as_gc_id().unwrap();
+                    let fiber = BxFiber {
+                        stack: {
+                            let mut stack = Vec::with_capacity(1 + final_args.len());
+                            stack.push(receiver);
+                            stack.extend(final_args);
+                            stack
+                        },
+                        frames: vec![CallFrame {
+                            function: func.clone(),
+                            chunk: Rc::new(RefCell::new(sub_chunk)),
+                            ip: 0,
+                            stack_base: 1,
+                            receiver: Some(receiver),
+                            handlers: Vec::new(),
+                            promoted_constants: vec![None; constant_count],
+                        }],
+                        future_id,
+                        wait_until: None,
+                        yield_requested: false,
+                        priority: 0,
+                        root_stack: Vec::new(),
+                    };
+                    self.fibers.push(fiber);
+                    let fiber_idx = self.fibers.len() - 1;
+                    self.current_fiber_idx = Some(fiber_idx);
+                    let result = loop {
+                        match self.run_fiber(fiber_idx, Some(Instant::now() + Duration::from_millis(2))) {
+                            Ok(Some(val)) => break Ok(val),
+                            Ok(None) => continue,
+                            Err(e) => break Err(e),
+                        }
+                    };
+                    self.current_fiber_idx = None;
+                    let _ = self.fibers.pop();
+                    result
+                } else {
+                    anyhow::bail!("Method {} not found on instance", name)
+                }
+            }
+            _ => anyhow::bail!("Value is not an object instance"),
+        }
+    }
+
+    pub fn instance_class_name(&self, receiver: BxValue) -> Result<String> {
+        let id = receiver
+            .as_gc_id()
+            .ok_or_else(|| anyhow::anyhow!("Value is not an object instance"))?;
+
+        match self.heap.get(id) {
+            GcObject::Instance(inst) => Ok(inst.class.borrow().name.clone()),
+            _ => anyhow::bail!("Value is not an object instance"),
+        }
+    }
+
+    pub fn construct_global_class(
+        &mut self,
+        class_name: &str,
+        args: Vec<BxValue>,
+    ) -> Result<BxValue> {
+        let class_val = self
+            .get_global(class_name)
+            .ok_or_else(|| anyhow::anyhow!("Class {} not found", class_name))?;
+        let id = class_val
+            .as_gc_id()
+            .ok_or_else(|| anyhow::anyhow!("Global {} is not a class", class_name))?;
+
+        let class = match self.heap.get(id) {
+            GcObject::Class(class) => Rc::clone(class),
+            _ => anyhow::bail!("Global {} is not a class", class_name),
+        };
+
+        let variables_scope = Rc::new(RefCell::new(HashMap::new()));
+        let inst_id = self.heap.alloc(GcObject::Instance(BxInstance {
+            class: Rc::clone(&class),
+            shape_id: self.shapes.get_root(),
+            properties: Vec::new(),
+            variables: variables_scope,
+        }));
+        let instance_val = BxValue::new_ptr(inst_id);
+
+        let constructor = class.borrow().constructor.clone();
+        let sub_chunk = constructor.chunk.clone();
+        let constant_count = sub_chunk.constants.len();
+        let future_id = self.future_new().as_gc_id().unwrap();
+        let fiber = BxFiber {
+            stack: {
+                let mut stack = Vec::with_capacity(1 + args.len());
+                stack.push(instance_val);
+                stack.extend(args);
+                stack
+            },
+            frames: vec![CallFrame {
+                function: Rc::new(constructor),
+                chunk: Rc::new(RefCell::new(sub_chunk)),
+                ip: 0,
+                stack_base: 1,
+                receiver: Some(instance_val),
+                handlers: Vec::new(),
+                promoted_constants: vec![None; constant_count],
+            }],
+            future_id,
+            wait_until: None,
+            yield_requested: false,
+            priority: 0,
+            root_stack: Vec::new(),
+        };
+        self.fibers.push(fiber);
+        let fiber_idx = self.fibers.len() - 1;
+        self.current_fiber_idx = Some(fiber_idx);
+        let result = loop {
+            match self.run_fiber(fiber_idx, Some(Instant::now() + Duration::from_millis(2))) {
+                Ok(Some(_)) => break Ok(instance_val),
+                Ok(None) => continue,
+                Err(e) => break Err(e),
+            }
+        };
+        self.current_fiber_idx = None;
+        let _ = self.fibers.pop();
+        result
+    }
+
+    pub fn instantiate_global_class_without_constructor(
+        &mut self,
+        class_name: &str,
+    ) -> Result<BxValue> {
+        let class_val = self
+            .get_global(class_name)
+            .ok_or_else(|| anyhow::anyhow!("Class {} not found", class_name))?;
+        let id = class_val
+            .as_gc_id()
+            .ok_or_else(|| anyhow::anyhow!("Global {} is not a class", class_name))?;
+
+        let class = match self.heap.get(id) {
+            GcObject::Class(class) => Rc::clone(class),
+            _ => anyhow::bail!("Global {} is not a class", class_name),
+        };
+
+        let variables_scope = Rc::new(RefCell::new(HashMap::new()));
+        let inst_id = self.heap.alloc(GcObject::Instance(BxInstance {
+            class,
+            shape_id: self.shapes.get_root(),
+            properties: Vec::new(),
+            variables: variables_scope,
+        }));
+        Ok(BxValue::new_ptr(inst_id))
+    }
+
+    pub fn instance_variables_json(&self, receiver: BxValue) -> Result<serde_json::Value> {
+        let id = receiver
+            .as_gc_id()
+            .ok_or_else(|| anyhow::anyhow!("Value is not an object instance"))?;
+
+        match self.heap.get(id) {
+            GcObject::Instance(inst) => {
+                let mut object = serde_json::Map::new();
+                for (key, value) in inst.variables.borrow().iter() {
+                    object.insert(key.clone(), self.bx_to_json(value));
+                }
+                Ok(serde_json::Value::Object(object))
+            }
+            _ => anyhow::bail!("Value is not an object instance"),
+        }
+    }
+
+    pub fn set_instance_variables_json(
+        &mut self,
+        receiver: BxValue,
+        json: serde_json::Value,
+    ) -> Result<()> {
+        let id = receiver
+            .as_gc_id()
+            .ok_or_else(|| anyhow::anyhow!("Value is not an object instance"))?;
+
+        let serde_json::Value::Object(values) = json else {
+            anyhow::bail!("Listener state must be a JSON object");
+        };
+
+        let mut converted = Vec::with_capacity(values.len());
+        for (key, value) in values {
+            converted.push((key.to_lowercase(), self.json_to_bx(value)));
+        }
+
+        match self.heap.get_mut(id) {
+            GcObject::Instance(inst) => {
+                let mut variables = inst.variables.borrow_mut();
+                variables.clear();
+                for (key, value) in converted {
+                    variables.insert(key, value);
+                }
+                Ok(())
+            }
+            _ => anyhow::bail!("Value is not an object instance"),
         }
     }
 

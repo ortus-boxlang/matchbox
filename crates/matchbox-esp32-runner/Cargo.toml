@@ -3,6 +3,10 @@ name = "matchbox-esp32-runner"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+embedded-web = []
+
 [dependencies]
 matchbox_vm = { path = "../matchbox-vm" }
 anyhow = "1.0"

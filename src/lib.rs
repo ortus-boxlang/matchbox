@@ -33,6 +33,345 @@ fn exported_function_names(ast: &[ast::Statement]) -> Vec<String> {
     functions
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Esp32UnsupportedFeature {
+    line: u32,
+    feature: &'static str,
+    guidance: &'static str,
+}
+
+fn validate_esp32_target(ast: &[ast::Statement], embedded_web_enabled: bool) -> Result<()> {
+    let mut findings = Vec::new();
+    for stmt in ast {
+        collect_esp32_unsupported_features_in_stmt(stmt, &mut findings, embedded_web_enabled);
+    }
+
+    if findings.is_empty() {
+        return Ok(());
+    }
+
+    findings.sort_by_key(|finding| finding.line);
+    findings.dedup();
+
+    let mut message = String::from(
+        "ESP32 currently supports only the lean routed subset of `web.server()`.\n\
+Unsupported features were found:\n",
+    );
+    for finding in findings {
+        message.push_str(&format!(
+            "  line {}: {}. {}\n",
+            finding.line, finding.feature, finding.guidance
+        ));
+    }
+    message.push_str(
+        "Allowed direction for now: route registration and middleware definitions only. \
+The embedded HTTP transport for `listen()` and heavier server features is not implemented yet.",
+    );
+    bail!(message)
+}
+
+fn collect_esp32_unsupported_features_in_stmt(
+    stmt: &ast::Statement,
+    findings: &mut Vec<Esp32UnsupportedFeature>,
+    embedded_web_enabled: bool,
+) {
+    use ast::StatementKind;
+
+    match &stmt.kind {
+        StatementKind::Import { .. } | StatementKind::Continue | StatementKind::Break => {}
+        StatementKind::ClassDecl { members, .. } => {
+            for member in members {
+                if let ast::ClassMember::Statement(statement) = member {
+                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                }
+            }
+        }
+        StatementKind::InterfaceDecl { members, .. } => {
+            for member in members {
+                collect_esp32_unsupported_features_in_stmt(member, findings, embedded_web_enabled);
+            }
+        }
+        StatementKind::FunctionDecl { body, .. } => {
+            collect_esp32_unsupported_features_in_function_body(body, findings, embedded_web_enabled);
+        }
+        StatementKind::ForLoop {
+            collection, body, ..
+        } => {
+            collect_esp32_unsupported_features_in_expr(collection, findings, embedded_web_enabled);
+            for statement in body {
+                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+            }
+        }
+        StatementKind::ForClassic {
+            init,
+            condition,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_esp32_unsupported_features_in_stmt(init, findings, embedded_web_enabled);
+            }
+            if let Some(condition) = condition {
+                collect_esp32_unsupported_features_in_expr(condition, findings, embedded_web_enabled);
+            }
+            if let Some(update) = update {
+                collect_esp32_unsupported_features_in_expr(update, findings, embedded_web_enabled);
+            }
+            for statement in body {
+                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+            }
+        }
+        StatementKind::WhileLoop { condition, body } => {
+            collect_esp32_unsupported_features_in_expr(condition, findings, embedded_web_enabled);
+            for statement in body {
+                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+            }
+        }
+        StatementKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_esp32_unsupported_features_in_expr(condition, findings, embedded_web_enabled);
+            for statement in then_branch {
+                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+            }
+            if let Some(else_branch) = else_branch {
+                for statement in else_branch {
+                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                }
+            }
+        }
+        StatementKind::Switch {
+            value,
+            cases,
+            default_case,
+        } => {
+            collect_esp32_unsupported_features_in_expr(value, findings, embedded_web_enabled);
+            for case in cases {
+                collect_esp32_unsupported_features_in_expr(&case.value, findings, embedded_web_enabled);
+                for statement in &case.body {
+                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                }
+            }
+            if let Some(default_case) = default_case {
+                for statement in default_case {
+                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                }
+            }
+        }
+        StatementKind::Return(expr) | StatementKind::Throw(expr) => {
+            if let Some(expr) = expr {
+                collect_esp32_unsupported_features_in_expr(expr, findings, embedded_web_enabled);
+            }
+        }
+        StatementKind::TryCatch {
+            try_branch,
+            catches,
+            finally_branch,
+        } => {
+            for statement in try_branch {
+                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+            }
+            for catch in catches {
+                for statement in &catch.body {
+                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                }
+            }
+            if let Some(finally_branch) = finally_branch {
+                for statement in finally_branch {
+                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                }
+            }
+        }
+        StatementKind::VariableDecl { value, .. } | StatementKind::Expression(value) => {
+            collect_esp32_unsupported_features_in_expr(value, findings, embedded_web_enabled);
+        }
+    }
+}
+
+fn collect_esp32_unsupported_features_in_function_body(
+    body: &ast::FunctionBody,
+    findings: &mut Vec<Esp32UnsupportedFeature>,
+    embedded_web_enabled: bool,
+) {
+    match body {
+        ast::FunctionBody::Block(statements) => {
+            for statement in statements {
+                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+            }
+        }
+        ast::FunctionBody::Expression(expr) => {
+            collect_esp32_unsupported_features_in_expr(expr, findings, embedded_web_enabled);
+        }
+        ast::FunctionBody::Abstract => {}
+    }
+}
+
+fn collect_esp32_unsupported_features_in_expr(
+    expr: &ast::Expression,
+    findings: &mut Vec<Esp32UnsupportedFeature>,
+    embedded_web_enabled: bool,
+) {
+    use ast::{ExpressionKind, Literal, StringPart};
+
+    match &expr.kind {
+        ExpressionKind::New { args, .. } => {
+            for arg in args {
+                collect_esp32_unsupported_features_in_expr(&arg.value, findings, embedded_web_enabled);
+            }
+        }
+        ExpressionKind::Assignment { target, value } => {
+            collect_esp32_unsupported_features_in_target(target, findings, embedded_web_enabled);
+            collect_esp32_unsupported_features_in_expr(value, findings, embedded_web_enabled);
+        }
+        ExpressionKind::Binary { left, right, .. } | ExpressionKind::Elvis { left, right } => {
+            collect_esp32_unsupported_features_in_expr(left, findings, embedded_web_enabled);
+            collect_esp32_unsupported_features_in_expr(right, findings, embedded_web_enabled);
+        }
+        ExpressionKind::UnaryNot(inner) | ExpressionKind::Postfix { base: inner, .. } => {
+            collect_esp32_unsupported_features_in_expr(inner, findings, embedded_web_enabled);
+        }
+        ExpressionKind::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_esp32_unsupported_features_in_expr(condition, findings, embedded_web_enabled);
+            collect_esp32_unsupported_features_in_expr(then_expr, findings, embedded_web_enabled);
+            collect_esp32_unsupported_features_in_expr(else_expr, findings, embedded_web_enabled);
+        }
+        ExpressionKind::FunctionCall { base, args } => {
+            if let Some(feature) = classify_esp32_unsupported_call(base, embedded_web_enabled) {
+                findings.push(Esp32UnsupportedFeature {
+                    line: expr.line,
+                    feature: feature.0,
+                    guidance: feature.1,
+                });
+            }
+            collect_esp32_unsupported_features_in_expr(base, findings, embedded_web_enabled);
+            for arg in args {
+                collect_esp32_unsupported_features_in_expr(&arg.value, findings, embedded_web_enabled);
+            }
+        }
+        ExpressionKind::ArrayAccess { base, index } => {
+            collect_esp32_unsupported_features_in_expr(base, findings, embedded_web_enabled);
+            collect_esp32_unsupported_features_in_expr(index, findings, embedded_web_enabled);
+        }
+        ExpressionKind::MemberAccess { base, .. } | ExpressionKind::SafeMemberAccess { base, .. } => {
+            collect_esp32_unsupported_features_in_expr(base, findings, embedded_web_enabled);
+        }
+        ExpressionKind::Prefix { target, .. } => {
+            collect_esp32_unsupported_features_in_target(target, findings, embedded_web_enabled);
+        }
+        ExpressionKind::Identifier(_) => {}
+        ExpressionKind::Literal(literal) => match literal {
+            Literal::String(parts) => {
+                for part in parts {
+                    if let StringPart::Expression(inner) = part {
+                        collect_esp32_unsupported_features_in_expr(inner, findings);
+                    }
+                }
+            }
+            Literal::Array(items) => {
+                for item in items {
+                    collect_esp32_unsupported_features_in_expr(item, findings, embedded_web_enabled);
+                }
+            }
+            Literal::Struct(entries) => {
+                for (key, value) in entries {
+                    collect_esp32_unsupported_features_in_expr(key, findings, embedded_web_enabled);
+                    collect_esp32_unsupported_features_in_expr(value, findings, embedded_web_enabled);
+                }
+            }
+            Literal::Function { body, .. } => {
+                collect_esp32_unsupported_features_in_function_body(body, findings, embedded_web_enabled);
+            }
+            Literal::Number(_) | Literal::Boolean(_) | Literal::Null => {}
+        },
+    }
+}
+
+fn collect_esp32_unsupported_features_in_target(
+    target: &ast::AssignmentTarget,
+    findings: &mut Vec<Esp32UnsupportedFeature>,
+    embedded_web_enabled: bool,
+) {
+    match target {
+        ast::AssignmentTarget::Identifier(_) => {}
+        ast::AssignmentTarget::Member { base, .. } => {
+            collect_esp32_unsupported_features_in_expr(base, findings, embedded_web_enabled);
+        }
+        ast::AssignmentTarget::Index { base, index } => {
+            collect_esp32_unsupported_features_in_expr(base, findings, embedded_web_enabled);
+            collect_esp32_unsupported_features_in_expr(index, findings, embedded_web_enabled);
+        }
+    }
+}
+
+fn classify_esp32_unsupported_call(
+    base: &ast::Expression,
+    embedded_web_enabled: bool,
+) -> Option<(&'static str, &'static str)> {
+    let chain = member_call_chain(base)?;
+    if !embedded_web_enabled && chain.len() == 2 && chain[0].eq_ignore_ascii_case("web") && chain[1].eq_ignore_ascii_case("server") {
+        return Some((
+            "`web.server()`",
+            "ESP32 routed web support is behind `--esp32-web`. Rebuild with that flag to opt into the embedded web runtime.",
+        ));
+    }
+    let method = chain.last()?.to_ascii_lowercase();
+
+    match method.as_str() {
+        "listen" => Some((
+            "`app.listen()`",
+            "Embedded HTTP transport is not implemented yet, so ESP32 builds cannot start the app server listener.",
+        )),
+        "setview" | "rendertemplate" => Some((
+            "`event.setView()` / `event.renderTemplate()`",
+            "ESP32 builds do not support filesystem-backed template rendering.",
+        )),
+        "buildstaticfiles" => Some((
+            "`app.middleware.buildStaticFiles()`",
+            "ESP32 builds do not support filesystem-backed static asset mounts.",
+        )),
+        "buildwebhook" | "webhook" => Some((
+            "webhook registration",
+            "Webhook helpers are native-server only right now and depend on the full HTTP server runtime.",
+        )),
+        "gethttpcookie" | "getcookie" | "sethttpcookie" | "setcookie" => Some((
+            "cookie helpers",
+            "Cookie helpers are not supported in the lean ESP32 app-server subset yet.",
+        )),
+        "getsession"
+        | "getsessionvalue"
+        | "paramsessionvalue"
+        | "setsessionvalue"
+        | "sessionexists"
+        | "clearsession"
+        | "invalidatesession" => Some((
+            "session helpers",
+            "Sessions are not supported in the lean ESP32 app-server subset yet.",
+        )),
+        _ => None,
+    }
+}
+
+fn member_call_chain(expr: &ast::Expression) -> Option<Vec<&str>> {
+    use ast::ExpressionKind;
+
+    match &expr.kind {
+        ExpressionKind::Identifier(name) => Some(vec![name.as_str()]),
+        ExpressionKind::MemberAccess { base, member }
+        | ExpressionKind::SafeMemberAccess { base, member } => {
+            let mut chain = member_call_chain(base)?;
+            chain.push(member.as_str());
+            Some(chain)
+        }
+        _ => None,
+    }
+}
+
 fn render_pure_js_bootstrap(functions: &[String], b64_wasm: &str, b64_bytecode: &str) -> String {
     let mut bootstrap = String::new();
     bootstrap.push_str(&format!("const wasmBase64 = \"{}\";\n", b64_wasm));
@@ -291,6 +630,7 @@ pub fn run() -> Result<()> {
     let mut is_flash = args.contains(&"--flash".to_string());
     let is_full_flash = args.contains(&"--full-flash".to_string());
     let is_watch = args.contains(&"--watch".to_string());
+    let esp32_web = args.contains(&"--esp32-web".to_string());
     if is_full_flash || is_watch {
         is_flash = true;
     }
@@ -340,6 +680,7 @@ pub fn run() -> Result<()> {
                 host,
                 webroot,
                 config: None,
+                app: None,
             };
 
             let rt = tokio::runtime::Runtime::new().unwrap();
@@ -386,9 +727,9 @@ pub fn run() -> Result<()> {
         Some(name) => {
             let path = Path::new(name);
             if path.is_dir() {
-                process_directory(path, is_build, target, keep_symbols, no_shaking, no_std_lib, strip_source, output.as_deref(), &extra_module_paths, is_flash, chip, is_fast_deploy, is_watch, is_full_flash)?;
+                process_directory(path, is_build, target, keep_symbols, no_shaking, no_std_lib, strip_source, output.as_deref(), &extra_module_paths, is_flash, chip, is_fast_deploy, is_watch, is_full_flash, esp32_web)?;
             } else {
-                process_file(path, is_build, target, keep_symbols, no_shaking, no_std_lib, strip_source, output.as_deref(), &extra_module_paths, is_flash, chip, is_fast_deploy, is_watch, is_full_flash)?;
+                process_file(path, is_build, target, keep_symbols, no_shaking, no_std_lib, strip_source, output.as_deref(), &extra_module_paths, is_flash, chip, is_fast_deploy, is_watch, is_full_flash, esp32_web)?;
             }
         }
         None => {
@@ -414,6 +755,7 @@ fn print_usage() {
     println!("  --target <wasm>     Produce a standalone WASM binary (Web)");
     println!("  --target <js>       Produce a JavaScript module wrapper");
     println!("  --target <esp32>    Produce an ESP32 firmware binary");
+    println!("  --esp32-web         Enable the embedded routed web runtime build flavor for ESP32");
     println!("  --flash             Flash to device. Defaults to fast bytecode-only flash for ESP32.");
     println!("  --full-flash        Force a full firmware flash (includes VM/Runner)");
     println!("  --fast-deploy       (Deprecated) Use --flash instead, which is now fast by default.");
@@ -765,7 +1107,7 @@ fn serial_devices() -> Vec<PathBuf> {
     devices
 }
 
-pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str>, keep_symbols: Vec<String>, no_shaking: bool, no_std_lib: bool, strip_source: bool, output: Option<&Path>, extra_module_paths: &[PathBuf], is_flash: bool, orig_chip: Option<&str>, is_fast_deploy: bool, is_watch: bool, is_full_flash: bool) -> Result<()> {
+pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str>, keep_symbols: Vec<String>, no_shaking: bool, no_std_lib: bool, strip_source: bool, output: Option<&Path>, extra_module_paths: &[PathBuf], is_flash: bool, orig_chip: Option<&str>, is_fast_deploy: bool, is_watch: bool, is_full_flash: bool, esp32_web: bool) -> Result<()> {
     if source_path.extension().and_then(|s| s.to_str()) == Some("bxb") {
         let bytes = fs::read(source_path)?;
         let mut chunk: Chunk = postcard::from_bytes(&bytes)?;
@@ -774,6 +1116,9 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
     } else {
         let source = fs::read_to_string(source_path)?;
         let ast = parser::parse(&source).map_err(|e| anyhow::anyhow!("Parse Error: {}", e))?;
+        if orig_target == Some("esp32") {
+            validate_esp32_target(&ast, esp32_web)?;
+        }
         // Discover modules from matchbox.toml (in CWD) and any --module flags.
         let cwd = std::env::current_dir().unwrap_or_else(|_| {
             source_path.parent().unwrap_or(Path::new(".")).to_path_buf()
@@ -835,7 +1180,7 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
                     } else {
                         (is_fast_deploy, is_full_flash)
                     };
-                    produce_esp32_binary(&chunk, source_path, output, is_flash, orig_chip, fd, ff)?;
+                    produce_esp32_binary(&chunk, source_path, output, is_flash, orig_chip, fd, ff, esp32_web)?;
                 }
                 target_val => produce_native_binary(&chunk, source_path, target_val, output)?,
             }
@@ -853,7 +1198,7 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
             }
             let chip_str = orig_chip.map(|s| s.to_string());
             println!("WATCH MODE ENABLED: Watching for changes in {}...", source_path.parent().unwrap().display());
-            return watch_mode(source_path, chip_str, is_full_flash);
+            return watch_mode(source_path, chip_str, is_full_flash, esp32_web);
         }
     }
     Ok(())
@@ -921,7 +1266,7 @@ fn produce_fusion_js_bundle(
     Ok(())
 }
 
-fn process_directory(path: &Path, is_build: bool, orig_target: Option<&str>, keep_symbols: Vec<String>, no_shaking: bool, no_std_lib: bool, strip_source: bool, output: Option<&Path>, extra_module_paths: &[PathBuf], is_flash: bool, orig_chip: Option<&str>, is_fast_deploy: bool, is_watch: bool, is_full_flash: bool) -> Result<()> {
+fn process_directory(path: &Path, is_build: bool, orig_target: Option<&str>, keep_symbols: Vec<String>, no_shaking: bool, no_std_lib: bool, strip_source: bool, output: Option<&Path>, extra_module_paths: &[PathBuf], is_flash: bool, orig_chip: Option<&str>, is_fast_deploy: bool, is_watch: bool, is_full_flash: bool, esp32_web: bool) -> Result<()> {
     let entry_points = ["index.bxs", "main.bxs", "Application.bx"];
     let mut entry_file = None;
     for ep in entry_points {
@@ -932,7 +1277,7 @@ fn process_directory(path: &Path, is_build: bool, orig_target: Option<&str>, kee
         }
     }
     let entry_file = entry_file.context("No entry point found in directory")?;
-    process_file(&entry_file, is_build, orig_target, keep_symbols, no_shaking, no_std_lib, strip_source, output, extra_module_paths, is_flash, orig_chip, is_fast_deploy, is_watch, is_full_flash)
+    process_file(&entry_file, is_build, orig_target, keep_symbols, no_shaking, no_std_lib, strip_source, output, extra_module_paths, is_flash, orig_chip, is_fast_deploy, is_watch, is_full_flash, esp32_web)
 }
 
 /// Recursively clear embedded source text from a chunk tree.
@@ -1661,7 +2006,7 @@ fn produce_wasm_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>)
     Ok(())
 }
 
-fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>, is_flash: bool, chip: Option<&str>, is_fast_deploy: bool, is_full_flash: bool) -> Result<()> {
+fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>, is_flash: bool, chip: Option<&str>, is_fast_deploy: bool, is_full_flash: bool, esp32_web: bool) -> Result<()> {
     fn write_embedded_esp32_partitions_csv() -> Result<PathBuf> {
         let path = std_env::temp_dir().join("matchbox_esp32_partitions.csv");
         fs::write(&path, ESP32_PARTITIONS_CSV)?;
@@ -1750,7 +2095,7 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
                 if !status.success() { bail!("Failed to flash stub."); }
                 
                 // 2. Automatically perform fast-deploy for the bytecode
-                return produce_esp32_binary(chunk, source_path, output, false, Some(chip), true, is_full_flash);
+                return produce_esp32_binary(chunk, source_path, output, false, Some(chip), true, is_full_flash, esp32_web);
             } else {
                 println!("ESP32 firmware produced (stub): {}", out_path.display());
                 println!("NOTE: To run this, you must also flash the bytecode to the 'storage' partition.");
@@ -1785,6 +2130,10 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
         .env("ESP_IDF_TOOLS_INSTALL_DIR", "fromenv")
         .env("MCU", chip);
 
+    if esp32_web {
+        cmd.arg("--features").arg("embedded-web");
+    }
+
     let status = cmd.status()?;
     if !status.success() {
         bail!(
@@ -1818,7 +2167,7 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
 
         if is_full_flash {
             println!("Full flash complete. Sending fresh bytecode to the 'storage' partition...");
-            return produce_esp32_binary(chunk, source_path, output, false, Some(chip), true, is_full_flash);
+            return produce_esp32_binary(chunk, source_path, output, false, Some(chip), true, is_full_flash, esp32_web);
         }
     }
 
@@ -1838,7 +2187,7 @@ fn wait_for_port(port: &str, timeout: std::time::Duration) -> bool {
     false
 }
 
-fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool) -> Result<()> {
+fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp32_web: bool) -> Result<()> {
     use notify::{Watcher, RecursiveMode, event::EventKind};
     use std::sync::mpsc::channel;
     use std::time::Duration;
@@ -1992,7 +2341,7 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool) -> 
                                 &[],         // module_mappings
                                 &[],         // extra_preludes
                             ).map_err(|e| anyhow::anyhow!("Compiler Error: {}", e))?;
-                            produce_esp32_binary(&chunk, source_path, None, true, chip.as_deref(), true, is_full_flash)?;
+                            produce_esp32_binary(&chunk, source_path, None, true, chip.as_deref(), true, is_full_flash, esp32_web)?;
                             Ok(())
                         })();
 
@@ -2075,5 +2424,84 @@ mod tests {
         assert!(source.contains("pump_until_blocked"));
         assert!(source.contains("future_state"));
         assert!(source.contains("HostFutureState::Pending"));
+    }
+
+    #[test]
+    fn esp32_validator_allows_route_and_middleware_registration() {
+        let source = r#"
+            app = web.server();
+            app.use( function( event, rc, prc, next ) {
+                prc.started = true;
+                next.run();
+            } );
+            app.get( "/health", function( event, rc, prc ) {
+                event.renderJson( { "ok": true } );
+            } );
+        "#;
+        let ast = parser::parse(source).unwrap();
+        assert!(validate_esp32_target(&ast, true).is_ok());
+    }
+
+    #[test]
+    fn esp32_validator_requires_opt_in_for_web_server() {
+        let source = r#"
+            app = web.server();
+            app.get( "/health", function( event, rc, prc ) {
+                event.renderJson( { "ok": true } );
+            } );
+        "#;
+        let ast = parser::parse(source).unwrap();
+        let err = validate_esp32_target(&ast, false).unwrap_err().to_string();
+        assert!(err.contains("web.server()"));
+        assert!(err.contains("--esp32-web"));
+    }
+
+    #[test]
+    fn esp32_validator_rejects_listen() {
+        let source = r#"
+            app = web.server();
+            app.listen( 8080 );
+        "#;
+        let ast = parser::parse(source).unwrap();
+        let err = validate_esp32_target(&ast, true).unwrap_err().to_string();
+        assert!(err.contains("line 3"));
+        assert!(err.contains("app.listen()"));
+        assert!(err.contains("Embedded HTTP transport is not implemented yet"));
+    }
+
+    #[test]
+    fn esp32_validator_rejects_static_assets_templates_and_webhooks() {
+        let source = r#"
+            app = web.server();
+            app.use( app.middleware.buildStaticFiles( "/assets", "public" ) );
+            app.webhook(
+                app.buildWebhook()
+                    .path( "/hooks/example" )
+                    .secret( "topsecret" )
+                    .signatureHeader( "x-signature" ),
+                function( event, rc, prc ) {
+                    event.setView( "views/home.bxm" );
+                }
+            );
+        "#;
+        let ast = parser::parse(source).unwrap();
+        let err = validate_esp32_target(&ast, true).unwrap_err().to_string();
+        assert!(err.contains("buildStaticFiles()"));
+        assert!(err.contains("webhook registration"));
+        assert!(err.contains("event.setView()"));
+    }
+
+    #[test]
+    fn esp32_validator_rejects_cookie_and_session_helpers() {
+        let source = r#"
+            function demo( event ) {
+                event.setHTTPCookie( "theme", "light" );
+                event.setSessionValue( "userId", 42 );
+            }
+        "#;
+        let ast = parser::parse(source).unwrap();
+        let err = validate_esp32_target(&ast, true).unwrap_err().to_string();
+        assert!(err.contains("cookie helpers"));
+        assert!(err.contains("session helpers"));
     }
 }

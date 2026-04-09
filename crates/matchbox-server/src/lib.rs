@@ -1,3 +1,5 @@
+mod app_server;
+
 use axum::{
     extract::{Query, State, Path as AxumPath, Form},
     http::{header, StatusCode, HeaderMap},
@@ -34,6 +36,10 @@ pub struct Args {
     /// Config file path (defaults to boxlang.json in webroot)
     #[arg(short, long)]
     pub config: Option<String>,
+
+    /// BoxLang app script to run in routed app-server mode
+    #[arg(long)]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -65,6 +71,13 @@ struct AppState {
 
 pub async fn run_server(args: Args) {
     tracing_subscriber::fmt::init();
+
+    if let Some(app_path) = &args.app {
+        if let Err(err) = app_server::run_script_server(Path::new(app_path)).await {
+            eprintln!("Error: {}", err);
+        }
+        return;
+    }
 
     let webroot = PathBuf::from(&args.webroot).canonicalize().unwrap_or_else(|_| PathBuf::from(&args.webroot));
     

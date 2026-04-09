@@ -1,0 +1,15 @@
+<html>
+    <head>
+        <title><bx:output>#viewArgs.title#</bx:output></title>
+        <link rel="stylesheet" href="/assets/site.css">
+    </head>
+    <body>
+        <main class="app-shell">
+            <h1><bx:output>#viewArgs.title#</bx:output></h1>
+            <p>Visits this session: <strong><bx:output>#viewArgs.visitCount#</bx:output></strong></p>
+            <p>Current request id: <code><bx:output>#prc.requestId#</bx:output></code></p>
+            <p>Try the JSON endpoint at <code>/api/hello/MatchBox</code>.</p>
+            <p>The stylesheet for this page is served by <code>app.middleware.buildStaticFiles()</code>.</p>
+        </main>
+    </body>
+</html>

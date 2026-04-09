@@ -24,7 +24,9 @@ Welcome to the MatchBox documentation. MatchBox is a native Rust implementation 
 | [JavaScript + WASM](building-and-deploying/javascript-and-wasm.md) | ES modules, raw WASM, and runtime (dynamic) execution in the browser. |
 | [WASM Container](building-and-deploying/wasm-container.md) | Wasmtime, WasmEdge, Docker OCI containers, and edge platforms. |
 | [ESP32 Firmware](building-and-deploying/esp32.md) | Cross-compiling and flashing for ESP32/S3/C3 microcontrollers. |
-| [Web Server](examples/web_server/README.md) | High-performance native web server with BXM template support. |
+| [Web Server (Webroot)](examples/web_server/README.md) | Static files, `.bxm` templates, and automatic web scopes. |
+| [App Server](examples/app_server/README.md) | Routed HTTP apps with `web.server()`, `event/rc/prc`, middleware, static asset mounts, sessions, templates, and webhooks. |
+| [WebSocket Counter](examples/websocket_counter/README.md) | Routed app server plus SocketBox-style websocket listener classes and browser updates. |
 | [JIT Compilation](building-and-deploying/jit.md) | How the four-tier JIT works, where it is active, and how to extend it. |
 
 ---

@@ -436,7 +436,10 @@ println("Result: " & result)
 
 ## Web Runtime & Templates
 
-MatchBox includes a built-in high-performance web server and support for BoxLang Markup (`.bxm`).
+MatchBox currently has two web runtime models:
+
+* a webroot server for static files and `.bxm` templates
+* a routed app server built around `web.server()`
 
 ### BoxLang Markup (BXM)
 
@@ -453,9 +456,9 @@ MatchBox includes a built-in high-performance web server and support for BoxLang
 </html>
 ```
 
-### Automatic Scopes
+### Webroot Automatic Scopes
 
-When running in web mode, MatchBox automatically populates several global scopes:
+When running the webroot server, MatchBox automatically populates several global scopes:
 
 *   **`url`**: Access query string parameters (e.g. `url.name`).
 *   **`form`**: Access POST data.
@@ -463,11 +466,57 @@ When running in web mode, MatchBox automatically populates several global scopes
 *   **`session`**: Persistent, in-memory data for the current user.
 *   **`cgi`**: Environment variables like `server_port` and `remote_addr`.
 
-### Starting the Server
+### Starting the Webroot Server
 
 ```bash
 cargo run -p matchbox_server -- --port 8080 --webroot ./www
 ```
+
+### Routed App Server
+
+The app server uses explicit route registration and ColdBox-style handlers:
+
+```boxlang
+import boxlang.web;
+
+app = web.server();
+
+app.get( "/users/:id", function( event, rc, prc ) {
+    event.renderJson( {
+        "id": rc.id
+    } );
+} );
+
+app.listen( 8080 );
+```
+
+Handlers receive:
+
+* **`event`**: Request/response API
+* **`rc`**: Public request collection
+* **`prc`**: Private request collection
+
+The `web` namespace is host-provided, but you must opt into it explicitly with `import boxlang.web;`.
+
+The app server supports:
+
+* route groups
+* middleware with `next.run()`
+* static asset mounts with `app.middleware.buildStaticFiles( mount, dir )`
+* cookies and in-memory sessions
+* explicit template rendering with `event.setView()`
+* webhook endpoints with `buildWebhook()`
+* SocketBox-style websocket listeners with `app.enableWebSockets()`
+
+These features currently target the native server runtime. ESP32 builds intentionally reject the heavier app-server features like `listen()`, static asset mounts, template rendering, webhooks, cookies, and sessions until the embedded HTTP transport exists.
+
+Start it with:
+
+```bash
+cargo run -p matchbox_server -- --app path/to/app.bxs
+```
+
+For a websocket example that serves a page and broadcasts a shared counter, see [websocket_counter](/home/jacob/dev/ortus-boxlang/matchbox/docs/examples/websocket_counter/README.md).
 
 ---
 

@@ -113,6 +113,7 @@ impl BxValue {
 
 pub trait BxVM {
     fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>>;
+    fn interpret_chunk(&mut self, chunk: crate::vm::chunk::Chunk) -> Result<BxValue, String>;
     fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue;
     fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String>;
     fn call_function_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String>;
@@ -121,6 +122,9 @@ pub trait BxVM {
     fn get_root_shape(&self) -> u32;
     fn get_shape_index(&self, shape_id: u32, field_name: &str) -> Option<u32>;
     fn get_len(&self, id: usize) -> usize;
+    fn is_array_value(&self, val: BxValue) -> bool;
+    fn is_struct_value(&self, val: BxValue) -> bool;
+    fn is_string_value(&self, val: BxValue) -> bool;
     fn is_bytes(&self, val: BxValue) -> bool;
     fn bytes_new(&mut self, data: Vec<u8>) -> usize;
     fn bytes_len(&self, id: usize) -> usize;
@@ -155,11 +159,16 @@ pub trait BxVM {
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize;
     fn native_object_call_method(&mut self, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
     fn construct_native_class(&mut self, class_name: &str, args: &[BxValue]) -> Result<BxValue, String>;
+    fn instance_class_name(&self, receiver: BxValue) -> Result<String, String>;
+    fn instance_variables_json(&self, receiver: BxValue) -> Result<serde_json::Value, String>;
     fn string_new(&mut self, s: String) -> usize;
     fn to_string(&self, val: BxValue) -> String;
     fn to_box_string(&self, val: BxValue) -> BoxString;
+    fn insert_global(&mut self, name: String, val: BxValue);
     fn get_cli_args(&self) -> Vec<String>;
     fn write_output(&mut self, s: &str);
+    fn begin_output_capture(&mut self);
+    fn end_output_capture(&mut self) -> Option<String>;
     fn suspend_gc(&mut self);
     fn resume_gc(&mut self);
     fn push_root(&mut self, val: BxValue);

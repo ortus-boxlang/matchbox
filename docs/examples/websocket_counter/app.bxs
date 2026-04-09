@@ -1,0 +1,38 @@
+class ClickCounterSocket {
+    function configure() {
+        variables.clickCount = 0;
+    }
+
+    function onConnect( required channel ) {
+        channel.sendJson( {
+            "type": "count",
+            "count": variables.clickCount
+        } );
+    }
+
+    function onMessage( required message, required channel ) {
+        variables.clickCount = variables.clickCount + 1;
+        channel.broadcastJson( {
+            "type": "count",
+            "count": variables.clickCount
+        } );
+    }
+
+    function onClose( required channel ) {}
+}
+
+import boxlang.web;
+
+app = web.server();
+
+app.get( "/", function( event, rc, prc ) {
+    event.setView( "views/home.bxm", {
+        "title": "MatchBox WebSocket Counter"
+    } );
+} );
+
+listener = new ClickCounterSocket();
+listener.configure();
+
+app.enableWebSockets( "/ws", listener );
+app.listen( 8099 );
