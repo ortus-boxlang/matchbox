@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/matchbox-embedded",
     "crates/matchbox-vm",
     "crates/matchbox-compiler",
     "crates/matchbox-macros",
@@ -25,6 +26,7 @@ libc = "0.2"
 bincode = "1.3.3"
 matchbox_vm = { path = "crates/matchbox-vm" }
 matchbox_compiler = { path = "crates/matchbox-compiler" }
+matchbox-embedded = { path = "crates/matchbox-embedded" }
 matchbox_server = { path = "crates/matchbox-server", optional = true }
 matchbox_tui = { path = "crates/matchbox-tui", optional = true }
 tokio = { version = "1.0", features = ["rt-multi-thread"], optional = true }

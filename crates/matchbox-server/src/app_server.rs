@@ -1201,9 +1201,11 @@ fn instantiate_app_definition(compiled: &CompiledScriptApp) -> anyhow::Result<Ap
 }
 
 pub fn load_listen_config(compiled: &CompiledScriptApp) -> anyhow::Result<ListenConfig> {
-    instantiate_app_definition(compiled)?
-        .listen
-        .ok_or_else(|| anyhow::anyhow!("App script did not call app.listen()."))
+    Ok(
+        instantiate_app_definition(compiled)?
+            .listen
+            .unwrap_or_default(),
+    )
 }
 
 fn load_websocket_runtime(
@@ -3211,6 +3213,30 @@ mod tests {
             err.to_lowercase().contains("web") || err.contains("No app was created"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn script_defaults_listen_config_when_omitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("app.bxs");
+        std::fs::write(
+            &script_path,
+            r#"
+                import boxlang.web;
+
+                app = web.server();
+                app.get("/", function( event, rc, prc ) {
+                    event.renderHtml("<h1>ready</h1>");
+                });
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile_script_app(&script_path).await.unwrap();
+        let listen = load_listen_config(&compiled).unwrap();
+
+        assert_eq!(listen.host, "127.0.0.1");
+        assert_eq!(listen.port, 8080);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

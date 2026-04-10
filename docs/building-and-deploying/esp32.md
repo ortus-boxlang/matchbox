@@ -10,7 +10,30 @@ Today, the intended `web.server()` direction for ESP32 is the lean subset:
 
 * route registration
 * middleware definitions
-* request/response helpers once the embedded HTTP transport lands
+* in-handler request/response helpers such as `event.renderJson()` and `event.renderHtml()`
+* route params and request metadata helpers
+
+The intended app shape is a route-driven script that avoids filesystem-backed features. A good ESP32-safe pattern today is:
+
+```bx
+import boxlang.web;
+
+app = web.server();
+
+app.get( "/", function( event, rc, prc ) {
+    event.renderHtml( "<h1>Roastatron 3K</h1>" );
+} );
+
+app.get( "/status", function( event, rc, prc ) {
+    event.renderJson( { "ok": true } );
+} );
+
+app.post( "/print", function( event, rc, prc ) {
+    event.renderJson( { "queued": true } );
+} );
+```
+
+This keeps the BoxLang surface aligned with the native server direction while avoiding the unsupported pieces below.
 
 To opt into that build flavor, add `--esp32-web` when compiling for ESP32.
 

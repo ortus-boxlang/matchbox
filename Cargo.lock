@@ -1693,6 +1693,7 @@ dependencies = [
  "ctrlc",
  "js-sys",
  "libc",
+ "matchbox-embedded",
  "matchbox_compiler",
  "matchbox_server",
  "matchbox_tui",
@@ -1706,6 +1707,14 @@ dependencies = [
  "wasm-bindgen",
  "wasm-encoder 0.245.1",
  "wasmparser 0.245.1",
+]
+
+[[package]]
+name = "matchbox-embedded"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
 ]
 
 [[package]]

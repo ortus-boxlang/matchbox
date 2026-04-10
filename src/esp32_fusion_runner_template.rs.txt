@@ -1,0 +1,1379 @@
+use anyhow::{anyhow, bail, Result};
+use core::convert::TryInto;
+use embedded_svc::http::server::{Connection, Request};
+use embedded_svc::http::{Headers, Method};
+use embedded_svc::io::{Read as _, Write as _};
+use embedded_svc::wifi::{AuthMethod, ClientConfiguration, Configuration as WifiConfiguration};
+use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::handle::RawHandle;
+use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::http::server::{Configuration as HttpConfiguration, EspHttpServer};
+use esp_idf_svc::log::EspLogger;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
+use esp_idf_sys as _;
+use matchbox_vm::{
+    vm::{chunk::Chunk, VM},
+    types::{BxNativeFunction, BxNativeObject, BxVM, BxValue},
+};
+use serde_json::Value as JsonValue;
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::Rc,
+    ffi::CString,
+    sync::{Arc, Mutex},
+};
+use url::form_urlencoded;
+
+static EMBEDDED_BYTECODE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bytecode.bxb"));
+#[cfg(feature = "embedded-web")]
+const WIFI_SSID: &str = "Pixel_174";
+#[cfg(feature = "embedded-web")]
+const WIFI_PASSWORD: &str = "myinternetpass";
+#[cfg(feature = "embedded-web")]
+const WIFI_HOSTNAME: &str = "roastatron3k";
+
+fn create_vm() -> VM {
+    let mut bifs = HashMap::new();
+    let mut classes = HashMap::new();
+{{registration_calls}}
+    VM::new_with_bifs(bifs, classes)
+}
+
+fn load_from_flash() -> Result<Chunk> {
+    unsafe {
+        let partition = esp_idf_sys::esp_partition_find_first(
+            esp_idf_sys::esp_partition_type_t_ESP_PARTITION_TYPE_DATA,
+            0x01,
+            std::ptr::null(),
+        );
+        if partition.is_null() {
+            bail!("Storage partition not found");
+        }
+        let mut map_handle: esp_idf_sys::esp_partition_mmap_handle_t = 0;
+        let mut map_ptr: *const std::ffi::c_void = std::ptr::null();
+        let err = esp_idf_sys::esp_partition_mmap(
+            partition,
+            0,
+            (*partition).size as usize,
+            esp_idf_sys::esp_partition_mmap_memory_t_ESP_PARTITION_MMAP_DATA,
+            &mut map_ptr,
+            &mut map_handle,
+        );
+        if err != 0 {
+            bail!("Failed to mmap");
+        }
+        let data_ptr = map_ptr as *const u8;
+        let len = u32::from_le_bytes([
+            *data_ptr,
+            *data_ptr.add(1),
+            *data_ptr.add(2),
+            *data_ptr.add(3),
+        ]) as usize;
+        let bytecode = std::slice::from_raw_parts(data_ptr.add(4), len);
+        let mut chunk: Chunk = postcard::from_bytes(bytecode)?;
+        chunk.reconstruct_functions();
+        esp_idf_sys::esp_partition_munmap(map_handle);
+        Ok(chunk)
+    }
+}
+
+fn load_chunk() -> Result<Chunk> {
+    match load_from_flash() {
+        Ok(chunk) => Ok(chunk),
+        Err(_) => {
+            let mut chunk: Chunk = postcard::from_bytes(EMBEDDED_BYTECODE)?;
+            chunk.reconstruct_functions();
+            Ok(chunk)
+        }
+    }
+}
+
+#[cfg(not(feature = "embedded-web"))]
+fn run_vm() -> Result<()> {
+    let chunk = load_chunk()?;
+    let mut vm = create_vm();
+    vm.interpret(chunk)?;
+    Ok(())
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Clone, Debug)]
+struct ListenConfig {
+    host: String,
+    port: u16,
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Clone, Debug)]
+struct AppDefinition {
+    middleware: Vec<BxValue>,
+    routes: Vec<RouteDefinition>,
+    listen: Option<ListenConfig>,
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Clone, Debug)]
+struct RouteDefinition {
+    method: String,
+    path: String,
+    middleware: Vec<BxValue>,
+    handler: BxValue,
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Default, Debug)]
+struct BuildState {
+    apps: Vec<Arc<Mutex<AppDefinition>>>,
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Clone, Debug)]
+struct RequestData {
+    method: String,
+    path: String,
+    matched_route: Option<String>,
+    route_params: HashMap<String, String>,
+    raw_query: Option<String>,
+    query: HashMap<String, String>,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+    full_url: String,
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Clone, Debug)]
+struct ResponseData {
+    status: u16,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Default, Debug)]
+struct ResponseState {
+    status: u16,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+
+#[cfg(feature = "embedded-web")]
+struct EmbeddedRuntimeState {
+    vm: VM,
+    app: AppDefinition,
+}
+
+#[cfg(feature = "embedded-web")]
+unsafe impl Send for EmbeddedRuntimeState {}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Debug)]
+struct WebNamespace {
+    build_state: Arc<Mutex<BuildState>>,
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Debug)]
+struct ServerAppObject {
+    app: Arc<Mutex<AppDefinition>>,
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Debug)]
+struct RouteGroupObject {
+    app: Arc<Mutex<AppDefinition>>,
+    prefix: String,
+    middleware: Vec<BxValue>,
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Debug)]
+struct RequestContextObject {
+    request: RequestData,
+    rc_id: usize,
+    prc_id: usize,
+    response: Arc<Mutex<ResponseState>>,
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Debug)]
+struct NextMiddlewareObject {
+    middleware: Vec<BxValue>,
+    index: usize,
+    handler: BxValue,
+    event: BxValue,
+    rc: BxValue,
+    prc: BxValue,
+}
+
+#[cfg(feature = "embedded-web")]
+#[derive(Debug)]
+struct NotFoundHandlerObject;
+
+#[cfg(feature = "embedded-web")]
+impl Default for ListenConfig {
+    fn default() -> Self {
+        Self {
+            host: "0.0.0.0".to_string(),
+            port: 8080,
+        }
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+impl BxNativeObject for WebNamespace {
+    fn get_property(&self, _name: &str) -> BxValue {
+        BxValue::new_null()
+    }
+
+    fn set_property(&mut self, _name: &str, _value: BxValue) {}
+
+    fn call_method(
+        &mut self,
+        vm: &mut dyn BxVM,
+        _id: usize,
+        name: &str,
+        _args: &[BxValue],
+    ) -> Result<BxValue, String> {
+        match name.to_lowercase().as_str() {
+            "server" => {
+                let app = Arc::new(Mutex::new(AppDefinition {
+                    middleware: Vec::new(),
+                    routes: Vec::new(),
+                    listen: None,
+                }));
+                self.build_state.lock().unwrap().apps.push(app.clone());
+                let object_id = vm.native_object_new(Rc::new(RefCell::new(ServerAppObject { app })));
+                Ok(BxValue::new_ptr(object_id))
+            }
+            _ => Err(format!("Method {} not found on web namespace.", name)),
+        }
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+impl BxNativeObject for ServerAppObject {
+    fn get_property(&self, _name: &str) -> BxValue {
+        BxValue::new_null()
+    }
+
+    fn set_property(&mut self, _name: &str, _value: BxValue) {}
+
+    fn call_method(
+        &mut self,
+        vm: &mut dyn BxVM,
+        _id: usize,
+        name: &str,
+        args: &[BxValue],
+    ) -> Result<BxValue, String> {
+        match name.to_lowercase().as_str() {
+            "get" | "post" | "put" | "patch" | "delete" => {
+                register_route(vm, &self.app, "", name, args)?;
+                Ok(BxValue::new_null())
+            }
+            "use" => {
+                register_app_middleware(&self.app, args)?;
+                Ok(BxValue::new_null())
+            }
+            "group" => {
+                let prefix = parse_group_prefix(vm, args)?;
+                let object_id = vm.native_object_new(Rc::new(RefCell::new(RouteGroupObject {
+                    app: self.app.clone(),
+                    prefix,
+                    middleware: Vec::new(),
+                })));
+                Ok(BxValue::new_ptr(object_id))
+            }
+            "listen" => {
+                let config = parse_listen_config(vm, args)?;
+                self.app.lock().unwrap().listen = Some(config);
+                Ok(BxValue::new_null())
+            }
+            _ => Err(format!("Method {} not found on server app.", name)),
+        }
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+impl BxNativeObject for RouteGroupObject {
+    fn get_property(&self, _name: &str) -> BxValue {
+        BxValue::new_null()
+    }
+
+    fn set_property(&mut self, _name: &str, _value: BxValue) {}
+
+    fn call_method(
+        &mut self,
+        vm: &mut dyn BxVM,
+        _id: usize,
+        name: &str,
+        args: &[BxValue],
+    ) -> Result<BxValue, String> {
+        match name.to_lowercase().as_str() {
+            "get" | "post" | "put" | "patch" | "delete" => {
+                register_group_route(vm, self, name, args)?;
+                Ok(BxValue::new_null())
+            }
+            "use" => {
+                self.middleware.extend(args.iter().copied());
+                Ok(BxValue::new_null())
+            }
+            "group" => {
+                let suffix = parse_group_prefix(vm, args)?;
+                let prefix = join_route_paths(&self.prefix, &suffix);
+                let object_id = vm.native_object_new(Rc::new(RefCell::new(RouteGroupObject {
+                    app: self.app.clone(),
+                    prefix,
+                    middleware: self.middleware.clone(),
+                })));
+                Ok(BxValue::new_ptr(object_id))
+            }
+            _ => Err(format!("Method {} not found on route group.", name)),
+        }
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+impl BxNativeObject for RequestContextObject {
+    fn get_property(&self, _name: &str) -> BxValue {
+        BxValue::new_null()
+    }
+
+    fn set_property(&mut self, _name: &str, _value: BxValue) {}
+
+    fn call_method(
+        &mut self,
+        vm: &mut dyn BxVM,
+        _id: usize,
+        name: &str,
+        args: &[BxValue],
+    ) -> Result<BxValue, String> {
+        match name.to_lowercase().as_str() {
+            "getcollection" => Ok(BxValue::new_ptr(self.rc_id)),
+            "getprivatecollection" => Ok(BxValue::new_ptr(self.prc_id)),
+            "getvalue" => Ok(struct_lookup(vm, self.rc_id, args)),
+            "getprivatevalue" => Ok(struct_lookup(vm, self.prc_id, args)),
+            "setvalue" => {
+                set_value(vm, self.rc_id, self.prc_id, args);
+                Ok(BxValue::new_null())
+            }
+            "paramvalue" => {
+                param_value(vm, self.rc_id, args);
+                Ok(BxValue::new_null())
+            }
+            "paramprivatevalue" => {
+                param_value(vm, self.prc_id, args);
+                Ok(BxValue::new_null())
+            }
+            "gethttpheader" => {
+                let key = arg_string(vm, args, 0).to_lowercase();
+                let value = self
+                    .request
+                    .headers
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| arg_default_string(vm, args, 1));
+                Ok(BxValue::new_ptr(vm.string_new(value)))
+            }
+            "getrouteparams" => {
+                let result_id = vm.struct_new();
+                for (key, value) in &self.request.route_params {
+                    let value_id = vm.string_new(value.clone());
+                    vm.struct_set(result_id, key, BxValue::new_ptr(value_id));
+                }
+                Ok(BxValue::new_ptr(result_id))
+            }
+            "getcurrentroute" => Ok(BxValue::new_ptr(vm.string_new(
+                self.request.matched_route.clone().unwrap_or_default(),
+            ))),
+            "gethttpmethod" | "getrequestmethod" => {
+                Ok(BxValue::new_ptr(vm.string_new(self.request.method.clone())))
+            }
+            "isjson" => Ok(BxValue::new_bool(is_json_body(&self.request.headers))),
+            "isajax" => {
+                let requested_with = self
+                    .request
+                    .headers
+                    .get("x-requested-with")
+                    .map(|value| value.eq_ignore_ascii_case("XMLHttpRequest"))
+                    .unwrap_or(false);
+                Ok(BxValue::new_bool(requested_with))
+            }
+            "gethttpcontent" => {
+                let as_json = arg_bool(vm, args, 0);
+                if as_json {
+                    let value: JsonValue = serde_json::from_slice(&self.request.body)
+                        .map_err(|e| format!("Bad Request: Invalid JSON body: {}", e))?;
+                    json_to_bx(vm, &value)
+                } else {
+                    let text = String::from_utf8(self.request.body.clone())
+                        .map_err(|e| format!("Request body is not valid UTF-8: {}", e))?;
+                    Ok(BxValue::new_ptr(vm.string_new(text)))
+                }
+            }
+            "getpath" => {
+                let with_query = args.is_empty() || arg_bool(vm, args, 0);
+                let mut value = self.request.path.clone();
+                if with_query {
+                    if let Some(raw) = &self.request.raw_query {
+                        value.push('?');
+                        value.push_str(raw);
+                    }
+                }
+                Ok(BxValue::new_ptr(vm.string_new(value)))
+            }
+            "geturl" => {
+                let with_query = args.is_empty() || arg_bool(vm, args, 0);
+                let value = if with_query {
+                    self.request.full_url.clone()
+                } else {
+                    self.request.path.clone()
+                };
+                Ok(BxValue::new_ptr(vm.string_new(value)))
+            }
+            "__requestpath" => Ok(BxValue::new_ptr(vm.string_new(self.request.path.clone()))),
+            "sethttpheader" => {
+                let name = arg_string(vm, args, 0);
+                let value = arg_string(vm, args, 1);
+                self.response.lock().unwrap().headers.insert(name, value);
+                Ok(BxValue::new_null())
+            }
+            "sethttpstatus" => {
+                let code = args.first().map(|v| v.as_number() as u16).unwrap_or(200);
+                self.response.lock().unwrap().status = code;
+                Ok(BxValue::new_null())
+            }
+            "rendertext" => {
+                let text = arg_string(vm, args, 0);
+                render_response(&self.response, "text/plain; charset=utf-8", text.into_bytes());
+                Ok(BxValue::new_null())
+            }
+            "renderhtml" => {
+                let html = arg_string(vm, args, 0);
+                render_response(&self.response, "text/html; charset=utf-8", html.into_bytes());
+                Ok(BxValue::new_null())
+            }
+            "renderjson" => {
+                let value = args.first().copied().unwrap_or(BxValue::new_null());
+                let json = bx_to_json(vm, value)?;
+                let body = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
+                render_response(&self.response, "application/json", body);
+                Ok(BxValue::new_null())
+            }
+            "renderdata" => {
+                if args.len() < 2 {
+                    return Err("renderData() requires type and data arguments".to_string());
+                }
+                let render_type = arg_string(vm, args, 0).to_lowercase();
+                match render_type.as_str() {
+                    "json" => {
+                        let json = bx_to_json(vm, args[1])?;
+                        let body = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
+                        render_response(&self.response, "application/json", body);
+                    }
+                    "html" => {
+                        render_response(
+                            &self.response,
+                            "text/html; charset=utf-8",
+                            arg_string(vm, args, 1).into_bytes(),
+                        );
+                    }
+                    "text" | "plain" => {
+                        render_response(
+                            &self.response,
+                            "text/plain; charset=utf-8",
+                            arg_string(vm, args, 1).into_bytes(),
+                        );
+                    }
+                    _ => return Err(format!("Unsupported renderData() type '{}'", render_type)),
+                }
+                Ok(BxValue::new_null())
+            }
+            _ => Err(format!("Method {} not found on request context.", name)),
+        }
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+impl BxNativeObject for NextMiddlewareObject {
+    fn get_property(&self, _name: &str) -> BxValue {
+        BxValue::new_null()
+    }
+
+    fn set_property(&mut self, _name: &str, _value: BxValue) {}
+
+    fn call_method(
+        &mut self,
+        vm: &mut dyn BxVM,
+        _id: usize,
+        name: &str,
+        _args: &[BxValue],
+    ) -> Result<BxValue, String> {
+        match name.to_lowercase().as_str() {
+            "run" => {
+                execute_middleware_chain(
+                    vm,
+                    &self.middleware,
+                    self.index,
+                    self.handler,
+                    self.event,
+                    self.rc,
+                    self.prc,
+                )?;
+                Ok(BxValue::new_null())
+            }
+            _ => Err(format!("Method {} not found on middleware next object.", name)),
+        }
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+impl BxNativeObject for NotFoundHandlerObject {
+    fn get_property(&self, _name: &str) -> BxValue {
+        BxValue::new_null()
+    }
+
+    fn set_property(&mut self, _name: &str, _value: BxValue) {}
+
+    fn call_method(
+        &mut self,
+        _vm: &mut dyn BxVM,
+        _id: usize,
+        name: &str,
+        _args: &[BxValue],
+    ) -> Result<BxValue, String> {
+        match name.to_lowercase().as_str() {
+            "__runhandler" => Err("Not Found".to_string()),
+            _ => Err(format!("Method {} not found on not found handler.", name)),
+        }
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+fn install_web_namespace(vm: &mut VM, build_state: Arc<Mutex<BuildState>>) {
+    let web_id = vm.native_object_new(Rc::new(RefCell::new(WebNamespace { build_state })));
+    vm.insert_global("web".to_string(), BxValue::new_ptr(web_id));
+}
+
+#[cfg(feature = "embedded-web")]
+fn register_route(
+    vm: &dyn BxVM,
+    app: &Arc<Mutex<AppDefinition>>,
+    prefix: &str,
+    method: &str,
+    args: &[BxValue],
+) -> Result<(), String> {
+    if args.len() < 2 {
+        return Err(format!("{}() requires a path and handler", method));
+    }
+    if !vm.is_string_value(args[0]) {
+        return Err(format!("{}() path must be a string", method));
+    }
+    let path = join_route_paths(prefix, &vm.to_string(args[0]));
+    let (middleware, handler) = parse_route_handlers(args)?;
+    app.lock().unwrap().routes.push(RouteDefinition {
+        method: method.to_uppercase(),
+        path,
+        middleware,
+        handler,
+    });
+    Ok(())
+}
+
+#[cfg(feature = "embedded-web")]
+fn register_group_route(
+    vm: &dyn BxVM,
+    group: &RouteGroupObject,
+    method: &str,
+    args: &[BxValue],
+) -> Result<(), String> {
+    if args.len() < 2 {
+        return Err(format!("{}() requires a path and handler", method));
+    }
+    if !vm.is_string_value(args[0]) {
+        return Err(format!("{}() path must be a string", method));
+    }
+    let path = join_route_paths(&group.prefix, &vm.to_string(args[0]));
+    let (mut middleware, handler) = parse_route_handlers(args)?;
+    let mut inherited = group.middleware.clone();
+    inherited.append(&mut middleware);
+    group.app.lock().unwrap().routes.push(RouteDefinition {
+        method: method.to_uppercase(),
+        path,
+        middleware: inherited,
+        handler,
+    });
+    Ok(())
+}
+
+#[cfg(feature = "embedded-web")]
+fn register_app_middleware(app: &Arc<Mutex<AppDefinition>>, args: &[BxValue]) -> Result<(), String> {
+    if args.is_empty() {
+        return Err("use() requires at least one middleware function".to_string());
+    }
+    app.lock().unwrap().middleware.extend(args.iter().copied());
+    Ok(())
+}
+
+#[cfg(feature = "embedded-web")]
+fn parse_route_handlers(args: &[BxValue]) -> Result<(Vec<BxValue>, BxValue), String> {
+    if args.len() < 2 {
+        return Err("Route requires a path and a handler".to_string());
+    }
+    let handler = *args.last().unwrap();
+    let middleware = if args.len() > 2 {
+        args[1..args.len() - 1].to_vec()
+    } else {
+        Vec::new()
+    };
+    Ok((middleware, handler))
+}
+
+#[cfg(feature = "embedded-web")]
+fn parse_group_prefix(vm: &dyn BxVM, args: &[BxValue]) -> Result<String, String> {
+    if args.is_empty() || !vm.is_string_value(args[0]) {
+        return Err("group() requires a string prefix".to_string());
+    }
+    Ok(normalize_route_path(&vm.to_string(args[0])))
+}
+
+#[cfg(feature = "embedded-web")]
+fn parse_listen_config(vm: &dyn BxVM, args: &[BxValue]) -> Result<ListenConfig, String> {
+    if args.is_empty() {
+        return Ok(ListenConfig::default());
+    }
+    let first = args[0];
+    if first.is_number() || first.is_int() {
+        return Ok(ListenConfig {
+            host: "0.0.0.0".to_string(),
+            port: first.as_number() as u16,
+        });
+    }
+    if vm.is_struct_value(first) {
+        let id = first.as_gc_id().unwrap();
+        let port = if vm.struct_key_exists(id, "port") {
+            vm.to_string(vm.struct_get(id, "port"))
+                .parse::<u16>()
+                .map_err(|e| format!("Invalid listen() port: {}", e))?
+        } else {
+            8080
+        };
+        return Ok(ListenConfig {
+            host: "0.0.0.0".to_string(),
+            port,
+        });
+    }
+    Err("listen() expects a port number or config struct".to_string())
+}
+
+#[cfg(feature = "embedded-web")]
+fn arg_string(vm: &dyn BxVM, args: &[BxValue], index: usize) -> String {
+    args.get(index).copied().map(|v| vm.to_string(v)).unwrap_or_default()
+}
+
+#[cfg(feature = "embedded-web")]
+fn arg_default_string(vm: &dyn BxVM, args: &[BxValue], index: usize) -> String {
+    args.get(index).copied().map(|v| vm.to_string(v)).unwrap_or_default()
+}
+
+#[cfg(feature = "embedded-web")]
+fn arg_bool(vm: &dyn BxVM, args: &[BxValue], index: usize) -> bool {
+    match args.get(index).copied() {
+        Some(val) if val.is_bool() => val.as_bool(),
+        Some(val) if val.is_number() || val.is_int() => val.as_number() != 0.0,
+        Some(val) => matches!(vm.to_string(val).to_lowercase().as_str(), "true" | "yes" | "1"),
+        None => false,
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+fn struct_lookup(vm: &dyn BxVM, scope_id: usize, args: &[BxValue]) -> BxValue {
+    let key = arg_string(vm, args, 0);
+    if vm.struct_key_exists(scope_id, &key) {
+        vm.struct_get(scope_id, &key)
+    } else {
+        args.get(1).copied().unwrap_or(BxValue::new_null())
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+fn set_value(vm: &mut dyn BxVM, rc_id: usize, prc_id: usize, args: &[BxValue]) {
+    if args.len() < 2 {
+        return;
+    }
+    let key = vm.to_string(args[0]);
+    let target_scope = if arg_bool(vm, args, 2) { prc_id } else { rc_id };
+    vm.struct_set(target_scope, &key, args[1]);
+}
+
+#[cfg(feature = "embedded-web")]
+fn param_value(vm: &mut dyn BxVM, scope_id: usize, args: &[BxValue]) {
+    if args.len() < 2 {
+        return;
+    }
+    let key = vm.to_string(args[0]);
+    if !vm.struct_key_exists(scope_id, &key) {
+        vm.struct_set(scope_id, &key, args[1]);
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+fn render_response(response: &Arc<Mutex<ResponseState>>, content_type: &str, body: Vec<u8>) {
+    let mut response = response.lock().unwrap();
+    response
+        .headers
+        .insert("content-type".to_string(), content_type.to_string());
+    response.body = body;
+}
+
+#[cfg(feature = "embedded-web")]
+fn execute_middleware_chain(
+    vm: &mut dyn BxVM,
+    middleware: &[BxValue],
+    index: usize,
+    handler: BxValue,
+    event: BxValue,
+    rc: BxValue,
+    prc: BxValue,
+) -> Result<(), String> {
+    let dummy_chunk = Rc::new(RefCell::new(Chunk::default()));
+    if let Some(current) = middleware.get(index).copied() {
+        let next_id = vm.native_object_new(Rc::new(RefCell::new(NextMiddlewareObject {
+            middleware: middleware.to_vec(),
+            index: index + 1,
+            handler,
+            event,
+            rc,
+            prc,
+        })));
+        execute_middleware_entry(
+            vm,
+            current,
+            event,
+            rc,
+            prc,
+            BxValue::new_ptr(next_id),
+            dummy_chunk,
+        )
+    } else {
+        execute_handler(vm, handler, event, rc, prc, dummy_chunk)
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+fn execute_middleware_entry(
+    vm: &mut dyn BxVM,
+    middleware: BxValue,
+    event: BxValue,
+    rc: BxValue,
+    prc: BxValue,
+    next: BxValue,
+    chunk: Rc<RefCell<Chunk>>,
+) -> Result<(), String> {
+    if let Some(id) = middleware.as_gc_id() {
+        match vm.native_object_call_method(id, "__runmiddleware", &[event, rc, prc, next]) {
+            Ok(_) => return Ok(()),
+            Err(err) if err.contains("is not a native object") => {}
+            Err(err) => return Err(err),
+        }
+    }
+    vm.call_function_by_value(&middleware, vec![event, rc, prc, next], chunk)
+        .map(|_| ())
+}
+
+#[cfg(feature = "embedded-web")]
+fn execute_handler(
+    vm: &mut dyn BxVM,
+    handler: BxValue,
+    event: BxValue,
+    rc: BxValue,
+    prc: BxValue,
+    chunk: Rc<RefCell<Chunk>>,
+) -> Result<(), String> {
+    if let Some(id) = handler.as_gc_id() {
+        match vm.native_object_call_method(id, "__runhandler", &[event, rc, prc]) {
+            Ok(_) => return Ok(()),
+            Err(err) if err.contains("is not a native object") => {}
+            Err(err) => return Err(err),
+        }
+    }
+    vm.call_function_by_value(&handler, vec![event, rc, prc], chunk)
+        .map(|_| ())
+}
+
+#[cfg(feature = "embedded-web")]
+fn normalize_route_path(path: &str) -> String {
+    if path == "/" || path.is_empty() {
+        return "/".to_string();
+    }
+    let trimmed = path.trim().trim_matches('/');
+    format!("/{}", trimmed)
+}
+
+#[cfg(feature = "embedded-web")]
+fn join_route_paths(prefix: &str, path: &str) -> String {
+    let prefix = normalize_route_path(prefix);
+    let path = normalize_route_path(path);
+    if prefix == "/" {
+        return path;
+    }
+    if path == "/" {
+        return prefix;
+    }
+    format!(
+        "{}/{}",
+        prefix.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
+#[cfg(feature = "embedded-web")]
+fn match_route(app: &AppDefinition, method: &str, path: &str) -> Option<(RouteDefinition, HashMap<String, String>)> {
+    for route in &app.routes {
+        if route.method != method.to_uppercase() {
+            continue;
+        }
+        if let Some(params) = match_path_pattern(&route.path, path) {
+            return Some((route.clone(), params));
+        }
+    }
+    None
+}
+
+#[cfg(feature = "embedded-web")]
+fn match_path_pattern(pattern: &str, path: &str) -> Option<HashMap<String, String>> {
+    let pattern_segments: Vec<_> = pattern.trim_matches('/').split('/').collect();
+    let path_segments: Vec<_> = path.trim_matches('/').split('/').collect();
+
+    let pattern_segments = if pattern_segments.len() == 1 && pattern_segments[0].is_empty() {
+        Vec::new()
+    } else {
+        pattern_segments
+    };
+    let path_segments = if path_segments.len() == 1 && path_segments[0].is_empty() {
+        Vec::new()
+    } else {
+        path_segments
+    };
+
+    if pattern_segments.len() != path_segments.len() {
+        return None;
+    }
+
+    let mut params = HashMap::new();
+    for (pattern_segment, path_segment) in pattern_segments.iter().zip(path_segments.iter()) {
+        if let Some(name) = pattern_segment.strip_prefix(':') {
+            params.insert(name.to_string(), (*path_segment).to_string());
+        } else if pattern_segment != path_segment {
+            return None;
+        }
+    }
+    Some(params)
+}
+
+#[cfg(feature = "embedded-web")]
+fn bx_to_json(vm: &dyn BxVM, value: BxValue) -> Result<JsonValue, String> {
+    if value.is_null() {
+        return Ok(JsonValue::Null);
+    }
+    if value.is_bool() {
+        return Ok(JsonValue::Bool(value.as_bool()));
+    }
+    if value.is_int() {
+        return Ok(JsonValue::from(value.as_int()));
+    }
+    if value.is_number() {
+        return Ok(JsonValue::from(value.as_number()));
+    }
+    if vm.is_string_value(value) {
+        return Ok(JsonValue::String(vm.to_string(value)));
+    }
+    if vm.is_bytes(value) {
+        return Ok(JsonValue::Array(
+            vm.to_bytes(value)?
+                .into_iter()
+                .map(JsonValue::from)
+                .collect(),
+        ));
+    }
+    if vm.is_array_value(value) {
+        let id = value.as_gc_id().unwrap();
+        let mut items = Vec::new();
+        for index in 0..vm.array_len(id) {
+            items.push(bx_to_json(vm, vm.array_get(id, index))?);
+        }
+        return Ok(JsonValue::Array(items));
+    }
+    if vm.is_struct_value(value) {
+        let id = value.as_gc_id().unwrap();
+        let mut object = serde_json::Map::new();
+        for key in vm.struct_key_array(id) {
+            object.insert(key.clone(), bx_to_json(vm, vm.struct_get(id, &key))?);
+        }
+        return Ok(JsonValue::Object(object));
+    }
+    Ok(JsonValue::String(vm.to_string(value)))
+}
+
+#[cfg(feature = "embedded-web")]
+fn json_to_bx(vm: &mut dyn BxVM, value: &JsonValue) -> Result<BxValue, String> {
+    match value {
+        JsonValue::Null => Ok(BxValue::new_null()),
+        JsonValue::Bool(val) => Ok(BxValue::new_bool(*val)),
+        JsonValue::Number(val) => Ok(BxValue::new_number(
+            val.as_f64().ok_or_else(|| "Unsupported JSON number".to_string())?,
+        )),
+        JsonValue::String(val) => Ok(BxValue::new_ptr(vm.string_new(val.clone()))),
+        JsonValue::Array(values) => {
+            let id = vm.array_new();
+            for value in values {
+                let bx = json_to_bx(vm, value)?;
+                vm.array_push(id, bx);
+            }
+            Ok(BxValue::new_ptr(id))
+        }
+        JsonValue::Object(values) => {
+            let id = vm.struct_new();
+            for (key, value) in values {
+                let bx = json_to_bx(vm, value)?;
+                vm.struct_set(id, key, bx);
+            }
+            Ok(BxValue::new_ptr(id))
+        }
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+fn is_form_encoded(headers: &HashMap<String, String>) -> bool {
+    headers
+        .get("content-type")
+        .map(|ct| ct.starts_with("application/x-www-form-urlencoded"))
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "embedded-web")]
+fn is_json_body(headers: &HashMap<String, String>) -> bool {
+    headers
+        .get("content-type")
+        .map(|ct| ct.starts_with("application/json"))
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "embedded-web")]
+fn parse_form_body(body: &[u8]) -> HashMap<String, String> {
+    form_urlencoded::parse(body).into_owned().collect()
+}
+
+#[cfg(feature = "embedded-web")]
+fn pick_primary_app(build_state: &Arc<Mutex<BuildState>>) -> Result<AppDefinition> {
+    let state = build_state.lock().unwrap();
+    let app = state
+        .apps
+        .iter()
+        .find(|app| app.lock().unwrap().listen.is_some())
+        .or_else(|| state.apps.first())
+        .cloned()
+        .ok_or_else(|| anyhow!("No app was created. Use web.server()."))?;
+    drop(state);
+    let app = app.lock().unwrap().clone();
+    Ok(app)
+}
+
+#[cfg(feature = "embedded-web")]
+fn initialize_embedded_runtime(chunk: &Chunk) -> Result<Arc<Mutex<EmbeddedRuntimeState>>> {
+    let build_state = Arc::new(Mutex::new(BuildState::default()));
+    let mut vm = create_vm();
+    install_web_namespace(&mut vm, build_state.clone());
+    vm.interpret(chunk.clone())?;
+    let app = pick_primary_app(&build_state)?;
+    Ok(Arc::new(Mutex::new(EmbeddedRuntimeState { vm, app })))
+}
+
+#[cfg(feature = "embedded-web")]
+fn dispatch_script_request(runtime: &Arc<Mutex<EmbeddedRuntimeState>>, mut request: RequestData) -> Result<ResponseData> {
+    let mut runtime = runtime.lock().unwrap();
+    let app = runtime.app.clone();
+    let vm = &mut runtime.vm;
+    let matched_route = match_route(&app, &request.method, &request.path);
+    let (route, params) = if let Some((route, params)) = matched_route {
+        request.matched_route = Some(route.path.clone());
+        request.route_params = params.clone();
+        (Some(route), params)
+    } else {
+        (None, HashMap::new())
+    };
+
+    let rc_id = vm.struct_new();
+    for (key, value) in request.query.iter() {
+        let value_id = vm.string_new(value.clone());
+        vm.struct_set(rc_id, key, BxValue::new_ptr(value_id));
+    }
+
+    if is_form_encoded(&request.headers) {
+        for (key, value) in parse_form_body(&request.body) {
+            let value_id = vm.string_new(value);
+            vm.struct_set(rc_id, &key, BxValue::new_ptr(value_id));
+        }
+    }
+
+    if is_json_body(&request.headers) {
+        if let Ok(JsonValue::Object(object)) = serde_json::from_slice::<JsonValue>(&request.body) {
+            for (key, value) in object {
+                let bx = json_to_bx(vm, &value).map_err(anyhow::Error::msg)?;
+                vm.struct_set(rc_id, &key, bx);
+            }
+        }
+    }
+
+    for (key, value) in params {
+        let value_id = vm.string_new(value);
+        vm.struct_set(rc_id, &key, BxValue::new_ptr(value_id));
+    }
+
+    let prc_id = vm.struct_new();
+    let response = Arc::new(Mutex::new(ResponseState {
+        status: 200,
+        headers: HashMap::new(),
+        body: Vec::new(),
+    }));
+    let event_id = vm.native_object_new(Rc::new(RefCell::new(RequestContextObject {
+        request,
+        rc_id,
+        prc_id,
+        response: response.clone(),
+    })));
+    let mut middleware_chain = app.middleware.clone();
+    let handler = if let Some(route) = route {
+        middleware_chain.extend(route.middleware.clone());
+        route.handler
+    } else {
+        let not_found_id = vm.native_object_new(Rc::new(RefCell::new(NotFoundHandlerObject)));
+        BxValue::new_ptr(not_found_id)
+    };
+
+    execute_middleware_chain(
+        vm,
+        &middleware_chain,
+        0,
+        handler,
+        BxValue::new_ptr(event_id),
+        BxValue::new_ptr(rc_id),
+        BxValue::new_ptr(prc_id),
+    )
+    .map_err(anyhow::Error::msg)?;
+
+    let response = response.lock().unwrap();
+    Ok(ResponseData {
+        status: response.status,
+        headers: response.headers.clone(),
+        body: response.body.clone(),
+    })
+}
+
+#[cfg(feature = "embedded-web")]
+fn method_from_embedded(method: Method) -> &'static str {
+    match method {
+        Method::Get => "GET",
+        Method::Post => "POST",
+        Method::Put => "PUT",
+        Method::Patch => "PATCH",
+        Method::Delete => "DELETE",
+        Method::Head => "HEAD",
+        Method::Options => "OPTIONS",
+        _ => "GET",
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+fn connect_wifi() -> Result<BlockingWifi<EspWifi<'static>>> {
+    let peripherals = Peripherals::take()?;
+    let sys_loop = EspSystemEventLoop::take()?;
+    let nvs = EspDefaultNvsPartition::take()?;
+
+    let mut wifi = BlockingWifi::wrap(
+        EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs))?,
+        sys_loop,
+    )?;
+
+    let hostname = CString::new(WIFI_HOSTNAME)?;
+    esp_idf_sys::esp!(unsafe {
+        esp_idf_sys::esp_netif_set_hostname(
+            wifi.wifi().sta_netif().handle(),
+            hostname.as_ptr() as *const _,
+        )
+    })?;
+
+    let wifi_configuration = WifiConfiguration::Client(ClientConfiguration {
+        ssid: WIFI_SSID.try_into().unwrap(),
+        bssid: None,
+        auth_method: AuthMethod::WPA2Personal,
+        password: WIFI_PASSWORD.try_into().unwrap(),
+        channel: None,
+        ..Default::default()
+    });
+
+    wifi.set_configuration(&wifi_configuration)?;
+    wifi.start()?;
+    println!("[matchbox] Wi-Fi started for SSID '{}'", WIFI_SSID);
+
+    wifi.connect()?;
+    println!("[matchbox] Wi-Fi connected");
+
+    wifi.wait_netif_up()?;
+    let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
+    println!(
+        "[matchbox] Wi-Fi ready. hostname='{}' ip={}",
+        WIFI_HOSTNAME,
+        ip_info.ip
+    );
+
+    Ok(wifi)
+}
+
+#[cfg(feature = "embedded-web")]
+fn request_data_from_embedded<C>(request: &mut Request<C>) -> Result<RequestData>
+where
+    C: Connection,
+{
+    let raw_uri = request.uri().to_string();
+    let (path, query) = match raw_uri.split_once('?') {
+        Some((path, query)) => (path.to_string(), Some(query.to_string())),
+        None => (raw_uri.clone(), None),
+    };
+
+    let mut headers = HashMap::new();
+    for name in [
+        "host",
+        "content-type",
+        "content-length",
+        "accept",
+        "x-requested-with",
+    ] {
+        if let Some(value) = request.header(name) {
+            headers.insert(name.to_string(), value.to_string());
+        }
+    }
+
+    let body_len = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let mut body = vec![0u8; body_len];
+    if body_len > 0 {
+        request
+            .read_exact(&mut body)
+            .map_err(|err| anyhow!("failed to read request body: {:?}", err))?;
+    }
+
+    let query_map = query
+        .as_ref()
+        .map(|raw| {
+            form_urlencoded::parse(raw.as_bytes())
+                .into_owned()
+                .collect::<HashMap<String, String>>()
+        })
+        .unwrap_or_default();
+    let host = headers
+        .get("host")
+        .cloned()
+        .unwrap_or_else(|| "localhost".to_string());
+    let full_url = if let Some(raw) = &query {
+        format!("http://{}{}?{}", host, path, raw)
+    } else {
+        format!("http://{}{}", host, path)
+    };
+
+    Ok(RequestData {
+        method: method_from_embedded(request.method()).to_string(),
+        path,
+        matched_route: None,
+        route_params: HashMap::new(),
+        raw_query: query,
+        query: query_map,
+        headers,
+        body,
+        full_url,
+    })
+}
+
+#[cfg(feature = "embedded-web")]
+fn error_response_data(request: &RequestData, err: &anyhow::Error) -> ResponseData {
+    let message = err.to_string();
+    let status = if message.contains("Not Found") {
+        404
+    } else if message.contains("Bad Request") {
+        400
+    } else {
+        500
+    };
+
+    let wants_json = request
+        .headers
+        .get("accept")
+        .map(|accept| accept.to_lowercase().contains("application/json"))
+        .unwrap_or(false);
+
+    let mut headers = HashMap::new();
+    if wants_json {
+        headers.insert("content-type".to_string(), "application/json".to_string());
+        let body = serde_json::to_vec(&serde_json::json!({ "error": message }))
+            .unwrap_or_else(|_| br#"{"error":"internal error"}"#.to_vec());
+        ResponseData { status, headers, body }
+    } else {
+        headers.insert(
+            "content-type".to_string(),
+            "text/plain; charset=utf-8".to_string(),
+        );
+        ResponseData {
+            status,
+            headers,
+            body: message.into_bytes(),
+        }
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+fn log_heap(label: &str) {
+    let free = unsafe { esp_idf_sys::heap_caps_get_free_size(esp_idf_sys::MALLOC_CAP_8BIT) };
+    let largest =
+        unsafe { esp_idf_sys::heap_caps_get_largest_free_block(esp_idf_sys::MALLOC_CAP_8BIT) };
+    println!(
+        "[matchbox] heap {} free={} largest={}",
+        label, free, largest
+    );
+}
+
+#[cfg(feature = "embedded-web")]
+fn write_embedded_response<C>(request: Request<C>, response: ResponseData) -> Result<()>
+where
+    C: Connection,
+{
+    let owned_headers: Vec<(String, String)> = response.headers.into_iter().collect();
+    let borrowed_headers: Vec<(&str, &str)> = owned_headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    let mut resp = request
+        .into_response(response.status, None, &borrowed_headers)
+        .map_err(|err| anyhow!("failed to start response: {:?}", err))?;
+    resp.write_all(&response.body)
+        .map_err(|err| anyhow!("failed to write response body: {:?}", err))?;
+    Ok(())
+}
+
+#[cfg(feature = "embedded-web")]
+fn install_method_handler(
+    server: &mut EspHttpServer<'static>,
+    runtime: Arc<Mutex<EmbeddedRuntimeState>>,
+    method: Method,
+    uri: &'static str,
+) -> Result<()> {
+    server.fn_handler::<anyhow::Error, _>(uri, method, move |mut request| {
+        log_heap("before-request");
+        let request_data = request_data_from_embedded(&mut request)
+            .map_err(|err| anyhow!("Failed to read embedded request: {}", err))?;
+        let response = match dispatch_script_request(&runtime, request_data.clone()) {
+            Ok(response) => response,
+            Err(err) => error_response_data(&request_data, &err),
+        };
+        write_embedded_response(request, response)
+            .map_err(|err| anyhow!("Failed to write embedded response: {}", err))?;
+        log_heap("after-request");
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok(())
+}
+
+#[cfg(feature = "embedded-web")]
+fn run_embedded_web() -> Result<()> {
+    let chunk = Arc::new(load_chunk()?);
+    log_heap("startup-pre-init");
+    let runtime = initialize_embedded_runtime(chunk.as_ref())?;
+    log_heap("startup-post-init");
+    let listen = ListenConfig::default();
+    let _wifi = connect_wifi()?;
+    log_heap("startup-post-wifi");
+    let mut config = HttpConfiguration::default();
+    config.http_port = listen.port;
+    config.uri_match_wildcard = true;
+    config.stack_size = 6144;
+    config.max_uri_handlers = 14;
+    config.max_sessions = 2;
+    config.max_open_sockets = 2;
+    config.session_timeout = core::time::Duration::from_secs(30);
+
+    let mut server = EspHttpServer::new(&config)?;
+    log_heap("startup-post-httpd");
+    for method in [
+        Method::Get,
+        Method::Post,
+        Method::Put,
+        Method::Patch,
+        Method::Delete,
+        Method::Head,
+        Method::Options,
+    ] {
+        install_method_handler(&mut server, runtime.clone(), method, "/")?;
+        install_method_handler(&mut server, runtime.clone(), method, "/*")?;
+    }
+    log_heap("startup-post-routes");
+
+    println!(
+        "[matchbox] Embedded app server listening on http://0.0.0.0:{}",
+        listen.port
+    );
+    core::mem::forget(server);
+    loop {
+        unsafe { esp_idf_sys::vTaskDelay(1000); }
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    esp_idf_sys::link_patches();
+    EspLogger::initialize_default();
+    println!("[matchbox] ESP32 Fusion Runner Starting...");
+    #[cfg(feature = "embedded-web")]
+    println!("[matchbox] Embedded web runtime flavor enabled.");
+
+    const STACK_SIZE: u32 = 48 * 1024;
+
+    extern "C" fn task_wrapper(_: *mut std::ffi::c_void) {
+        #[cfg(feature = "embedded-web")]
+        if let Err(error) = run_embedded_web() {
+            eprintln!("[matchbox] Embedded web task failed: {}", error);
+        }
+
+        #[cfg(not(feature = "embedded-web"))]
+        if let Err(error) = run_vm() {
+            eprintln!("[matchbox] Fusion VM Task failed: {}", error);
+        }
+
+        println!("[matchbox] Fusion VM Task finished. Standing by...");
+        loop {
+            unsafe { esp_idf_sys::vTaskDelay(100); }
+        }
+    }
+
+    unsafe {
+        let name = std::ffi::CString::new("matchbox_fusion_vm").unwrap();
+        let res = esp_idf_sys::xTaskCreatePinnedToCore(
+            Some(task_wrapper),
+            name.as_ptr(),
+            STACK_SIZE,
+            std::ptr::null_mut(),
+            5,
+            std::ptr::null_mut(),
+            0,
+        );
+
+        if res != 1 {
+            anyhow::bail!("Failed to create fusion VM task (error {})", res);
+        }
+    }
+
+    println!("[matchbox] Main task standing by...");
+    loop {
+        unsafe { esp_idf_sys::vTaskDelay(1000); }
+    }
+}

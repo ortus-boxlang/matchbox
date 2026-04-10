@@ -15,13 +15,49 @@ use wasm_bindgen::prelude::*;
 const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
 const ESP32_PARTITIONS_CSV: &str =
     include_str!("../crates/matchbox-esp32-runner/partitions.csv");
+const ESP32_STORAGE_OFFSET: &str = "0x310000";
 
 mod stubs;
 mod modules;
+mod embedded;
 
 const JS_GLUE_TEMPLATE: &str = include_str!("js_bundle_template.js");
 
 use postcard;
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Esp32BoxConfig {
+    board: Option<String>,
+    psram: Option<bool>,
+    web_port: Option<u16>,
+    wifi: Option<Esp32WifiConfig>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Esp32WifiConfig {
+    ssid: Option<String>,
+    password: Option<String>,
+    hostname: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BoxProjectConfig {
+    esp32: Option<Esp32BoxConfig>,
+}
+
+fn read_esp32_box_config(project_dir: &Path) -> Result<Option<Esp32BoxConfig>> {
+    let box_json_path = project_dir.join("box.json");
+    if !box_json_path.exists() {
+        return Ok(None);
+    }
+
+    let text = fs::read_to_string(&box_json_path)?;
+    let config: BoxProjectConfig = serde_json::from_str(&text)?;
+    Ok(config.esp32)
+}
 
 fn exported_function_names(ast: &[ast::Statement]) -> Vec<String> {
     let mut functions = Vec::new();
@@ -64,7 +100,7 @@ Unsupported features were found:\n",
         ));
     }
     message.push_str(
-        "Allowed direction for now: route registration and middleware definitions only. \
+        "Allowed direction for now: route registration, lean middleware definitions, and in-handler request/response helpers such as `event.renderJson()` and `event.renderHtml()`. \
 The embedded HTTP transport for `listen()` and heavier server features is not implemented yet.",
     );
     bail!(message)
@@ -511,6 +547,11 @@ impl BoxLangVM {{
     }}
 }}
 "#)
+}
+
+fn render_esp32_fusion_runner_source(registration_calls: &str) -> String {
+    include_str!("esp32_fusion_runner_template.rs.txt")
+        .replace("{{registration_calls}}", registration_calls)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1124,6 +1165,11 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
             source_path.parent().unwrap_or(Path::new(".")).to_path_buf()
         });
         let modules_info = modules::discover_modules(&cwd, extra_module_paths)?;
+        let embedded_manifest = if orig_target == Some("esp32") {
+            embedded::discover_embedded_app(&cwd)?
+        } else {
+            None
+        };
 
         let module_mappings: Vec<(String, PathBuf)> = modules_info.iter()
             .map(|m| (m.name.clone(), m.path.clone()))
@@ -1164,8 +1210,23 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
             let native_dir = project_root.join("native");
             
             let has_native_modules = modules_info.iter().any(|m| m.has_native);
-            if (native_dir.exists() && native_dir.is_dir()) || has_native_modules {
-                return produce_fusion_artifact(&chunk, source_path, &native_dir, t, &ast, output, &modules_info, is_flash, orig_chip);
+            let should_use_fusion =
+                ((native_dir.exists() && native_dir.is_dir()) || has_native_modules)
+                && !(t == "esp32" && esp32_web);
+            if should_use_fusion {
+                return produce_fusion_artifact(
+                    &chunk,
+                    source_path,
+                    &native_dir,
+                    t,
+                    &ast,
+                    output,
+                    &modules_info,
+                    embedded_manifest.as_ref(),
+                    is_flash,
+                    orig_chip,
+                    esp32_web,
+                );
             }
 
             match t {
@@ -1173,6 +1234,7 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
                 "wasm" => produce_wasm_binary(&chunk, source_path, output)?,
                 "js" => produce_js_bundle(&chunk, source_path, &ast, output)?,
                 "esp32" => {
+                    let esp32_config = read_esp32_box_config(&cwd)?;
                     // In watch mode, force a full flash on the initial entry so the
                     // on-device runner always matches the current bytecode format.
                     let (fd, ff) = if is_watch {
@@ -1180,7 +1242,18 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
                     } else {
                         (is_fast_deploy, is_full_flash)
                     };
-                    produce_esp32_binary(&chunk, source_path, output, is_flash, orig_chip, fd, ff, esp32_web)?;
+                    produce_esp32_binary(
+                        &chunk,
+                        source_path,
+                        output,
+                        is_flash,
+                        orig_chip,
+                        fd,
+                        ff,
+                        esp32_web,
+                        embedded_manifest.as_ref(),
+                        esp32_config.as_ref(),
+                    )?;
                 }
                 target_val => produce_native_binary(&chunk, source_path, target_val, output)?,
             }
@@ -1487,7 +1560,19 @@ fn produce_native_binary(chunk: &Chunk, source_path: &Path, target: &str, output
     Ok(())
 }
 
-fn produce_fusion_artifact(chunk: &Chunk, source_path: &Path, native_dir: &Path, target: &str, ast: &[ast::Statement], output: Option<&Path>, modules: &[modules::ModuleInfo], is_flash: bool, chip: Option<&str>) -> Result<()> {
+fn produce_fusion_artifact(
+    chunk: &Chunk,
+    source_path: &Path,
+    native_dir: &Path,
+    target: &str,
+    ast: &[ast::Statement],
+    output: Option<&Path>,
+    modules: &[modules::ModuleInfo],
+    embedded_manifest: Option<&embedded::EmbeddedBuildManifest>,
+    is_flash: bool,
+    chip: Option<&str>,
+    esp32_web: bool,
+) -> Result<()> {
     println!("Native Fusion detected! Target: {}. Building hybrid artifact...", target);
     
     let is_esp32 = target == "esp32";
@@ -1501,10 +1586,18 @@ fn produce_fusion_artifact(chunk: &Chunk, source_path: &Path, native_dir: &Path,
 
     let script_stem = source_path.file_stem().and_then(|s| s.to_str()).unwrap_or("fusion");
     let build_dir = std_env::current_dir()?.join("target").join("fusion").join(script_stem);
+    let mut embedded_route_table_path: Option<PathBuf> = None;
     if build_dir.exists() {
         fs::remove_dir_all(&build_dir)?;
     }
     fs::create_dir_all(&build_dir.join("src"))?;
+    if let Some(manifest) = embedded_manifest {
+        let manifest_path = embedded::write_embedded_manifest(&build_dir, manifest)?;
+        let route_table_path = embedded::write_embedded_route_table(&build_dir, manifest)?;
+        embedded_route_table_path = Some(route_table_path.clone());
+        println!("Embedded route manifest produced: {}", manifest_path.display());
+        println!("Embedded route table produced: {}", route_table_path.display());
+    }
 
     let is_wasm = target == "wasm" || target == "js";
     let is_wasi = target == "wasi";
@@ -1547,8 +1640,12 @@ anyhow = "1.0"
     if is_esp32 {
         cargo_toml.push_str("esp-idf-svc = { version = \"0.52\", features = [\"binstart\", \"critical-section\", \"embassy-time-driver\"] }\n");
         cargo_toml.push_str("esp-idf-sys = \"0.37\"\n");
+        cargo_toml.push_str("embedded-svc = \"0.29\"\n");
         cargo_toml.push_str("embassy-time = { version = \"0.5\", features = [\"generic-queue-8\"] }\n");
         cargo_toml.push_str("log = \"0.4\"\n");
+        cargo_toml.push_str("serde_json = \"1.0\"\n");
+        cargo_toml.push_str("url = \"2.5\"\n");
+        cargo_toml.push_str("\n[features]\ndefault = []\nembedded-web = []\n");
         cargo_toml.push_str("\n[build-dependencies]\nembuild = { version = \"0.33\", features = [\"espidf\"] }\n");
         
         // Copy partitions and toolchain
@@ -1695,39 +1792,7 @@ strip = true
     let bytecode = postcard::to_stdvec(chunk)?;
     let mut code = String::new();
 
-    if is_esp32 {
-        code.push_str(r#"
-use matchbox_vm::{vm::VM, types::{BxValue, BxNativeFunction}, Chunk};
-use std::collections::HashMap;
-use anyhow::{Result, bail};
-use esp_idf_sys as _; 
-use esp_idf_svc::log::EspLogger;
-
-static EMBEDDED_BYTECODE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bytecode.bxb"));
-
-fn load_from_flash() -> Result<Chunk> {
-    unsafe {
-        let partition = esp_idf_sys::esp_partition_find_first(
-            esp_idf_sys::esp_partition_type_t_ESP_PARTITION_TYPE_DATA,
-            0x01,
-            std::ptr::null(),
-        );
-        if partition.is_null() { bail!("Storage partition not found"); }
-        let mut map_handle: esp_idf_sys::esp_partition_mmap_handle_t = 0;
-        let mut map_ptr: *const std::ffi::c_void = std::ptr::null();
-        let err = esp_idf_sys::esp_partition_mmap(partition, 0, (*partition).size as usize, esp_idf_sys::esp_partition_mmap_memory_t_ESP_PARTITION_MMAP_DATA, &mut map_ptr, &mut map_handle);
-        if err != 0 { bail!("Failed to mmap"); }
-        let data_ptr = map_ptr as *const u8;
-        let len = u32::from_le_bytes([*data_ptr, *data_ptr.add(1), *data_ptr.add(2), *data_ptr.add(3)]) as usize;
-        let bytecode = std::slice::from_raw_parts(data_ptr.add(4), len);
-        let mut chunk: Chunk = postcard::from_bytes(bytecode)?;
-        chunk.reconstruct_functions();
-        esp_idf_sys::esp_partition_munmap(map_handle);
-        Ok(chunk)
-    }
-}
-"#);
-    } else {
+    if !is_esp32 {
         code.push_str(r#"
 use matchbox_vm::{vm::VM, types::{BxValue, BxNativeFunction}, Chunk};
 use std::collections::HashMap;
@@ -1738,66 +1803,7 @@ use std::collections::HashMap;
     code.push_str("\n");
 
     if is_esp32 {
-        code.push_str(&format!(r#"
-fn run_vm() -> anyhow::Result<()> {{
-    let mut chunk = match load_from_flash() {{
-        Ok(c) => c,
-        Err(_) => {{
-            let mut c: Chunk = postcard::from_bytes(EMBEDDED_BYTECODE)?;
-            c.reconstruct_functions();
-            c
-        }}
-    }};
-
-    let mut bifs = HashMap::new();
-
-    let mut classes = HashMap::new();
-{}
-    let mut vm = VM::new_with_bifs(bifs, classes);
-    vm.interpret(chunk)?;
-    Ok(())
-}}
-
-fn main() -> anyhow::Result<()> {{
-    esp_idf_sys::link_patches();
-    EspLogger::initialize_default();
-    println!("[matchbox] ESP32 Fusion Runner Starting...");
-
-    const STACK_SIZE: u32 = 48 * 1024;
-
-    extern "C" fn task_wrapper(_: *mut std::ffi::c_void) {{
-        if let Err(error) = run_vm() {{
-            eprintln!("[matchbox] Fusion VM Task failed: {{}}", error);
-        }}
-        println!("[matchbox] Fusion VM Task finished. Standing by...");
-        loop {{
-            unsafe {{ esp_idf_sys::vTaskDelay(100); }}
-        }}
-    }}
-
-    unsafe {{
-        let name = std::ffi::CString::new("matchbox_fusion_vm").unwrap();
-        let res = esp_idf_sys::xTaskCreatePinnedToCore(
-            Some(task_wrapper),
-            name.as_ptr(),
-            STACK_SIZE,
-            std::ptr::null_mut(),
-            5,
-            std::ptr::null_mut(),
-            0,
-        );
-
-        if res != 1 {{
-            anyhow::bail!("Failed to create fusion VM task (error {{}})", res);
-        }}
-    }}
-
-    println!("[matchbox] Main task standing by...");
-    loop {{
-        unsafe {{ esp_idf_sys::vTaskDelay(1000); }}
-    }}
-}}
-"#, registration_calls));
+        code.push_str(&render_esp32_fusion_runner_source(&registration_calls));
     } else if target == "js" {
         code.push_str(&render_fusion_web_host_source(&registration_calls, &bytecode));
     } else {
@@ -1877,9 +1883,15 @@ impl BoxLangVM {
         let bytecode_path = build_dir.join("bytecode.bxb");
         fs::write(&bytecode_path, bytecode)?;
         cmd.env("BOXLANG_BYTECODE_PATH", bytecode_path.to_str().unwrap());
+        if let Some(route_table_path) = embedded_route_table_path.as_ref() {
+            cmd.env("MATCHBOX_EMBEDDED_ROUTE_TABLE", route_table_path.to_str().unwrap());
+        }
         let sdkconfig_defaults_path = build_dir.join("sdkconfig.defaults");
         if sdkconfig_defaults_path.exists() {
             cmd.env("ESP_IDF_SDKCONFIG_DEFAULTS", sdkconfig_defaults_path.to_str().unwrap());
+        }
+        if esp32_web {
+            cmd.arg("--features").arg("embedded-web");
         }
     }
 
@@ -2006,11 +2018,54 @@ fn produce_wasm_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>)
     Ok(())
 }
 
-fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>, is_flash: bool, chip: Option<&str>, is_fast_deploy: bool, is_full_flash: bool, esp32_web: bool) -> Result<()> {
+fn produce_esp32_binary(
+    chunk: &Chunk,
+    source_path: &Path,
+    output: Option<&Path>,
+    is_flash: bool,
+    chip: Option<&str>,
+    is_fast_deploy: bool,
+    is_full_flash: bool,
+    esp32_web: bool,
+    embedded_manifest: Option<&embedded::EmbeddedBuildManifest>,
+    esp32_config: Option<&Esp32BoxConfig>,
+) -> Result<()> {
     fn write_embedded_esp32_partitions_csv() -> Result<PathBuf> {
         let path = std_env::temp_dir().join("matchbox_esp32_partitions.csv");
         fs::write(&path, ESP32_PARTITIONS_CSV)?;
         Ok(path)
+    }
+
+    fn write_storage_payload(chip: &str, payload: &[u8], description: &str) -> Result<()> {
+        let mut data = (payload.len() as u32).to_le_bytes().to_vec();
+        data.extend_from_slice(payload);
+        let sector_size = 4096;
+        let padded_len = (data.len() + sector_size - 1) / sector_size * sector_size;
+        data.resize(padded_len, 0xFF);
+
+        let temp_bin = std_env::temp_dir().join(format!("matchbox_{}.bin", description));
+        fs::write(&temp_bin, &data)?;
+
+        let mut flash_cmd = std::process::Command::new("espflash");
+        flash_cmd
+            .arg("write-bin")
+            .arg("--chip")
+            .arg(chip)
+            .arg("--after")
+            .arg("no-reset")
+            .arg(ESP32_STORAGE_OFFSET)
+            .arg(&temp_bin);
+
+        let status = flash_cmd.status()?;
+        if !status.success() {
+            bail!("Failed to write {} to ESP32 storage partition", description);
+        }
+
+        let mut reset_cmd = std::process::Command::new("espflash");
+        reset_cmd.arg("reset").arg("--chip").arg(chip);
+        let _ = reset_cmd.status();
+
+        Ok(())
     }
 
     let chip = chip.unwrap_or("esp32");
@@ -2024,47 +2079,44 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
         _ => "xtensa-esp32-espidf",
     };
 
-    if is_fast_deploy {
+    let temp_dir = std_env::temp_dir().join("matchbox_esp32_build");
+    if temp_dir.exists() {
+        fs::remove_dir_all(&temp_dir)?;
+    }
+    fs::create_dir_all(&temp_dir)?;
+
+    let embedded_route_table_path = if esp32_web {
+        embedded_manifest
+            .map(|manifest| embedded::write_embedded_route_table(&temp_dir, manifest))
+            .transpose()?
+    } else {
+        None
+    };
+
+    if is_fast_deploy && !esp32_web {
         println!("FAST DEPLOY: Sending {} bytes of bytecode to ESP32 'storage' partition...", bytecode_bytes.len());
-        // 1. Prepare the data: [4 bytes length (LE)][bytecode bytes]
-        let mut data = (bytecode_bytes.len() as u32).to_le_bytes().to_vec();
-        data.extend_from_slice(&bytecode_bytes);
-        // Pad to 4KB sector boundary — espflash may not fully program the last
-        // partial flash page, leaving trailing 0xFF on the chip.
-        let sector_size = 4096;
-        let padded_len = (data.len() + sector_size - 1) / sector_size * sector_size;
-        data.resize(padded_len, 0xFF);
-
-        let temp_bin = std_env::temp_dir().join("matchbox_fast_deploy.bin");
-        fs::write(&temp_bin, &data)?;
-
-        // 2. Flash ONLY the data partition using espflash.
-        //    Use --after no-reset so the flash chip finishes its write cycle
-        //    before we reset.  USB-JTAG hard-reset can interrupt the last page write.
-        let mut flash_cmd = std::process::Command::new("espflash");
-        flash_cmd.arg("write-bin")
-            .arg("--chip").arg(chip)
-            .arg("--after").arg("no-reset")
-            .arg("0x110000") // Offset for 'storage' partition
-            .arg(&temp_bin);
-
-        let status = flash_cmd.status()?;
-        if !status.success() {
-            bail!("Fast deploy failed. Ensure the device is connected and already has a MatchBox Runner flashed. (Try --full-flash for the first time)");
-        }
-
-        // 3. Reset the device separately so the firmware boots with the new bytecode.
-        let mut reset_cmd = std::process::Command::new("espflash");
-        reset_cmd.arg("reset")
-            .arg("--chip").arg(chip);
-        let _ = reset_cmd.status();
-
+        write_storage_payload(chip, &bytecode_bytes, "fast_deploy")?;
         println!("Fast deploy successful!");
         return Ok(());
     }
 
+    if is_fast_deploy && esp32_web {
+        if let Some(route_table_path) = embedded_route_table_path.as_ref() {
+            let route_bytes = fs::read(route_table_path)?;
+            println!(
+                "FAST DEPLOY: Sending {} bytes of embedded app artifact to ESP32 'storage' partition...",
+                route_bytes.len()
+            );
+            write_storage_payload(chip, &route_bytes, "embedded_route_table")?;
+            println!("Fast deploy successful!");
+            return Ok(());
+        }
+        bail!("Embedded web fast deploy requires an app/ directory with embedded routes");
+    }
+
     // Attempt to use a pre-built stub if available
-    if let Some(stub_bytes) = stubs::get_stub(target) {
+    if !esp32_web {
+        if let Some(stub_bytes) = stubs::get_stub(target) {
         if !stub_bytes.is_empty() {
             println!("Using pre-built ESP32 stub for target '{}'...", target);
             let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("elf"));
@@ -2095,7 +2147,18 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
                 if !status.success() { bail!("Failed to flash stub."); }
                 
                 // 2. Automatically perform fast-deploy for the bytecode
-                return produce_esp32_binary(chunk, source_path, output, false, Some(chip), true, is_full_flash, esp32_web);
+                return produce_esp32_binary(
+                    chunk,
+                    source_path,
+                    output,
+                    false,
+                    Some(chip),
+                    true,
+                    is_full_flash,
+                    esp32_web,
+                    embedded_manifest,
+                    esp32_config,
+                );
             } else {
                 println!("ESP32 firmware produced (stub): {}", out_path.display());
                 println!("NOTE: To run this, you must also flash the bytecode to the 'storage' partition.");
@@ -2105,15 +2168,11 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
             println!("Note: Pre-built stub for '{}' is empty/missing. Falling back to local build...", target);
         }
     }
+    }
 
     println!("Building custom ESP32 firmware for chip: {} (no stub found)...", chip);
     println!("Using activated ESP-IDF environment (`ESP_IDF_TOOLS_INSTALL_DIR=fromenv`) for ESP32 runner build.");
-    let temp_dir = std_env::temp_dir().join("matchbox_esp32_build");
-    if temp_dir.exists() {
-        fs::remove_dir_all(&temp_dir)?;
-    }
-    fs::create_dir_all(&temp_dir)?;
-    
+
     let bytecode_path = temp_dir.join("bytecode.bxb");
     fs::write(&bytecode_path, bytecode_bytes)?;
 
@@ -2130,8 +2189,44 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
         .env("ESP_IDF_TOOLS_INSTALL_DIR", "fromenv")
         .env("MCU", chip);
 
+    if let Some(config) = esp32_config {
+        if let Some(board) = config.board.as_deref() {
+            cmd.env("MATCHBOX_ESP32_BOARD", board);
+        }
+        if let Some(web_port) = config.web_port {
+            cmd.env("MATCHBOX_ESP32_WEB_PORT", web_port.to_string());
+        }
+        if let Some(wifi) = config.wifi.as_ref() {
+            if let Some(ssid) = wifi.ssid.as_deref() {
+                cmd.env("MATCHBOX_ESP32_WIFI_SSID", ssid);
+            }
+            if let Some(password) = wifi.password.as_deref() {
+                cmd.env("MATCHBOX_ESP32_WIFI_PASSWORD", password);
+            }
+            if let Some(hostname) = wifi.hostname.as_deref() {
+                cmd.env("MATCHBOX_ESP32_WIFI_HOSTNAME", hostname);
+            }
+        }
+    }
+
+    if let Some(route_table_path) = embedded_route_table_path.as_ref() {
+        cmd.env(
+            "MATCHBOX_EMBEDDED_ROUTE_TABLE",
+            route_table_path.to_str().unwrap(),
+        );
+    }
+
     if esp32_web {
         cmd.arg("--features").arg("embedded-web");
+    }
+    let psram_enabled = esp32_config.and_then(|config| config.psram).unwrap_or(false)
+        || std_env::var_os("MATCHBOX_ESP32_PSRAM").is_some();
+    if psram_enabled {
+        cmd.arg("--features").arg("psram");
+        cmd.env(
+            "ESP_IDF_SDKCONFIG_DEFAULTS",
+            runner_path.join("sdkconfig.defaults.psram").to_str().unwrap(),
+        );
     }
 
     let status = cmd.status()?;
@@ -2165,9 +2260,31 @@ fn produce_esp32_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>
         }
         println!("Flash successful!");
 
-        if is_full_flash {
+        if esp32_web {
+            if let Some(route_table_path) = embedded_route_table_path.as_ref() {
+                let route_bytes = fs::read(route_table_path)?;
+                println!("Writing embedded app artifact to 'storage' partition...");
+                write_storage_payload(chip, &route_bytes, "embedded_route_table")?;
+                println!("Embedded app artifact deploy complete.");
+            }
+        }
+
+        if is_full_flash && !esp32_web {
             println!("Full flash complete. Sending fresh bytecode to the 'storage' partition...");
-            return produce_esp32_binary(chunk, source_path, output, false, Some(chip), true, is_full_flash, esp32_web);
+            return produce_esp32_binary(
+                chunk,
+                source_path,
+                output,
+                false,
+                Some(chip),
+                true,
+                is_full_flash,
+                esp32_web,
+                embedded_manifest,
+                esp32_config,
+            );
+        } else if is_full_flash && esp32_web {
+            println!("Full flash complete for embedded web firmware.");
         }
     }
 
@@ -2331,6 +2448,15 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
                             let source_text = fs::read_to_string(source_path)?;
                             let ast = parser::parse(&source_text)
                                 .map_err(|e| anyhow::anyhow!("Parse Error: {}", e))?;
+                            let cwd = std::env::current_dir().unwrap_or_else(|_| {
+                                source_path.parent().unwrap_or(Path::new(".")).to_path_buf()
+                            });
+                            let embedded_manifest = if esp32_web {
+                                embedded::discover_embedded_app(&cwd)?
+                            } else {
+                                None
+                            };
+                            let esp32_config = read_esp32_box_config(&cwd)?;
                             let chunk = matchbox_compiler::compile_with_treeshaking(
                                 source_path.to_str().unwrap_or("unknown"),
                                 &ast,
@@ -2341,7 +2467,18 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
                                 &[],         // module_mappings
                                 &[],         // extra_preludes
                             ).map_err(|e| anyhow::anyhow!("Compiler Error: {}", e))?;
-                            produce_esp32_binary(&chunk, source_path, None, true, chip.as_deref(), true, is_full_flash, esp32_web)?;
+                            produce_esp32_binary(
+                                &chunk,
+                                source_path,
+                                None,
+                                true,
+                                chip.as_deref(),
+                                true,
+                                is_full_flash,
+                                esp32_web,
+                                embedded_manifest.as_ref(),
+                                esp32_config.as_ref(),
+                            )?;
                             Ok(())
                         })();
 
@@ -2436,6 +2573,21 @@ mod tests {
             } );
             app.get( "/health", function( event, rc, prc ) {
                 event.renderJson( { "ok": true } );
+            } );
+        "#;
+        let ast = parser::parse(source).unwrap();
+        assert!(validate_esp32_target(&ast, true).is_ok());
+    }
+
+    #[test]
+    fn esp32_validator_allows_inline_html_and_json_handlers() {
+        let source = r#"
+            app = web.server();
+            app.get( "/", function( event, rc, prc ) {
+                event.renderHtml( "<h1>ready</h1>" );
+            } );
+            app.post( "/print", function( event, rc, prc ) {
+                event.renderJson( { "ok": true, "path": event.getCurrentRoute() } );
             } );
         "#;
         let ast = parser::parse(source).unwrap();

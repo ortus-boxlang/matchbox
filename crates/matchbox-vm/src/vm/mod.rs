@@ -142,6 +142,8 @@ impl BxVM for VM {
     }
 
     fn interpret_chunk(&mut self, chunk: Chunk) -> Result<BxValue, String> {
+        // Legacy consuming execution path. Keep this behavior intact so the
+        // main VM can migrate to the borrowed path incrementally later.
         self.interpret(chunk).map_err(|e| e.to_string())
     }
 
@@ -1053,9 +1055,30 @@ impl VM {
     }
 
     pub fn interpret(&mut self, mut chunk: Chunk) -> Result<BxValue> {
+        // Legacy consuming execution path. This still clones the chunk into a
+        // per-run Rc/RefCell wrapper and is kept as-is for existing callers.
         chunk.ensure_caches();
         let chunk_for_func = chunk.clone();
         let chunk_rc = Rc::new(RefCell::new(chunk));
+        self.interpret_chunk_shared(chunk_for_func, chunk_rc)
+    }
+
+    pub fn interpret_chunk_borrowed(&mut self, chunk: &Chunk) -> Result<BxValue> {
+        // New borrowed execution path used by the ESP32 runner to avoid
+        // cloning the entire route chunk on every request.
+        let mut chunk_for_func = chunk.clone();
+        chunk_for_func.ensure_caches();
+        let mut owned_chunk = chunk_for_func.clone();
+        owned_chunk.ensure_caches();
+        let chunk_rc = Rc::new(RefCell::new(owned_chunk));
+        self.interpret_chunk_shared(chunk_for_func, chunk_rc)
+    }
+
+    fn interpret_chunk_shared(
+        &mut self,
+        chunk_for_func: Chunk,
+        chunk_rc: Rc<RefCell<Chunk>>,
+    ) -> Result<BxValue> {
         let function = Rc::new(BxCompiledFunction {
             name: "script".to_string(),
             arity: 0,
@@ -1088,7 +1111,7 @@ impl VM {
             priority: 0,
             root_stack: Vec::new(),
         };
-        
+
         self.fibers.push(fiber);
         let res = self.run_all();
         self.current_fiber_idx = None;

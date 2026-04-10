@@ -1,23 +1,55 @@
 [package]
 name = "matchbox-esp32-runner"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [features]
-default = []
-embedded-web = []
+default = [
+    "strict-profile",
+    "platform-web",
+    "platform-mdns",
+    "platform-camera",
+    "platform-bluetooth",
+    "platform-pins",
+    "platform-sdcard",
+    "platform-printer",
+]
+embedded-web = ["platform-web"]
+strict-profile = []
+platform-web = []
+platform-mdns = ["platform-web"]
+platform-camera = []
+platform-bluetooth = []
+platform-pins = []
+platform-sdcard = []
+platform-printer = ["platform-bluetooth"]
+psram = []
 
 [dependencies]
+printer-bitmap-native = { path = "../../../../jbeers/matchbox-printer/modules/printer-bitmap/matchbox" }
+bx-bluetooth-native = { path = "../../../../jbeers/bx-bluetooth/matchbox" }
+bx-camera-native = { path = "../../../../jbeers/bx-camera/matchbox" }
+matchbox-embedded = { path = "../matchbox-embedded" }
+matchbox_compiler = { path = "../matchbox-compiler" }
 matchbox_vm = { path = "../matchbox-vm" }
 anyhow = "1.0"
+postcard = { version = "1.0", features = ["alloc", "use-std"] }
 esp-idf-svc = { version = "0.52", features = ["binstart"] }
 esp-idf-sys = "0.37"
-postcard = { version = "1.0", features = ["alloc", "use-std"] }
-bincode = "1.3.3"
+embedded-svc = "0.29"
 log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+url = "2.5"
 
 [build-dependencies]
 embuild = { version = "0.33", features = ["espidf"] }
+
+[package.metadata.esp-idf-sys]
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/mdns", version = "1.5" }
 
 [profile.release]
 opt-level = "s" # Optimize for size

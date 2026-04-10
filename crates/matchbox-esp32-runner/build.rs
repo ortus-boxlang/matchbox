@@ -1,25 +1,30 @@
-use std::env;
-use std::fs;
-use std::path::PathBuf;
-
 fn main() {
-    // If we're building from the matchbox CLI, it will set BOXLANG_BYTECODE_PATH.
-    // Otherwise, we'll use an empty dummy to allow 'cargo build' to work.
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let dest_path = out_dir.join("bytecode.bxb");
+    println!("cargo:rerun-if-env-changed=MATCHBOX_EMBEDDED_ROUTE_TABLE");
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let dest_path = out_dir.join("embedded-route-table.json");
+    let sdkconfig_dest_path = out_dir.join("sdkconfig.defaults.generated");
 
-    if let Ok(bytecode_path) = env::var("BOXLANG_BYTECODE_PATH") {
-        if !bytecode_path.is_empty() {
-            fs::copy(bytecode_path, &dest_path).expect("Failed to copy bytecode");
-        } else {
-            fs::write(&dest_path, b"").expect("Failed to write dummy bytecode");
+    if let Ok(route_table_path) = std::env::var("MATCHBOX_EMBEDDED_ROUTE_TABLE") {
+        if !route_table_path.is_empty() {
+            println!("cargo:rerun-if-changed={route_table_path}");
+            std::fs::copy(route_table_path, dest_path)
+                .expect("Failed to copy embedded route table");
         }
     } else {
-        // Create an empty chunk as a dummy
-        let empty: Vec<u8> = vec![];
-        fs::write(&dest_path, empty).expect("Failed to write dummy bytecode");
+        std::fs::write(dest_path, [])
+            .expect("Failed to write default embedded route table");
     }
 
-    // Standard ESP-IDF build script hook
+    if std::env::var_os("CARGO_FEATURE_PSRAM").is_some() {
+        let psram_defaults = std::path::PathBuf::from("sdkconfig.defaults.psram");
+        println!("cargo:rerun-if-changed={}", psram_defaults.display());
+        std::fs::copy(&psram_defaults, &sdkconfig_dest_path)
+            .expect("Failed to copy PSRAM sdkconfig defaults");
+        println!(
+            "cargo:rustc-env=MATCHBOX_PSRAM_SDKCONFIG_DEFAULTS={}",
+            sdkconfig_dest_path.display()
+        );
+    }
+
     embuild::espidf::sysenv::output();
 }
