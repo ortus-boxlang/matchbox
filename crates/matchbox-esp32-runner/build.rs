@@ -16,7 +16,13 @@ fn main() {
     }
 
     if std::env::var_os("CARGO_FEATURE_PSRAM").is_some() {
-        let psram_defaults = std::path::PathBuf::from("sdkconfig.defaults.psram");
+        let board = std::env::var("MATCHBOX_ESP32_BOARD").ok();
+        let psram_defaults = match board.as_deref() {
+            Some("xiao-esp32s3-sense") => {
+                std::path::PathBuf::from("sdkconfig.defaults.xiao-esp32s3-sense.psram")
+            }
+            _ => std::path::PathBuf::from("sdkconfig.defaults.psram"),
+        };
         println!("cargo:rerun-if-changed={}", psram_defaults.display());
         std::fs::copy(&psram_defaults, &sdkconfig_dest_path)
             .expect("Failed to copy PSRAM sdkconfig defaults");

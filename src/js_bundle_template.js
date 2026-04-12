@@ -51,6 +51,14 @@ const wasiShim = {
     fd_read: (fd, iovs, iovs_len, nread) => 0,
     fd_seek: (fd, offset, whence, newoffset) => 0,
     fd_fdstat_get: (fd, stat) => 0,
+    fd_filestat_get: (fd, stat) => 0,
+    fd_prestat_get: (fd, prestat) => 0,
+    fd_prestat_dir_name: (fd, path, path_len) => 0,
+    fd_readdir: (fd, buf, buf_len, cookie, buf_used) => {
+        const view = new DataView(wasm.memory.buffer);
+        view.setUint32(buf_used, 0, true);
+        return 0;
+    },
     path_open: (fd, dirflags, path, path_len, oflags, fs_rights_base, fs_rights_inheriting, fdflags, opened_fd) => 0,
     path_filestat_get: (fd, flags, path, path_len, stat) => 0,
     path_remove_directory: (fd, path, path_len) => 0,

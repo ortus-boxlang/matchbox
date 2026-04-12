@@ -1,5 +1,6 @@
 use crate::features::BundledFeatures;
 use crate::profile::StrictProfile;
+use crate::printer;
 use crate::{mdns, web, wifi};
 use anyhow::Result;
 
@@ -41,18 +42,31 @@ impl PlatformServices {
     }
 
     pub fn run_forever(&self, profile: &StrictProfile) -> Result<()> {
+        if self.features.psram {
+            unsafe {
+                let total = esp_idf_sys::esp_psram_get_size();
+                let free = esp_idf_sys::heap_caps_get_free_size(esp_idf_sys::MALLOC_CAP_SPIRAM);
+                let total_heap =
+                    esp_idf_sys::heap_caps_get_total_size(esp_idf_sys::MALLOC_CAP_SPIRAM);
+                println!(
+                    "[matchbox] PSRAM runtime total={} free={} heap_total={}",
+                    total, free, total_heap
+                );
+            }
+        }
         let wifi_state = wifi::connect(profile)?;
+
+        #[cfg(feature = "platform-web")]
+        if self.features.web {
+            web::serve(profile, self.features, &wifi_state)?;
+        }
+
         #[cfg(feature = "platform-mdns")]
         let _mdns = if self.features.mdns {
             Some(mdns::try_start(profile, profile.web_port)?)
         } else {
             None
         };
-
-        #[cfg(feature = "platform-web")]
-        if self.features.web {
-            web::serve(profile, self.features, &wifi_state)?;
-        }
 
         println!("[matchbox] Platform services are running");
         loop {

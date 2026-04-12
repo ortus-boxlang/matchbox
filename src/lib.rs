@@ -433,23 +433,127 @@ fn render_pure_js_bootstrap(functions: &[String], b64_wasm: &str, b64_bytecode: 
     bootstrap
 }
 
-fn render_fusion_js_bootstrap(functions: &[String]) -> String {
+fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String {
     let mut bootstrap = String::new();
     bootstrap.push_str("\nlet vm = null;\n");
-    bootstrap.push_str("async function ensureInit() {\n");
-    bootstrap.push_str("    await init();\n");
-    bootstrap.push_str("    if (!vm) {\n");
-    bootstrap.push_str("        vm = new BoxLangVM();\n");
+    bootstrap.push_str("let __matchboxReady = null;\n");
+    bootstrap.push_str("function normalizeBoxLangValue(value) {\n");
+    bootstrap.push_str("    if (value == null) {\n");
+    bootstrap.push_str("        return value;\n");
     bootstrap.push_str("    }\n");
-    bootstrap.push_str("    return vm;\n");
+    bootstrap.push_str("    if (Array.isArray(value)) {\n");
+    bootstrap.push_str("        return value.filter(item => item !== undefined).map(normalizeBoxLangValue);\n");
+    bootstrap.push_str("    }\n");
+    bootstrap.push_str("    if (typeof value === \"object\") {\n");
+    bootstrap.push_str("        if (value instanceof Number || value instanceof String || value instanceof Boolean) {\n");
+    bootstrap.push_str("            return value.valueOf();\n");
+    bootstrap.push_str("        }\n");
+    bootstrap.push_str("        const normalized = {};\n");
+    bootstrap.push_str("        for (const [key, inner] of Object.entries(value)) {\n");
+    bootstrap.push_str("            normalized[key] = normalizeBoxLangValue(inner);\n");
+    bootstrap.push_str("        }\n");
+    bootstrap.push_str("        return normalized;\n");
+    bootstrap.push_str("    }\n");
+    bootstrap.push_str("    return value;\n");
+    bootstrap.push_str("}\n\n");
+    bootstrap.push_str("function isPlainObject(value) {\n");
+    bootstrap.push_str("    return value != null && typeof value === \"object\" && !Array.isArray(value);\n");
+    bootstrap.push_str("}\n\n");
+    bootstrap.push_str("async function waitForModule(moduleName) {\n");
+    bootstrap.push_str("    const start = Date.now();\n");
+    bootstrap.push_str("    while (Date.now() - start < 5000) {\n");
+    bootstrap.push_str("        const mod = window.MatchBox?.modules?.[moduleName];\n");
+    bootstrap.push_str("        if (mod) {\n");
+    bootstrap.push_str("            return mod;\n");
+    bootstrap.push_str("        }\n");
+    bootstrap.push_str("        await new Promise(resolve => setTimeout(resolve, 25));\n");
+    bootstrap.push_str("    }\n");
+    bootstrap.push_str("    throw new Error(`MatchBox module ${moduleName} did not become ready`);\n");
+    bootstrap.push_str("}\n\n");
+    bootstrap.push_str("function createModuleState(moduleName, options = {}) {\n");
+    bootstrap.push_str("    const initialState = options.initialState || {};\n");
+    bootstrap.push_str("    const mount = options.mount || null;\n");
+    bootstrap.push_str("    const state = {\n");
+    bootstrap.push_str("        ready: false,\n");
+    bootstrap.push_str("        error: null,\n");
+    bootstrap.push_str("        ...initialState,\n");
+    bootstrap.push_str("        async module() {\n");
+    bootstrap.push_str("            const ready = window.MatchBox?.ready?.[moduleName];\n");
+    bootstrap.push_str("            if (ready) {\n");
+    bootstrap.push_str("                await ready;\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("            return await waitForModule(moduleName);\n");
+    bootstrap.push_str("        },\n");
+    bootstrap.push_str("        applyState(next) {\n");
+    bootstrap.push_str("            if (!isPlainObject(next)) {\n");
+    bootstrap.push_str("                return next;\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("            for (const [key, value] of Object.entries(next)) {\n");
+    bootstrap.push_str("                this[key] = normalizeBoxLangValue(value);\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("            return next;\n");
+    bootstrap.push_str("        },\n");
+    bootstrap.push_str("        async call(method, ...args) {\n");
+    bootstrap.push_str("            const mod = await this.module();\n");
+    bootstrap.push_str("            if (typeof mod[method] !== \"function\") {\n");
+    bootstrap.push_str("                throw new Error(`MatchBox export ${method} is not available on ${moduleName}`);\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("            const result = await mod[method](...args);\n");
+    bootstrap.push_str("            return this.applyState(result);\n");
+    bootstrap.push_str("        },\n");
+    bootstrap.push_str("        async init() {\n");
+    bootstrap.push_str("            try {\n");
+    bootstrap.push_str("                if (mount) {\n");
+    bootstrap.push_str("                    await this.call(mount);\n");
+    bootstrap.push_str("                }\n");
+    bootstrap.push_str("                this.ready = true;\n");
+    bootstrap.push_str("                this.error = null;\n");
+    bootstrap.push_str("            } catch (error) {\n");
+    bootstrap.push_str("                this.error = String(error);\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("        }\n");
+    bootstrap.push_str("    };\n");
+    bootstrap.push_str("    return state;\n");
+    bootstrap.push_str("}\n\n");
+    bootstrap.push_str("async function ensureInit() {\n");
+    bootstrap.push_str("    if (!__matchboxReady) {\n");
+    bootstrap.push_str("        __matchboxReady = (async () => {\n");
+    bootstrap.push_str("            await __wbg_init();\n");
+    bootstrap.push_str("            if (!vm) {\n");
+    bootstrap.push_str("                vm = new BoxLangVM();\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("            return vm;\n");
+    bootstrap.push_str("        })();\n");
+    bootstrap.push_str("    }\n");
+    bootstrap.push_str("    return await __matchboxReady;\n");
     bootstrap.push_str("}\n\n");
 
     for func in functions {
         bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
         bootstrap.push_str("    const vm = await ensureInit();\n");
-        bootstrap.push_str(&format!("    return await vm.call(\"{}\", args);\n", func));
+        bootstrap.push_str(&format!("    return normalizeBoxLangValue(await vm.call(\"{}\", args));\n", func));
         bootstrap.push_str("}\n\n");
     }
+
+    bootstrap.push_str("export const ready = ensureInit();\n\n");
+
+    bootstrap.push_str("if (typeof window !== \"undefined\") {\n");
+    bootstrap.push_str("    window.MatchBox = window.MatchBox || {};\n");
+    bootstrap.push_str("    window.MatchBox.modules = window.MatchBox.modules || {};\n");
+    bootstrap.push_str("    window.MatchBox.ready = window.MatchBox.ready || {};\n");
+    bootstrap.push_str("    window.MatchBox.createModuleState = window.MatchBox.createModuleState || createModuleState;\n");
+    bootstrap.push_str(&format!("    window.MatchBox.modules[\"{}\"] = {{\n", module_name));
+    for func in functions {
+        bootstrap.push_str(&format!("        {},\n", func));
+    }
+    bootstrap.push_str("    };\n");
+    bootstrap.push_str(&format!("    window.MatchBox.ready[\"{}\"] = ready;\n", module_name));
+    bootstrap.push_str("    ready.then(() => {\n");
+    bootstrap.push_str("        window.dispatchEvent(new CustomEvent(\"matchbox:ready\", {\n");
+    bootstrap.push_str(&format!("            detail: {{ module: \"{}\" }}\n", module_name));
+    bootstrap.push_str("        }));\n");
+    bootstrap.push_str("    });\n");
+    bootstrap.push_str("}\n");
 
     bootstrap
 }
@@ -459,8 +563,9 @@ fn render_fusion_web_host_source(registration_calls: &str, bytecode: &[u8]) -> S
 use matchbox_vm::{{vm::{{HostFutureState, VM}}, types::{{BxNativeFunction, BxValue}}, Chunk}};
 use std::collections::HashMap;
 use console_error_panic_hook;
-use js_sys::{{Array, Promise}};
-use wasm_bindgen::prelude::*;
+use js_sys::{{Array, Function, Promise}};
+use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::window;
 
@@ -469,10 +574,13 @@ fn as_js_error(message: impl Into<String>) -> JsValue {{
 }}
 
 async fn yield_to_host() -> Result<(), JsValue> {{
-    let promise = Promise::new(&mut |resolve, reject| {{
-        let Some(win) = window() else {{
-            let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("window is unavailable"));
-            return;
+    let promise = Promise::new(&mut |resolve: Function, reject: Function| {{
+        let win: web_sys::Window = match window() {{
+            Some(win) => win,
+            None => {{
+                let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("window is unavailable"));
+                return;
+            }}
         }};
 
         if let Err(err) = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0) {{
@@ -1211,6 +1319,7 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
             
             let has_native_modules = modules_info.iter().any(|m| m.has_native);
             let should_use_fusion =
+                t == "js" ||
                 ((native_dir.exists() && native_dir.is_dir()) || has_native_modules)
                 && !(t == "esp32" && esp32_web);
             if should_use_fusion {
@@ -1278,22 +1387,62 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
 }
 
 fn produce_js_bundle(chunk: &Chunk, source_path: &Path, ast: &[ast::Statement], output: Option<&Path>) -> Result<()> {
+    use wasm_encoder::Encode;
+
     let bytecode = postcard::to_stdvec(chunk)?;
-    let b64_bytecode = base64_simd::STANDARD.encode_to_string(&bytecode);
-    
-    let wasm_bytes = stubs::get_stub("wasi").unwrap_or(&[]).to_vec();
+
+    let wasm_bytes = stubs::get_stub("web").unwrap_or(&[]).to_vec();
     if wasm_bytes.is_empty() {
-        bail!("WASI runner stub is empty. The matchbox CLI must be rebuilt with the wasm32-wasip1 target installed.");
+        bail!("Web runner stub is empty. The matchbox CLI must be rebuilt with the wasm32-unknown-unknown target installed.");
     }
-    let b64_wasm = base64_simd::STANDARD.encode_to_string(&wasm_bytes);
-    let functions = exported_function_names(ast);
-    let bootstrap = render_pure_js_bootstrap(&functions, &b64_wasm, &b64_bytecode);
 
-    let final_js = JS_GLUE_TEMPLATE.replace("/* __REPLACE_ME__ */", &bootstrap);
+    let mut out_wasm = wasm_bytes;
+    let custom_section = wasm_encoder::CustomSection {
+        name: "boxlang_bytecode".into(),
+        data: (&bytecode).into(),
+    };
+    let mut section_bytes = Vec::new();
+    custom_section.encode(&mut section_bytes);
+    out_wasm.extend_from_slice(&section_bytes);
 
-    let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("js"));
-    fs::write(&out_path, final_js)?;
-    println!("Standalone JS module produced: {}", out_path.display());
+    let out_path = output
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| source_path.with_extension("js"));
+    let out_dir = out_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    fs::create_dir_all(&out_dir)?;
+
+    let stem = out_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("app")
+        .to_string();
+
+    let raw_wasm_path = out_dir.join(format!("{}.raw.wasm", stem));
+    fs::write(&raw_wasm_path, out_wasm)?;
+
+    let wasm_bindgen_bin = std_env::var("WASM_BINDGEN").unwrap_or_else(|_| "wasm-bindgen".to_string());
+    let status = std::process::Command::new(wasm_bindgen_bin)
+        .arg("--target").arg("web")
+        .arg("--out-dir").arg(&out_dir)
+        .arg("--out-name").arg(&stem)
+        .arg(&raw_wasm_path)
+        .status()?;
+
+    if !status.success() {
+        bail!("Failed to run wasm-bindgen for JS bundle");
+    }
+
+    let generated_js_path = out_dir.join(format!("{}.js", stem));
+    let generated_js = fs::read_to_string(&generated_js_path)?;
+    let bootstrap = render_fusion_js_bootstrap(&exported_function_names(ast), &stem);
+    fs::write(&generated_js_path, format!("{}\n{}", generated_js, bootstrap))?;
+
+    let _ = fs::remove_file(&raw_wasm_path);
+    println!("Standalone JS module produced: {}", generated_js_path.display());
     Ok(())
 }
 
@@ -1308,6 +1457,7 @@ fn produce_fusion_js_bundle(
         .unwrap_or_else(|| source_path.with_extension("js"));
     let out_dir = out_path
         .parent()
+        .filter(|p| !p.as_os_str().is_empty())
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     fs::create_dir_all(&out_dir)?;
@@ -1332,7 +1482,7 @@ fn produce_fusion_js_bundle(
 
     let generated_js_path = out_dir.join(format!("{}.js", stem));
     let generated_js = fs::read_to_string(&generated_js_path)?;
-    let bootstrap = render_fusion_js_bootstrap(&exported_function_names(ast));
+    let bootstrap = render_fusion_js_bootstrap(&exported_function_names(ast), &stem);
     fs::write(&generated_js_path, format!("{}\n{}", generated_js, bootstrap))?;
 
     println!("Fusion JS module produced: {}", generated_js_path.display());
@@ -1622,6 +1772,24 @@ fn produce_fusion_artifact(
         ));
     }
 
+    let vm_dependency = if target == "js" {
+        format!("matchbox_vm = {{ path = \"{}\", features = [\"js\"] }}", vm_path)
+    } else {
+        format!("matchbox_vm = {{ path = \"{}\" }}", vm_path)
+    };
+
+    let wasm_extra_dependencies = if is_wasm {
+        r#"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window"] }
+"#
+    } else {
+        ""
+    };
+
     let mut cargo_toml = format!(r#"[package]
 name = "fusion_build"
 version = "0.1.0"
@@ -1630,10 +1798,11 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-matchbox_vm = {{ path = "{vm_path}" }}
+{vm_dependency}
 postcard = {{ version = "1.0", features = ["alloc", "use-std"] }}
 bincode = "1.3.3"
 anyhow = "1.0"
+{wasm_extra_dependencies}
 {extra_dep_lines}
 "#);
 
@@ -1712,12 +1881,7 @@ strip = true
 "#);
 
     if is_wasm {
-        cargo_toml.push_str("\n[lib]\ncrate-type = [\"cdylib\", \"rlib\"]\n\n");
-        cargo_toml.push_str("wasm-bindgen = \"0.2\"\n");
-        cargo_toml.push_str("wasm-bindgen-futures = \"0.4\"\n");
-        cargo_toml.push_str("console_error_panic_hook = \"0.1\"\n");
-        cargo_toml.push_str("js-sys = \"0.3\"\n");
-        cargo_toml.push_str("web-sys = { version = \"0.3\", features = [\"Window\"] }\n");
+        cargo_toml.push_str("\n[lib]\ncrate-type = [\"cdylib\", \"rlib\"]\n");
     }
 
     fs::write(build_dir.join("Cargo.toml"), cargo_toml)?;
@@ -1792,7 +1956,7 @@ strip = true
     let bytecode = postcard::to_stdvec(chunk)?;
     let mut code = String::new();
 
-    if !is_esp32 {
+    if !is_esp32 && target != "js" {
         code.push_str(r#"
 use matchbox_vm::{vm::VM, types::{BxValue, BxNativeFunction}, Chunk};
 use std::collections::HashMap;
@@ -2223,10 +2387,24 @@ fn produce_esp32_binary(
         || std_env::var_os("MATCHBOX_ESP32_PSRAM").is_some();
     if psram_enabled {
         cmd.arg("--features").arg("psram");
-        cmd.env(
-            "ESP_IDF_SDKCONFIG_DEFAULTS",
-            runner_path.join("sdkconfig.defaults.psram").to_str().unwrap(),
-        );
+        match esp32_config.and_then(|config| config.board.as_deref()) {
+            Some("xiao-esp32s3-sense") => {
+                let sdkconfig_path = runner_path.join("sdkconfig.xiao-esp32s3-sense");
+                cmd.env(
+                    "ESP_IDF_SDKCONFIG",
+                    sdkconfig_path.to_str().unwrap(),
+                );
+                cmd.env("SDKCONFIG", sdkconfig_path.to_str().unwrap());
+            }
+            _ => {
+                let sdkconfig_defaults = runner_path.join("sdkconfig.defaults.psram");
+                cmd.env(
+                    "ESP_IDF_SDKCONFIG_DEFAULTS",
+                    sdkconfig_defaults.to_str().unwrap(),
+                );
+                cmd.env("SDKCONFIG_DEFAULTS", sdkconfig_defaults.to_str().unwrap());
+            }
+        }
     }
 
     let status = cmd.status()?;
@@ -2538,11 +2716,13 @@ mod tests {
 
     #[test]
     fn fusion_js_bootstrap_uses_async_vm_call_without_bytecode_loader() {
-        let bootstrap = render_fusion_js_bootstrap(&vec!["hello".to_string()]);
+        let bootstrap = render_fusion_js_bootstrap(&vec!["hello".to_string()], "app");
 
-        assert!(bootstrap.contains("await init();"));
+        assert!(bootstrap.contains("await __wbg_init();"));
         assert!(bootstrap.contains("vm = new BoxLangVM();"));
         assert!(bootstrap.contains("return await vm.call(\"hello\", args);"));
+        assert!(bootstrap.contains("window.MatchBox.modules[\"app\"]"));
+        assert!(bootstrap.contains("hello,"));
         assert!(!bootstrap.contains("load_bytecode"));
         assert!(!bootstrap.contains("wasmBase64"));
     }

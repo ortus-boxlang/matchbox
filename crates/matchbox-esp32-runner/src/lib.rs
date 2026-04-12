@@ -1,8 +1,11 @@
 pub mod boot;
+pub mod camera;
 pub mod esp32_bifs;
 pub mod features;
+pub mod imaging;
 pub mod mdns;
 pub mod platform;
+pub mod printer;
 pub mod profile;
 pub mod web;
 pub mod wifi;

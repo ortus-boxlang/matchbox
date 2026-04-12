@@ -1,4 +1,5 @@
 use crate::features::BundledFeatures;
+use crate::camera::with_photo;
 use crate::profile::StrictProfile;
 use crate::wifi::WifiState;
 use anyhow::Result;
@@ -82,6 +83,22 @@ struct RequestContextData {
     cgi: HashMap<String, String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct HeapSnapshot {
+    free: usize,
+    largest_internal_8bit_block: usize,
+    free_internal_8bit: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PartitionSnapshot {
+    label: String,
+    partition_type: String,
+    subtype: u32,
+    address: usize,
+    size: usize,
+}
+
 pub fn serve(
     profile: &StrictProfile,
     features: BundledFeatures,
@@ -130,11 +147,15 @@ pub fn serve(
         })
         .collect();
     server.fn_handler("/__matchbox/status", Method::Get, move |request| {
+        let heap = heap_snapshot();
+        let partitions = partition_snapshots();
         let payload = json!({
             "ok": true,
             "hostname": hostname,
             "ip": ip,
             "features": feature_summary,
+            "heap": heap,
+            "partitions": partitions,
             "routes": status_routes,
         });
         let body = serde_json::to_vec(&payload).unwrap_or_else(|_| br#"{"ok":false}"#.to_vec());
@@ -142,6 +163,58 @@ pub fn serve(
             .into_response(200, Some("OK"), &[("content-type", "application/json")])
             .map_err(anyhow::Error::msg)?;
         response.write_all(&body).map(|_| ()).map_err(anyhow::Error::msg)
+    })?;
+
+    server.fn_handler("/__matchbox/photo/*", Method::Get, move |request| {
+        let path = request.uri().split_once('?').map(|(path, _)| path).unwrap_or(request.uri());
+        let Some(photo_id) = path
+            .strip_prefix("/__matchbox/photo/")
+            .and_then(|segment| segment.parse::<u64>().ok())
+        else {
+            return request
+                .into_response(
+                    404,
+                    Some("Not Found"),
+                    &[("content-type", "text/plain; charset=utf-8")],
+                )
+                .map_err(anyhow::Error::msg)?
+                .write_all(b"Photo not found")
+                .map(|_| ())
+                .map_err(anyhow::Error::msg);
+        };
+
+        with_photo(photo_id, |capture| match capture {
+            Some((format, bytes, _, _, _)) => {
+                let content_type = if format.eq_ignore_ascii_case("jpeg") {
+                    "image/jpeg"
+                } else {
+                    "application/octet-stream"
+                };
+                let mut response = request
+                    .into_response(
+                        200,
+                        Some("OK"),
+                        &[
+                            ("content-type", content_type),
+                            ("cache-control", "no-store, no-cache, must-revalidate"),
+                            ("pragma", "no-cache"),
+                        ],
+                    )
+                    .map_err(anyhow::Error::msg)?;
+                response.write_all(bytes).map(|_| ()).map_err(anyhow::Error::msg)
+            }
+            None => request
+                .into_response(
+                    404,
+                    Some("Not Found"),
+                    &[("content-type", "text/plain; charset=utf-8")],
+                )
+                .map_err(anyhow::Error::msg)?
+                .write_all(b"No captured image is available yet")
+                .map(|_| ())
+                .map_err(anyhow::Error::msg),
+        })
+        .map_err(anyhow::Error::msg)?
     })?;
 
     for method in [
@@ -414,6 +487,71 @@ fn log_heap(label: &str) {
             label, free, largest
         );
     }
+}
+
+fn heap_snapshot() -> HeapSnapshot {
+    unsafe {
+        HeapSnapshot {
+            free: esp_idf_sys::esp_get_free_heap_size() as usize,
+            largest_internal_8bit_block: esp_idf_sys::heap_caps_get_largest_free_block(
+                esp_idf_sys::MALLOC_CAP_INTERNAL | esp_idf_sys::MALLOC_CAP_8BIT,
+            ) as usize,
+            free_internal_8bit: esp_idf_sys::heap_caps_get_free_size(
+                esp_idf_sys::MALLOC_CAP_INTERNAL | esp_idf_sys::MALLOC_CAP_8BIT,
+            ) as usize,
+        }
+    }
+}
+
+fn partition_snapshots() -> Vec<PartitionSnapshot> {
+    unsafe {
+        let mut partitions = Vec::new();
+
+        if let Some(snapshot) = find_partition_snapshot(
+            esp_idf_sys::esp_partition_type_t_ESP_PARTITION_TYPE_APP,
+            esp_idf_sys::esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_FACTORY as u32,
+            "app",
+        ) {
+            partitions.push(snapshot);
+        }
+
+        if let Some(snapshot) = find_partition_snapshot(
+            esp_idf_sys::esp_partition_type_t_ESP_PARTITION_TYPE_DATA,
+            0x81,
+            "storage",
+        ) {
+            partitions.push(snapshot);
+        }
+
+        partitions
+    }
+}
+
+unsafe fn find_partition_snapshot(
+    partition_type: esp_idf_sys::esp_partition_type_t,
+    subtype: u32,
+    type_label: &str,
+) -> Option<PartitionSnapshot> {
+    let partition = esp_idf_sys::esp_partition_find_first(
+        partition_type,
+        subtype,
+        std::ptr::null(),
+    );
+    if partition.is_null() {
+        return None;
+    }
+
+    let label = std::ffi::CStr::from_ptr((*partition).label.as_ptr())
+        .to_string_lossy()
+        .into_owned();
+
+    Some(PartitionSnapshot {
+        label,
+        partition_type: type_label.to_string(),
+        subtype,
+        address: (*partition).address as usize,
+        size: (*partition).size as usize,
+    })
 }
 
 fn install_scope(vm: &mut VM, scope_name: &str, values: &HashMap<String, String>) {

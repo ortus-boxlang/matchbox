@@ -4411,7 +4411,11 @@ impl VM {
             let id = self.heap.alloc(GcObject::String(BoxString::new(&val.as_string().unwrap())));
             BxValue::new_ptr(id)
         } else if let Some(n) = val.as_f64() {
-            BxValue::new_number(n)
+            if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
+                BxValue::new_int(n as i32)
+            } else {
+                BxValue::new_number(n)
+            }
         } else if let Some(b) = val.as_bool() {
             BxValue::new_bool(b)
         } else if val.is_null() {
