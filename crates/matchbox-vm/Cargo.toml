@@ -53,3 +53,6 @@ bif-crypto = ["sha2"]
 bif-cli = ["crossterm"]
 bif-jni = ["jni"]
 bif-datasource = ["postgres", "r2d2", "r2d2_postgres"]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.50"

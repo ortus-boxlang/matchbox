@@ -426,7 +426,12 @@ fn render_pure_js_bootstrap(functions: &[String], b64_wasm: &str, b64_bytecode: 
     for func in functions {
         bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
         bootstrap.push_str("    await ensureInit();\n");
-        bootstrap.push_str(&format!("    return vm.call(\"{}\", args);\n", func));
+        bootstrap.push_str(&format!("    try {{\n"));
+        bootstrap.push_str(&format!("        return await vm.call(\"{}\", args);\n", func));
+        bootstrap.push_str(&format!("    }} catch (e) {{\n"));
+        bootstrap.push_str(&format!("        if (e instanceof Error) throw e;\n"));
+        bootstrap.push_str(&format!("        throw new Error(String(e));\n"));
+        bootstrap.push_str(&format!("    }}\n"));
         bootstrap.push_str("}\n\n");
     }
 
@@ -437,25 +442,6 @@ fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String
     let mut bootstrap = String::new();
     bootstrap.push_str("\nlet vm = null;\n");
     bootstrap.push_str("let __matchboxReady = null;\n");
-    bootstrap.push_str("function normalizeBoxLangValue(value) {\n");
-    bootstrap.push_str("    if (value == null) {\n");
-    bootstrap.push_str("        return value;\n");
-    bootstrap.push_str("    }\n");
-    bootstrap.push_str("    if (Array.isArray(value)) {\n");
-    bootstrap.push_str("        return value.filter(item => item !== undefined).map(normalizeBoxLangValue);\n");
-    bootstrap.push_str("    }\n");
-    bootstrap.push_str("    if (typeof value === \"object\") {\n");
-    bootstrap.push_str("        if (value instanceof Number || value instanceof String || value instanceof Boolean) {\n");
-    bootstrap.push_str("            return value.valueOf();\n");
-    bootstrap.push_str("        }\n");
-    bootstrap.push_str("        const normalized = {};\n");
-    bootstrap.push_str("        for (const [key, inner] of Object.entries(value)) {\n");
-    bootstrap.push_str("            normalized[key] = normalizeBoxLangValue(inner);\n");
-    bootstrap.push_str("        }\n");
-    bootstrap.push_str("        return normalized;\n");
-    bootstrap.push_str("    }\n");
-    bootstrap.push_str("    return value;\n");
-    bootstrap.push_str("}\n\n");
     bootstrap.push_str("function isPlainObject(value) {\n");
     bootstrap.push_str("    return value != null && typeof value === \"object\" && !Array.isArray(value);\n");
     bootstrap.push_str("}\n\n");
@@ -478,9 +464,8 @@ fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String
     bootstrap.push_str("        error: null,\n");
     bootstrap.push_str("        ...initialState,\n");
     bootstrap.push_str("        async module() {\n");
-    bootstrap.push_str("            const ready = window.MatchBox?.ready?.[moduleName];\n");
-    bootstrap.push_str("            if (ready) {\n");
-    bootstrap.push_str("                await ready;\n");
+    bootstrap.push_str("            if (typeof window.MatchBox?.ready === \"function\") {\n");
+    bootstrap.push_str("                await window.MatchBox.ready(moduleName);\n");
     bootstrap.push_str("            }\n");
     bootstrap.push_str("            return await waitForModule(moduleName);\n");
     bootstrap.push_str("        },\n");
@@ -489,7 +474,7 @@ fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String
     bootstrap.push_str("                return next;\n");
     bootstrap.push_str("            }\n");
     bootstrap.push_str("            for (const [key, value] of Object.entries(next)) {\n");
-    bootstrap.push_str("                this[key] = normalizeBoxLangValue(value);\n");
+    bootstrap.push_str("                this[key] = value;\n");
     bootstrap.push_str("            }\n");
     bootstrap.push_str("            return next;\n");
     bootstrap.push_str("        },\n");
@@ -531,7 +516,7 @@ fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String
     for func in functions {
         bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
         bootstrap.push_str("    const vm = await ensureInit();\n");
-        bootstrap.push_str(&format!("    return normalizeBoxLangValue(await vm.call(\"{}\", args));\n", func));
+        bootstrap.push_str(&format!("    return await vm.call(\"{}\", args);\n", func));
         bootstrap.push_str("}\n\n");
     }
 
@@ -540,18 +525,23 @@ fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String
     bootstrap.push_str("if (typeof window !== \"undefined\") {\n");
     bootstrap.push_str("    window.MatchBox = window.MatchBox || {};\n");
     bootstrap.push_str("    window.MatchBox.modules = window.MatchBox.modules || {};\n");
-    bootstrap.push_str("    window.MatchBox.ready = window.MatchBox.ready || {};\n");
+    bootstrap.push_str("    window.MatchBox._readySignals = window.MatchBox._readySignals || {};\n");
+    bootstrap.push_str("    window.MatchBox.ready = window.MatchBox.ready || function(stem) {\n");
+    bootstrap.push_str("        return window.MatchBox._readySignals[stem] || Promise.resolve();\n");
+    bootstrap.push_str("    };\n");
     bootstrap.push_str("    window.MatchBox.createModuleState = window.MatchBox.createModuleState || createModuleState;\n");
     bootstrap.push_str(&format!("    window.MatchBox.modules[\"{}\"] = {{\n", module_name));
     for func in functions {
         bootstrap.push_str(&format!("        {},\n", func));
     }
     bootstrap.push_str("    };\n");
-    bootstrap.push_str(&format!("    window.MatchBox.ready[\"{}\"] = ready;\n", module_name));
+    bootstrap.push_str(&format!("    window.MatchBox._readySignals[\"{}\"] = ready;\n", module_name));
     bootstrap.push_str("    ready.then(() => {\n");
-    bootstrap.push_str("        window.dispatchEvent(new CustomEvent(\"matchbox:ready\", {\n");
-    bootstrap.push_str(&format!("            detail: {{ module: \"{}\" }}\n", module_name));
-    bootstrap.push_str("        }));\n");
+    bootstrap.push_str("        if (typeof window.dispatchEvent === \"function\") {\n");
+    bootstrap.push_str("            window.dispatchEvent(new CustomEvent(\"matchbox:ready\", {\n");
+    bootstrap.push_str(&format!("                detail: {{ module: \"{}\" }}\n", module_name));
+    bootstrap.push_str("            }));\n");
+    bootstrap.push_str("        }\n");
     bootstrap.push_str("    });\n");
     bootstrap.push_str("}\n");
 
@@ -563,14 +553,14 @@ fn render_fusion_web_host_source(registration_calls: &str, bytecode: &[u8]) -> S
 use matchbox_vm::{{vm::{{HostFutureState, VM}}, types::{{BxNativeFunction, BxValue}}, Chunk}};
 use std::collections::HashMap;
 use console_error_panic_hook;
-use js_sys::{{Array, Function, Promise}};
+use js_sys::{{Array, Function, Promise, Error}};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::window;
 
 fn as_js_error(message: impl Into<String>) -> JsValue {{
-    JsValue::from_str(&message.into())
+    Error::new(&message.into()).into()
 }}
 
 async fn yield_to_host() -> Result<(), JsValue> {{
@@ -649,7 +639,13 @@ impl BoxLangVM {{
                 .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))? {{
                 HostFutureState::Pending => yield_to_host().await?,
                 HostFutureState::Completed(value) => return Ok(self.vm.bx_to_js(&value)),
-                HostFutureState::Failed(error) => return Err(self.vm.bx_to_js(&error)),
+                HostFutureState::Failed(error) => {{
+                    let js_err = self.vm.bx_to_js(&error);
+                    if let Some(msg) = js_err.as_string() {{
+                        return Err(as_js_error(msg));
+                    }}
+                    return Err(js_err);
+                }}
             }}
         }}
     }}
@@ -715,7 +711,7 @@ impl BoxLangVM {
         }
     }
 
-    pub fn load_bytecode(&mut self, bytes: &[u8]) -> Result<(), String> {
+    pub fn load_bytecode(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
         let res = (|| -> Result<()> {
             let mut chunk: Chunk = postcard::from_bytes(bytes)?;
             chunk.reconstruct_functions();
@@ -725,21 +721,21 @@ impl BoxLangVM {
             Ok(())
         })();
 
-        res.map_err(|e| format!("Error: {}", e))
+        res.map_err(|e| js_sys::Error::new(&format!("Error: {}", e)).into())
     }
 
-    pub fn call(&mut self, name: &str, args: js_sys::Array) -> Result<JsValue, String> {
+    pub fn call(&mut self, name: &str, args: js_sys::Array) -> Result<JsValue, JsValue> {
         let mut bx_args = Vec::new();
         for i in 0..args.length() {
             bx_args.push(self.vm.js_to_bx(args.get(i)));
         }
 
         let func = self.vm.get_global(name)
-            .ok_or_else(|| format!("Function {} not found", name))?;
+            .ok_or_else(|| js_sys::Error::new(&format!("Function {} not found", name)))?;
 
         match self.vm.call_function_value(func, bx_args, self.chunk.clone()) {
             Ok(val) => Ok(self.vm.bx_to_js(&val)),
-            Err(e) => Err(format!("Error: {}", e)),
+            Err(e) => Err(js_sys::Error::new(&format!("Error: {}", e)).into()),
         }
     }
 }
@@ -1437,7 +1433,18 @@ fn produce_js_bundle(chunk: &Chunk, source_path: &Path, ast: &[ast::Statement], 
     }
 
     let generated_js_path = out_dir.join(format!("{}.js", stem));
-    let generated_js = fs::read_to_string(&generated_js_path)?;
+    let mut generated_js = fs::read_to_string(&generated_js_path)?;
+    
+    // Rename WASM file to {stem}.wasm
+    let old_wasm_path = out_dir.join(format!("{}_bg.wasm", stem));
+    let new_wasm_path = out_dir.join(format!("{}.wasm", stem));
+    if old_wasm_path.exists() {
+        fs::rename(&old_wasm_path, &new_wasm_path)?;
+    }
+    
+    // Update JS to point to {stem}.wasm instead of {stem}_bg.wasm
+    generated_js = generated_js.replace(&format!("{}_bg.wasm", stem), &format!("{}.wasm", stem));
+    
     let bootstrap = render_fusion_js_bootstrap(&exported_function_names(ast), &stem);
     fs::write(&generated_js_path, format!("{}\n{}", generated_js, bootstrap))?;
 
@@ -1481,7 +1488,18 @@ fn produce_fusion_js_bundle(
     }
 
     let generated_js_path = out_dir.join(format!("{}.js", stem));
-    let generated_js = fs::read_to_string(&generated_js_path)?;
+    let mut generated_js = fs::read_to_string(&generated_js_path)?;
+    
+    // Rename WASM file to {stem}.wasm
+    let old_wasm_path = out_dir.join(format!("{}_bg.wasm", stem));
+    let new_wasm_path = out_dir.join(format!("{}.wasm", stem));
+    if old_wasm_path.exists() {
+        fs::rename(&old_wasm_path, &new_wasm_path)?;
+    }
+    
+    // Update JS to point to {stem}.wasm instead of {stem}_bg.wasm
+    generated_js = generated_js.replace(&format!("{}_bg.wasm", stem), &format!("{}.wasm", stem));
+    
     let bootstrap = render_fusion_js_bootstrap(&exported_function_names(ast), &stem);
     fs::write(&generated_js_path, format!("{}\n{}", generated_js, bootstrap))?;
 

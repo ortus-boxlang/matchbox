@@ -6,6 +6,9 @@ pub mod intern;
 #[cfg(feature = "jit")]
 pub mod jit;
 
+#[cfg(all(test, target_arch = "wasm32", feature = "js"))]
+mod interop_tests;
+
 use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, BxNativeFunction, NativeFutureHandle, NativeFutureMessage, NativeFutureValue, Tracer, box_string::BoxString};
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use crate::types::take_wasm_future_thunk;
@@ -4367,10 +4370,10 @@ impl VM {
 
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
     pub fn bx_to_js(&self, val: &BxValue) -> JsValue {
-        if val.is_number() {
+        if val.is_int() {
+            JsValue::from(val.as_int())
+        } else if val.is_number() {
             JsValue::from_f64(val.as_number())
-        } else if val.is_int() {
-            JsValue::from_f64(val.as_int() as f64)
         } else if val.is_bool() {
             JsValue::from_bool(val.as_bool())
         } else if val.is_null() {
@@ -4430,6 +4433,17 @@ impl VM {
         } else if val.is_instance_of::<js_sys::Promise>() {
             let promise: js_sys::Promise = val.into();
             BxValue::new_ptr(self.heap.alloc(GcObject::JsValue(promise.into())))
+        } else if val.is_object() {
+            // Check if it's a plain object (not a special type we already handled)
+            let keys = js_sys::Object::keys(val.unchecked_ref::<js_sys::Object>());
+            let struct_id = self.struct_new();
+            for i in 0..keys.length() {
+                let key = keys.get(i).as_string().unwrap();
+                let prop_val = Reflect::get(&val, &key.clone().into()).unwrap();
+                let bx_prop = self.js_to_bx(prop_val);
+                self.struct_set(struct_id, &key, bx_prop);
+            }
+            BxValue::new_ptr(struct_id)
         } else {
             BxValue::new_ptr(self.heap.alloc(GcObject::JsValue(val)))
         }
