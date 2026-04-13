@@ -3,165 +3,82 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BoxLang Todo App</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; }
-
-    body {
-      font-family: system-ui, sans-serif;
-      background: #f4f6fa;
-      margin: 0;
-      min-height: 100vh;
-      display: flex;
-      align-items: flex-start;
-      justify-content: center;
-      padding: 2rem 1rem;
-    }
-
-    #app {
-      background: #fff;
-      border-radius: 12px;
-      box-shadow: 0 4px 24px rgba(0,0,0,.08);
-      padding: 2rem;
-      width: 100%;
-      max-width: 480px;
-    }
-
-    h1 {
-      margin: 0 0 1.5rem;
-      font-size: 1.6rem;
-      color: #1a1a2e;
-    }
-
-    h1 span { color: #5b4dff; }
-
-    #input-row {
-      display: flex;
-      gap: .5rem;
-      margin-bottom: 1.25rem;
-    }
-
-    #todo-input {
-      flex: 1;
-      padding: .6rem .9rem;
-      border: 1.5px solid #d0d5e8;
-      border-radius: 8px;
-      font-size: 1rem;
-      outline: none;
-      transition: border-color .2s;
-    }
-
-    #todo-input:focus { border-color: #5b4dff; }
-
-    #add-btn {
-      padding: .6rem 1.1rem;
-      background: #5b4dff;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      font-size: 1rem;
-      cursor: pointer;
-      transition: background .2s;
-    }
-
-    #add-btn:hover { background: #4338e0; }
-
-    #todo-list {
-      list-style: none;
-      margin: 0;
-      padding: 0;
-    }
-
-    #todo-list li {
-      display: flex;
-      align-items: center;
-      padding: .65rem .5rem;
-      border-bottom: 1px solid #f0f0f0;
-      gap: .5rem;
-    }
-
-    #todo-list li:last-child { border-bottom: none; }
-
-    #todo-list li.done .todo-text {
-      text-decoration: line-through;
-      color: #999;
-    }
-
-    .todo-text {
-      flex: 1;
-      cursor: pointer;
-      color: #222;
-    }
-
-    .remove-btn {
-      background: none;
-      border: none;
-      color: #c0392b;
-      font-size: 1rem;
-      cursor: pointer;
-      opacity: .5;
-      transition: opacity .2s;
-      padding: 0 .25rem;
-    }
-
-    .remove-btn:hover { opacity: 1; }
-
-    .empty { color: #aaa; font-style: italic; }
-  </style>
-</head>
-<body>
-  <div id="app">
-    <h1>BoxLang <span>Todo</span></h1>
-
-    <div id="input-row">
-      <input
-        type="text"
-        id="todo-input"
-        placeholder="What needs to be done?"
-        autocomplete="off"
-      />
-      <button id="add-btn">Add</button>
-    </div>
-
-    <ul id="todo-list"></ul>
-  </div>
-
-  <!--
-    Import the BoxLang-compiled ES module.
-    Build it first: matchbox --target js todo.bxs
-  -->
-  <script type="module">
-    import { addTodo, toggleTodo, removeTodo } from './todo.js';
-
-    const input  = document.getElementById('todo-input');
-    const addBtn = document.getElementById('add-btn');
-    const list   = document.getElementById('todo-list');
-
-    // Add a new task
-    async function handleAdd() {
-      const text = input.value.trim();
-      if (!text) return;
-      await addTodo(text);
-      input.value = '';
-      input.focus();
-    }
-
-    addBtn.addEventListener('click', handleAdd);
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') handleAdd();
-    });
-
-    // Toggle done / remove via event delegation on the list
-    list.addEventListener('click', async (e) => {
-      const id = Number(e.target.getAttribute('data-id'));
-      if (!id) return;
-
-      if (e.target.classList.contains('remove-btn')) {
-        await removeTodo(id);
-      } else if (e.target.classList.contains('todo-text')) {
-        await toggleTodo(id);
-      }
+  <title>BoxLang Zero-Boilerplate Todo</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
+  <!-- Import the compiled JS bundle -->
+  <script type="module" src="./todo.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script>
+    document.addEventListener("alpine:init", async () => {
+      await window.MatchBox.ready("todo");
+      const app = window.MatchBox.State("todo", {
+        mount: "getSnapshot",
+        initialState: {
+          todos: [],
+          total: 0,
+          completed: 0,
+          remaining: 0,
+          newTodo: "",
+          filter: "all"
+        }
+      });
+      Alpine.store("todoApp", app);
+      await app.init();
     });
   </script>
+  <style>
+    main { padding-top: 3rem; padding-bottom: 3rem; }
+    .todo-row { display: grid; grid-template-columns: auto 1fr auto; gap: 0.75rem; align-items: center; }
+    .todo-text.done { text-decoration: line-through; opacity: 0.65; }
+    .toolbar { display: flex; gap: 0.5rem; justify-content: space-between; align-items: center; }
+    .empty { opacity: 0.7; text-align: center; padding: 1rem 0; }
+  </style>
+</head>
+<body x-data>
+  <main class="container" x-data="$store.todoApp">
+    <header>
+      <h1>BoxLang <span>Todo</span></h1>
+      <p>Pico CSS + Alpine.js + BoxLang State-Driven Logic</p>
+    </header>
+
+    <article>
+      <form @submit.prevent="await call('submitTodo', newTodo); newTodo = '';">
+        <label for="todo-input">New todo</label>
+        <input type="text" x-model="newTodo" placeholder="What needs to be done?" autocomplete="off" />
+        <button type="submit">Add Todo</button>
+      </form>
+    </article>
+
+    <article x-show="ready">
+      <div class="toolbar">
+        <div role="group">
+          <button type="button" :class="filter === 'all' ? '' : 'outline'" @click="filter = 'all'">All</button>
+          <button type="button" :class="filter === 'open' ? '' : 'outline'" @click="filter = 'open'">Open</button>
+          <button type="button" :class="filter === 'done' ? '' : 'outline'" @click="filter = 'done'">Done</button>
+        </div>
+        <button class="secondary" @click="await call('clearCompletedAction')" x-show="completed > 0">
+          Clear Completed
+        </button>
+      </div>
+
+      <p><small x-text="`${remaining} remaining, ${completed} completed, ${total} total`"></small></p>
+
+      <template x-if="total === 0">
+        <p class="empty">No tasks yet — add one above!</p>
+      </template>
+
+      <template x-for="todo in (filter === 'open' ? todos.filter(t => !t.done) : filter === 'done' ? todos.filter(t => t.done) : todos)" :key="todo.id">
+        <article class="todo-row">
+          <input type="checkbox" :checked="todo.done" @change="await call('toggleTodoAction', todo.id)" />
+          <span class="todo-text" :class="{ done: todo.done }" x-text="todo.text"></span>
+          <button type="button" class="outline" @click="await call('removeTodoAction', todo.id)">Delete</button>
+        </article>
+      </template>
+    </article>
+
+    <footer x-show="error">
+      <mark x-text="error"></mark>
+    </footer>
+  </main>
 </body>
 </html>

@@ -1,9 +1,8 @@
 # WASM Browser — Todo App
 
-A minimal but complete browser Todo application written entirely in BoxLang and
-compiled to WebAssembly. State management and DOM manipulation are handled in
-BoxLang via the `js.*` browser interop global; the HTML provides the shell and
-wires up events.
+A minimal browser Todo application written in BoxLang and compiled to WebAssembly.
+BoxLang owns the app state and state transitions. The HTML shell wires that
+state into Alpine using the generated `window.MatchBox.State(...)` helper.
 
 ## Project Layout
 
@@ -17,19 +16,9 @@ wasm_browser/
 
 `matchbox --target js` compiles `todo.bxs` to an **ES module** (`todo.js` + `todo.wasm`).
 
-- **BoxLang owns the state** (`todos` array) and DOM rendering (`renderTodos()`).  
-- **JavaScript owns the events**: the `<script type="module">` block in `index.html`
-  imports the BoxLang-compiled module and wires click/keyboard events to exported
-  BoxLang functions (`addTodo`, `toggleTodo`, `removeTodo`).
-
-BoxLang functions access the browser DOM through the `js.*` global:
-
-```boxlang
-list = js.document.getElementById("todo-list")
-li   = js.document.createElement("li")
-li.textContent = "Buy milk"
-list.appendChild(li)
-```
+- **BoxLang owns the state** and returns plain snapshot structs for the UI.
+- **The generated browser contract owns readiness and module lookup** through `window.MatchBox`.
+- **The page owns framework wiring** by creating an Alpine store from `window.MatchBox.State("todo", ...)`.
 
 ## Build
 
@@ -96,8 +85,8 @@ Most modern hosts (Netlify, Vercel, Cloudflare Pages) handle this automatically.
 
 | Concept | Where to look |
 |---|---|
-| `js.*` DOM API | `todo.bxs` — `renderTodos()` |
-| Exported BoxLang functions | `todo.bxs` — `addTodo`, `toggleTodo`, `removeTodo` |
-| ES module import | `index.html` — `import { addTodo } from './todo.js'` |
-| Async function calls | `index.html` — `await addTodo(text)` |
-| Event delegation | `index.html` — `list.addEventListener('click', ...)` |
+| BoxLang state/actions | `todo.bxs` |
+| Generated browser namespace | `todo.js` → `window.MatchBox.modules["todo"]` |
+| Readiness signal | `window.MatchBox.ready("todo")` |
+| Generic state helper | `window.MatchBox.State("todo", ...)` in `index.html` |
+| Alpine store wiring | `index.html` |

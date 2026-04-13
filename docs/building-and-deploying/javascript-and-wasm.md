@@ -1,18 +1,18 @@
 # JavaScript + WebAssembly
 
-MatchBox can compile BoxLang for the browser and Node.js via WebAssembly. There are three distinct modes, chosen to match different use-cases.
+MatchBox can compile BoxLang for browser-oriented WebAssembly workflows. There are three distinct modes, chosen to match different use-cases.
 
 | Mode | Command | Use case |
 | :--- | :--- | :--- |
-| **JS Module (AOT)** | `--target js` | Ship a pre-compiled BoxLang app as an ES module |
-| **WASM binary (AOT)** | `--target wasm` | Raw `.wasm` binary, brought your own loader |
+| **JS Module (AOT)** | `--target js` | Ship a pre-compiled browser app/library as an ES module |
+| **WASM binary (AOT)** | `--target wasm` | Raw browser-oriented `.wasm` binary, bring your own loader |
 | **Runtime (JIT-like)** | Build `pkg/` once, call `run_boxlang()` | Execute source strings at runtime in the browser |
 
 ---
 
 ## Mode 1: JavaScript ES Module (AOT)
 
-This is the recommended way to ship a BoxLang application to the browser. MatchBox compiles your script to bytecode, embeds it in a WASM binary, and wraps it in a JavaScript ES module that bootstraps the runtime automatically.
+This is the recommended way to ship a BoxLang application to the browser today. MatchBox compiles your script to bytecode, embeds it in a WASM binary, and wraps it in a JavaScript ES module that bootstraps the runtime automatically.
 
 ### Compile
 
@@ -38,14 +38,17 @@ matchbox --target js my_lib.bxs
 </html>
 ```
 
-### Use in Node.js
+### Current Runtime Contract
 
-```js
-import { greet } from './my_lib.js';
+The generated module is browser-focused and currently assumes a real browser environment for the highest-usability path.
 
-const message = await greet("Node");
-console.log(message);
-```
+- Importing `./app.js` initializes the runtime automatically.
+- Exported top-level BoxLang functions are available as ES module exports.
+- The bundle also registers `window.MatchBox.modules["app"]`.
+- `window.MatchBox.ready("app")` resolves when the module is ready.
+- `window.MatchBox.State(moduleName, options)` creates a framework-agnostic state helper for state-snapshot style apps.
+
+This browser contract is the supported path today. Non-browser runtimes may work for simple imports, but they are not the documented target surface yet.
 
 ### Exporting Functions
 
@@ -67,7 +70,7 @@ function calculate(a, b) {
 
 ## Mode 2: Raw WASM Binary (AOT)
 
-Use `--target wasm` when you want the raw `.wasm` file and full control over how it is loaded. This is useful for integration with non-standard JS runtimes, edge platforms, or when you are bundling the WASM via a tool like Webpack or Vite.
+Use `--target wasm` when you want the raw `.wasm` file and full control over how it is loaded in a browser-oriented environment.
 
 ```bash
 matchbox --target wasm my_app.bxs
@@ -137,7 +140,7 @@ console.log(sum, message);
 
 ## JavaScript Interop from BoxLang
 
-When BoxLang code is running inside a browser WASM context, it can access the JavaScript environment through the `js` global:
+When BoxLang code is running inside the browser JS target, it can access a browser bridge through the `js` global:
 
 ```boxlang
 // DOM access
@@ -149,10 +152,17 @@ js.alert("Hello!")
 js.console.log("Logged from BoxLang")
 
 // Location
-url = js.window.location.href
+url = js.location.href
 ```
 
-> `js.*` is only available in browser WASM. Using it in a native build throws a runtime error.
+The important current rule is:
+
+- Plain JS values cross the boundary as BoxLang values: strings, booleans, null, numbers, arrays, and plain objects.
+- Browser host objects stay as JS handles: DOM nodes, `document`, `window`, functions, and other browser-native objects.
+
+That keeps state/data interop predictable while preserving access to real browser objects.
+
+> `js.*` is a browser-only surface. Using it in a native build throws a runtime error.
 
 ---
 

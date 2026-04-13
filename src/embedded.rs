@@ -167,14 +167,24 @@ mod tests {
 
     #[test]
     fn builds_route_table_entries_from_manifest() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("matchbox-embedded-route-table-{}", nonce));
+        let app_dir = root.join("app");
+        fs::create_dir_all(&app_dir).unwrap();
+        let source_path = app_dir.join("print.post.bxs");
+        fs::write(&source_path, "writeOutput( 'ok' );").unwrap();
+
         let manifest = EmbeddedBuildManifest {
-            app_root: PathBuf::from("/project/app"),
+            app_root: app_dir.clone(),
             app: EmbeddedAppDefinition {
                 listen: Default::default(),
                 routes: vec![EmbeddedRoute {
                     method: "POST".to_string(),
                     path: "/print".to_string(),
-                    source_path: PathBuf::from("/project/app/print.post.bxs"),
+                    source_path: source_path.clone(),
                     source_kind: EmbeddedSourceKind::Script,
                 }],
             },
@@ -186,5 +196,7 @@ mod tests {
         assert_eq!(table.routes[0].path, "/print");
         assert_eq!(table.routes[0].source_kind, "script");
         assert!(!table.routes[0].bytecode.is_empty());
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

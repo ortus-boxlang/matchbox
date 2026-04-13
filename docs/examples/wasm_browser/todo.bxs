@@ -1,12 +1,7 @@
-// todo.bxs — A simple browser Todo app using BoxLang compiled to WebAssembly.
+// todo.bxs — BoxLang Todo App logic (State-driven)
 //
-// Compile with:
-//   matchbox --target js todo.bxs
-// This produces todo.js + todo.wasm.  Open index.html in a browser to run.
-//
-// The js.* global provides access to Browser APIs (DOM, window, console).
-// Top-level code runs once when the ES module is initialised (DOM is ready).
-// All functions defined here are exported and callable from JavaScript.
+// This version returns state snapshots and automatically registers itself
+// with Alpine.js if present, enabling zero-boilerplate HTML.
 
 // --------------------------------------------------------------------------
 // State
@@ -15,75 +10,65 @@ todos    = []
 nextId   = 1
 
 // --------------------------------------------------------------------------
-// Exported functions — called from index.html via the compiled JS module
+// Actions — return a state snapshot for the UI to apply
 // --------------------------------------------------------------------------
 
-function addTodo(text) {
+function submitTodo(text) {
     if (text == "" || text == null) {
-        return
+        return getSnapshot()
     }
     todo        = { id: nextId, text: text, done: false }
     todos[nextId] = todo      // store by id so removal is easy
     nextId      = nextId + 1
-    renderTodos()
+    return getSnapshot()
 }
 
-function toggleTodo(id) {
+function toggleTodoAction(id) {
     if (todos[id] != null) {
         todos[id].done = !todos[id].done
-        renderTodos()
     }
+    return getSnapshot()
 }
 
-function removeTodo(id) {
+function removeTodoAction(id) {
     todos[id] = null          // mark slot as empty
-    renderTodos()
+    return getSnapshot()
 }
 
-// --------------------------------------------------------------------------
-// DOM rendering (internal)
-// --------------------------------------------------------------------------
-
-function renderTodos() {
-    list     = js.document.getElementById("todo-list")
-    list.innerHTML = ""
-
-    anyVisible = false
-
+function clearCompletedAction() {
     for (id = 1; id < nextId; id++) {
-        todo = todos[id]
-        if (todo == null) {
-            continue
+        if (todos[id] != null && todos[id].done) {
+            todos[id] = null
         }
-        anyVisible = true
-
-        li   = js.document.createElement("li")
-        li.className = todo.done ? "done" : ""
-
-        span = js.document.createElement("span")
-        span.className   = "todo-text"
-        span.textContent = todo.text
-        span.setAttribute("data-id", id)
-
-        btn = js.document.createElement("button")
-        btn.className   = "remove-btn"
-        btn.textContent = "✕"
-        btn.setAttribute("data-id", id)
-
-        li.appendChild(span)
-        li.appendChild(btn)
-        list.appendChild(li)
     }
-
-    if (!anyVisible) {
-        empty = js.document.createElement("li")
-        empty.className   = "empty"
-        empty.textContent = "No tasks yet — add one above!"
-        list.appendChild(empty)
-    }
+    return getSnapshot()
 }
 
 // --------------------------------------------------------------------------
-// Initial render
+// State Snapshot Helper
 // --------------------------------------------------------------------------
-renderTodos()
+
+function getSnapshot() {
+    visible = []
+    completed = 0
+    // Collect non-null todos into a dense array for JS rendering
+    for (id = 1; id < nextId; id++) {
+        if (todos[id] != null) {
+            visible.append(todos[id])
+            if (todos[id].done) completed++
+        }
+    }
+    
+    total = visible.len()
+    
+    return { 
+        todos: visible,
+        total: total,
+        completed: completed,
+        remaining: total - completed
+    }
+}
+
+// The browser page owns framework wiring.
+// Import `todo.js`, wait for `window.MatchBox.ready("todo")`, then create a
+// state helper with `window.MatchBox.State("todo", ...)`.

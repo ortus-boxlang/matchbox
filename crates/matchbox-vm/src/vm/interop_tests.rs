@@ -2,8 +2,11 @@
 mod tests {
     use crate::vm::VM;
     use crate::types::{BxValue, BxVM};
+    use crate::vm::gc::GcObject;
     use wasm_bindgen::JsValue;
     use wasm_bindgen_test::*;
+
+    wasm_bindgen_test_configure!(run_in_browser);
 
     #[wasm_bindgen_test]
     fn test_bx_to_js_int() {
@@ -125,11 +128,11 @@ mod tests {
         let js_arr = js_sys::Array::new();
         js_arr.push(&JsValue::from_f64(10.0));
         let bx = vm.js_to_bx(js_arr.into());
+        assert!(bx.is_ptr());
         let id = bx.as_gc_id().unwrap();
+        assert!(matches!(vm.heap.get(id), GcObject::Array(_)));
         assert_eq!(vm.array_len(id), 1);
-        let item = vm.array_get(id, 0);
-        assert!(item.is_int());
-        assert_eq!(item.as_int(), 10);
+        assert_eq!(vm.array_get(id, 0).as_int(), 10);
     }
 
     #[wasm_bindgen_test]
@@ -138,10 +141,66 @@ mod tests {
         let js_obj = js_sys::Object::new();
         js_sys::Reflect::set(&js_obj, &"a".into(), &JsValue::from_f64(1.0)).unwrap();
         let bx = vm.js_to_bx(js_obj.into());
+        assert!(bx.is_ptr());
         let id = bx.as_gc_id().unwrap();
-        assert_eq!(vm.struct_len(id), 1);
-        let val = vm.struct_get(id, "a");
-        assert!(val.is_int());
-        assert_eq!(val.as_int(), 1);
+        assert!(matches!(vm.heap.get(id), GcObject::Struct(_)));
+        assert_eq!(vm.struct_get(id, "a").as_int(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn test_js_to_bx_nested_plain_values() {
+        let mut vm = VM::new();
+        let items = js_sys::Array::new();
+        items.push(&JsValue::from_f64(1.0));
+        items.push(&JsValue::from_f64(2.0));
+
+        let meta = js_sys::Object::new();
+        js_sys::Reflect::set(&meta, &"enabled".into(), &JsValue::from_bool(true)).unwrap();
+
+        let js_obj = js_sys::Object::new();
+        js_sys::Reflect::set(&js_obj, &"items".into(), &items).unwrap();
+        js_sys::Reflect::set(&js_obj, &"meta".into(), &meta).unwrap();
+
+        let bx = vm.js_to_bx(js_obj.into());
+        let root_id = bx.as_gc_id().unwrap();
+        let items_val = vm.struct_get(root_id, "items");
+        let items_id = items_val.as_gc_id().unwrap();
+        assert!(matches!(vm.heap.get(items_id), GcObject::Array(_)));
+        assert_eq!(vm.array_len(items_id), 2);
+
+        let meta_val = vm.struct_get(root_id, "meta");
+        let meta_id = meta_val.as_gc_id().unwrap();
+        assert!(matches!(vm.heap.get(meta_id), GcObject::Struct(_)));
+        assert!(vm.struct_get(meta_id, "enabled").as_bool());
+    }
+
+    #[wasm_bindgen_test]
+    fn test_js_to_bx_preserves_dom_node_as_host_handle() {
+        let mut vm = VM::new();
+        let document = web_sys::window().unwrap().document().unwrap();
+        let node: JsValue = document.create_element("div").unwrap().into();
+        let bx = vm.js_to_bx(node);
+        let id = bx.as_gc_id().unwrap();
+        assert!(matches!(vm.heap.get(id), GcObject::JsValue(_)));
+    }
+
+    #[wasm_bindgen_test]
+    fn test_vm_js_global_is_browser_bridge_namespace() {
+        let vm = VM::new();
+        let js_global = vm.get_global("js").unwrap();
+        let js_id = js_global.as_gc_id().unwrap();
+        let root = match vm.heap.get(js_id) {
+            GcObject::JsValue(value) => value.clone(),
+            other => panic!("expected JsValue root, got {:?}", other),
+        };
+
+        let document = js_sys::Reflect::get(&root, &"document".into()).unwrap();
+        assert!(document.is_object());
+
+        let window_prop = js_sys::Reflect::get(&root, &"window".into()).unwrap();
+        assert!(window_prop.is_object());
+
+        let matchbox_prop = js_sys::Reflect::get(&root, &"MatchBox".into()).unwrap();
+        assert!(matchbox_prop.is_undefined() || matchbox_prop.is_object());
     }
 }

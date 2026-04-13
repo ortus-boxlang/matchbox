@@ -28,6 +28,90 @@ use std::vec;
 
 pub static INTERRUPT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+fn browser_js_root() -> Option<JsValue> {
+    let window = web_sys::window()?;
+    let root = Object::new();
+    let window_js: JsValue = window.into();
+
+    Reflect::set(&root, &JsValue::from_str("window"), &window_js).ok()?;
+    Reflect::set(&root, &JsValue::from_str("globalThis"), &js_sys::global()).ok()?;
+
+    for prop in [
+        "alert",
+        "document",
+        "console",
+        "location",
+        "history",
+        "navigator",
+        "MatchBox",
+        "Alpine",
+        "fetch",
+        "setTimeout",
+        "clearTimeout",
+        "CustomEvent",
+    ] {
+        if let Ok(value) = Reflect::get(&window_js, &JsValue::from_str(prop)) {
+            Reflect::set(&root, &JsValue::from_str(prop), &value).ok()?;
+        }
+    }
+
+    Some(root.into())
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+fn is_plain_js_object(value: &JsValue) -> bool {
+    if !value.is_object() || Array::is_array(value) {
+        return false;
+    }
+
+    if value.clone().dyn_into::<Function>().is_ok() {
+        return false;
+    }
+
+    let object = Object::from(value.clone());
+    let prototype = Object::get_prototype_of(&object);
+    if prototype.is_null() || prototype.is_undefined() {
+        return true;
+    }
+
+    let global = js_sys::global();
+    let object_ctor = match Reflect::get(&global, &JsValue::from_str("Object")) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let object_prototype = match Reflect::get(&object_ctor, &JsValue::from_str("prototype")) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+
+    Object::is(&prototype, &object_prototype)
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+fn resolve_js_property(target: &JsValue, name: &str) -> JsValue {
+    let direct = JsValue::from_str(name);
+    if Reflect::has(target, &direct).unwrap_or(false) {
+        return direct;
+    }
+
+    let mut current = target.clone();
+    while !current.is_null() && !current.is_undefined() {
+        let object = Object::from(current.clone());
+        let names = Object::get_own_property_names(&object);
+        for candidate in names.iter() {
+            if let Some(candidate_str) = candidate.as_string() {
+                if candidate_str.eq_ignore_ascii_case(name) {
+                    return JsValue::from_str(&candidate_str);
+                }
+            }
+        }
+        current = Object::get_prototype_of(&object).into();
+    }
+
+    direct
+}
+
 #[derive(Debug)]
 struct VariablesScopeProxy {
     variables: Rc<RefCell<HashMap<String, BxValue>>>,
@@ -61,6 +145,8 @@ impl BxNativeObject for VariablesScopeProxy {
 use wasm_bindgen::prelude::*;
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use js_sys::{Array, Function, Reflect};
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+use js_sys::Object;
 
 #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
 #[link(wasm_import_module = "matchbox_js_host")]
@@ -134,6 +220,9 @@ pub struct VM {
     #[cfg(feature = "jit")]
     pub jit: Option<Box<jit::JitState>>,
 }
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+const JS_INTEROP_MAX_DEPTH: usize = 32;
 
 impl BxVM for VM {
     fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>> {
@@ -857,8 +946,8 @@ impl VM {
 
         #[cfg(all(target_arch = "wasm32", feature = "js"))]
         {
-            if let Some(window) = web_sys::window() {
-                let id = vm.heap.alloc(GcObject::JsValue(window.into()));
+            if let Some(js_root) = browser_js_root() {
+                let id = vm.heap.alloc(GcObject::JsValue(js_root));
                 vm.insert_global("js".to_string(), BxValue::new_ptr(id));
             }
         }
@@ -885,6 +974,81 @@ impl VM {
         vm.init_server_scope();
 
         vm
+    }
+
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    fn is_seen_js_value(value: &JsValue, seen: &[JsValue]) -> bool {
+        seen.iter().any(|candidate| Object::is(candidate, value))
+    }
+
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    fn plain_js_value_to_bx(
+        &mut self,
+        value: JsValue,
+        seen: &mut Vec<JsValue>,
+        depth: usize,
+    ) -> Option<BxValue> {
+        if depth >= JS_INTEROP_MAX_DEPTH {
+            return None;
+        }
+
+        if Array::is_array(&value) {
+            if Self::is_seen_js_value(&value, seen) {
+                return None;
+            }
+            seen.push(value.clone());
+            let js_array = Array::from(&value);
+            let id = self.array_new();
+            for idx in 0..js_array.length() {
+                let item = self.js_to_bx_with_seen(js_array.get(idx), seen, depth + 1);
+                self.array_push(id, item);
+            }
+            seen.pop();
+            return Some(BxValue::new_ptr(id));
+        }
+
+        if !is_plain_js_object(&value) {
+            return None;
+        }
+
+        if Self::is_seen_js_value(&value, seen) {
+            return None;
+        }
+        seen.push(value.clone());
+        let object = Object::from(value.clone());
+        let keys = Object::keys(&object);
+        let id = self.struct_new();
+        for key in keys.iter() {
+            if let Some(key_str) = key.as_string() {
+                let prop = Reflect::get(&value, &JsValue::from_str(&key_str)).unwrap_or(JsValue::UNDEFINED);
+                let bx = self.js_to_bx_with_seen(prop, seen, depth + 1);
+                self.struct_set(id, &key_str, bx);
+            }
+        }
+        seen.pop();
+        Some(BxValue::new_ptr(id))
+    }
+
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    fn js_to_bx_with_seen(&mut self, val: JsValue, seen: &mut Vec<JsValue>, depth: usize) -> BxValue {
+        if val.is_string() {
+            let id = self.heap.alloc(GcObject::String(BoxString::new(&val.as_string().unwrap())));
+            BxValue::new_ptr(id)
+        } else if let Some(n) = val.as_f64() {
+            if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
+                BxValue::new_int(n as i32)
+            } else {
+                BxValue::new_number(n)
+            }
+        } else if let Some(b) = val.as_bool() {
+            BxValue::new_bool(b)
+        } else if val.is_null() || val.is_undefined() {
+            BxValue::new_null()
+        } else if let Some(bx) = self.plain_js_value_to_bx(val.clone(), seen, depth) {
+            bx
+        } else {
+            BxValue::new_ptr(self.heap.alloc(GcObject::JsValue(val)))
+        }
     }
 
     /// Activate the Cranelift JIT. Call this before `interpret` to enable
@@ -2389,7 +2553,7 @@ impl VM {
                         if let GcObject::JsValue(js) = self.heap.get(id) {
                             let js = js.clone();
                             let name = self.interner.resolve(name_id);
-                            let prop = JsValue::from_str(name);
+                            let prop = resolve_js_property(&js, name);
                             match Reflect::get(&js, &prop) {
                                 Ok(val) => {
                                     let bx_val = self.js_to_bx(val);
@@ -2588,7 +2752,7 @@ impl VM {
                         if let GcObject::JsValue(js) = self.heap.get(id) {
                             let js = js.clone();
                             let name = self.interner.resolve(name_id);
-                            let prop = JsValue::from_str(name);
+                            let prop = resolve_js_property(&js, name);
                             let js_val = self.bx_to_js(&val);
                             Reflect::set(&js, &prop, &js_val).ok();
                             self.fibers[fiber_idx].stack.push(val);
@@ -4019,7 +4183,7 @@ impl VM {
             #[cfg(all(target_arch = "wasm32", feature = "js"))]
             if let GcObject::JsValue(js) = self.heap.get(id) {
                 let js = js.clone();
-                let prop = JsValue::from_str(&name);
+                let prop = resolve_js_property(&js, &name);
                 match Reflect::get(&js, &prop) {
                     Ok(val) => {
                         if let Ok(func) = val.clone().dyn_into::<Function>() {
@@ -4410,43 +4574,7 @@ impl VM {
 
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
     pub fn js_to_bx(&mut self, val: JsValue) -> BxValue {
-        if val.is_string() {
-            let id = self.heap.alloc(GcObject::String(BoxString::new(&val.as_string().unwrap())));
-            BxValue::new_ptr(id)
-        } else if let Some(n) = val.as_f64() {
-            if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
-                BxValue::new_int(n as i32)
-            } else {
-                BxValue::new_number(n)
-            }
-        } else if let Some(b) = val.as_bool() {
-            BxValue::new_bool(b)
-        } else if val.is_null() {
-            BxValue::new_null()
-        } else if Array::is_array(&val) {
-            let js_arr: Array = val.into();
-            let mut bx_arr = Vec::new();
-            for i in 0..js_arr.length() {
-                bx_arr.push(self.js_to_bx(js_arr.get(i)));
-            }
-            BxValue::new_ptr(self.heap.alloc(GcObject::Array(bx_arr)))
-        } else if val.is_instance_of::<js_sys::Promise>() {
-            let promise: js_sys::Promise = val.into();
-            BxValue::new_ptr(self.heap.alloc(GcObject::JsValue(promise.into())))
-        } else if val.is_object() {
-            // Check if it's a plain object (not a special type we already handled)
-            let keys = js_sys::Object::keys(val.unchecked_ref::<js_sys::Object>());
-            let struct_id = self.struct_new();
-            for i in 0..keys.length() {
-                let key = keys.get(i).as_string().unwrap();
-                let prop_val = Reflect::get(&val, &key.clone().into()).unwrap();
-                let bx_prop = self.js_to_bx(prop_val);
-                self.struct_set(struct_id, &key, bx_prop);
-            }
-            BxValue::new_ptr(struct_id)
-        } else {
-            BxValue::new_ptr(self.heap.alloc(GcObject::JsValue(val)))
-        }
+        self.js_to_bx_with_seen(val, &mut Vec::new(), 0)
     }
 
     fn collect_garbage(&mut self) {

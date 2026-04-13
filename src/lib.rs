@@ -520,21 +520,27 @@ fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String
         bootstrap.push_str("}\n\n");
     }
 
-    bootstrap.push_str("export const ready = ensureInit();\n\n");
-
     bootstrap.push_str("if (typeof window !== \"undefined\") {\n");
     bootstrap.push_str("    window.MatchBox = window.MatchBox || {};\n");
+    bootstrap.push_str("    window.MatchBox.runtime = window.MatchBox.runtime || \"browser\";\n");
+    bootstrap.push_str("    window.MatchBox.contractVersion = window.MatchBox.contractVersion || 1;\n");
     bootstrap.push_str("    window.MatchBox.modules = window.MatchBox.modules || {};\n");
     bootstrap.push_str("    window.MatchBox._readySignals = window.MatchBox._readySignals || {};\n");
     bootstrap.push_str("    window.MatchBox.ready = window.MatchBox.ready || function(stem) {\n");
     bootstrap.push_str("        return window.MatchBox._readySignals[stem] || Promise.resolve();\n");
     bootstrap.push_str("    };\n");
     bootstrap.push_str("    window.MatchBox.createModuleState = window.MatchBox.createModuleState || createModuleState;\n");
+    bootstrap.push_str("    window.MatchBox.State = window.MatchBox.State || createModuleState;\n");
     bootstrap.push_str(&format!("    window.MatchBox.modules[\"{}\"] = {{\n", module_name));
     for func in functions {
         bootstrap.push_str(&format!("        {},\n", func));
     }
     bootstrap.push_str("    };\n");
+    bootstrap.push_str("}\n\n");
+
+    bootstrap.push_str("export const ready = ensureInit();\n\n");
+
+    bootstrap.push_str("if (typeof window !== \"undefined\") {\n");
     bootstrap.push_str(&format!("    window.MatchBox._readySignals[\"{}\"] = ready;\n", module_name));
     bootstrap.push_str("    ready.then(() => {\n");
     bootstrap.push_str("        if (typeof window.dispatchEvent === \"function\") {\n");
@@ -2729,7 +2735,8 @@ mod tests {
         assert!(bootstrap.contains("const wasmBase64 = \"stub-wasm\";"));
         assert!(bootstrap.contains("const bytecodeBase64 = \"stub-bytecode\";"));
         assert!(bootstrap.contains("vm.load_bytecode(bytecodeBinary);"));
-        assert!(bootstrap.contains("return vm.call(\"hello\", args);"));
+        assert!(bootstrap.contains("return await vm.call(\"hello\", args);"));
+        assert!(bootstrap.contains("if (e instanceof Error) throw e;"));
     }
 
     #[test]
