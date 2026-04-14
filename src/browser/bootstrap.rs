@@ -1,0 +1,203 @@
+use matchbox_compiler::ast;
+
+pub fn exported_function_names(ast: &[ast::Statement]) -> Vec<String> {
+    let mut functions = Vec::new();
+    for stmt in ast {
+        if let ast::StatementKind::FunctionDecl { name, .. } = &stmt.kind {
+            functions.push(name.clone());
+        }
+    }
+    functions
+}
+
+pub fn render_pure_js_bootstrap(functions: &[String], b64_wasm: &str, b64_bytecode: &str) -> String {
+    let mut bootstrap = String::new();
+    bootstrap.push_str(&format!("const wasmBase64 = \"{}\";\n", b64_wasm));
+    bootstrap.push_str(&format!("const bytecodeBase64 = \"{}\";\n\n", b64_bytecode));
+
+    bootstrap.push_str("let vm = null;\n");
+    bootstrap.push_str("async function ensureInit() {\n");
+    bootstrap.push_str("    if (vm) return;\n");
+    bootstrap.push_str("    const wasmBinary = Uint8Array.from(atob(wasmBase64), c => c.charCodeAt(0));\n");
+    bootstrap.push_str("    await init(wasmBinary);\n");
+    bootstrap.push_str("    vm = new BoxLangVM();\n");
+    bootstrap.push_str("    const bytecodeBinary = Uint8Array.from(atob(bytecodeBase64), c => c.charCodeAt(0));\n");
+    bootstrap.push_str("    vm.load_bytecode(bytecodeBinary);\n");
+    bootstrap.push_str("}\n\n");
+
+    for func in functions {
+        bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
+        bootstrap.push_str("    await ensureInit();\n");
+        bootstrap.push_str(&format!("    try {{\n"));
+        bootstrap.push_str(&format!("        return await vm.call(\"{}\", args);\n", func));
+        bootstrap.push_str(&format!("    }} catch (e) {{\n"));
+        bootstrap.push_str(&format!("        if (e instanceof Error) throw e;\n"));
+        bootstrap.push_str(&format!("        throw new Error(String(e));\n"));
+        bootstrap.push_str(&format!("    }}\n"));
+        bootstrap.push_str("}\n\n");
+    }
+
+    bootstrap
+}
+
+pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String {
+    let mut bootstrap = String::new();
+    bootstrap.push_str("\nlet vm = null;\n");
+    bootstrap.push_str("let __matchboxReady = null;\n");
+    bootstrap.push_str("function isPlainObject(value) {\n");
+    bootstrap.push_str("    return value != null && typeof value === \"object\" && !Array.isArray(value);\n");
+    bootstrap.push_str("}\n\n");
+    bootstrap.push_str("async function waitForModule(moduleName) {\n");
+    bootstrap.push_str("    if (typeof window === \"undefined\") return null;\n");
+    bootstrap.push_str("    const start = Date.now();\n");
+    bootstrap.push_str("    while (Date.now() - start < 5000) {\n");
+    bootstrap.push_str("        const mod = window.MatchBox?.modules?.[moduleName];\n");
+    bootstrap.push_str("        if (mod) {\n");
+    bootstrap.push_str("            return mod;\n");
+    bootstrap.push_str("        }\n");
+    bootstrap.push_str("        await new Promise(resolve => setTimeout(resolve, 25));\n");
+    bootstrap.push_str("    }\n");
+    bootstrap.push_str("    throw new Error(`MatchBox module ${moduleName} did not become ready`);\n");
+    bootstrap.push_str("}\n\n");
+    bootstrap.push_str("function createModuleState(moduleName, options = {}) {\n");
+    bootstrap.push_str("    const initialState = options.initialState || {};\n");
+    bootstrap.push_str("    const mount = options.mount || null;\n");
+    bootstrap.push_str("    const state = {\n");
+    bootstrap.push_str("        ready: false,\n");
+    bootstrap.push_str("        error: null,\n");
+    bootstrap.push_str("        ...initialState,\n");
+    bootstrap.push_str("        async module() {\n");
+    bootstrap.push_str("            if (typeof window !== \"undefined\" && typeof window.MatchBox?.ready === \"function\") {\n");
+    bootstrap.push_str("                await window.MatchBox.ready(moduleName);\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("            return await waitForModule(moduleName);\n");
+    bootstrap.push_str("        },\n");
+    bootstrap.push_str("        applyState(next) {\n");
+    bootstrap.push_str("            if (!isPlainObject(next)) {\n");
+    bootstrap.push_str("                return next;\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("            for (const [key, value] of Object.entries(next)) {\n");
+    bootstrap.push_str("                this[key] = value;\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("            return next;\n");
+    bootstrap.push_str("        },\n");
+    bootstrap.push_str("        async call(method, ...args) {\n");
+    bootstrap.push_str("            const mod = await this.module();\n");
+    bootstrap.push_str("            if (typeof mod[method] !== \"function\") {\n");
+    bootstrap.push_str("                throw new Error(`MatchBox export ${method} is not available on ${moduleName}`);\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("            const result = await mod[method](...args);\n");
+    bootstrap.push_str("            return this.applyState(result);\n");
+    bootstrap.push_str("        },\n");
+    bootstrap.push_str("        async init() {\n");
+    bootstrap.push_str("            try {\n");
+    bootstrap.push_str("                if (mount) {\n");
+    bootstrap.push_str("                    await this.call(mount);\n");
+    bootstrap.push_str("                }\n");
+    bootstrap.push_str("                this.ready = true;\n");
+    bootstrap.push_str("                this.error = null;\n");
+    bootstrap.push_str("            } catch (error) {\n");
+    bootstrap.push_str("                this.error = String(error);\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("        }\n");
+    bootstrap.push_str("    };\n");
+    bootstrap.push_str("    return state;\n");
+    bootstrap.push_str("}\n\n");
+    bootstrap.push_str("async function ensureInit() {\n");
+    bootstrap.push_str("    if (!__matchboxReady) {\n");
+    bootstrap.push_str("        __matchboxReady = (async () => {\n");
+    bootstrap.push_str("            await __wbg_init();\n");
+    bootstrap.push_str("            if (!vm) {\n");
+    bootstrap.push_str("                vm = new BoxLangVM();\n");
+    bootstrap.push_str("            }\n");
+    bootstrap.push_str("            return vm;\n");
+    bootstrap.push_str("        })();\n");
+    bootstrap.push_str("    }\n");
+    bootstrap.push_str("    return await __matchboxReady;\n");
+    bootstrap.push_str("}\n\n");
+
+    for func in functions {
+        bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
+        bootstrap.push_str("    const vm = await ensureInit();\n");
+        bootstrap.push_str(&format!("    return await vm.call(\"{}\", args);\n", func));
+        bootstrap.push_str("}\n\n");
+    }
+
+    bootstrap.push_str("if (typeof window !== \"undefined\") {\n");
+    bootstrap.push_str("    window.MatchBox = window.MatchBox || {};\n");
+    bootstrap.push_str("    window.MatchBox.runtime = window.MatchBox.runtime || \"browser\";\n");
+    bootstrap.push_str("    window.MatchBox.contractVersion = window.MatchBox.contractVersion || 1;\n");
+    bootstrap.push_str("    window.MatchBox.modules = window.MatchBox.modules || {};\n");
+    bootstrap.push_str("    window.MatchBox._readySignals = window.MatchBox._readySignals || {};\n");
+    bootstrap.push_str("    window.MatchBox.ready = window.MatchBox.ready || function(stem) {\n");
+    bootstrap.push_str("        return window.MatchBox._readySignals[stem] || Promise.resolve();\n");
+    bootstrap.push_str("    };\n");
+    bootstrap.push_str("    window.MatchBox.createModuleState = window.MatchBox.createModuleState || createModuleState;\n");
+    bootstrap.push_str("    window.MatchBox.State = window.MatchBox.State || createModuleState;\n");
+    bootstrap.push_str(&format!("    window.MatchBox.modules[\"{}\"] = {{\n", module_name));
+    for func in functions {
+        bootstrap.push_str(&format!("        {},\n", func));
+    }
+    bootstrap.push_str("    };\n");
+    bootstrap.push_str("}\n\n");
+
+    bootstrap.push_str("export const ready = ensureInit();\n\n");
+
+    bootstrap.push_str("if (typeof window !== \"undefined\") {\n");
+    bootstrap.push_str(&format!("    window.MatchBox._readySignals[\"{}\"] = ready;\n", module_name));
+    bootstrap.push_str("    ready.then(() => {\n");
+    bootstrap.push_str("        if (typeof window.dispatchEvent === \"function\") {\n");
+    bootstrap.push_str("            window.dispatchEvent(new CustomEvent(\"matchbox:ready\", {\n");
+    bootstrap.push_str(&format!("                detail: {{ module: \"{}\" }}\n", module_name));
+    bootstrap.push_str("            }));\n");
+    bootstrap.push_str("        }\n");
+    bootstrap.push_str("    });\n");
+    bootstrap.push_str("}\n");
+
+    bootstrap
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use matchbox_compiler::parser;
+
+    #[test]
+    fn exported_function_names_collects_top_level_functions() {
+        let source = r#"
+            function alpha() {}
+            x = 1
+            function beta(a) { return a; }
+        "#;
+        let ast = parser::parse(source).unwrap();
+        assert_eq!(exported_function_names(&ast), vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn pure_js_bootstrap_keeps_stub_loader_shape() {
+        let bootstrap = render_pure_js_bootstrap(
+            &vec!["hello".to_string()],
+            "stub-wasm",
+            "stub-bytecode",
+        );
+
+        assert!(bootstrap.contains("const wasmBase64 = \"stub-wasm\";"));
+        assert!(bootstrap.contains("const bytecodeBase64 = \"stub-bytecode\";"));
+        assert!(bootstrap.contains("vm.load_bytecode(bytecodeBinary);"));
+        assert!(bootstrap.contains("return await vm.call(\"hello\", args);"));
+        assert!(bootstrap.contains("if (e instanceof Error) throw e;"));
+    }
+
+    #[test]
+    fn fusion_js_bootstrap_uses_async_vm_call_without_bytecode_loader() {
+        let bootstrap = render_fusion_js_bootstrap(&vec!["hello".to_string()], "app");
+
+        assert!(bootstrap.contains("await __wbg_init();"));
+        assert!(bootstrap.contains("vm = new BoxLangVM();"));
+        assert!(bootstrap.contains("return await vm.call(\"hello\", args);"));
+        assert!(bootstrap.contains("window.MatchBox.modules[\"app\"]"));
+        assert!(bootstrap.contains("hello,"));
+        assert!(!bootstrap.contains("load_bytecode"));
+        assert!(!bootstrap.contains("wasmBase64"));
+    }
+}

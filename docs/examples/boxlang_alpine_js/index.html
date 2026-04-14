@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MatchBox + Alpine.js</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex items-center justify-center">
+
+    <div class="max-w-md w-full bg-slate-800 p-8 rounded-xl shadow-2xl border border-slate-700"
+         x-data="bxCounter(5)">
+        
+        <h1 class="text-2xl font-bold mb-6 text-center text-blue-400">
+            BoxLang + Alpine.js
+        </h1>
+
+        <div class="flex flex-col items-center gap-6">
+            <div class="text-6xl font-mono font-black" x-text="count"></div>
+            
+            <div class="flex gap-4">
+                <button @click="decrement($data)" 
+                        class="px-6 py-2 bg-red-600 hover:bg-red-500 rounded-lg font-bold transition-colors">
+                    -
+                </button>
+                <button @click="increment($data)" 
+                        class="px-6 py-2 bg-green-600 hover:bg-green-500 rounded-lg font-bold transition-colors">
+                    +
+                </button>
+            </div>
+
+            <div class="w-full h-px bg-slate-700 my-2"></div>
+
+            <div class="flex items-center gap-3 text-sm text-slate-400">
+                <span>Step Size:</span>
+                <input type="number" x-model.number="step" 
+                       class="w-16 bg-slate-950 border border-slate-600 rounded px-2 py-1 text-white text-center focus:outline-none focus:border-blue-500">
+            </div>
+
+            <template x-if="isEven(count)">
+                <div class="text-green-400 font-semibold animate-bounce">
+                    That count is Even!
+                </div>
+            </template>
+        </div>
+
+        <p class="mt-8 text-xs text-slate-500 text-center italic">
+            This entire component logic is running in a BoxLang WASM VM.
+        </p>
+    </div>
+
+    <!-- 
+        Load the BoxLang bundle. 
+        Note: You must build counter.bxs using 'matchbox --target js counter.bxs' first.
+    -->
+    <script type="module" src="./counter.js"></script>
+</body>
+</html>

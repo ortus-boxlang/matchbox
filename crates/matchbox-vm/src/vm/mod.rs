@@ -89,7 +89,7 @@ fn is_plain_js_object(value: &JsValue) -> bool {
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
-fn resolve_js_property(target: &JsValue, name: &str) -> JsValue {
+pub(crate) fn resolve_js_property(target: &JsValue, name: &str) -> JsValue {
     let direct = JsValue::from_str(name);
     if Reflect::has(target, &direct).unwrap_or(false) {
         return direct;
@@ -143,6 +143,8 @@ impl BxNativeObject for VariablesScopeProxy {
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use wasm_bindgen::prelude::*;
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+use wasm_bindgen::JsCast;
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use js_sys::{Array, Function, Reflect};
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -219,6 +221,10 @@ pub struct VM {
     pending_native_futures: HashMap<usize, usize>,
     #[cfg(feature = "jit")]
     pub jit: Option<Box<jit::JitState>>,
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    pub(crate) callback_registry: Rc<RefCell<HashMap<usize, BxValue>>>,
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    pub(crate) next_callback_id: RefCell<usize>,
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -942,6 +948,10 @@ impl VM {
             pending_native_futures: HashMap::new(),
             #[cfg(feature = "jit")]
             jit: None,
+            #[cfg(all(target_arch = "wasm32", feature = "js"))]
+            callback_registry: Rc::new(RefCell::new(HashMap::new())),
+            #[cfg(all(target_arch = "wasm32", feature = "js"))]
+            next_callback_id: RefCell::new(1),
         };
 
         #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -3644,6 +3654,22 @@ impl VM {
                     self.gc_suspended = false;
                     res
                 }
+                #[cfg(all(target_arch = "wasm32", feature = "js"))]
+                GcObject::JsValue(js) => {
+                    use js_sys::Function;
+                    if let Ok(func) = js.clone().dyn_into::<Function>() {
+                        let js_args = js_sys::Array::new();
+                        for arg in args {
+                            js_args.push(&self.bx_to_js(&arg));
+                        }
+                        match js_sys::Reflect::apply(&func, &JsValue::UNDEFINED, &js_args) {
+                            Ok(val) => Ok(self.js_to_bx(val)),
+                            Err(e) => anyhow::bail!("JS Error: {:?}", e),
+                        }
+                    } else {
+                        anyhow::bail!("Value is not a callable JS function")
+                    }
+                }
 
                 _ => anyhow::bail!("Value is not a callable function"),
             }
@@ -4565,6 +4591,23 @@ impl VM {
                     js_obj.into()
                 }
                 GcObject::JsValue(js) => js.clone(),
+                GcObject::CompiledFunction(_) | GcObject::NativeFunction(_) => {
+                    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+                    {
+                        let id = *self.next_callback_id.borrow();
+                        self.callback_registry.borrow_mut().insert(id, val.clone());
+                        *self.next_callback_id.borrow_mut() += 1;
+                        
+                        let vm_ptr = self as *const VM as usize;
+                        let body = format!("return _matchbox_invoke_callback({}, {}, Array.from(arguments));", vm_ptr, id);
+                        match Function::new_no_args(&body).dyn_into::<Function>() {
+                            Ok(f) => f.into(),
+                            Err(_) => JsValue::UNDEFINED
+                        }
+                    }
+                    #[cfg(not(all(target_arch = "wasm32", feature = "js")))]
+                    JsValue::UNDEFINED
+                }
                 _ => JsValue::UNDEFINED,
             }
         } else {
@@ -4687,5 +4730,23 @@ impl VM {
             }
             serde_json::Value::Null => BxValue::new_null(),
         }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+#[wasm_bindgen]
+pub fn _matchbox_invoke_callback(vm_ptr: usize, callback_id: usize, args: js_sys::Array) -> Result<JsValue, JsValue> {
+    let vm = unsafe { &mut *(vm_ptr as *mut VM) };
+    let func = vm.callback_registry.borrow().get(&callback_id).cloned();
+    if let Some(func) = func {
+        let mut bx_args = Vec::new();
+        for i in 0..args.length() {
+            bx_args.push(vm.js_to_bx(args.get(i)));
+        }
+        vm.call_function_value(func, bx_args, None)
+            .map(|v| vm.bx_to_js(&v))
+            .map_err(|e| js_sys::Error::new(&e.to_string()).into())
+    } else {
+        Err(js_sys::Error::new("Callback not found").into())
     }
 }

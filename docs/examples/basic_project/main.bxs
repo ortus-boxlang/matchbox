@@ -8,8 +8,8 @@ println("=== MatchBox Basic Project ===")
 println("")
 
 // --- Create instances ---
-cat = new models.Animal().init("Whiskers", "Meow")
-dog = new models.Dog().init("Rex", "Labrador")
+cat = new models.Animal("Whiskers", "Meow")
+dog = new models.Dog("Rex", "Labrador")
 
 // --- Polymorphism: call shared methods on both ---
 println("--- Descriptions ---")

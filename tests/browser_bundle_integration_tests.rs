@@ -312,3 +312,153 @@ try {
         html,
     );
 }
+
+#[test]
+fn browser_bundle_supports_multiple_modules_on_one_page() {
+    // We need to compile two different modules. 
+    // run_browser_page currently only compiles one.
+    // I'll adjust it or do it manually here.
+    
+    let test_name = "browser_bundle_multiple_modules";
+    if !firefox_available() {
+        eprintln!("skipping {test_name}: firefox is unavailable");
+        return;
+    }
+
+    let root = unique_test_dir(test_name);
+    fs::create_dir_all(&root).unwrap();
+
+    // Module A
+    let source_a = "function getName() { return 'ModuleA' }";
+    let source_path_a = root.join("moduleA.bxs");
+    let output_path_a = root.join("moduleA.js");
+    fs::write(&source_path_a, source_a).unwrap();
+    matchbox::process_file(&source_path_a, false, Some("js"), vec![], false, false, false, Some(&output_path_a), &[], false, None, false, false, false, false).unwrap();
+
+    // Module B
+    let source_b = "function getName() { return 'ModuleB' }";
+    let source_path_b = root.join("moduleB.bxs");
+    let output_path_b = root.join("moduleB.js");
+    fs::write(&source_path_b, source_b).unwrap();
+    matchbox::process_file(&source_path_b, false, Some("js"), vec![], false, false, false, Some(&output_path_b), &[], false, None, false, false, false, false).unwrap();
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { getName as getA, ready as readyA } from "./moduleA.js";
+import { getName as getB, ready as readyB } from "./moduleB.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+try {
+  await Promise.all([readyA, readyB]);
+  const nameA = await getA();
+  const nameB = await getB();
+  
+  if (nameA === 'ModuleA' && nameB === 'ModuleB') {
+    await report("ok");
+  } else {
+    await report(`fail-${nameA}-${nameB}`);
+  }
+} catch (e) {
+  await report("fail-exception");
+}
+</script>
+</body>
+</html>
+"#;
+    fs::write(root.join("index.html"), html).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let (report_tx, report_rx) = mpsc::channel::<String>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server_root = root.clone();
+
+    let server = thread::spawn(move || {
+        while !server_stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = serve_request(stream, &server_root, &report_tx);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let url = format!("http://{address}/index.html");
+    let profile_dir = root.join("firefox-profile");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let mut firefox = spawn_firefox(&profile_dir, &url).expect("firefox should start");
+    let report = report_rx.recv_timeout(Duration::from_secs(20)).unwrap();
+
+    stop.store(true, Ordering::SeqCst);
+    let _ = firefox.kill();
+    let _ = firefox.wait();
+    let _ = server.join();
+    let _ = fs::remove_dir_all(&root);
+
+    assert_eq!(report, "ok");
+}
+
+#[test]
+fn browser_bundle_supports_callbacks_and_error_propagation() {
+    let source = r#"
+function runWithCallback(cb) {
+    return cb(42)
+}
+
+function failMe() {
+    throw "BoxLang Error"
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { runWithCallback, failMe, ready } from "./browser_bundle_callbacks_and_errors.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+try {
+  await ready;
+  
+  // Callback test
+  const result = await runWithCallback((n) => n * 2);
+  if (result !== 84) {
+    await report(`fail-callback-${result}`);
+    throw new Error("bad-callback");
+  }
+
+  // Error propagation test
+  try {
+    await failMe();
+    await report("fail-no-error");
+  } catch (e) {
+    if (String(e).includes("BoxLang Error")) {
+      await report("ok");
+    } else {
+      await report(`fail-wrong-error-${e}`);
+    }
+  }
+} catch (e) {
+  await report(`fail-exception-${e}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page("browser_bundle_callbacks_and_errors", source, html);
+}

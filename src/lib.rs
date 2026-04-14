@@ -20,8 +20,7 @@ const ESP32_STORAGE_OFFSET: &str = "0x310000";
 mod stubs;
 mod modules;
 mod embedded;
-
-const JS_GLUE_TEMPLATE: &str = include_str!("js_bundle_template.js");
+mod browser;
 
 use postcard;
 
@@ -57,16 +56,6 @@ fn read_esp32_box_config(project_dir: &Path) -> Result<Option<Esp32BoxConfig>> {
     let text = fs::read_to_string(&box_json_path)?;
     let config: BoxProjectConfig = serde_json::from_str(&text)?;
     Ok(config.esp32)
-}
-
-fn exported_function_names(ast: &[ast::Statement]) -> Vec<String> {
-    let mut functions = Vec::new();
-    for stmt in ast {
-        if let ast::StatementKind::FunctionDecl { name, .. } = &stmt.kind {
-            functions.push(name.clone());
-        }
-    }
-    functions
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,257 +395,6 @@ fn member_call_chain(expr: &ast::Expression) -> Option<Vec<&str>> {
         }
         _ => None,
     }
-}
-
-fn render_pure_js_bootstrap(functions: &[String], b64_wasm: &str, b64_bytecode: &str) -> String {
-    let mut bootstrap = String::new();
-    bootstrap.push_str(&format!("const wasmBase64 = \"{}\";\n", b64_wasm));
-    bootstrap.push_str(&format!("const bytecodeBase64 = \"{}\";\n\n", b64_bytecode));
-
-    bootstrap.push_str("let vm = null;\n");
-    bootstrap.push_str("async function ensureInit() {\n");
-    bootstrap.push_str("    if (vm) return;\n");
-    bootstrap.push_str("    const wasmBinary = Uint8Array.from(atob(wasmBase64), c => c.charCodeAt(0));\n");
-    bootstrap.push_str("    await init(wasmBinary);\n");
-    bootstrap.push_str("    vm = new BoxLangVM();\n");
-    bootstrap.push_str("    const bytecodeBinary = Uint8Array.from(atob(bytecodeBase64), c => c.charCodeAt(0));\n");
-    bootstrap.push_str("    vm.load_bytecode(bytecodeBinary);\n");
-    bootstrap.push_str("}\n\n");
-
-    for func in functions {
-        bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
-        bootstrap.push_str("    await ensureInit();\n");
-        bootstrap.push_str(&format!("    try {{\n"));
-        bootstrap.push_str(&format!("        return await vm.call(\"{}\", args);\n", func));
-        bootstrap.push_str(&format!("    }} catch (e) {{\n"));
-        bootstrap.push_str(&format!("        if (e instanceof Error) throw e;\n"));
-        bootstrap.push_str(&format!("        throw new Error(String(e));\n"));
-        bootstrap.push_str(&format!("    }}\n"));
-        bootstrap.push_str("}\n\n");
-    }
-
-    bootstrap
-}
-
-fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String {
-    let mut bootstrap = String::new();
-    bootstrap.push_str("\nlet vm = null;\n");
-    bootstrap.push_str("let __matchboxReady = null;\n");
-    bootstrap.push_str("function isPlainObject(value) {\n");
-    bootstrap.push_str("    return value != null && typeof value === \"object\" && !Array.isArray(value);\n");
-    bootstrap.push_str("}\n\n");
-    bootstrap.push_str("async function waitForModule(moduleName) {\n");
-    bootstrap.push_str("    const start = Date.now();\n");
-    bootstrap.push_str("    while (Date.now() - start < 5000) {\n");
-    bootstrap.push_str("        const mod = window.MatchBox?.modules?.[moduleName];\n");
-    bootstrap.push_str("        if (mod) {\n");
-    bootstrap.push_str("            return mod;\n");
-    bootstrap.push_str("        }\n");
-    bootstrap.push_str("        await new Promise(resolve => setTimeout(resolve, 25));\n");
-    bootstrap.push_str("    }\n");
-    bootstrap.push_str("    throw new Error(`MatchBox module ${moduleName} did not become ready`);\n");
-    bootstrap.push_str("}\n\n");
-    bootstrap.push_str("function createModuleState(moduleName, options = {}) {\n");
-    bootstrap.push_str("    const initialState = options.initialState || {};\n");
-    bootstrap.push_str("    const mount = options.mount || null;\n");
-    bootstrap.push_str("    const state = {\n");
-    bootstrap.push_str("        ready: false,\n");
-    bootstrap.push_str("        error: null,\n");
-    bootstrap.push_str("        ...initialState,\n");
-    bootstrap.push_str("        async module() {\n");
-    bootstrap.push_str("            if (typeof window.MatchBox?.ready === \"function\") {\n");
-    bootstrap.push_str("                await window.MatchBox.ready(moduleName);\n");
-    bootstrap.push_str("            }\n");
-    bootstrap.push_str("            return await waitForModule(moduleName);\n");
-    bootstrap.push_str("        },\n");
-    bootstrap.push_str("        applyState(next) {\n");
-    bootstrap.push_str("            if (!isPlainObject(next)) {\n");
-    bootstrap.push_str("                return next;\n");
-    bootstrap.push_str("            }\n");
-    bootstrap.push_str("            for (const [key, value] of Object.entries(next)) {\n");
-    bootstrap.push_str("                this[key] = value;\n");
-    bootstrap.push_str("            }\n");
-    bootstrap.push_str("            return next;\n");
-    bootstrap.push_str("        },\n");
-    bootstrap.push_str("        async call(method, ...args) {\n");
-    bootstrap.push_str("            const mod = await this.module();\n");
-    bootstrap.push_str("            if (typeof mod[method] !== \"function\") {\n");
-    bootstrap.push_str("                throw new Error(`MatchBox export ${method} is not available on ${moduleName}`);\n");
-    bootstrap.push_str("            }\n");
-    bootstrap.push_str("            const result = await mod[method](...args);\n");
-    bootstrap.push_str("            return this.applyState(result);\n");
-    bootstrap.push_str("        },\n");
-    bootstrap.push_str("        async init() {\n");
-    bootstrap.push_str("            try {\n");
-    bootstrap.push_str("                if (mount) {\n");
-    bootstrap.push_str("                    await this.call(mount);\n");
-    bootstrap.push_str("                }\n");
-    bootstrap.push_str("                this.ready = true;\n");
-    bootstrap.push_str("                this.error = null;\n");
-    bootstrap.push_str("            } catch (error) {\n");
-    bootstrap.push_str("                this.error = String(error);\n");
-    bootstrap.push_str("            }\n");
-    bootstrap.push_str("        }\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    return state;\n");
-    bootstrap.push_str("}\n\n");
-    bootstrap.push_str("async function ensureInit() {\n");
-    bootstrap.push_str("    if (!__matchboxReady) {\n");
-    bootstrap.push_str("        __matchboxReady = (async () => {\n");
-    bootstrap.push_str("            await __wbg_init();\n");
-    bootstrap.push_str("            if (!vm) {\n");
-    bootstrap.push_str("                vm = new BoxLangVM();\n");
-    bootstrap.push_str("            }\n");
-    bootstrap.push_str("            return vm;\n");
-    bootstrap.push_str("        })();\n");
-    bootstrap.push_str("    }\n");
-    bootstrap.push_str("    return await __matchboxReady;\n");
-    bootstrap.push_str("}\n\n");
-
-    for func in functions {
-        bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
-        bootstrap.push_str("    const vm = await ensureInit();\n");
-        bootstrap.push_str(&format!("    return await vm.call(\"{}\", args);\n", func));
-        bootstrap.push_str("}\n\n");
-    }
-
-    bootstrap.push_str("if (typeof window !== \"undefined\") {\n");
-    bootstrap.push_str("    window.MatchBox = window.MatchBox || {};\n");
-    bootstrap.push_str("    window.MatchBox.runtime = window.MatchBox.runtime || \"browser\";\n");
-    bootstrap.push_str("    window.MatchBox.contractVersion = window.MatchBox.contractVersion || 1;\n");
-    bootstrap.push_str("    window.MatchBox.modules = window.MatchBox.modules || {};\n");
-    bootstrap.push_str("    window.MatchBox._readySignals = window.MatchBox._readySignals || {};\n");
-    bootstrap.push_str("    window.MatchBox.ready = window.MatchBox.ready || function(stem) {\n");
-    bootstrap.push_str("        return window.MatchBox._readySignals[stem] || Promise.resolve();\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.createModuleState = window.MatchBox.createModuleState || createModuleState;\n");
-    bootstrap.push_str("    window.MatchBox.State = window.MatchBox.State || createModuleState;\n");
-    bootstrap.push_str(&format!("    window.MatchBox.modules[\"{}\"] = {{\n", module_name));
-    for func in functions {
-        bootstrap.push_str(&format!("        {},\n", func));
-    }
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("}\n\n");
-
-    bootstrap.push_str("export const ready = ensureInit();\n\n");
-
-    bootstrap.push_str("if (typeof window !== \"undefined\") {\n");
-    bootstrap.push_str(&format!("    window.MatchBox._readySignals[\"{}\"] = ready;\n", module_name));
-    bootstrap.push_str("    ready.then(() => {\n");
-    bootstrap.push_str("        if (typeof window.dispatchEvent === \"function\") {\n");
-    bootstrap.push_str("            window.dispatchEvent(new CustomEvent(\"matchbox:ready\", {\n");
-    bootstrap.push_str(&format!("                detail: {{ module: \"{}\" }}\n", module_name));
-    bootstrap.push_str("            }));\n");
-    bootstrap.push_str("        }\n");
-    bootstrap.push_str("    });\n");
-    bootstrap.push_str("}\n");
-
-    bootstrap
-}
-
-fn render_fusion_web_host_source(registration_calls: &str, bytecode: &[u8]) -> String {
-    format!(r#"
-use matchbox_vm::{{vm::{{HostFutureState, VM}}, types::{{BxNativeFunction, BxValue}}, Chunk}};
-use std::collections::HashMap;
-use console_error_panic_hook;
-use js_sys::{{Array, Function, Promise, Error}};
-use wasm_bindgen::prelude::wasm_bindgen;
-use wasm_bindgen::JsValue;
-use wasm_bindgen_futures::JsFuture;
-use web_sys::window;
-
-fn as_js_error(message: impl Into<String>) -> JsValue {{
-    Error::new(&message.into()).into()
-}}
-
-async fn yield_to_host() -> Result<(), JsValue> {{
-    let promise = Promise::new(&mut |resolve: Function, reject: Function| {{
-        let win: web_sys::Window = match window() {{
-            Some(win) => win,
-            None => {{
-                let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("window is unavailable"));
-                return;
-            }}
-        }};
-
-        if let Err(err) = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0) {{
-            let _ = reject.call1(&JsValue::NULL, &err);
-        }}
-    }});
-
-    let _ = JsFuture::from(promise).await?;
-    Ok(())
-}}
-
-fn new_vm() -> VM {{
-    let mut bifs = HashMap::new();
-    let mut classes = HashMap::new();
-{registration_calls}    VM::new_with_bifs(bifs, classes)
-}}
-
-fn embedded_chunk() -> Result<Chunk, String> {{
-    let bytecode: Vec<u8> = vec!{bytecode:?};
-    let mut chunk: Chunk = postcard::from_bytes(&bytecode).map_err(|e| e.to_string())?;
-    chunk.reconstruct_functions();
-    Ok(chunk)
-}}
-
-#[wasm_bindgen]
-pub struct BoxLangVM {{
-    vm: VM,
-}}
-
-#[wasm_bindgen]
-impl BoxLangVM {{
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Result<BoxLangVM, JsValue> {{
-        console_error_panic_hook::set_once();
-        let mut vm = new_vm();
-        let chunk = embedded_chunk().map_err(as_js_error)?;
-        vm.interpret_sync(chunk)
-            .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))?;
-        Ok(BoxLangVM {{ vm }})
-    }}
-
-    pub async fn call(&mut self, name: &str, args: Array) -> Result<JsValue, JsValue> {{
-        let func = self
-            .vm
-            .get_global(name)
-            .ok_or_else(|| as_js_error(format!("Function {{}} not found", name)))?;
-
-        let mut bx_args = Vec::new();
-        for idx in 0..args.length() {{
-            bx_args.push(self.vm.js_to_bx(args.get(idx)));
-        }}
-
-        let future = self
-            .vm
-            .start_call_function_value(func, bx_args)
-            .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))?;
-
-        loop {{
-            self.vm
-                .pump_until_blocked()
-                .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))?;
-
-            match self
-                .vm
-                .future_state(future)
-                .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))? {{
-                HostFutureState::Pending => yield_to_host().await?,
-                HostFutureState::Completed(value) => return Ok(self.vm.bx_to_js(&value)),
-                HostFutureState::Failed(error) => {{
-                    let js_err = self.vm.bx_to_js(&error);
-                    if let Some(msg) = js_err.as_string() {{
-                        return Err(as_js_error(msg));
-                    }}
-                    return Err(js_err);
-                }}
-            }}
-        }}
-    }}
-}}
-"#)
 }
 
 fn render_esp32_fusion_runner_source(registration_calls: &str) -> String {
@@ -1343,7 +1081,7 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
             match t {
                 "wasi" => produce_wasi_binary(&chunk, source_path, output)?,
                 "wasm" => produce_wasm_binary(&chunk, source_path, output)?,
-                "js" => produce_js_bundle(&chunk, source_path, &ast, output)?,
+                "js" => browser::packaging::produce_js_bundle(&chunk, source_path, &ast, output)?,
                 "esp32" => {
                     let esp32_config = read_esp32_box_config(&cwd)?;
                     // In watch mode, force a full flash on the initial entry so the
@@ -1385,131 +1123,6 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
             return watch_mode(source_path, chip_str, is_full_flash, esp32_web);
         }
     }
-    Ok(())
-}
-
-fn produce_js_bundle(chunk: &Chunk, source_path: &Path, ast: &[ast::Statement], output: Option<&Path>) -> Result<()> {
-    use wasm_encoder::Encode;
-
-    let bytecode = postcard::to_stdvec(chunk)?;
-
-    let wasm_bytes = stubs::get_stub("web").unwrap_or(&[]).to_vec();
-    if wasm_bytes.is_empty() {
-        bail!("Web runner stub is empty. The matchbox CLI must be rebuilt with the wasm32-unknown-unknown target installed.");
-    }
-
-    let mut out_wasm = wasm_bytes;
-    let custom_section = wasm_encoder::CustomSection {
-        name: "boxlang_bytecode".into(),
-        data: (&bytecode).into(),
-    };
-    let mut section_bytes = Vec::new();
-    custom_section.encode(&mut section_bytes);
-    out_wasm.extend_from_slice(&section_bytes);
-
-    let out_path = output
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| source_path.with_extension("js"));
-    let out_dir = out_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    fs::create_dir_all(&out_dir)?;
-
-    let stem = out_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("app")
-        .to_string();
-
-    let raw_wasm_path = out_dir.join(format!("{}.raw.wasm", stem));
-    fs::write(&raw_wasm_path, out_wasm)?;
-
-    let wasm_bindgen_bin = std_env::var("WASM_BINDGEN").unwrap_or_else(|_| "wasm-bindgen".to_string());
-    let status = std::process::Command::new(wasm_bindgen_bin)
-        .arg("--target").arg("web")
-        .arg("--out-dir").arg(&out_dir)
-        .arg("--out-name").arg(&stem)
-        .arg(&raw_wasm_path)
-        .status()?;
-
-    if !status.success() {
-        bail!("Failed to run wasm-bindgen for JS bundle");
-    }
-
-    let generated_js_path = out_dir.join(format!("{}.js", stem));
-    let mut generated_js = fs::read_to_string(&generated_js_path)?;
-    
-    // Rename WASM file to {stem}.wasm
-    let old_wasm_path = out_dir.join(format!("{}_bg.wasm", stem));
-    let new_wasm_path = out_dir.join(format!("{}.wasm", stem));
-    if old_wasm_path.exists() {
-        fs::rename(&old_wasm_path, &new_wasm_path)?;
-    }
-    
-    // Update JS to point to {stem}.wasm instead of {stem}_bg.wasm
-    generated_js = generated_js.replace(&format!("{}_bg.wasm", stem), &format!("{}.wasm", stem));
-    
-    let bootstrap = render_fusion_js_bootstrap(&exported_function_names(ast), &stem);
-    fs::write(&generated_js_path, format!("{}\n{}", generated_js, bootstrap))?;
-
-    let _ = fs::remove_file(&raw_wasm_path);
-    println!("Standalone JS module produced: {}", generated_js_path.display());
-    Ok(())
-}
-
-fn produce_fusion_js_bundle(
-    wasm_artifact: &Path,
-    source_path: &Path,
-    ast: &[ast::Statement],
-    output: Option<&Path>,
-) -> Result<()> {
-    let out_path = output
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| source_path.with_extension("js"));
-    let out_dir = out_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    fs::create_dir_all(&out_dir)?;
-
-    let stem = out_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("app")
-        .to_string();
-
-    let wasm_bindgen_bin = std_env::var("WASM_BINDGEN").unwrap_or_else(|_| "wasm-bindgen".to_string());
-    let status = std::process::Command::new(wasm_bindgen_bin)
-        .arg("--target").arg("web")
-        .arg("--out-dir").arg(&out_dir)
-        .arg("--out-name").arg(&stem)
-        .arg(wasm_artifact)
-        .status()?;
-
-    if !status.success() {
-        bail!("Failed to run wasm-bindgen for JS fusion bundle");
-    }
-
-    let generated_js_path = out_dir.join(format!("{}.js", stem));
-    let mut generated_js = fs::read_to_string(&generated_js_path)?;
-    
-    // Rename WASM file to {stem}.wasm
-    let old_wasm_path = out_dir.join(format!("{}_bg.wasm", stem));
-    let new_wasm_path = out_dir.join(format!("{}.wasm", stem));
-    if old_wasm_path.exists() {
-        fs::rename(&old_wasm_path, &new_wasm_path)?;
-    }
-    
-    // Update JS to point to {stem}.wasm instead of {stem}_bg.wasm
-    generated_js = generated_js.replace(&format!("{}_bg.wasm", stem), &format!("{}.wasm", stem));
-    
-    let bootstrap = render_fusion_js_bootstrap(&exported_function_names(ast), &stem);
-    fs::write(&generated_js_path, format!("{}\n{}", generated_js, bootstrap))?;
-
-    println!("Fusion JS module produced: {}", generated_js_path.display());
     Ok(())
 }
 
@@ -1993,7 +1606,7 @@ use std::collections::HashMap;
     if is_esp32 {
         code.push_str(&render_esp32_fusion_runner_source(&registration_calls));
     } else if target == "js" {
-        code.push_str(&render_fusion_web_host_source(&registration_calls, &bytecode));
+        code.push_str(&browser::runtime::render_fusion_web_host_source(&registration_calls, &bytecode));
     } else {
         code.push_str(&format!(r#"
 fn run_interpreted() -> anyhow::Result<()> {{
@@ -2113,7 +1726,7 @@ impl BoxLangVM {
         println!("{} Fusion binary produced: {}", target.to_uppercase(), out_path.display());
     } else if target == "js" {
         let artifact = build_dir.join("target").join("wasm32-unknown-unknown").join("release").join("fusion_build.wasm");
-        produce_fusion_js_bundle(&artifact, source_path, ast, output)?;
+        browser::packaging::produce_fusion_js_bundle(&artifact, source_path, ast, output)?;
     }
     Ok(())
 }
@@ -2712,61 +2325,6 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn exported_function_names_collects_top_level_functions() {
-        let source = r#"
-            function alpha() {}
-            x = 1
-            function beta(a) { return a; }
-        "#;
-        let ast = parser::parse(source).unwrap();
-        assert_eq!(exported_function_names(&ast), vec!["alpha".to_string(), "beta".to_string()]);
-    }
-
-    #[test]
-    fn pure_js_bootstrap_keeps_stub_loader_shape() {
-        let bootstrap = render_pure_js_bootstrap(
-            &vec!["hello".to_string()],
-            "stub-wasm",
-            "stub-bytecode",
-        );
-
-        assert!(bootstrap.contains("const wasmBase64 = \"stub-wasm\";"));
-        assert!(bootstrap.contains("const bytecodeBase64 = \"stub-bytecode\";"));
-        assert!(bootstrap.contains("vm.load_bytecode(bytecodeBinary);"));
-        assert!(bootstrap.contains("return await vm.call(\"hello\", args);"));
-        assert!(bootstrap.contains("if (e instanceof Error) throw e;"));
-    }
-
-    #[test]
-    fn fusion_js_bootstrap_uses_async_vm_call_without_bytecode_loader() {
-        let bootstrap = render_fusion_js_bootstrap(&vec!["hello".to_string()], "app");
-
-        assert!(bootstrap.contains("await __wbg_init();"));
-        assert!(bootstrap.contains("vm = new BoxLangVM();"));
-        assert!(bootstrap.contains("return await vm.call(\"hello\", args);"));
-        assert!(bootstrap.contains("window.MatchBox.modules[\"app\"]"));
-        assert!(bootstrap.contains("hello,"));
-        assert!(!bootstrap.contains("load_bytecode"));
-        assert!(!bootstrap.contains("wasmBase64"));
-    }
-
-    #[test]
-    fn fusion_web_host_source_registers_modules_and_uses_scheduler_api() {
-        let source = render_fusion_web_host_source(
-            "    for (name, val) in demo::register_bifs() { bifs.insert(name, val); }\n",
-            &[1, 2, 3],
-        );
-
-        assert!(source.contains("demo::register_bifs()"));
-        assert!(source.contains("VM::new_with_bifs(bifs, classes)"));
-        assert!(source.contains("vm.interpret_sync(chunk)"));
-        assert!(source.contains("start_call_function_value"));
-        assert!(source.contains("pump_until_blocked"));
-        assert!(source.contains("future_state"));
-        assert!(source.contains("HostFutureState::Pending"));
-    }
 
     #[test]
     fn esp32_validator_allows_route_and_middleware_registration() {
