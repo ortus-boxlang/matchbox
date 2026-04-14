@@ -2,9 +2,8 @@ use axum::{
     body::{to_bytes, Body},
     extract::{
         State,
-        ws::{Message as WebSocketMessage, WebSocket, WebSocketUpgrade},
     },
-    http::{header, HeaderMap, Method, Request, Response, StatusCode},
+    http::{header, Request, Response, StatusCode},
     response::IntoResponse,
     routing::{any, get},
     Router,
@@ -23,15 +22,19 @@ use std::{
     fs as stdfs,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::mpsc::{self, Receiver as StdReceiver, Sender as StdSender},
+    sync::mpsc::{self},
     sync::{Arc, Mutex},
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::fs;
 use url::form_urlencoded;
 use uuid::Uuid;
+use crate::{RequestData, request_data_from_parts, bx_to_json, json_to_bx};
+use crate::websocket::{
+    WebSocketConfig, WebSocketRuntimeHandle,
+    websocket_handler, websocket_runtime_main
+};
 
 const SESSION_COOKIE_NAME: &str = "MBX_SESSION_ID";
 const DEFAULT_WEBHOOK_REPLAY_TTL_SECONDS: i64 = 3600;
@@ -67,7 +70,7 @@ impl Default for ListenConfig {
 }
 
 #[derive(Clone, Debug)]
-struct AppDefinition {
+pub struct AppDefinition {
     middleware: Vec<BxValue>,
     routes: Vec<RouteDefinition>,
     websocket: Option<WebSocketConfig>,
@@ -94,30 +97,9 @@ struct WebhookConfig {
     replay_ttl_seconds: Option<i64>,
 }
 
-#[derive(Clone, Debug)]
-struct WebSocketConfig {
-    uri: String,
-    listener_class: String,
-    listener_state: JsonValue,
-}
-
 #[derive(Default, Debug)]
-struct BuildState {
-    apps: Vec<Arc<Mutex<AppDefinition>>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct RequestData {
-    method: String,
-    path: String,
-    matched_route: Option<String>,
-    route_params: HashMap<String, String>,
-    raw_query: Option<String>,
-    query: HashMap<String, String>,
-    cookies: HashMap<String, String>,
-    headers: HashMap<String, String>,
-    body: Vec<u8>,
-    full_url: String,
+pub struct BuildState {
+    pub apps: Vec<Arc<Mutex<AppDefinition>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -179,13 +161,6 @@ struct StaticFilesMiddlewareObject {
 }
 
 #[derive(Debug)]
-struct WebSocketChannelObject {
-    connection_id: String,
-    request: RequestData,
-    outbound: Rc<RefCell<HashMap<String, UnboundedSender<WebSocketOutbound>>>>,
-}
-
-#[derive(Debug)]
 struct RequestContextObject {
     request: RequestData,
     rc_id: usize,
@@ -207,42 +182,6 @@ struct NextMiddlewareObject {
 
 #[derive(Debug)]
 struct NotFoundHandlerObject;
-
-#[derive(Clone)]
-pub struct WebSocketRuntimeHandle {
-    uri: String,
-    commands: StdSender<WebSocketRuntimeCommand>,
-}
-
-enum WebSocketRuntimeCommand {
-    Connect {
-        connection_id: String,
-        request: RequestData,
-        outbound: UnboundedSender<WebSocketOutbound>,
-    },
-    Message {
-        connection_id: String,
-        message: IncomingWebSocketMessage,
-    },
-    Close {
-        connection_id: String,
-    },
-}
-
-enum IncomingWebSocketMessage {
-    Text(String),
-    Binary(Vec<u8>),
-}
-
-#[derive(Clone, Debug)]
-enum WebSocketOutbound {
-    Text(String),
-    Binary(Vec<u8>),
-    Close {
-        code: u16,
-        reason: String,
-    },
-}
 
 impl BxNativeObject for WebNamespace {
     fn get_property(&self, _name: &str) -> BxValue {
@@ -1004,139 +943,6 @@ impl BxNativeObject for NotFoundHandlerObject {
     }
 }
 
-impl BxNativeObject for WebSocketChannelObject {
-    fn get_property(&self, name: &str) -> BxValue {
-        match name.to_lowercase().as_str() {
-            "id" => BxValue::new_null(),
-            _ => BxValue::new_null(),
-        }
-    }
-
-    fn set_property(&mut self, _name: &str, _value: BxValue) {}
-
-    fn call_method(
-        &mut self,
-        vm: &mut dyn BxVM,
-        _id: usize,
-        name: &str,
-        args: &[BxValue],
-    ) -> Result<BxValue, String> {
-        match name.to_lowercase().as_str() {
-            "sendmessage" | "sendtext" => {
-                if args.is_empty() {
-                    return Err("sendMessage() requires a message".to_string());
-                }
-                let message = vm.to_string(args[0]);
-                if let Some(sender) = self.outbound.borrow().get(&self.connection_id) {
-                    sender
-                        .send(WebSocketOutbound::Text(message))
-                        .map_err(|_| "WebSocket connection is closed".to_string())?;
-                } else {
-                    return Err("WebSocket connection is closed".to_string());
-                }
-                Ok(BxValue::new_null())
-            }
-            "broadcastmessage" | "broadcasttext" => {
-                if args.is_empty() {
-                    return Err("broadcastMessage() requires a message".to_string());
-                }
-                let message = vm.to_string(args[0]);
-                for sender in self.outbound.borrow().values() {
-                    sender
-                        .send(WebSocketOutbound::Text(message.clone()))
-                        .map_err(|_| "WebSocket connection is closed".to_string())?;
-                }
-                Ok(BxValue::new_null())
-            }
-            "sendjson" => {
-                if args.is_empty() {
-                    return Err("sendJson() requires a payload".to_string());
-                }
-                let payload = bx_to_json(vm, args[0])?;
-                let text = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-                if let Some(sender) = self.outbound.borrow().get(&self.connection_id) {
-                    sender
-                        .send(WebSocketOutbound::Text(text))
-                        .map_err(|_| "WebSocket connection is closed".to_string())?;
-                } else {
-                    return Err("WebSocket connection is closed".to_string());
-                }
-                Ok(BxValue::new_null())
-            }
-            "broadcastjson" => {
-                if args.is_empty() {
-                    return Err("broadcastJson() requires a payload".to_string());
-                }
-                let payload = bx_to_json(vm, args[0])?;
-                let text = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-                for sender in self.outbound.borrow().values() {
-                    sender
-                        .send(WebSocketOutbound::Text(text.clone()))
-                        .map_err(|_| "WebSocket connection is closed".to_string())?;
-                }
-                Ok(BxValue::new_null())
-            }
-            "sendbytes" => {
-                if args.is_empty() {
-                    return Err("sendBytes() requires a bytes payload".to_string());
-                }
-                let payload = vm.to_bytes(args[0])?;
-                if let Some(sender) = self.outbound.borrow().get(&self.connection_id) {
-                    sender
-                        .send(WebSocketOutbound::Binary(payload))
-                        .map_err(|_| "WebSocket connection is closed".to_string())?;
-                } else {
-                    return Err("WebSocket connection is closed".to_string());
-                }
-                Ok(BxValue::new_null())
-            }
-            "broadcastbytes" => {
-                if args.is_empty() {
-                    return Err("broadcastBytes() requires a bytes payload".to_string());
-                }
-                let payload = vm.to_bytes(args[0])?;
-                for sender in self.outbound.borrow().values() {
-                    sender
-                        .send(WebSocketOutbound::Binary(payload.clone()))
-                        .map_err(|_| "WebSocket connection is closed".to_string())?;
-                }
-                Ok(BxValue::new_null())
-            }
-            "close" => {
-                let code = args
-                    .first()
-                    .map(|value| vm.to_string(*value).parse::<u16>().unwrap_or(1000))
-                    .unwrap_or(1000);
-                let reason = args.get(1).map(|value| vm.to_string(*value)).unwrap_or_default();
-                if let Some(sender) = self.outbound.borrow().get(&self.connection_id) {
-                    sender
-                        .send(WebSocketOutbound::Close { code, reason })
-                        .map_err(|_| "WebSocket connection is closed".to_string())?;
-                } else {
-                    return Err("WebSocket connection is closed".to_string());
-                }
-                Ok(BxValue::new_null())
-            }
-            "getid" => Ok(BxValue::new_ptr(vm.string_new(self.connection_id.clone()))),
-            "getpath" => Ok(BxValue::new_ptr(vm.string_new(self.request.path.clone()))),
-            "geturl" => Ok(BxValue::new_ptr(vm.string_new(self.request.full_url.clone()))),
-            "gethttpheader" => {
-                if args.is_empty() {
-                    return Err("getHTTPHeader() requires a header name".to_string());
-                }
-                let key = vm.to_string(args[0]).to_lowercase();
-                if let Some(value) = self.request.headers.get(&key) {
-                    Ok(BxValue::new_ptr(vm.string_new(value.clone())))
-                } else if let Some(default) = args.get(1) {
-                    Ok(*default)
-                } else {
-                    Ok(BxValue::new_null())
-                }
-            }
-            _ => Err(format!("Method {} not found on websocket channel.", name)),
-        }
-    }
-}
 
 
 pub async fn run_script_server(script_path: &Path) -> anyhow::Result<()> {
@@ -1156,7 +962,7 @@ pub async fn run_script_server(script_path: &Path) -> anyhow::Result<()> {
 pub fn build_script_router(state: Arc<ScriptServerState>) -> Router {
     let mut router = Router::new();
     if let Some(runtime) = state.websocket.clone() {
-        router = router.route(&runtime.uri, get(websocket_handler));
+        router = router.route(&runtime.uri, get(websocket_handler).with_state(runtime.clone()));
     }
     router
         .route("/", any(script_handler))
@@ -1222,10 +1028,16 @@ fn load_websocket_runtime(
         commands: commands_tx,
     });
     let runtime_compiled = compiled.clone();
+    let runtime_app_root = compiled_app_root(&compiled);
     thread::Builder::new()
         .name("matchbox-websocket-runtime".to_string())
         .spawn(move || {
-            if let Err(err) = websocket_runtime_main(runtime_compiled, config, commands_rx) {
+            let web_context = if runtime_compiled.web_imported {
+                Some((Arc::new(Mutex::new(BuildState::default())), runtime_app_root))
+            } else {
+                None
+            };
+            if let Err(err) = websocket_runtime_main(runtime_compiled.chunk.clone(), config, commands_rx, web_context) {
                 eprintln!("WebSocket runtime stopped: {}", err);
             }
         })?;
@@ -1409,212 +1221,10 @@ async fn script_handler(
     }
 }
 
-async fn websocket_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<ScriptServerState>>,
-    method: Method,
-    headers: HeaderMap,
-    uri: axum::http::Uri,
-) -> impl IntoResponse {
-    let Some(runtime) = state.websocket.clone() else {
-        return (StatusCode::NOT_FOUND, "Not Found").into_response();
-    };
 
-    let request = request_data_from_parts(method, uri.path(), uri.query(), &headers, Vec::new());
-    let connection_id = Uuid::new_v4().to_string();
 
-    ws.on_upgrade(move |socket| websocket_connection_loop(socket, runtime, connection_id, request))
-}
 
-async fn websocket_connection_loop(
-    mut socket: WebSocket,
-    runtime: Arc<WebSocketRuntimeHandle>,
-    connection_id: String,
-    request: RequestData,
-) {
-    let (outbound_tx, mut outbound_rx): (
-        UnboundedSender<WebSocketOutbound>,
-        UnboundedReceiver<WebSocketOutbound>,
-    ) = unbounded_channel();
 
-    if runtime
-        .commands
-        .send(WebSocketRuntimeCommand::Connect {
-            connection_id: connection_id.clone(),
-            request,
-            outbound: outbound_tx,
-        })
-        .is_err()
-    {
-        let _ = socket.close().await;
-        return;
-    }
-
-    loop {
-        tokio::select! {
-            outbound = outbound_rx.recv() => {
-                let Some(outbound) = outbound else {
-                    break;
-                };
-                let send_result = match outbound {
-                    WebSocketOutbound::Text(text) => socket.send(WebSocketMessage::Text(text)).await,
-                    WebSocketOutbound::Binary(bytes) => socket.send(WebSocketMessage::Binary(bytes)).await,
-                    WebSocketOutbound::Close { code, reason } => {
-                        socket
-                            .send(WebSocketMessage::Close(Some(axum::extract::ws::CloseFrame {
-                                code,
-                                reason: reason.into(),
-                            })))
-                            .await
-                    }
-                };
-                if send_result.is_err() {
-                    break;
-                }
-            }
-            inbound = socket.recv() => {
-                let Some(inbound) = inbound else {
-                    break;
-                };
-                match inbound {
-                    Ok(WebSocketMessage::Text(text)) => {
-                        if runtime.commands.send(WebSocketRuntimeCommand::Message {
-                            connection_id: connection_id.clone(),
-                            message: IncomingWebSocketMessage::Text(text),
-                        }).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(WebSocketMessage::Binary(bytes)) => {
-                        if runtime.commands.send(WebSocketRuntimeCommand::Message {
-                            connection_id: connection_id.clone(),
-                            message: IncomingWebSocketMessage::Binary(bytes),
-                        }).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(WebSocketMessage::Close(_)) => break,
-                    Ok(WebSocketMessage::Ping(payload)) => {
-                        if socket.send(WebSocketMessage::Pong(payload)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Ok(WebSocketMessage::Pong(_)) => {}
-                    Err(_) => break,
-                }
-            }
-        }
-    }
-
-    let _ = runtime
-        .commands
-        .send(WebSocketRuntimeCommand::Close { connection_id });
-}
-
-fn websocket_runtime_main(
-    compiled: Arc<CompiledScriptApp>,
-    config: WebSocketConfig,
-    commands: StdReceiver<WebSocketRuntimeCommand>,
-) -> anyhow::Result<()> {
-    let build_state = Arc::new(Mutex::new(BuildState::default()));
-    let mut vm = VM::new();
-    if compiled.web_imported {
-        install_web_namespace(&mut vm, build_state, compiled_app_root(&compiled));
-    }
-    vm.interpret(compiled.chunk.clone())?;
-
-    let listener = vm.instantiate_global_class_without_constructor(&config.listener_class)?;
-    vm.set_instance_variables_json(listener, config.listener_state.clone())?;
-    vm.insert_global("__websocketlistener".to_string(), listener);
-    let channel_registry_id = vm.struct_new();
-    vm.insert_global(
-        "__websocketconnections".to_string(),
-        BxValue::new_ptr(channel_registry_id),
-    );
-
-    let outbound_senders: Rc<RefCell<HashMap<String, UnboundedSender<WebSocketOutbound>>>> =
-        Rc::new(RefCell::new(HashMap::new()));
-
-    while let Ok(command) = commands.recv() {
-        match command {
-            WebSocketRuntimeCommand::Connect {
-                connection_id,
-                request,
-                outbound,
-            } => {
-                outbound_senders
-                    .borrow_mut()
-                    .insert(connection_id.clone(), outbound);
-                let channel = build_websocket_channel(
-                    &mut vm,
-                    &connection_id,
-                    request,
-                    outbound_senders.clone(),
-                );
-                vm.struct_set(channel_registry_id, &connection_id, channel);
-                if let Err(err) = vm.call_method_value(listener, "onconnect", vec![channel]) {
-                    eprintln!("WebSocket onConnect error: {}", err);
-                    send_websocket_close(outbound_senders.clone(), &connection_id, 1011, "Internal error");
-                }
-            }
-            WebSocketRuntimeCommand::Message {
-                connection_id,
-                message,
-            } => {
-                let channel = vm.struct_get(channel_registry_id, &connection_id);
-                if channel.is_null() {
-                    continue;
-                }
-                let message_value = match message {
-                    IncomingWebSocketMessage::Text(text) => BxValue::new_ptr(vm.string_new(text)),
-                    IncomingWebSocketMessage::Binary(bytes) => BxValue::new_ptr(vm.bytes_new(bytes)),
-                };
-                if let Err(err) = vm.call_method_value(listener, "onmessage", vec![message_value, channel]) {
-                    eprintln!("WebSocket onMessage error: {}", err);
-                    send_websocket_close(outbound_senders.clone(), &connection_id, 1011, "Internal error");
-                }
-            }
-            WebSocketRuntimeCommand::Close { connection_id } => {
-                let channel = vm.struct_get(channel_registry_id, &connection_id);
-                if !channel.is_null() {
-                    let _ = vm.call_method_value(listener, "onclose", vec![channel]);
-                    let _ = vm.struct_delete(channel_registry_id, &connection_id);
-                }
-                outbound_senders.borrow_mut().remove(&connection_id);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn build_websocket_channel(
-    vm: &mut VM,
-    connection_id: &str,
-    request: RequestData,
-    outbound: Rc<RefCell<HashMap<String, UnboundedSender<WebSocketOutbound>>>>,
-) -> BxValue {
-    let id = vm.native_object_new(Rc::new(RefCell::new(WebSocketChannelObject {
-        connection_id: connection_id.to_string(),
-        request,
-        outbound,
-    })));
-    BxValue::new_ptr(id)
-}
-
-fn send_websocket_close(
-    outbound: Rc<RefCell<HashMap<String, UnboundedSender<WebSocketOutbound>>>>,
-    connection_id: &str,
-    code: u16,
-    reason: &str,
-) {
-    if let Some(sender) = outbound.borrow().get(connection_id) {
-        let _ = sender.send(WebSocketOutbound::Close {
-            code,
-            reason: reason.to_string(),
-        });
-    }
-}
 
 
 fn response_to_http(response: ResponseData) -> Response<Body> {
@@ -1633,7 +1243,7 @@ fn response_to_http(response: ResponseData) -> Response<Body> {
 }
 
 
-fn install_web_namespace(vm: &mut VM, build_state: Arc<Mutex<BuildState>>, app_root: PathBuf) {
+pub fn install_web_namespace(vm: &mut VM, build_state: Arc<Mutex<BuildState>>, app_root: PathBuf) {
     let web_id = vm.native_object_new(Rc::new(RefCell::new(WebNamespace {
         build_state,
         app_root,
@@ -1731,6 +1341,7 @@ fn register_websocket_listener(
         uri,
         listener_class,
         listener_state,
+        handler: "WebSocket.bx".to_string(),
     });
     Ok(())
 }
@@ -2314,52 +1925,6 @@ fn sync_struct_from_vm(
     }
 }
 
-fn request_data_from_parts(
-    method: Method,
-    path: &str,
-    query: Option<&str>,
-    headers: &HeaderMap,
-    body: Vec<u8>,
-) -> RequestData {
-    let mut header_map = HashMap::new();
-    for (name, value) in headers.iter() {
-        if let Ok(value) = value.to_str() {
-            header_map.insert(name.as_str().to_lowercase(), value.to_string());
-        }
-    }
-    let cookie_map = header_map
-        .get("cookie")
-        .map(|raw| parse_cookie_header(raw))
-        .unwrap_or_default();
-    let query_map = query
-        .map(|raw| {
-            form_urlencoded::parse(raw.as_bytes())
-                .into_owned()
-                .collect::<HashMap<String, String>>()
-        })
-        .unwrap_or_default();
-    let host = header_map
-        .get("host")
-        .cloned()
-        .unwrap_or_else(|| "localhost".to_string());
-    let full_url = if let Some(raw) = query {
-        format!("http://{}{}?{}", host, path, raw)
-    } else {
-        format!("http://{}{}", host, path)
-    };
-    RequestData {
-        method: method.as_str().to_string(),
-        path: path.to_string(),
-        matched_route: None,
-        route_params: HashMap::new(),
-        raw_query: query.map(|s| s.to_string()),
-        query: query_map,
-        cookies: cookie_map,
-        headers: header_map,
-        body,
-        full_url,
-    }
-}
 
 fn is_form_encoded(headers: &HashMap<String, String>) -> bool {
     headers
@@ -2377,18 +1942,6 @@ fn is_json_body(headers: &HashMap<String, String>) -> bool {
 
 fn parse_form_body(body: &[u8]) -> HashMap<String, String> {
     form_urlencoded::parse(body).into_owned().collect()
-}
-
-fn parse_cookie_header(raw: &str) -> HashMap<String, String> {
-    let mut cookies = HashMap::new();
-    for cookie in raw.split(';') {
-        let mut parts = cookie.trim().splitn(2, '=');
-        if let (Some(name), Some(value)) = (parts.next(), parts.next()) {
-            cookies.insert(name.trim().to_string(), value.trim().to_string());
-            cookies.insert(name.trim().to_lowercase(), value.trim().to_string());
-        }
-    }
-    cookies
 }
 
 fn execute_middleware_chain(
@@ -2536,86 +2089,10 @@ fn match_path_pattern(pattern: &str, path: &str) -> Option<HashMap<String, Strin
     Some(params)
 }
 
-fn bx_to_json(vm: &dyn BxVM, value: BxValue) -> Result<JsonValue, String> {
-    if value.is_null() {
-        return Ok(JsonValue::Null);
-    }
-    if value.is_bool() {
-        return Ok(JsonValue::Bool(value.as_bool()));
-    }
-    if value.is_int() {
-        return Ok(JsonValue::from(value.as_int()));
-    }
-    if value.is_number() {
-        return Ok(JsonValue::from(value.as_number()));
-    }
-    if vm.is_string_value(value) {
-        return Ok(JsonValue::String(vm.to_string(value)));
-    }
-    if vm.is_bytes(value) {
-        return Ok(JsonValue::Array(
-            vm.to_bytes(value)?
-                .into_iter()
-                .map(JsonValue::from)
-                .collect(),
-        ));
-    }
-    if vm.is_array_value(value) {
-        let id = value.as_gc_id().unwrap();
-        let mut items = Vec::new();
-        for index in 0..vm.array_len(id) {
-            items.push(bx_to_json(vm, vm.array_get(id, index))?);
-        }
-        return Ok(JsonValue::Array(items));
-    }
-    if vm.is_struct_value(value) {
-        let id = value.as_gc_id().unwrap();
-        let mut object = serde_json::Map::new();
-        for key in vm.struct_key_array(id) {
-            object.insert(key.clone(), bx_to_json(vm, vm.struct_get(id, &key))?);
-        }
-        return Ok(JsonValue::Object(object));
-    }
-    Ok(JsonValue::String(vm.to_string(value)))
-}
-
-fn json_to_bx(vm: &mut dyn BxVM, value: &JsonValue) -> Result<BxValue, String> {
-    match value {
-        JsonValue::Null => Ok(BxValue::new_null()),
-        JsonValue::Bool(val) => Ok(BxValue::new_bool(*val)),
-        JsonValue::Number(val) => {
-            if let Some(i) = val.as_i64() {
-                Ok(BxValue::new_number(i as f64))
-            } else {
-                Ok(BxValue::new_number(
-                    val.as_f64()
-                        .ok_or_else(|| "Unsupported JSON number".to_string())?,
-                ))
-            }
-        }
-        JsonValue::String(val) => Ok(BxValue::new_ptr(vm.string_new(val.clone()))),
-        JsonValue::Array(values) => {
-            let id = vm.array_new();
-            for value in values {
-                let bx = json_to_bx(vm, value)?;
-                vm.array_push(id, bx);
-            }
-            Ok(BxValue::new_ptr(id))
-        }
-        JsonValue::Object(values) => {
-            let id = vm.struct_new();
-            for (key, value) in values {
-                let bx = json_to_bx(vm, value)?;
-                vm.struct_set(id, key, bx);
-            }
-            Ok(BxValue::new_ptr(id))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderMap;
     use futures_util::{SinkExt, StreamExt};
     use tokio::time::{sleep, Duration};
     use tokio_tungstenite::{connect_async, tungstenite::Message};

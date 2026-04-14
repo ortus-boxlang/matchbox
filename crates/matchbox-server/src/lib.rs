@@ -1,8 +1,11 @@
 mod app_server;
+mod websocket;
+#[cfg(test)]
+mod websocket_tests;
 
 use axum::{
     extract::{Query, State, Path as AxumPath, Form},
-    http::{header, StatusCode, HeaderMap},
+    http::{header, StatusCode, HeaderMap, Method},
     response::{IntoResponse},
     routing::get,
     Router,
@@ -10,13 +13,169 @@ use axum::{
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use matchbox_vm::vm::VM;
-use matchbox_vm::types::BxVM;
+use matchbox_vm::types::{BxVM, BxValue};
 use matchbox_compiler::{parser, compiler::Compiler};
 use clap::Parser as ClapParser;
 use tokio::fs;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+use websocket::{WebSocketRuntimeHandle, websocket_handler, websocket_runtime_main};
+
+#[derive(Clone, Debug)]
+pub struct RequestData {
+    pub method: String,
+    pub path: String,
+    pub matched_route: Option<String>,
+    pub route_params: HashMap<String, String>,
+    pub raw_query: Option<String>,
+    pub query: HashMap<String, String>,
+    pub cookies: HashMap<String, String>,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
+    pub full_url: String,
+}
+
+pub fn request_data_from_parts(
+    method: Method,
+    path: &str,
+    query: Option<&str>,
+    headers: &HeaderMap,
+    body: Vec<u8>,
+) -> RequestData {
+    let mut header_map = HashMap::new();
+    for (name, value) in headers.iter() {
+        if let Ok(value) = value.to_str() {
+            header_map.insert(name.as_str().to_lowercase(), value.to_string());
+        }
+    }
+    let cookie_map = header_map
+        .get("cookie")
+        .map(|raw| parse_cookie_header(raw))
+        .unwrap_or_default();
+    let query_map = query
+        .map(|raw| {
+            url::form_urlencoded::parse(raw.as_bytes())
+                .into_owned()
+                .collect::<HashMap<String, String>>()
+        })
+        .unwrap_or_default();
+    let host = header_map
+        .get("host")
+        .cloned()
+        .unwrap_or_else(|| "localhost".to_string());
+    let full_url = if let Some(raw) = query {
+        format!("http://{}{}?{}", host, path, raw)
+    } else {
+        format!("http://{}{}", host, path)
+    };
+
+    RequestData {
+        method: method.to_string(),
+        path: path.to_string(),
+        matched_route: None,
+        route_params: HashMap::new(),
+        raw_query: query.map(|s| s.to_string()),
+        query: query_map,
+        cookies: cookie_map,
+        headers: header_map,
+        body,
+        full_url,
+    }
+}
+
+pub fn parse_cookie_header(raw: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for part in raw.split(';') {
+        let mut kv = part.splitn(2, '=');
+        if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
+            let key = k.trim().to_string();
+            let val = v.trim().to_string();
+            map.insert(key.clone(), val.clone());
+            map.insert(key.to_lowercase(), val);
+        }
+    }
+    map
+}
+
+pub fn bx_to_json(vm: &dyn BxVM, value: BxValue) -> Result<JsonValue, String> {
+    if value.is_null() {
+        return Ok(JsonValue::Null);
+    }
+    if value.is_bool() {
+        return Ok(JsonValue::Bool(value.as_bool()));
+    }
+    if value.is_int() {
+        return Ok(JsonValue::from(value.as_int()));
+    }
+    if value.is_number() {
+        return Ok(JsonValue::from(value.as_number()));
+    }
+    if vm.is_string_value(value) {
+        return Ok(JsonValue::String(vm.to_string(value)));
+    }
+    if vm.is_bytes(value) {
+        return Ok(JsonValue::Array(
+            vm.to_bytes(value)?
+                .into_iter()
+                .map(JsonValue::from)
+                .collect(),
+        ));
+    }
+    if vm.is_array_value(value) {
+        let id = value.as_gc_id().unwrap();
+        let mut items = Vec::new();
+        for index in 0..vm.array_len(id) {
+            items.push(bx_to_json(vm, vm.array_get(id, index))?);
+        }
+        return Ok(JsonValue::Array(items));
+    }
+    if vm.is_struct_value(value) {
+        let id = value.as_gc_id().unwrap();
+        let mut object = serde_json::Map::new();
+        for key in vm.struct_key_array(id) {
+            object.insert(key.clone(), bx_to_json(vm, vm.struct_get(id, &key))?);
+        }
+        return Ok(JsonValue::Object(object));
+    }
+    Ok(JsonValue::String(vm.to_string(value)))
+}
+
+pub fn json_to_bx(vm: &mut dyn BxVM, value: &JsonValue) -> Result<BxValue, String> {
+    match value {
+        JsonValue::Null => Ok(BxValue::new_null()),
+        JsonValue::Bool(val) => Ok(BxValue::new_bool(*val)),
+        JsonValue::Number(val) => {
+            if let Some(i) = val.as_i64() {
+                Ok(BxValue::new_number(i as f64))
+            } else {
+                Ok(BxValue::new_number(
+                    val.as_f64()
+                        .ok_or_else(|| "Unsupported JSON number".to_string())?,
+                ))
+            }
+        }
+        JsonValue::String(val) => Ok(BxValue::new_ptr(vm.string_new(val.clone()))),
+        JsonValue::Array(values) => {
+            let id = vm.array_new();
+            for value in values {
+                let bx = json_to_bx(vm, value)?;
+                vm.array_push(id, bx);
+            }
+            Ok(BxValue::new_ptr(id))
+        }
+        JsonValue::Object(values) => {
+            let id = vm.struct_new();
+            for (key, value) in values {
+                let bx = json_to_bx(vm, value)?;
+                vm.struct_set(id, key, bx);
+            }
+            Ok(BxValue::new_ptr(id))
+        }
+    }
+}
 
 #[derive(ClapParser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -49,6 +208,7 @@ pub struct Config {
     pub rewrites: bool,
     #[serde(default = "default_rewrite_file_name")]
     pub rewrite_file_name: String,
+    pub websocket: Option<websocket::WebSocketConfig>,
 }
 
 fn default_rewrites() -> bool { false }
@@ -59,6 +219,7 @@ impl Default for Config {
         Self {
             rewrites: default_rewrites(),
             rewrite_file_name: default_rewrite_file_name(),
+            websocket: None,
         }
     }
 }
@@ -67,6 +228,21 @@ struct AppState {
     webroot: PathBuf,
     config: Config,
     sessions: Mutex<HashMap<String, HashMap<String, String>>>,
+    websocket: Option<Arc<WebSocketRuntimeHandle>>,
+}
+
+pub fn find_file_case_insensitive(parent: &std::path::Path, target_name: &str) -> Option<std::path::PathBuf> {
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        let target_lower = target_name.to_lowercase();
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.to_lowercase() == target_lower {
+                    return Some(entry.path());
+                }
+            }
+        }
+    }
+    None
 }
 
 pub async fn run_server(args: Args) {
@@ -98,16 +274,64 @@ pub async fn run_server(args: Args) {
         Config::default()
     };
 
+    let websocket = if let Some(ws_config) = &config.websocket {
+        if let Some(ws_script_path) = find_file_case_insensitive(&webroot, &ws_config.handler) {
+            match std::fs::read_to_string(&ws_script_path) {
+                Ok(source) => {
+                    let ast = parser::parse(&source).map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", ws_config.handler, e)).ok();
+                    let chunk = ast.and_then(|ast| {
+                        let compiler = Compiler::new(&ws_config.handler);
+                        compiler.compile(&ast, &source).map_err(|e| eprintln!("Failed to compile {}: {}", ws_config.handler, e)).ok()
+                    });
+
+                    if let Some(chunk) = chunk {
+                        let (commands_tx, commands_rx) = mpsc::channel();
+                        let runtime = Arc::new(WebSocketRuntimeHandle {
+                            uri: ws_config.uri.clone(),
+                            commands: commands_tx,
+                        });
+                        let config_clone = ws_config.clone();
+                        thread::Builder::new()
+                            .name("matchbox-websocket-runtime".to_string())
+                            .spawn(move || {
+                                if let Err(err) = websocket_runtime_main(chunk, config_clone, commands_rx, None) {
+                                    eprintln!("WebSocket runtime stopped: {}", err);
+                                }
+                            })
+                            .expect("Failed to spawn websocket runtime thread");
+                        Some(runtime)
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to read {}: {}", ws_config.handler, e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let state = Arc::new(AppState {
         webroot: webroot.clone(),
         config,
         sessions: Mutex::new(HashMap::new()),
+        websocket,
     });
 
-    let app = Router::new()
+    let mut router = Router::new()
         .route("/", get(handler).post(handler))
-        .route("/*path", get(handler).post(handler))
-        .with_state(state.clone());
+        .route("/*path", get(handler).post(handler));
+
+    if let Some(runtime) = &state.websocket {
+        router = router.route(&runtime.uri, get(websocket_handler).with_state(runtime.clone()));
+    }
+
+    let app = router.with_state(state.clone());
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse().unwrap();
     println!("MatchBox Server listening on http://{}", addr);
@@ -214,6 +438,7 @@ mod tests {
             webroot,
             config: Config::default(),
             sessions: Mutex::new(HashMap::new()),
+            websocket: None,
         })
     }
 
@@ -305,10 +530,16 @@ mod tests {
         let webroot = temp.path().to_path_buf().canonicalize().unwrap();
         std::fs::write(webroot.join("index.bxm"), "<h1>Index</h1>").unwrap();
         
-        let mut state = setup_test_state(webroot);
-        let mut arc_state = Arc::get_mut(&mut state).unwrap();
-        arc_state.config.rewrites = true;
-        arc_state.config.rewrite_file_name = "index.bxm".to_string();
+        let state = Arc::new(AppState {
+            webroot,
+            config: Config {
+                rewrites: true,
+                rewrite_file_name: "index.bxm".to_string(),
+                websocket: None,
+            },
+            sessions: Mutex::new(HashMap::new()),
+            websocket: None,
+        });
         
         let res = handler(
             State(state),
