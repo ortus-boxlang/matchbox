@@ -19,3 +19,7 @@ docs/examples/esp32/hello_esp32.elf
 tests/modules/greetings/models/Greeter
 camera_stream.elf
 crates/matchbox-esp32-runner/.embuild
+docs/examples/boxlang_alpine_js/counter_bg.wasm.d.ts
+docs/examples/boxlang_alpine_js/counter.js
+docs/examples/boxlang_alpine_js/counter.d.ts
+docs/examples/boxlang_alpine_js/panic_debug.txt

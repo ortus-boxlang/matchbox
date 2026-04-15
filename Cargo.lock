@@ -1694,6 +1694,7 @@ name = "matchbox"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "base64",
  "base64-simd",
  "bincode",
  "ctrlc",

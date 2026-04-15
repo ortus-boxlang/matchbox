@@ -55,11 +55,23 @@ impl BoxLangVM {{
     #[wasm_bindgen(constructor)]
     pub fn new() -> Result<BoxLangVM, JsValue> {{
         console_error_panic_hook::set_once();
-        let mut vm = new_vm();
-        let chunk = embedded_chunk().map_err(as_js_error)?;
-        vm.interpret_sync(chunk)
-            .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))?;
+        let vm = new_vm();
         Ok(BoxLangVM {{ vm }})
+    }}
+
+    /// Run embedded bytecode. Must be called after the callback bridge is
+    /// registered so that any callbacks created during top-level execution
+    /// use the VM's final heap address.
+    pub fn init(&mut self) -> Result<(), JsValue> {{
+        let chunk = embedded_chunk().map_err(as_js_error)?;
+        self.vm
+            .interpret_sync(chunk)
+            .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))?;
+        Ok(())
+    }}
+
+    pub fn vm_ptr(&self) -> usize {{
+        &self.vm as *const VM as usize
     }}
 
     pub async fn call(&mut self, name: &str, args: Array) -> Result<JsValue, JsValue> {{
@@ -116,7 +128,9 @@ mod tests {
 
         assert!(source.contains("demo::register_bifs()"));
         assert!(source.contains("VM::new_with_bifs(bifs, classes)"));
-        assert!(source.contains("vm.interpret_sync(chunk)"));
+        assert!(source.contains("fn init(&mut self)"));
+        assert!(source.contains(".interpret_sync(chunk)"));
+        assert!(source.contains("vm_ptr"));
         assert!(source.contains("start_call_function_value"));
         assert!(source.contains("pump_until_blocked"));
         assert!(source.contains("future_state"));

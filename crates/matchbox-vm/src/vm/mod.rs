@@ -31,32 +31,87 @@ pub static INTERRUPT_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 fn browser_js_root() -> Option<JsValue> {
     let window = web_sys::window()?;
-    let root = Object::new();
     let window_js: JsValue = window.into();
 
-    Reflect::set(&root, &JsValue::from_str("window"), &window_js).ok()?;
-    Reflect::set(&root, &JsValue::from_str("globalThis"), &js_sys::global()).ok()?;
+    // Build a Proxy over window so that `js.Alpine`, `js.document`, etc.
+    // resolve live at access time instead of being eagerly snapshotted.
+    // `js.window` and `js.globalThis` are explicit overrides so that
+    // `js.window` always returns the Window object itself (avoiding an
+    // infinite proxy loop on `window.window`).
+    let target = Object::new();
+    Reflect::set(&target, &JsValue::from_str("window"), &window_js).ok()?;
+    Reflect::set(&target, &JsValue::from_str("globalThis"), &js_sys::global()).ok()?;
 
-    for prop in [
-        "alert",
-        "document",
-        "console",
-        "location",
-        "history",
-        "navigator",
-        "MatchBox",
-        "Alpine",
-        "fetch",
-        "setTimeout",
-        "clearTimeout",
-        "CustomEvent",
-    ] {
-        if let Ok(value) = Reflect::get(&window_js, &JsValue::from_str(prop)) {
-            Reflect::set(&root, &JsValue::from_str(prop), &value).ok()?;
-        }
-    }
+    let handler = Object::new();
 
-    Some(root.into())
+    // --- get trap: target overrides first, then live window lookup ---
+    let win_for_get = window_js.clone();
+    let get_fn = Closure::<dyn Fn(JsValue, JsValue, JsValue) -> JsValue>::new(
+        move |target: JsValue, prop: JsValue, _receiver: JsValue| {
+            if let Ok(val) = Reflect::get(&target, &prop) {
+                if !val.is_undefined() {
+                    return val;
+                }
+            }
+            Reflect::get(&win_for_get, &prop).unwrap_or(JsValue::UNDEFINED)
+        },
+    );
+    Reflect::set(&handler, &JsValue::from_str("get"), get_fn.as_ref().unchecked_ref()).ok()?;
+    get_fn.forget();
+
+    // --- has trap: delegate to window so resolve_js_property works ---
+    let win_for_has = window_js.clone();
+    let has_fn = Closure::<dyn Fn(JsValue, JsValue) -> bool>::new(
+        move |target: JsValue, prop: JsValue| {
+            if Reflect::has(&target, &prop).unwrap_or(false) {
+                return true;
+            }
+            Reflect::has(&win_for_has, &prop).unwrap_or(false)
+        },
+    );
+    Reflect::set(&handler, &JsValue::from_str("has"), has_fn.as_ref().unchecked_ref()).ok()?;
+    has_fn.forget();
+
+    // --- getOwnPropertyDescriptor trap: bridge to window for case-insensitive enumeration ---
+    let win_for_desc = window_js.clone();
+    let desc_fn = Closure::<dyn Fn(JsValue, JsValue) -> JsValue>::new(
+        move |target: JsValue, prop: JsValue| {
+            let desc = Object::get_own_property_descriptor(&Object::from(target), &prop);
+            if !desc.is_undefined() {
+                return desc;
+            }
+            Object::get_own_property_descriptor(&Object::from(win_for_desc.clone()), &prop)
+        },
+    );
+    Reflect::set(&handler, &JsValue::from_str("getOwnPropertyDescriptor"), desc_fn.as_ref().unchecked_ref()).ok()?;
+    desc_fn.forget();
+
+    // --- ownKeys trap: merge target keys + window keys for enumeration ---
+    let win_for_keys = window_js.clone();
+    let keys_fn = Closure::<dyn Fn(JsValue) -> JsValue>::new(
+        move |target: JsValue| {
+            let result = Array::new();
+            // Add target's own keys first
+            let target_keys = Reflect::own_keys(&target).unwrap_or_else(|_| Array::new());
+            for k in target_keys.iter() {
+                result.push(&k);
+            }
+            // Add window's own keys (skip duplicates)
+            if let Ok(win_keys) = Reflect::own_keys(&win_for_keys) {
+                for k in win_keys.iter() {
+                    if !Reflect::has(&target, &k).unwrap_or(false) {
+                        result.push(&k);
+                    }
+                }
+            }
+            result.into()
+        },
+    );
+    Reflect::set(&handler, &JsValue::from_str("ownKeys"), keys_fn.as_ref().unchecked_ref()).ok()?;
+    keys_fn.forget();
+
+    let proxy = Proxy::new(&target, &handler);
+    Some(proxy.into())
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -146,9 +201,11 @@ use wasm_bindgen::prelude::*;
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use wasm_bindgen::JsCast;
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
-use js_sys::{Array, Function, Reflect};
+use js_sys::{Array, Function, Reflect, Proxy};
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use js_sys::Object;
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+use wasm_bindgen::closure::Closure;
 
 #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
 #[link(wasm_import_module = "matchbox_js_host")]
@@ -1024,13 +1081,28 @@ impl VM {
         if Self::is_seen_js_value(&value, seen) {
             return None;
         }
-        seen.push(value.clone());
         let object = Object::from(value.clone());
         let keys = Object::keys(&object);
+
+        // Plain API objects such as Alpine often expose callable members.
+        // Keep those as JS handles so BoxLang can invoke the original method
+        // instead of normalizing the object into a dead struct snapshot.
+        for key in keys.iter() {
+            if let Some(key_str) = key.as_string() {
+                let prop = Reflect::get(&value, &JsValue::from_str(&key_str))
+                    .unwrap_or(JsValue::UNDEFINED);
+                if prop.is_function() {
+                    return None;
+                }
+            }
+        }
+
+        seen.push(value.clone());
         let id = self.struct_new();
         for key in keys.iter() {
             if let Some(key_str) = key.as_string() {
-                let prop = Reflect::get(&value, &JsValue::from_str(&key_str)).unwrap_or(JsValue::UNDEFINED);
+                let prop = Reflect::get(&value, &JsValue::from_str(&key_str))
+                    .unwrap_or(JsValue::UNDEFINED);
                 let bx = self.js_to_bx_with_seen(prop, seen, depth + 1);
                 self.struct_set(id, &key_str, bx);
             }
@@ -3645,6 +3717,7 @@ impl VM {
                         }
                     };
                     self.current_fiber_idx = None;
+                    let _ = self.fibers.swap_remove(fiber_idx);
                     result
                 }
                 GcObject::NativeFunction(f) => {
@@ -4599,7 +4672,7 @@ impl VM {
                         *self.next_callback_id.borrow_mut() += 1;
                         
                         let vm_ptr = self as *const VM as usize;
-                        let body = format!("return _matchbox_invoke_callback({}, {}, Array.from(arguments));", vm_ptr, id);
+                        let body = format!("return globalThis.MatchBox.invokeCallback({}, {}, Array.from(arguments));", vm_ptr, id);
                         match Function::new_no_args(&body).dyn_into::<Function>() {
                             Ok(f) => f.into(),
                             Err(_) => JsValue::UNDEFINED
@@ -4639,6 +4712,8 @@ impl VM {
         }
         // 2. Globals
         roots.extend(self.global_values.iter().cloned());
+        #[cfg(all(target_arch = "wasm32", feature = "js"))]
+        roots.extend(self.callback_registry.borrow().values().cloned());
         for completion in &self.native_completions {
             match completion {
                 NativeCompletion::Resolve { future, value } => {
@@ -4739,13 +4814,32 @@ pub fn _matchbox_invoke_callback(vm_ptr: usize, callback_id: usize, args: js_sys
     let vm = unsafe { &mut *(vm_ptr as *mut VM) };
     let func = vm.callback_registry.borrow().get(&callback_id).cloned();
     if let Some(func) = func {
+        // Determine the function's max arity so we can truncate excess
+        // arguments, matching JavaScript's behavior of silently ignoring them.
+        let max_arity = if let Some(id) = func.as_gc_id() {
+            match vm.heap.get(id) {
+                GcObject::CompiledFunction(f) => Some(f.arity as u32),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let arg_count = match max_arity {
+            Some(arity) => args.length().min(arity),
+            None => args.length(),
+        };
+
         let mut bx_args = Vec::new();
-        for i in 0..args.length() {
+        for i in 0..arg_count {
             bx_args.push(vm.js_to_bx(args.get(i)));
         }
-        vm.call_function_value(func, bx_args, None)
+        let future = vm
+            .start_call_function_value(func, bx_args)
+            .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))?;
+        vm.run_future_to_completion(future)
             .map(|v| vm.bx_to_js(&v))
-            .map_err(|e| js_sys::Error::new(&e.to_string()).into())
+            .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))
     } else {
         Err(js_sys::Error::new("Callback not found").into())
     }

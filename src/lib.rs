@@ -468,6 +468,10 @@ impl BoxLangVM {
         res.map_err(|e| js_sys::Error::new(&format!("Error: {}", e)).into())
     }
 
+    pub fn vm_ptr(&self) -> usize {
+        &self.vm as *const vm::VM as usize
+    }
+
     pub fn call(&mut self, name: &str, args: js_sys::Array) -> Result<JsValue, JsValue> {
         let mut bx_args = Vec::new();
         for i in 0..args.length() {
@@ -1059,7 +1063,6 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
             
             let has_native_modules = modules_info.iter().any(|m| m.has_native);
             let should_use_fusion =
-                t == "js" ||
                 ((native_dir.exists() && native_dir.is_dir()) || has_native_modules)
                 && !(t == "esp32" && esp32_web);
             if should_use_fusion {
@@ -1640,6 +1643,7 @@ impl BoxLangVM {
         self.vm.interpret(chunk).map_err(|e| e.to_string())?;
         Ok(())
     }
+    pub fn vm_ptr(&self) -> usize { &self.vm as *const VM as usize }
     pub fn call(&mut self, name: &str, args: js_sys::Array) -> Result<JsValue, String> {
         let mut bx_args = Vec::new();
         for i in 0..args.length() { bx_args.push(self.vm.js_to_bx(args.get(i))); }

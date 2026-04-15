@@ -462,3 +462,104 @@ try {
 
     run_browser_page("browser_bundle_callbacks_and_errors", source, html);
 }
+
+#[test]
+fn browser_bundle_returns_boxlang_callbacks_to_js() {
+    let source = r#"
+function makeDoubler() {
+    return (value) => value * 2
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { makeDoubler, ready } from "./browser_bundle_returns_boxlang_callbacks_to_js.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
+window.addEventListener("unhandledrejection", (event) => report(`fail-${String(event.reason?.stack || event.reason)}`));
+
+try {
+  await ready;
+
+  const doubler = await makeDoubler();
+  const result = await doubler(21);
+  if (result !== 42) {
+    await report(`fail-${result}`);
+    throw new Error("bad-result");
+  }
+
+  await report("ok");
+} catch (_error) {
+  await report(`fail-${String(_error?.stack || _error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_returns_boxlang_callbacks_to_js",
+        source,
+        html,
+    );
+}
+
+#[test]
+fn browser_bundle_invokes_methods_on_callable_plain_js_objects() {
+    let source = r#"
+function invokeData(api) {
+    return api.data(21)
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { invokeData, ready } from "./browser_bundle_invokes_methods_on_callable_plain_js_objects.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", () => report("fail"));
+window.addEventListener("unhandledrejection", () => report("fail"));
+
+try {
+  await ready;
+
+  const api = {
+    value: 1,
+    data(n) {
+      this.value = this.value + n;
+      return this.value;
+    }
+  };
+
+  const result = await invokeData(api);
+  if (result !== 22 || api.value !== 22) {
+    await report(`fail-${result}-${api.value}`);
+    throw new Error("bad-call");
+  }
+
+  await report("ok");
+} catch (_error) {
+  await report("fail");
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_invokes_methods_on_callable_plain_js_objects",
+        source,
+        html,
+    );
+}

@@ -1,0 +1,42 @@
+/**
+* This BoxLang script defines an Alpine.js data component entirely in BoxLang.
+*/
+
+function registerComponent() {
+    Alpine = js.Alpine;
+    if ( isNull( Alpine ) || isNull( Alpine.data ) ) {
+        return false;
+    }
+
+    js.console.log("BoxLang: Registering 'bxCounter' component...");
+
+    Alpine.data( "bxCounter", ( initialValue = 0 ) => {
+        js.console.log("registering...");
+        return {
+            "count" : initialValue,
+            "step"  : 1,
+            "increment" : function( count, step ) {
+                return count + step;
+            },
+            "decrement" : function( count, step ) {
+                return count - step;
+            },
+            "isEven" : function( val ) {
+                return val % 2 == 0;
+            }
+        };
+    } );
+
+    js.console.log("BoxLang: Component registered!");
+    return true;
+}
+
+// 1. Try immediate registration
+if ( !registerComponent() ) {
+    js.console.log("BoxLang: Alpine not ready, setting up listener...");
+    
+    // 2. Wait for Alpine to initialize
+    js.document.addEventListener( "alpine:init", () => {
+        registerComponent();
+    } );
+}

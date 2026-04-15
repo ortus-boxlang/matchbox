@@ -5,7 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MatchBox + Alpine.js</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    
+    <!-- Load WASM + Alpine ESM in parallel, then register and start -->
+    <script type="module">
+        import { ready, registerComponent } from './counter.js';
+
+        const [_, { default: Alpine }] = await Promise.all([
+            ready,
+            import('https://unpkg.com/alpinejs@3/dist/module.esm.js')
+        ]);
+        window.Alpine = Alpine;
+
+        await registerComponent();
+        Alpine.start();
+    </script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen flex items-center justify-center">
 
@@ -20,11 +33,11 @@
             <div class="text-6xl font-mono font-black" x-text="count"></div>
             
             <div class="flex gap-4">
-                <button @click="decrement($data)" 
+                <button @click="count = decrement(count, step)" 
                         class="px-6 py-2 bg-red-600 hover:bg-red-500 rounded-lg font-bold transition-colors">
                     -
                 </button>
-                <button @click="increment($data)" 
+                <button @click="count = increment(count, step)" 
                         class="px-6 py-2 bg-green-600 hover:bg-green-500 rounded-lg font-bold transition-colors">
                     +
                 </button>
@@ -38,7 +51,7 @@
                        class="w-16 bg-slate-950 border border-slate-600 rounded px-2 py-1 text-white text-center focus:outline-none focus:border-blue-500">
             </div>
 
-            <template x-if="isEven(count)">
+            <template x-if="iseven(count)">
                 <div class="text-green-400 font-semibold animate-bounce">
                     That count is Even!
                 </div>
@@ -50,10 +63,5 @@
         </p>
     </div>
 
-    <!-- 
-        Load the BoxLang bundle. 
-        Note: You must build counter.bxs using 'matchbox --target js counter.bxs' first.
-    -->
-    <script type="module" src="./counter.js"></script>
 </body>
 </html>
