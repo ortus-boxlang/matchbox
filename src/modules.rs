@@ -284,7 +284,7 @@ pub fn execute_module_lifecycle(name: &str, path: &Path) -> serde_json::Value {
         "{source}\nmc = new ModuleConfig()\nmc.onLoad()\nreturn mc.configure()\n"
     );
 
-    let ast = match matchbox_compiler::parser::parse(&wrapper) {
+    let ast = match matchbox_compiler::parser::parse(&wrapper, Some(&descriptor.to_string_lossy())) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("Warning: Module '{}': failed to parse ModuleConfig.bx: {}", name, e);

@@ -31,7 +31,7 @@ pub fn compile_with_treeshaking(
     // Parse all module bif sources up front.
     let mut module_prelude_stmts: Vec<Statement> = Vec::new();
     for src in extra_preludes {
-        let stmts = parser::parse(src)?;
+        let stmts = parser::parse(src, Some("module_prelude"))?;
         module_prelude_stmts.extend(stmts);
     }
 
@@ -44,7 +44,7 @@ pub fn compile_with_treeshaking(
         }
     } else {
         // Parse the built-in prelude.
-        let prelude_ast = parser::parse(PRELUDE_SOURCE)?;
+        let prelude_ast = parser::parse(PRELUDE_SOURCE, Some("prelude.bxs"))?;
 
         if no_shaking {
             // All built-in + all module bifs, no shaking.

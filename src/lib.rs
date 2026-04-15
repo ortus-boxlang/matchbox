@@ -8,6 +8,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use anyhow::{Result, bail, Context};
+use colored::*;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -423,7 +424,7 @@ pub fn run_boxlang_bytecode(bytes: &[u8]) -> String {
 #[wasm_bindgen]
 pub fn run_boxlang(source: &str) -> String {
     let res = (|| -> Result<String> {
-        let ast = parser::parse(source)?;
+        let ast = parser::parse(source, Some("wasm_input"))?;
         let compiler = compiler::Compiler::new("wasm_input");
         let chunk = compiler.compile(&ast, source)?;
         let mut vm = vm::VM::new();
@@ -1008,7 +1009,9 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
         run_chunk(chunk, &[])?;
     } else {
         let source = fs::read_to_string(source_path)?;
-        let ast = parser::parse(&source).map_err(|e| anyhow::anyhow!("Parse Error: {}", e))?;
+        let ast = parser::parse(&source, source_path.to_str()).map_err(|e| {
+            anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e)
+        })?;
         if orig_target == Some("esp32") {
             validate_esp32_target(&ast, esp32_web)?;
         }
@@ -1252,7 +1255,7 @@ fn run_repl() -> Result<()> {
 
     // Load full prelude for REPL
 
-    let prelude_ast = parser::parse(matchbox_compiler::PRELUDE_SOURCE)?;
+    let prelude_ast = parser::parse(matchbox_compiler::PRELUDE_SOURCE, Some("prelude.bxs"))?;
     let compiler = compiler::Compiler::new("prelude");
     let prelude_chunk = compiler.compile(&prelude_ast, matchbox_compiler::PRELUDE_SOURCE)?;
     vm.interpret(prelude_chunk)?;
@@ -1276,7 +1279,7 @@ fn run_repl() -> Result<()> {
             break;
         }
 
-        match parser::parse(input) {
+        match parser::parse(input, Some("repl")) {
             Ok(ast) => {
                 let mut compiler = compiler::Compiler::new("repl");
                 compiler.is_repl = true;
@@ -1288,13 +1291,13 @@ fn run_repl() -> Result<()> {
                                     println!("=> {}", val);
                                 }
                             }
-                            Err(e) => println!("Error: {}", e),
+                            Err(e) => println!("{} {}", "Error:".red().bold(), e),
                         }
                     }
-                    Err(e) => println!("Compiler Error: {}", e),
+                    Err(e) => println!("{} {}", "Compiler Error:".red().bold(), e),
                 }
             }
-            Err(e) => println!("Parse Error: {}", e),
+            Err(e) => println!("{} {}", "Parse Error:".red().bold(), e),
         }
     }
 
@@ -2265,8 +2268,9 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
 
                         let res = (|| -> Result<()> {
                             let source_text = fs::read_to_string(source_path)?;
-                            let ast = parser::parse(&source_text)
-                                .map_err(|e| anyhow::anyhow!("Parse Error: {}", e))?;
+                            let ast = parser::parse(&source_text, source_path.to_str()).map_err(|e| {
+                                anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e)
+                            })?;
                             let cwd = std::env::current_dir().unwrap_or_else(|_| {
                                 source_path.parent().unwrap_or(Path::new(".")).to_path_buf()
                             });
@@ -2342,7 +2346,7 @@ mod tests {
                 event.renderJson( { "ok": true } );
             } );
         "#;
-        let ast = parser::parse(source).unwrap();
+        let ast = parser::parse(source, Some("test")).unwrap();
         assert!(validate_esp32_target(&ast, true).is_ok());
     }
 
@@ -2357,7 +2361,7 @@ mod tests {
                 event.renderJson( { "ok": true, "path": event.getCurrentRoute() } );
             } );
         "#;
-        let ast = parser::parse(source).unwrap();
+        let ast = parser::parse(source, Some("test")).unwrap();
         assert!(validate_esp32_target(&ast, true).is_ok());
     }
 
@@ -2369,7 +2373,7 @@ mod tests {
                 event.renderJson( { "ok": true } );
             } );
         "#;
-        let ast = parser::parse(source).unwrap();
+        let ast = parser::parse(source, Some("test")).unwrap();
         let err = validate_esp32_target(&ast, false).unwrap_err().to_string();
         assert!(err.contains("web.server()"));
         assert!(err.contains("--esp32-web"));
@@ -2381,7 +2385,7 @@ mod tests {
             app = web.server();
             app.listen( 8080 );
         "#;
-        let ast = parser::parse(source).unwrap();
+        let ast = parser::parse(source, Some("test")).unwrap();
         let err = validate_esp32_target(&ast, true).unwrap_err().to_string();
         assert!(err.contains("line 3"));
         assert!(err.contains("app.listen()"));
@@ -2403,7 +2407,7 @@ mod tests {
                 }
             );
         "#;
-        let ast = parser::parse(source).unwrap();
+        let ast = parser::parse(source, Some("test")).unwrap();
         let err = validate_esp32_target(&ast, true).unwrap_err().to_string();
         assert!(err.contains("buildStaticFiles()"));
         assert!(err.contains("webhook registration"));
@@ -2418,7 +2422,7 @@ mod tests {
                 event.setSessionValue( "userId", 42 );
             }
         "#;
-        let ast = parser::parse(source).unwrap();
+        let ast = parser::parse(source, Some("test")).unwrap();
         let err = validate_esp32_target(&ast, true).unwrap_err().to_string();
         assert!(err.contains("cookie helpers"));
         assert!(err.contains("session helpers"));

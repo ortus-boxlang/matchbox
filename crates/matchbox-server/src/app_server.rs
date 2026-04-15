@@ -973,7 +973,7 @@ pub fn build_script_router(state: Arc<ScriptServerState>) -> Router {
 pub async fn compile_script_app(script_path: &Path) -> anyhow::Result<CompiledScriptApp> {
     let path = script_path.to_path_buf();
     let source = fs::read_to_string(&path).await?;
-    let ast = parser::parse(&source)?;
+    let ast = parser::parse(&source, path.to_str())?;
     let web_imported = ast.iter().any(|stmt| {
         matches!(
             &stmt.kind,
@@ -1763,9 +1763,9 @@ fn render_template(
     let source = stdfs::read_to_string(&resolved_path).map_err(|e| e.to_string())?;
     let ext = resolved_path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let ast = if ext.eq_ignore_ascii_case("bxm") {
-        parser::parse_bxm(&source).map_err(|e| e.to_string())?
+        parser::parse_bxm(&source, resolved_path.to_str()).map_err(|e| e.to_string())?
     } else {
-        parser::parse(&source).map_err(|e| e.to_string())?
+        parser::parse(&source, resolved_path.to_str()).map_err(|e| e.to_string())?
     };
 
     let compiler = Compiler::new(&resolved_path.to_string_lossy());

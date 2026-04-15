@@ -278,7 +278,7 @@ pub async fn run_server(args: Args) {
         if let Some(ws_script_path) = find_file_case_insensitive(&webroot, &ws_config.handler) {
             match std::fs::read_to_string(&ws_script_path) {
                 Ok(source) => {
-                    let ast = parser::parse(&source).map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", ws_config.handler, e)).ok();
+                    let ast = parser::parse(&source, Some(&ws_config.handler)).map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", ws_config.handler, e)).ok();
                     let chunk = ast.and_then(|ast| {
                         let compiler = Compiler::new(&ws_config.handler);
                         compiler.compile(&ast, &source).map_err(|e| eprintln!("Failed to compile {}: {}", ws_config.handler, e)).ok()
@@ -565,9 +565,9 @@ async fn execute_template(
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     
     let ast = if ext == "bxm" {
-        parser::parse_bxm(&source)?
+        parser::parse_bxm(&source, path.to_str())?
     } else {
-        parser::parse(&source)?
+        parser::parse(&source, path.to_str())?
     };
 
     let filename = path.to_string_lossy();

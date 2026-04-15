@@ -7,18 +7,24 @@ use crate::ast::{Expression, ExpressionKind, Literal, Statement, StatementKind, 
 pub mod bxm;
 
 #[cfg(feature = "bxm")]
-pub fn parse_bxm(source: &str) -> Result<Vec<Statement>> {
+pub fn parse_bxm(source: &str, filename: Option<&str>) -> Result<Vec<Statement>> {
     let transpiled = bxm::transpile_bxm(source);
-    parse(&transpiled)
+    parse(&transpiled, filename)
 }
 
 #[derive(Parser)]
 #[grammar = "parser/boxlang.pest"]
 pub struct BxParser;
 
-pub fn parse(source: &str) -> Result<Vec<Statement>> {
+pub fn parse(source: &str, filename: Option<&str>) -> Result<Vec<Statement>> {
     let mut ast = Vec::new();
-    let pairs = BxParser::parse(Rule::program, source)?;
+    let pairs = BxParser::parse(Rule::program, source).map_err(|e| {
+        if let Some(f) = filename {
+            e.with_path(f)
+        } else {
+            e
+        }
+    })?;
 
     for pair in pairs {
         if pair.as_rule() == Rule::program {
@@ -351,7 +357,7 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
             if let Some(_else_kw) = inner_rules.next() {
                 let else_rule = inner_rules.next().unwrap();
                 match else_rule.as_rule() {
-                    Rule::block => {
+                    Rule::block | Rule::statement => {
                         else_branch = Some(parse_block(else_rule)?);
                     }
                     Rule::if_statement => {

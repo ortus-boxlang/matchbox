@@ -1657,7 +1657,7 @@ impl Compiler {
         }
 
         let source = fs::read_to_string(&file_path)?;
-        let ast = crate::parser::parse(&source)
+        let ast = crate::parser::parse(&source, file_path.to_str())
             .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", class_path, e))?;
 
         let _filename = file_path.to_str().unwrap_or(class_path);
@@ -1710,7 +1710,7 @@ impl Compiler {
         }
 
         let source = fs::read_to_string(&file_path)?;
-        let ast = crate::parser::parse(&source)
+        let ast = crate::parser::parse(&source, file_path.to_str())
             .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", iface_path, e))?;
 
         let _filename = file_path.to_str().unwrap_or(iface_path);

@@ -99,9 +99,9 @@ fn route_to_table_entry(route: &EmbeddedRoute) -> Result<EmbeddedRouteTableEntry
     let source = fs::read_to_string(&route.source_path)
         .with_context(|| format!("Failed to read {}", route.source_path.display()))?;
     let ast = match route.source_kind {
-        EmbeddedSourceKind::Template => parser::parse_bxm(&source)
+        EmbeddedSourceKind::Template => parser::parse_bxm(&source, Some(&route.source_path.to_string_lossy()))
             .with_context(|| format!("Failed to parse template {}", route.source_path.display()))?,
-        EmbeddedSourceKind::Script => parser::parse(&source)
+        EmbeddedSourceKind::Script => parser::parse(&source, Some(&route.source_path.to_string_lossy()))
             .with_context(|| format!("Failed to parse script {}", route.source_path.display()))?,
     };
 

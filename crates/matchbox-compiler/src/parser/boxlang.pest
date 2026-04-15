@@ -63,10 +63,10 @@ param_decl = { required_keyword? ~ (type_name ~ identifier | identifier) ~ ("=" 
 params = { param_decl ~ ("," ~ param_decl)* }
 
 for_keyword = @{ "for" ~ !ASCII_ALPHANUMERIC }
-for_loop = { for_keyword ~ "(" ~ (for_in | for_classic) ~ ")" ~ block }
+for_loop = { for_keyword ~ "(" ~ (for_in | for_classic) ~ ")" ~ (block | statement) }
 
 while_keyword = @{ "while" ~ !ASCII_ALPHANUMERIC }
-while_loop = { while_keyword ~ "(" ~ expression ~ ")" ~ block }
+while_loop = { while_keyword ~ "(" ~ expression ~ ")" ~ (block | statement) }
 
 in_keyword = @{ "in" ~ !ASCII_ALPHANUMERIC }
 for_in = { identifier ~ ("," ~ identifier)? ~ in_keyword ~ expression }
@@ -77,7 +77,7 @@ update = { expression }
 
 if_keyword = @{ "if" ~ !ASCII_ALPHANUMERIC }
 else_keyword = @{ "else" ~ !ASCII_ALPHANUMERIC }
-if_statement = { if_keyword ~ "(" ~ expression ~ ")" ~ block ~ (else_keyword ~ (if_statement | block))? }
+if_statement = { if_keyword ~ "(" ~ expression ~ ")" ~ (block | statement) ~ (else_keyword ~ (if_statement | block | statement))? }
 block = { "{" ~ statement* ~ "}" }
 
 try_keyword = @{ "try" ~ !ASCII_ALPHANUMERIC }
@@ -205,4 +205,4 @@ boolean = @{ ("true" | "false") ~ !ASCII_ALPHANUMERIC }
 
 null_lit = @{ "null" ~ !ASCII_ALPHANUMERIC }
 
-identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+identifier = @{ (ASCII_ALPHA | "_" | "$") ~ (ASCII_ALPHANUMERIC | "_" | "$")* }
