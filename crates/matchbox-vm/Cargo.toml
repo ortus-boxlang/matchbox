@@ -40,7 +40,7 @@ r2d2_postgres = { version = "0.18", optional = true }
 wasm-bindgen = { version = "0.2.100", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3.77", optional = true }
-web-sys = { version = "0.3.77", optional = true, features = ["Window", "Document", "Element", "HtmlElement", "Node", "EventTarget", "Response", "Headers", "Request", "RequestInit", "RequestMode"] }
+web-sys = { version = "0.3.77", optional = true, features = ["Window", "Document", "Element", "HtmlElement", "Node", "EventTarget", "Response", "Headers", "Request", "RequestInit", "RequestMode", "console"] }
 
 [features]
 default = []

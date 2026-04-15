@@ -8,10 +8,9 @@ function registerComponent() {
         return false;
     }
 
-    js.console.log("BoxLang: Registering 'bxCounter' component...");
+    println("BoxLang: Registering 'bxCounter' component...");
 
     Alpine.data( "bxCounter", ( initialValue = 0 ) => {
-        js.console.log("registering...");
         return {
             "count" : initialValue,
             "step"  : 1,
@@ -27,13 +26,13 @@ function registerComponent() {
         };
     } );
 
-    js.console.log("BoxLang: Component registered!");
+    println("BoxLang: Component registered!");
     return true;
 }
 
 // 1. Try immediate registration
 if ( !registerComponent() ) {
-    js.console.log("BoxLang: Alpine not ready, setting up listener...");
+    println("BoxLang: Alpine not ready, setting up listener...");
     
     // 2. Wait for Alpine to initialize
     js.document.addEventListener( "alpine:init", () => {

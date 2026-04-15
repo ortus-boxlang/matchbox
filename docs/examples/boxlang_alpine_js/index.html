@@ -56,6 +56,11 @@
                     That count is Even!
                 </div>
             </template>
+            <template x-if="!iseven(count)">
+                <div class="text-red-400 font-semibold">
+                    That count is Odd!
+                </div>
+            </template>
         </div>
 
         <p class="mt-8 text-xs text-slate-500 text-center italic">

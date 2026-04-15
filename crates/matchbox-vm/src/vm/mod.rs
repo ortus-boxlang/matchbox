@@ -3613,12 +3613,24 @@ impl VM {
                         args.push(self.fibers[fiber_idx].stack.pop().unwrap());
                     }
                     args.reverse();
-                    let out = args.iter().map(|a| self.to_string(*a)).collect::<Vec<_>>().join(" ");
-                    if let Some(ref mut buffer) = self.output_buffer {
-                        buffer.push_str(&out);
-                        buffer.push('\n');
-                    } else {
-                        println!("{}", out);
+
+                    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+                    {
+                        let js_args = js_sys::Array::new();
+                        for arg in &args {
+                            js_args.push(&self.bx_to_js(arg));
+                        }
+                        web_sys::console::log(&js_args);
+                    }
+                    #[cfg(not(all(target_arch = "wasm32", feature = "js")))]
+                    {
+                        let out = args.iter().map(|a| self.to_string(*a)).collect::<Vec<_>>().join(" ");
+                        if let Some(ref mut buffer) = self.output_buffer {
+                            buffer.push_str(&out);
+                            buffer.push('\n');
+                        } else {
+                            println!("{}", out);
+                        }
                     }
                 }
                 _ => {
