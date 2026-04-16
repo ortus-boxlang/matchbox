@@ -24,6 +24,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown, wasm32-wasip1
+      - name: Install wasm-bindgen-cli
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          # Use a pre-compiled binary if possible to save time
+          curl -L https://github.com/rustwasm/wasm-bindgen/releases/download/0.2.100/wasm-bindgen-0.2.100-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          echo "$(pwd)/wasm-bindgen-0.2.100-x86_64-unknown-linux-musl" >> $GITHUB_PATH
       - name: Setup Firefox
         if: matrix.os == 'ubuntu-latest'
         uses: browser-actions/setup-firefox@v1
