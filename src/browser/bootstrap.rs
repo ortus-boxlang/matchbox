@@ -362,7 +362,7 @@ mod tests {
             x = 1
             function beta(a) { return a; }
         "#;
-        let ast = parser::parse(source).unwrap();
+        let ast = parser::parse(source, Some("bootstrap_test")).unwrap();
         assert_eq!(exported_function_names(&ast), vec!["alpha".to_string(), "beta".to_string()]);
     }
 

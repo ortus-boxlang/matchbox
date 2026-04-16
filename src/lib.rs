@@ -1009,9 +1009,16 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
         run_chunk(chunk, &[])?;
     } else {
         let source = fs::read_to_string(source_path)?;
-        let ast = parser::parse(&source, source_path.to_str()).map_err(|e| {
-            anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e)
-        })?;
+        let ext = source_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let ast = if ext == "bxm" {
+            parser::parse_bxm(&source, source_path.to_str()).map_err(|e| {
+                anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e)
+            })?
+        } else {
+            parser::parse(&source, source_path.to_str()).map_err(|e| {
+                anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e)
+            })?
+        };
         if orig_target == Some("esp32") {
             validate_esp32_target(&ast, esp32_web)?;
         }

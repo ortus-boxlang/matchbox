@@ -941,8 +941,8 @@ impl VM {
             match self.heap.get(id) {
                 GcObject::String(s) => s.to_string(),
                 GcObject::Bytes(bytes) => format!("<bytes len:{}>", bytes.len()),
-                GcObject::Array(_) => format!("<array id:{}>", id),
-                GcObject::Struct(_) => format!("<struct id:{}>", id),
+                GcObject::Array(_) => self.bx_to_json(&val).to_string(),
+                GcObject::Struct(_) => self.bx_to_json(&val).to_string(),
                 GcObject::Instance(inst) => format!("<instance of {}>", inst.class.borrow().name),
                 GcObject::Future(_) => format!("<future id:{}>", id),
                 GcObject::CompiledFunction(f) => format!("<function {}>", f.name),
@@ -1207,8 +1207,7 @@ impl VM {
     }
 
     pub fn insert_global(&mut self, name: String, val: BxValue) {
-        let name_lower = name.to_lowercase();
-        let name_id = self.interner.intern(&name_lower);
+        let name_id = self.interner.intern(&name);
         self.insert_global_interned(name_id, val);
     }
 
@@ -1223,8 +1222,7 @@ impl VM {
     }
 
     pub fn get_global(&self, name: &str) -> Option<BxValue> {
-        let name_lower = name.to_lowercase();
-        if let Some(name_id) = self.interner.get_id(&name_lower) {
+        if let Some(name_id) = self.interner.get_id(name) {
             self.global_names.get(&name_id).map(|&idx| self.global_values[idx])
         } else {
             None
@@ -1283,7 +1281,7 @@ impl VM {
         let mut current_class = class;
         loop {
             let class_ref = current_class.borrow();
-            if let Some((_, method)) = class_ref.methods.iter().find(|(name, _)| name == method_name) {
+            if let Some((_, method)) = class_ref.methods.iter().find(|(name, _)| name.eq_ignore_ascii_case(method_name)) {
                 return Some(Rc::new(method.clone()));
             }
             

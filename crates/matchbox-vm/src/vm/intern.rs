@@ -15,19 +15,20 @@ impl StringInterner {
         }
     }
 
-    /// Intern a string: lowercase it, deduplicate, return a stable ID.
+    /// Intern a string: preserve the first casing seen for presentation,
+    /// but use its lowercase form for deduplication (case-insensitivity).
     pub fn intern(&mut self, s: &str) -> InternId {
         let lowered = s.to_lowercase();
         if let Some(&id) = self.lookup.get(&lowered) {
             return id;
         }
         let id = self.strings.len() as InternId;
-        self.strings.push(lowered.clone());
+        self.strings.push(s.to_string());
         self.lookup.insert(lowered, id);
         id
     }
 
-    /// Resolve an InternId back to its lowercased string.
+    /// Resolve an InternId back to its original casing string.
     pub fn resolve(&self, id: InternId) -> &str {
         &self.strings[id as usize]
     }

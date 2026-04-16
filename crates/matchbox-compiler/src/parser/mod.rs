@@ -9,7 +9,8 @@ pub mod bxm;
 #[cfg(feature = "bxm")]
 pub fn parse_bxm(source: &str, filename: Option<&str>) -> Result<Vec<Statement>> {
     let transpiled = bxm::transpile_bxm(source);
-    parse(&transpiled, filename)
+    let label = filename.map(|f| format!("transpiled from {}", f));
+    parse(&transpiled, label.as_deref())
 }
 
 #[derive(Parser)]
