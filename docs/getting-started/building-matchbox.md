@@ -23,7 +23,7 @@ To build MatchBox, you need the [Rust toolchain](https://rustup.rs/).
 
 ### Web & WASM Build
 - **Target**: `rustup target add wasm32-unknown-unknown`
-- **Tool**: `cargo install wasm-bindgen-cli`
+- **Tool**: `cargo install wasm-bindgen-cli --version 0.2.114`
 
 ### ESP32 Build (Optional)
 - **Toolchain**: [Espressif Rust Toolchain](https://github.com/esp-rs/rust-build) (Xtensa)

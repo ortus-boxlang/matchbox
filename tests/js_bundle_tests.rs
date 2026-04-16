@@ -1,8 +1,33 @@
 use std::fs;
 use std::path::Path;
+use std::process::{Command, Stdio};
+
+fn wasm_bindgen_available() -> bool {
+    let wasm_bindgen_bin = std::env::var("WASM_BINDGEN").unwrap_or_else(|_| "wasm-bindgen".to_string());
+    Command::new(wasm_bindgen_bin)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn skip_without_wasm_bindgen(test_name: &str) -> bool {
+    if wasm_bindgen_available() {
+        return false;
+    }
+
+    eprintln!("skipping {test_name}: wasm-bindgen is unavailable");
+    true
+}
 
 #[test]
 fn test_js_bundle_contains_matchbox_namespace() {
+    if skip_without_wasm_bindgen("test_js_bundle_contains_matchbox_namespace") {
+        return;
+    }
+
     let tmp_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tmp").join("js_tests");
     if tmp_dir.exists() {
         fs::remove_dir_all(&tmp_dir).unwrap();
@@ -52,6 +77,10 @@ fn test_js_bundle_contains_matchbox_namespace() {
 
 #[test]
 fn test_js_bundle_isolation() {
+    if skip_without_wasm_bindgen("test_js_bundle_isolation") {
+        return;
+    }
+
     let tmp_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tmp").join("js_isolation_tests");
     if tmp_dir.exists() {
         fs::remove_dir_all(&tmp_dir).unwrap();
@@ -88,6 +117,10 @@ fn test_js_bundle_isolation() {
 
 #[test]
 fn test_js_numerical_interop() {
+    if skip_without_wasm_bindgen("test_js_numerical_interop") {
+        return;
+    }
+
     let tmp_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tmp").join("js_num_tests");
     if tmp_dir.exists() {
         fs::remove_dir_all(&tmp_dir).unwrap();
@@ -121,6 +154,10 @@ fn test_js_to_bx_integer_semantics() {
 
 #[test]
 fn test_js_bundle_contains_state_helper() {
+    if skip_without_wasm_bindgen("test_js_bundle_contains_state_helper") {
+        return;
+    }
+
     let tmp_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tmp").join("js_state_tests");
     if tmp_dir.exists() {
         fs::remove_dir_all(&tmp_dir).unwrap();
@@ -158,6 +195,10 @@ fn test_js_bundle_contains_state_helper() {
 
 #[test]
 fn test_js_error_handling() {
+    if skip_without_wasm_bindgen("test_js_error_handling") {
+        return;
+    }
+
     let tmp_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tmp").join("js_error_tests");
     if tmp_dir.exists() {
         fs::remove_dir_all(&tmp_dir).unwrap();
