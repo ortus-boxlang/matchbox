@@ -194,6 +194,7 @@ fn run_browser_page(test_name: &str, source: &str, html: &str) {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn browser_bundle_state_helper_and_readiness_work() {
     let source = r#"
 count = 0
@@ -248,6 +249,7 @@ try {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn browser_bundle_normalizes_plain_values_and_preserves_dom_handles() {
     let source = r#"
 function summarize(payload) {
@@ -314,6 +316,7 @@ try {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn browser_bundle_supports_multiple_modules_on_one_page() {
     // We need to compile two different modules. 
     // run_browser_page currently only compiles one.
@@ -410,6 +413,7 @@ try {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn browser_bundle_supports_callbacks_and_error_propagation() {
     let source = r#"
 function runWithCallback(cb) {
@@ -464,6 +468,7 @@ try {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn browser_bundle_returns_boxlang_callbacks_to_js() {
     let source = r#"
 function makeDoubler() {
@@ -511,6 +516,7 @@ try {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn browser_bundle_invokes_methods_on_callable_plain_js_objects() {
     let source = r#"
 function invokeData(api) {

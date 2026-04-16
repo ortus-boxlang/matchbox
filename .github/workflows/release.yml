@@ -22,6 +22,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+      - name: Setup Firefox
+        if: matrix.os == 'ubuntu-latest'
+        uses: browser-actions/setup-firefox@v1
+      - name: Install Browser Dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          # Ensure basic browser dependencies are met
+          sudo apt-get install -y libdbus-glib-1-2
+          # Use Playwright to install all system dependencies for Firefox
+          npx playwright install-deps firefox
       - name: Run Tests
         run: cargo test
 
