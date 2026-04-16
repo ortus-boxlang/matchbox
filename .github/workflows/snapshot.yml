@@ -230,6 +230,9 @@ jobs:
 
           [[ -n "${IDF_PATH:-}" ]] || { echo "Could not determine IDF_PATH inside the ESP32 smoke container"; exit 1; }
           echo "Using IDF_PATH=$IDF_PATH"
+          source "$IDF_PATH/export.sh"
+          command -v idf.py >/dev/null 2>&1 || { echo "idf.py is still not on PATH after sourcing export.sh"; exit 1; }
+          idf.py --version
 
           ./target/x86_64-unknown-linux-gnu/release/matchbox \
             docs/examples/native_fusion/app.bxs \
