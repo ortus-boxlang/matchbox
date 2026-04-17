@@ -18,6 +18,16 @@ fn firefox_available() -> bool {
         .unwrap_or(false)
 }
 
+fn web_runner_stub_available() -> bool {
+    let stub_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("stubs")
+        .join("runner_stub_wasm32-unknown-unknown.wasm");
+
+    fs::metadata(stub_path)
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+}
+
 fn unique_test_dir(name: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -122,6 +132,12 @@ fn spawn_firefox(profile_dir: &Path, url: &str) -> std::io::Result<Child> {
 fn run_browser_page(test_name: &str, source: &str, html: &str) {
     if !firefox_available() {
         eprintln!("skipping {test_name}: firefox is unavailable");
+        return;
+    }
+    if !web_runner_stub_available() {
+        eprintln!(
+            "skipping {test_name}: web runner stub is unavailable; rebuild with wasm32-unknown-unknown installed"
+        );
         return;
     }
 
@@ -325,6 +341,12 @@ fn browser_bundle_supports_multiple_modules_on_one_page() {
     let test_name = "browser_bundle_multiple_modules";
     if !firefox_available() {
         eprintln!("skipping {test_name}: firefox is unavailable");
+        return;
+    }
+    if !web_runner_stub_available() {
+        eprintln!(
+            "skipping {test_name}: web runner stub is unavailable; rebuild with wasm32-unknown-unknown installed"
+        );
         return;
     }
 
