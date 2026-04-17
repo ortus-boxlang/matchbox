@@ -211,15 +211,15 @@ jobs:
       - name: Setup ESP-IDF Path
         shell: bash
         run: |
-          if [[ -z "${IDF_PATH:-}" ]]; then
-            for candidate in /opt/esp/idf /opt/esp-idf /home/esp/esp-idf /esp-idf; do
-              if [[ -f "$candidate/tools/cmake/toolchain-esp32s3.cmake" ]]; then
-                echo "IDF_PATH=$candidate" >> $GITHUB_ENV
-                echo "Detected IDF_PATH at $candidate"
-                break
-              fi
-            done
-          fi
+          for candidate in /opt/esp/idf /opt/esp-idf /home/esp/esp-idf /esp-idf; do
+            if [[ -f "$candidate/export.sh" ]]; then
+              echo "IDF_PATH=$candidate" >> $GITHUB_ENV
+              echo "Detected IDF_PATH at $candidate"
+              exit 0
+            fi
+          done
+          echo "ERROR: Could not find ESP-IDF in known locations"
+          exit 1
 
       - name: Build MatchBox host CLI
         env:
