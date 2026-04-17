@@ -6,6 +6,7 @@ use std::env as std_env;
 use std::fs;
 use postcard;
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
 
 // ---------------------------------------------------------------------------
@@ -198,7 +199,7 @@ fn main() -> Result<()> {
 
     let mut vm = VM::new();
     match vm.interpret(chunk) {
-        Ok(val) => {
+        Ok(_val) => {
             // println!("Result: {}", val);
             Ok(())
         }

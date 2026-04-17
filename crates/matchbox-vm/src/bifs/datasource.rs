@@ -1,3 +1,4 @@
+#[cfg(feature = "bif-datasource")]
 use crate::types::{BxVM, BxValue};
 
 #[cfg(feature = "bif-datasource")]

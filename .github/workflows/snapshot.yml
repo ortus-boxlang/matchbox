@@ -42,6 +42,7 @@ jobs:
       - name: Build Web Runner Stub (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: |
+          mkdir -p stubs
           cargo build --manifest-path crates/matchbox-runner/Cargo.toml --release --target wasm32-unknown-unknown --features js
           cp crates/matchbox-runner/target/wasm32-unknown-unknown/release/matchbox_runner.wasm stubs/runner_stub_wasm32-unknown-unknown.wasm
           test -s stubs/runner_stub_wasm32-unknown-unknown.wasm

@@ -20,6 +20,7 @@ mod jni {
 }
 mod cli;
 mod crypto;
+#[cfg(feature = "bif-datasource")]
 mod datasource;
 mod fs;
 mod http;

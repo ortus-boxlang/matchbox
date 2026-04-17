@@ -585,7 +585,7 @@ impl BxVM for VM {
     fn struct_delete(&mut self, id: usize, key: &str) -> bool {
         let key_id = self.interner.get_id(key).unwrap_or(u32::MAX);
         if let GcObject::Struct(s) = self.heap.get_mut(id) {
-            if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
+            if self.shapes.get_index(s.shape_id, key_id).is_some() {
                 // To delete from a shape-based struct, we must reconstruct the struct's state
                 // minus the deleted field and find/create a new shape.
                 let mut entries = Vec::new();
@@ -4681,6 +4681,7 @@ impl VM {
 
     fn execute_bif_call(&mut self, fiber_idx: usize, bif_name: String, arg_count: usize, receiver: BxValue) -> Result<()> {
         if bif_name == "futureget" {
+            #[cfg(all(target_arch = "wasm32", feature = "js"))]
             let receiver_idx = self.fibers[fiber_idx].stack.len() - 1 - arg_count;
 
             #[cfg(all(target_arch = "wasm32", feature = "js"))]
