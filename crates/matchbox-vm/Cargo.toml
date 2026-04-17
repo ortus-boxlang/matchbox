@@ -44,7 +44,7 @@ web-sys = { version = "0.3.77", optional = true, features = ["Window", "Document
 
 [features]
 default = []
-js = ["wasm-bindgen", "js-sys", "web-sys", "getrandom/wasm_js", "uuid/js"]
+js = ["wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys", "getrandom/wasm_js", "uuid/js"]
 jit = ["cranelift-jit", "cranelift-frontend", "cranelift-codegen", "cranelift-module", "cranelift-native"]
 bif-io = ["walkdir", "fs_extra"]
 bif-http = ["reqwest", "wasm-bindgen-futures", "js-sys", "web-sys"]

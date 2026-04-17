@@ -11,7 +11,7 @@ mod interop_tests;
 
 use crate::types::{BxValue, BxCompiledFunction, BxClass, BxInstance, BxFuture, FutureStatus, Constant, BxVM, BxStruct, BxNativeObject, BxNativeFunction, NativeFutureHandle, NativeFutureMessage, NativeFutureValue, Tracer, box_string::BoxString};
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
-use crate::types::take_wasm_future_thunk;
+use crate::types::{register_wasm_future_thunk, take_wasm_future_thunk};
 use self::chunk::{Chunk, IcEntry};
 use self::opcode::op;
 use self::gc::{Heap, GcObject};
@@ -144,6 +144,24 @@ fn is_plain_js_object(value: &JsValue) -> bool {
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
+fn schedule_browser_vm_pump(vm_ptr: usize) {
+    let global = js_sys::global();
+    let matchbox = match Reflect::get(&global, &JsValue::from_str("MatchBox")) {
+        Ok(value) if !value.is_undefined() && !value.is_null() => value,
+        _ => return,
+    };
+
+    let schedule = match Reflect::get(&matchbox, &JsValue::from_str("schedulePump")) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+
+    if let Ok(func) = schedule.dyn_into::<Function>() {
+        let _ = func.call1(&matchbox, &JsValue::from_f64(vm_ptr as f64));
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
 pub(crate) fn resolve_js_property(target: &JsValue, name: &str) -> JsValue {
     let direct = JsValue::from_str(name);
     if Reflect::has(target, &direct).unwrap_or(false) {
@@ -201,11 +219,15 @@ use wasm_bindgen::prelude::*;
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use wasm_bindgen::JsCast;
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
-use js_sys::{Array, Function, Reflect, Proxy};
+use js_sys::{Array, Function, Reflect, Proxy, Promise};
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use js_sys::Object;
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use wasm_bindgen::closure::Closure;
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+use wasm_bindgen_futures::{future_to_promise, JsFuture};
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+use web_sys::window;
 
 #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
 #[link(wasm_import_module = "matchbox_js_host")]
@@ -296,6 +318,13 @@ impl BxVM for VM {
         }
     }
 
+    fn current_receiver(&self) -> Option<BxValue> {
+        self.current_fiber_idx
+            .and_then(|idx| self.fibers.get(idx))
+            .and_then(|fiber| fiber.frames.last())
+            .and_then(|frame| frame.receiver)
+    }
+
     fn interpret_chunk(&mut self, chunk: Chunk) -> Result<BxValue, String> {
         // Legacy consuming execution path. Keep this behavior intact so the
         // main VM can migrate to the borrowed path incrementally later.
@@ -304,7 +333,7 @@ impl BxVM for VM {
 
     fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue {
         let dummy = Rc::new(RefCell::new(Chunk::default()));
-        self.spawn(func, args, priority, dummy)
+        self.spawn(func, args, priority, dummy, None)
     }
 
     fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, priority: u8, _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String> {
@@ -313,7 +342,7 @@ impl BxVM for VM {
             if let GcObject::CompiledFunction(f) = obj {
                 let f = Rc::clone(f);
                 let dummy = Rc::new(RefCell::new(Chunk::default()));
-                Ok(self.spawn(f, args, priority, dummy))
+                Ok(self.spawn(f, args, priority, dummy, None))
             } else {
                 Err("Value is not a callable function".to_string())
             }
@@ -788,6 +817,15 @@ impl BxVM for VM {
             self.fibers[idx].root_stack.pop();
         }
     }
+
+    fn get_interner(&mut self) -> &mut crate::vm::intern::StringInterner {
+        &mut self.interner
+    }
+
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    fn js_to_bx_wasm(&mut self, val: JsValue) -> BxValue {
+        self.js_to_bx(val)
+    }
 }
 
 impl VM {
@@ -799,10 +837,11 @@ impl VM {
             arity: 0,
             min_arity: 0,
             params: Vec::new(),
+            captured_receiver: None,
             chunk: chunk_for_func,
         });
 
-        let future = self.spawn(function, Vec::new(), 0, Rc::new(RefCell::new(Chunk::default())));
+        let future = self.spawn(function, Vec::new(), 0, Rc::new(RefCell::new(Chunk::default())), None);
         self.run_future_to_completion(future)
     }
 
@@ -812,7 +851,9 @@ impl VM {
         function: Rc<BxCompiledFunction>,
         args: Vec<BxValue>,
         priority: u8,
+        receiver: Option<BxValue>
     ) -> BxValue {
+        let receiver = receiver.or(function.captured_receiver).or(self.current_receiver());
         let future_id = self.heap.alloc(GcObject::Future(BxFuture {
             value: BxValue::new_null(),
             status: FutureStatus::Pending,
@@ -837,7 +878,7 @@ impl VM {
                 chunk,
                 ip: 0,
                 stack_base: 1,
-                receiver: None,
+                receiver,
                 handlers: Vec::new(),
                 promoted_constants: Vec::new(),
             }],
@@ -1117,6 +1158,10 @@ impl VM {
             let id = self.heap.alloc(GcObject::String(BoxString::new(&val.as_string().unwrap())));
             BxValue::new_ptr(id)
         } else if let Some(n) = val.as_f64() {
+            return BxValue::new_ptr(id);
+        }
+
+        if let Some(n) = val.as_f64() {
             if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
                 BxValue::new_int(n as i32)
             } else {
@@ -1131,6 +1176,48 @@ impl VM {
         } else {
             BxValue::new_ptr(self.heap.alloc(GcObject::JsValue(val)))
         }
+    }
+
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    fn bridge_js_promise_to_future(&mut self, promise: JsValue) -> BxValue {
+        let vm_ptr = self as *const VM as usize;
+        let future = self.future_new();
+        if let Some(id) = future.as_gc_id() {
+            *self.pending_native_futures.entry(id).or_insert(0) += 1;
+        }
+
+        let future_for_resolve = future;
+        let sender_for_resolve = self.native_future_tx.clone();
+        let resolve_cb = Closure::wrap(Box::new(move |res: JsValue| {
+            let thunk_id = register_wasm_future_thunk(Box::new(move |vm| Ok(vm.js_to_bx_wasm(res))));
+            let _ = sender_for_resolve.send(NativeFutureMessage::ResolveWasmThunk {
+                future: future_for_resolve,
+                thunk_id,
+            });
+            schedule_browser_vm_pump(vm_ptr);
+        }) as Box<dyn FnMut(JsValue)>);
+
+        let future_for_reject = future;
+        let sender_for_reject = self.native_future_tx.clone();
+        let reject_cb = Closure::wrap(Box::new(move |err: JsValue| {
+            let thunk_id = register_wasm_future_thunk(Box::new(move |vm| {
+                let bx_err = vm.js_to_bx_wasm(err);
+                Err(vm.to_string(bx_err))
+            }));
+            let _ = sender_for_reject.send(NativeFutureMessage::ResolveWasmThunk {
+                future: future_for_reject,
+                thunk_id,
+            });
+            schedule_browser_vm_pump(vm_ptr);
+        }) as Box<dyn FnMut(JsValue)>);
+
+        let promise = js_sys::Promise::from(promise);
+        let _ = promise.then2(&resolve_cb, &reject_cb);
+
+        resolve_cb.forget();
+        reject_cb.forget();
+
+        future
     }
 
     /// Activate the Cranelift JIT. Call this before `interpret` to enable
@@ -1270,8 +1357,20 @@ impl VM {
                 },
                 GcObject::Future(_) => match name {
                     "onerror" => Some("futureonerror".to_string()),
+                    "get" => Some("futureget".to_string()),
                     _ => None,
                 },
+                #[cfg(all(target_arch = "wasm32", feature = "js"))]
+                GcObject::JsValue(js) => {
+                    if js.is_instance_of::<js_sys::Promise>() {
+                        match name {
+                            "get" => Some("futureget".to_string()),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                }
                 _ => None,
             }
         } else {
@@ -1333,6 +1432,7 @@ impl VM {
             arity: 0,
             min_arity: 0,
             params: Vec::new(),
+            captured_receiver: None,
             chunk: chunk_for_func,
         });
 
@@ -1375,7 +1475,7 @@ impl VM {
                     if args.len() < f.min_arity as usize || args.len() > f.arity as usize {
                         anyhow::bail!("Expected {}-{} arguments but got {}", f.min_arity, f.arity, args.len());
                     }
-                    Ok(self.enqueue_function_call(func, f, args, 0))
+                    Ok(self.enqueue_function_call(func, f, args, 0, Some(func)))
                 }
                 GcObject::NativeFunction(f) => {
                     let f = *f;
@@ -1461,7 +1561,15 @@ impl VM {
         }
     }
 
-    pub fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue {
+    pub fn spawn(
+        &mut self,
+        func: Rc<BxCompiledFunction>,
+        args: Vec<BxValue>,
+        priority: u8,
+        _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
+        receiver: Option<BxValue>,
+    ) -> BxValue {
+        let receiver = receiver.or(func.captured_receiver).or(self.current_receiver());
         let future_id = self.heap.alloc(GcObject::Future(BxFuture {
             value: BxValue::new_null(),
             status: FutureStatus::Pending,
@@ -1486,7 +1594,7 @@ impl VM {
                 chunk,
                 ip: 0,
                 stack_base: 1,
-                receiver: None,
+                receiver,
                 handlers: Vec::new(),
                 promoted_constants: Vec::new(),
             }],
@@ -3717,7 +3825,7 @@ impl VM {
                     if args.len() < f.min_arity as usize || args.len() > f.arity as usize {
                         anyhow::bail!("Expected {}-{} arguments but got {}", f.min_arity, f.arity, args.len());
                     }
-                    let _future = self.enqueue_function_call(func, f, args, 0);
+                    let _future = self.enqueue_function_call(func, f, args, 0, Some(func));
                     let fiber_idx = self.fibers.len() - 1;
                     self.current_fiber_idx = Some(fiber_idx);
                     // Loop until the fiber completes — this is a synchronous blocking call.
@@ -4048,7 +4156,7 @@ impl VM {
                 GcObject::CompiledFunction(f) => {
                     let f_rc = Rc::clone(f);
                     let dummy_chunk = Rc::new(RefCell::new(Chunk::default()));
-                    self.spawn(f_rc, vec![err_val], 1, dummy_chunk);
+                    self.spawn(f_rc, vec![err_val], 1, dummy_chunk, Some(handler));
                 }
 
                 GcObject::NativeFunction(f) => {
@@ -4294,6 +4402,38 @@ impl VM {
             #[cfg(all(target_arch = "wasm32", feature = "js"))]
             if let GcObject::JsValue(js) = self.heap.get(id) {
                 let js = js.clone();
+                if name.eq_ignore_ascii_case("get") && js.is_instance_of::<js_sys::Promise>() {
+                    let future_val = self.bridge_js_promise_to_future(js.clone());
+                    let future_id = match future_val.as_gc_id() {
+                        Some(future_id) => future_id,
+                        None => return self.throw_error(fiber_idx, "Promise interop did not produce a future."),
+                    };
+
+                    self.fibers[fiber_idx].stack[receiver_idx] = future_val;
+
+                    if let GcObject::Future(f) = self.heap.get(future_id) {
+                        match f.status.clone() {
+                            FutureStatus::Pending => {
+                                let fiber = &mut self.fibers[fiber_idx];
+                                fiber.frames.last_mut().unwrap().ip = ip_at_start;
+                                fiber.yield_requested = true;
+                                return Ok(());
+                            }
+                            FutureStatus::Completed => {
+                                for _ in 0..arg_count {
+                                    self.fibers[fiber_idx].stack.pop();
+                                }
+                                self.fibers[fiber_idx].stack.pop();
+                                self.fibers[fiber_idx].stack.push(f.value);
+                                return Ok(());
+                            }
+                            FutureStatus::Failed(error) => {
+                                return self.throw_value(fiber_idx, error);
+                            }
+                        }
+                    }
+                }
+
                 let prop = resolve_js_property(&js, &name);
                 match Reflect::get(&js, &prop) {
                     Ok(val) => {
@@ -4329,14 +4469,21 @@ impl VM {
                     if name == "get" {
                         match status {
                             FutureStatus::Pending => {
+                                eprintln!("[future.get] pending in execute_invoke");
+                                // Suspend this fiber and return to the host loop.
+                                // We don't pop anything; we stay at the current instruction
+                                // so that we retry when the fiber resumes.
                                 let fiber = &mut self.fibers[fiber_idx];
                                 fiber.frames.last_mut().unwrap().ip = ip_at_start;
                                 fiber.yield_requested = true;
                                 return Ok(());
                             }
                             FutureStatus::Completed => {
-                                for _ in 0..arg_count { self.fibers[fiber_idx].stack.pop(); }
-                                self.fibers[fiber_idx].stack.pop();
+                                eprintln!("[future.get] completed in execute_invoke -> {:?}", self.to_string(value));
+                                for _ in 0..arg_count {
+                                    self.fibers[fiber_idx].stack.pop();
+                                }
+                                self.fibers[fiber_idx].stack.pop(); // Pop the future/receiver
                                 self.fibers[fiber_idx].stack.push(value);
                                 return Ok(());
                             }
@@ -4537,6 +4684,49 @@ impl VM {
     }
 
     fn execute_bif_call(&mut self, fiber_idx: usize, bif_name: String, arg_count: usize, receiver: BxValue) -> Result<()> {
+        if bif_name == "futureget" {
+            let receiver_idx = self.fibers[fiber_idx].stack.len() - 1 - arg_count;
+
+            #[cfg(all(target_arch = "wasm32", feature = "js"))]
+            if let Some(id) = receiver.as_gc_id() {
+                if let GcObject::JsValue(js) = self.heap.get(id) {
+                    let js = js.clone();
+                    if js.is_instance_of::<js_sys::Promise>() {
+                        let future_val = self.bridge_js_promise_to_future(js);
+                        self.fibers[fiber_idx].stack[receiver_idx] = future_val;
+                        return self.execute_bif_call(fiber_idx, bif_name, arg_count, future_val);
+                    }
+                }
+            }
+
+            if let Some(id) = receiver.as_gc_id() {
+                if let GcObject::Future(f) = self.heap.get(id) {
+                    match f.status.clone() {
+                        FutureStatus::Pending => {
+                            if let Some(frame) = self.fibers[fiber_idx].frames.last_mut() {
+                                if frame.ip > 0 {
+                                    frame.ip -= 1;
+                                }
+                            }
+                            self.fibers[fiber_idx].yield_requested = true;
+                            return Ok(());
+                        }
+                        FutureStatus::Completed => {
+                            for _ in 0..arg_count {
+                                self.fibers[fiber_idx].stack.pop().unwrap();
+                            }
+                            self.fibers[fiber_idx].stack.pop();
+                            self.fibers[fiber_idx].stack.push(f.value);
+                            return Ok(());
+                        }
+                        FutureStatus::Failed(error) => {
+                            return self.throw_value(fiber_idx, error);
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(bif_val) = self.get_global(&bif_name) {
             if let Some(bif_id) = bif_val.as_gc_id() {
                 if let GcObject::NativeFunction(bif) = self.heap.get(bif_id) {
@@ -4619,6 +4809,10 @@ impl VM {
                 BxValue::new_ptr(id)
             }
             Constant::CompiledFunction(f) => {
+                let mut f = f;
+                if f.captured_receiver.is_none() {
+                    f.captured_receiver = self.current_receiver();
+                }
                 BxValue::new_ptr(self.heap.alloc(GcObject::CompiledFunction(Rc::new(f))))
             }
             Constant::Class(c) => BxValue::new_ptr(self.heap.alloc(GcObject::Class(Rc::new(RefCell::new(c))))),
@@ -4676,6 +4870,61 @@ impl VM {
                     js_obj.into()
                 }
                 GcObject::JsValue(js) => js.clone(),
+                GcObject::Future(_) => {
+                    let vm_ptr = self as *const VM as usize;
+                    let future = *val;
+
+                    future_to_promise(async move {
+                        async fn yield_to_host() -> Result<(), JsValue> {
+                            let promise = Promise::new(&mut |resolve: Function, reject: Function| {
+                                let win = match window() {
+                                    Some(win) => win,
+                                    None => {
+                                        let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("window is unavailable"));
+                                        return;
+                                    }
+                                };
+
+                                if let Err(err) = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0) {
+                                    let _ = reject.call1(&JsValue::NULL, &err);
+                                }
+                            });
+
+                            let _ = JsFuture::from(promise).await?;
+                            Ok(())
+                        }
+
+                        loop {
+                            let state = {
+                                let vm = unsafe { &*(vm_ptr as *const VM) };
+                                vm.future_state(future)
+                                    .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))?
+                            };
+
+                            match state {
+                                HostFutureState::Pending => yield_to_host().await?,
+                                HostFutureState::Completed(value) => {
+                                    let js = {
+                                        let vm = unsafe { &*(vm_ptr as *const VM) };
+                                        vm.bx_to_js(&value)
+                                    };
+                                    return Ok(js);
+                                }
+                                HostFutureState::Failed(error) => {
+                                    let js = {
+                                        let vm = unsafe { &*(vm_ptr as *const VM) };
+                                        vm.bx_to_js(&error)
+                                    };
+                                    if let Some(msg) = js.as_string() {
+                                        return Err(JsValue::from(js_sys::Error::new(&msg)));
+                                    }
+                                    return Err(js);
+                                }
+                            }
+                        }
+                    })
+                    .into()
+                }
                 GcObject::CompiledFunction(_) | GcObject::NativeFunction(_) => {
                     #[cfg(all(target_arch = "wasm32", feature = "js"))]
                     {
@@ -4684,7 +4933,7 @@ impl VM {
                         *self.next_callback_id.borrow_mut() += 1;
                         
                         let vm_ptr = self as *const VM as usize;
-                        let body = format!("return globalThis.MatchBox.invokeCallback({}, {}, Array.from(arguments));", vm_ptr, id);
+                        let body = format!("return globalThis.MatchBox.invokeCallback({}, {}, this, Array.from(arguments));", vm_ptr, id);
                         match Function::new_no_args(&body).dyn_into::<Function>() {
                             Ok(f) => f.into(),
                             Err(_) => JsValue::UNDEFINED
@@ -4849,10 +5098,62 @@ pub fn _matchbox_invoke_callback(vm_ptr: usize, callback_id: usize, args: js_sys
         let future = vm
             .start_call_function_value(func, bx_args)
             .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))?;
-        vm.run_future_to_completion(future)
-            .map(|v| vm.bx_to_js(&v))
-            .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))
+        vm.pump_until_blocked()
+            .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))?;
+
+        match vm.future_state(future) {
+            Ok(HostFutureState::Completed(value)) => Ok(vm.bx_to_js(&value)),
+            Ok(HostFutureState::Failed(error)) => {
+                let js_err = vm.bx_to_js(&error);
+                if let Some(msg) = js_err.as_string() {
+                    Err(JsValue::from(js_sys::Error::new(&msg)))
+                } else {
+                    Err(js_err)
+                }
+            }
+            Ok(HostFutureState::Pending) => Ok(vm.bx_to_js(&future)),
+            Err(e) => Err(JsValue::from(js_sys::Error::new(&e.to_string()))),
+        }
     } else {
         Err(js_sys::Error::new("Callback not found").into())
     }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+#[wasm_bindgen]
+pub fn _matchbox_pump_vm(vm_ptr: usize) -> Result<(), JsValue> {
+    let vm = unsafe { &mut *(vm_ptr as *mut VM) };
+    vm.pump_until_blocked()
+        .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+#[wasm_bindgen]
+pub fn _matchbox_get_instance_prop(vm_ptr: usize, gc_id: u32, name: &str) -> JsValue {
+    let vm = unsafe { &mut *(vm_ptr as *mut VM) };
+    let base_val = BxValue::new_ptr(gc_id as usize);
+    let val = vm.get_member(base_val, name, None, None);
+    vm.bx_to_js(&val)
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+#[wasm_bindgen]
+pub fn _matchbox_get_instance_keys(vm_ptr: usize, gc_id: u32) -> js_sys::Array {
+    let vm = unsafe { &mut *(vm_ptr as *mut VM) };
+    let base_val = BxValue::new_ptr(gc_id as usize);
+    let keys = vm.instance_key_array(base_val);
+    let js_keys = js_sys::Array::new();
+    for key in keys {
+        js_keys.push(&JsValue::from_str(&key));
+    }
+    js_keys
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+#[wasm_bindgen]
+pub fn _matchbox_set_instance_prop(vm_ptr: usize, gc_id: u32, name: &str, val: JsValue) {
+    let vm = unsafe { &mut *(vm_ptr as *mut VM) };
+    let base_val = BxValue::new_ptr(gc_id as usize);
+    let bx_val = vm.js_to_bx(val);
+    vm.set_member(base_val, name, bx_val, None, None);
 }

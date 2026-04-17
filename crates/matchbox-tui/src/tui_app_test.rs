@@ -37,6 +37,7 @@ mod tests {
         fn current_chunk(&self) -> Option<Rc<RefCell<matchbox_vm::Chunk>>> { 
             Some(Rc::new(RefCell::new(matchbox_vm::Chunk::new("test.bxs")))) 
         }
+        fn current_receiver(&self) -> Option<BxValue> { None }
         fn spawn(&mut self, _: Rc<BxCompiledFunction>, _: Vec<BxValue>, _: u8, _: Rc<RefCell<matchbox_vm::Chunk>>) -> BxValue { 
             self.spawn_called = true;
             BxValue::new_null() 

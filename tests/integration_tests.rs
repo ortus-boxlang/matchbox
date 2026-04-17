@@ -88,6 +88,7 @@ script_test!(vm_continue, "vm_continue.bxs");
 script_test!(vm_array_sparse, "vm_array_sparse.bxs");
 script_test!(vm_polymorphic_ic, "vm_polymorphic_ic.bxs");
 script_test!(vm_fiber_priority, "vm_fiber_priority.bxs");
+script_test!(vm_runasync_closure_this, "vm_runasync_closure_this.bxs");
 script_test!(bvm_features, "bvm_features.bxs");
 script_test!(vm_safe_nav_elvis, "vm_safe_nav_elvis.bxs");
 script_test!(vm_switch, "vm_switch.bxs");

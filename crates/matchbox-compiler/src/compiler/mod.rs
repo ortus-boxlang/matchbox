@@ -147,6 +147,7 @@ impl Compiler {
                                 arity: 0,
                                 min_arity: 0,
                                 params: Vec::new(),
+                                captured_receiver: None,
                                 chunk: getter_chunk,
                             };
                             methods.insert(getter_name.to_lowercase(), func);
@@ -167,6 +168,7 @@ impl Compiler {
                                 arity: 1,
                                 min_arity: 1,
                                 params: vec!["val".to_string()],
+                                captured_receiver: None,
                                 chunk: setter_chunk,
                             };
                             methods.insert(setter_name.to_lowercase(), func);
@@ -212,6 +214,7 @@ impl Compiler {
                     arity: 0,
                     min_arity: 0,
                     params: Vec::new(),
+                    captured_receiver: None,
                     chunk: constructor_compiler.chunk,
                 };
 
@@ -1457,6 +1460,7 @@ impl Compiler {
             arity: params.len() as u32,
             min_arity,
             params: params.iter().map(|p| p.name.to_lowercase()).collect(),
+            captured_receiver: None,
             chunk: sub_compiler.chunk,
         })
     }

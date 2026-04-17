@@ -1,0 +1,22 @@
+class AsyncClosureTest {
+    this.value = 0
+
+    function bumpLater() {
+        future = runAsync(() => {
+            this.value = this.value + 1
+            return this.value
+        })
+
+        result = future.get()
+        if (result != 1) {
+            throw "expected async lambda to return 1, got " & result
+        }
+    }
+}
+
+test = new AsyncClosureTest()
+test.bumpLater()
+
+if (test.value != 1) {
+    throw "expected async lambda to capture this and update value"
+}

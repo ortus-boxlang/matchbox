@@ -7,7 +7,8 @@ mod tests {
     use wasm_bindgen::JsValue;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_test::*;
-    use js_sys::Reflect;
+    use js_sys::{Function, Promise, Reflect};
+    use wasm_bindgen_futures::JsFuture;
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -244,7 +245,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn test_js_promise_is_returned_as_js_value() {
+    fn test_js_promise_is_preserved_as_js_value_until_get() {
         let mut vm = VM::new();
         // Create a JS function that returns a Promise
         let js_func = js_sys::Function::new_no_args("return Promise.resolve(42);");
@@ -254,11 +255,31 @@ mod tests {
         let id = result.as_gc_id().expect("Expected a GC pointer");
         
         match vm.heap.get(id) {
-            GcObject::JsValue(js) => {
-                assert!(js.is_instance_of::<js_sys::Promise>());
+            GcObject::JsValue(value) => {
+                assert!(value.is_instance_of::<Promise>());
             }
-            other => panic!("Expected JsValue, got {:?}", other),
+            other => panic!("Expected JsValue(Promise), got {:?}", other),
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn test_js_callback_future_is_marshalled_to_promise() {
+        let mut vm = VM::new();
+        let callback_id = 77usize;
+        let bx_func = BxValue::new_ptr(vm.heap.alloc(GcObject::NativeFunction(|vm, _args| {
+            Ok(vm.future_new())
+        })));
+        vm.callback_registry.borrow_mut().insert(callback_id, bx_func);
+
+        let result = crate::vm::_matchbox_invoke_callback(
+            &mut vm as *mut VM as usize,
+            callback_id,
+            JsValue::UNDEFINED,
+            js_sys::Array::new(),
+        )
+        .expect("expected promise result");
+
+        assert!(result.is_instance_of::<Promise>());
     }
 
     #[wasm_bindgen_test]
@@ -342,5 +363,86 @@ mod tests {
             let type_prop = resolve_js_property(js, "type");
             assert_eq!(Reflect::get(js, &type_prop).unwrap().as_string().unwrap(), "click");
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn test_boxlang_instance_proxy_and_this_interop() {
+        use crate::types::box_string::BoxString;
+        use crate::types::{BxClass, BxCompiledFunction, BxInstance};
+        use crate::vm::chunk::Chunk;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use wasm_bindgen::prelude::Closure;
+
+        let mut vm = VM::new();
+
+        // 1. Mock globalThis.MatchBox
+        let global = js_sys::global();
+        let matchbox = js_sys::Object::new();
+        Reflect::set(&global, &"MatchBox".into(), &matchbox).unwrap();
+
+        // createInstanceProxy mock
+        let create_proxy = Closure::wrap(Box::new(move |ptr: usize, id: u32| {
+            let target = js_sys::Object::new();
+            Reflect::set(&target, &"__matchbox_vm_ptr".into(), &(ptr as f64).into()).unwrap();
+            Reflect::set(&target, &"__matchbox_gc_id".into(), &(id as f64).into()).unwrap();
+            
+            let handler = js_sys::Object::new();
+            let get_trap = Closure::wrap(Box::new(move |target: JsValue, prop: JsValue, _receiver: JsValue| {
+                let ptr = Reflect::get(&target, &"__matchbox_vm_ptr".into()).unwrap().as_f64().unwrap() as usize;
+                let id = Reflect::get(&target, &"__matchbox_gc_id".into()).unwrap().as_f64().unwrap() as u32;
+                let name = prop.as_string().unwrap();
+                
+                // Call the bridge
+                use crate::vm::_matchbox_get_instance_prop;
+                _matchbox_get_instance_prop(ptr, id, &name)
+            }) as Box<dyn Fn(JsValue, JsValue, JsValue) -> JsValue>);
+            
+            Reflect::set(&handler, &"get".into(), get_trap.as_ref()).unwrap();
+            get_trap.forget();
+            
+            js_sys::Proxy::new(&target, &handler).into()
+        }) as Box<dyn Fn(usize, u32) -> JsValue>);
+        Reflect::set(&matchbox, &"createInstanceProxy".into(), create_proxy.as_ref()).unwrap();
+        create_proxy.forget();
+
+        // 2. Create a BoxLang Class "User" with a public "name" property
+        let class = Rc::new(RefCell::new(BxClass {
+            name: "User".to_string(),
+            extends: None,
+            implements: Vec::new(),
+            constructor: BxCompiledFunction {
+                name: "init".to_string(),
+                arity: 0,
+                min_arity: 0,
+                params: Vec::new(),
+                captured_receiver: None,
+                chunk: Chunk::default(),
+            },
+            methods: Vec::new(),
+        }));
+
+        let inst_id = vm.heap.alloc(GcObject::Instance(BxInstance {
+            class,
+            shape_id: vm.shapes.get_root(),
+            properties: Vec::new(),
+            variables: Rc::new(RefCell::new(std::collections::HashMap::new())),
+        }));
+        let instance = BxValue::new_ptr(inst_id);
+
+        let bob_val = BxValue::new_ptr(vm.heap.alloc(GcObject::String(BoxString::new("Bob"))));
+        if let GcObject::Instance(inst) = vm.heap.get(inst_id) {
+            let name_id = vm.interner.intern("name");
+            inst.variables.borrow_mut().insert(name_id, bob_val);
+        }
+        vm.set_member(instance, "name", bob_val, None, None);
+
+        // 3. Convert Instance to JS Proxy
+        let js_proxy = vm.bx_to_js(&instance);
+        assert!(js_proxy.is_object());
+
+        let name_val = Reflect::get(&js_proxy, &"name".into()).unwrap();
+        assert_eq!(name_val.as_string().unwrap(), "Bob");
+        assert_eq!(vm.unwrap_matchbox_instance(&js_proxy), Some(inst_id as u32));
     }
 }

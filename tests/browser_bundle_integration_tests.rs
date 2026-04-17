@@ -563,3 +563,101 @@ try {
         html,
     );
 }
+
+#[test]
+fn browser_bundle_awaits_js_promises_via_future_get() {
+    let source = r#"
+function awaitJsPromise() {
+    return js.globalThis.matchboxResolveLater().get()
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { awaitJsPromise, ready } from "./browser_bundle_awaits_js_promises_via_future_get.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.matchboxResolveLater = function() {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve("done"), 0);
+  });
+};
+
+window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
+window.addEventListener("unhandledrejection", (event) => report(`fail-${String(event.reason?.stack || event.reason)}`));
+
+try {
+  await ready;
+  const result = await awaitJsPromise();
+  if (result !== "done") {
+    await report(`fail-${String(result)}`);
+    throw new Error("bad-result");
+  }
+  await report("ok");
+} catch (_error) {
+  await report(`fail-${String(_error?.stack || _error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_awaits_js_promises_via_future_get",
+        source,
+        html,
+    );
+}
+
+#[test]
+fn browser_bundle_preserves_quoted_struct_key_case_for_js() {
+    let source = r#"
+function buildOptions() {
+    return {
+        "acceptAllDevices": true,
+        "optionalServices": ["service-a", "service-b"]
+    }
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { buildOptions, ready } from "./browser_bundle_preserves_quoted_struct_key_case_for_js.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
+window.addEventListener("unhandledrejection", (event) => report(`fail-${String(event.reason?.stack || event.reason)}`));
+
+try {
+  await ready;
+  const options = await buildOptions();
+  const keys = Object.keys(options);
+  if (keys[0] !== "acceptAllDevices" || keys[1] !== "optionalServices") {
+    await report(`fail-${keys.join("|")}`);
+    throw new Error(`bad-keys:${keys.join("|")}`);
+  }
+  await report("ok");
+} catch (_error) {
+  await report(`fail-${String(_error?.stack || _error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_preserves_quoted_struct_key_case_for_js",
+        source,
+        html,
+    );
+}

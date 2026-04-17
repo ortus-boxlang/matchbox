@@ -167,6 +167,7 @@ mod tests {
     struct MockVM;
     impl BxVM for MockVM {
         fn current_chunk(&self) -> Option<Rc<RefCell<matchbox_vm::Chunk>>> { None }
+        fn current_receiver(&self) -> Option<BxValue> { None }
         fn spawn(&mut self, _: Rc<BxCompiledFunction>, _: Vec<BxValue>, _: u8, _: Rc<RefCell<matchbox_vm::Chunk>>) -> BxValue { BxValue::new_null() }
         fn spawn_by_value(&mut self, _: &BxValue, _: Vec<BxValue>, _: u8, _: Rc<RefCell<matchbox_vm::Chunk>>) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
         fn call_function_by_value(&mut self, _: &BxValue, _: Vec<BxValue>, _: Rc<RefCell<matchbox_vm::Chunk>>) -> Result<BxValue, String> { Ok(BxValue::new_null()) }

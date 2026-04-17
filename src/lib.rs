@@ -12,6 +12,14 @@ use colored::*;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsValue;
+#[cfg(target_arch = "wasm32")]
+use js_sys::{Array, Error, Function, Promise};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
+#[cfg(target_arch = "wasm32")]
+use web_sys::window;
 
 const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
 const ESP32_PARTITIONS_CSV: &str =
@@ -446,6 +454,31 @@ pub struct BoxLangVM {
 }
 
 #[cfg(target_arch = "wasm32")]
+fn as_wasm_js_error(message: impl Into<String>) -> JsValue {
+    Error::new(&message.into()).into()
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn yield_to_browser_host() -> Result<(), JsValue> {
+    let promise = Promise::new(&mut |resolve: Function, reject: Function| {
+        let win = match window() {
+            Some(win) => win,
+            None => {
+                let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("window is unavailable"));
+                return;
+            }
+        };
+
+        if let Err(err) = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0) {
+            let _ = reject.call1(&JsValue::NULL, &err);
+        }
+    });
+
+    let _ = JsFuture::from(promise).await?;
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 impl BoxLangVM {
     #[wasm_bindgen(constructor)]
@@ -473,18 +506,45 @@ impl BoxLangVM {
         &self.vm as *const vm::VM as usize
     }
 
-    pub fn call(&mut self, name: &str, args: js_sys::Array) -> Result<JsValue, JsValue> {
+    pub fn pump(&mut self) -> Result<(), JsValue> {
+        self.vm
+            .pump_until_blocked()
+            .map_err(|e| as_wasm_js_error(format!("Error: {}", e)))
+    }
+
+    pub async fn call(&mut self, name: &str, args: Array) -> Result<JsValue, JsValue> {
         let mut bx_args = Vec::new();
         for i in 0..args.length() {
             bx_args.push(self.vm.js_to_bx(args.get(i)));
         }
 
         let func = self.vm.get_global(name)
-            .ok_or_else(|| js_sys::Error::new(&format!("Function {} not found", name)))?;
+            .ok_or_else(|| as_wasm_js_error(format!("Function {} not found", name)))?;
 
-        match self.vm.call_function_value(func, bx_args, self.chunk.clone()) {
-            Ok(val) => Ok(self.vm.bx_to_js(&val)),
-            Err(e) => Err(js_sys::Error::new(&format!("Error: {}", e)).into()),
+        let future = self
+            .vm
+            .start_call_function_value(func, bx_args)
+            .map_err(|e| as_wasm_js_error(format!("Error: {}", e)))?;
+
+        loop {
+            self.vm
+                .pump_until_blocked()
+                .map_err(|e| as_wasm_js_error(format!("Error: {}", e)))?;
+
+            match self
+                .vm
+                .future_state(future)
+                .map_err(|e| as_wasm_js_error(format!("Error: {}", e)))? {
+                vm::HostFutureState::Pending => yield_to_browser_host().await?,
+                vm::HostFutureState::Completed(value) => return Ok(self.vm.bx_to_js(&value)),
+                vm::HostFutureState::Failed(error) => {
+                    let js_err = self.vm.bx_to_js(&error);
+                    if let Some(msg) = js_err.as_string() {
+                        return Err(as_wasm_js_error(msg));
+                    }
+                    return Err(js_err);
+                }
+            }
         }
     }
 }

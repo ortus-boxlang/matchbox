@@ -3,6 +3,13 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
+fn truthy_env(name: &str) -> bool {
+    matches!(
+        env::var(name).ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+    )
+}
+
 fn main() {
     // 1. Get Git commit hash
     let commit = Command::new("git")
@@ -44,8 +51,10 @@ fn main() {
     println!("cargo:rerun-if-changed=crates/matchbox-runner/src/main.rs");
     println!("cargo:rerun-if-changed=crates/matchbox-runner/Cargo.toml");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/src/vm/mod.rs");
+    println!("cargo:rerun-if-changed=crates/matchbox-vm/src/vm/intern.rs");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/src/vm/opcode.rs");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/src/bifs");
+    println!("cargo:rerun-if-changed=crates/matchbox-vm/src/types");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/src/lib.rs");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/Cargo.toml");
     println!("cargo:rerun-if-changed=build.rs");
@@ -72,8 +81,10 @@ fn main() {
             Path::new(&root_dir).join("crates/matchbox-runner/src/main.rs"),
             Path::new(&root_dir).join("crates/matchbox-runner/Cargo.toml"),
             Path::new(&root_dir).join("crates/matchbox-vm/src/vm/mod.rs"),
+            Path::new(&root_dir).join("crates/matchbox-vm/src/vm/intern.rs"),
             Path::new(&root_dir).join("crates/matchbox-vm/src/vm/opcode.rs"),
             Path::new(&root_dir).join("crates/matchbox-vm/src/bifs/mod.rs"),
+            Path::new(&root_dir).join("crates/matchbox-vm/src/types/mod.rs"),
             Path::new(&root_dir).join("crates/matchbox-vm/src/lib.rs"),
             Path::new(&root_dir).join("crates/matchbox-vm/Cargo.toml"),
         ];
@@ -166,6 +177,8 @@ fn main() {
         ("riscv32imc-esp-espidf", "runner_stub_esp32c3.elf"),
     ];
 
+    let rebuild_embedded_stubs = truthy_env("MATCHBOX_REBUILD_EMBEDDED_STUBS");
+
     for (target, dest) in esp32_targets {
         let dest_path = stub_dest_dir.join(dest);
         
@@ -190,7 +203,7 @@ fn main() {
             })
         });
 
-        if needs_rebuild {
+        if needs_rebuild && (is_empty || rebuild_embedded_stubs) {
             println!("cargo:warning=Building ESP32 stub for {} (this may take a few minutes)...", target);
             let mut success = false;
             
@@ -244,6 +257,11 @@ fn main() {
             if !success && !dest_path.exists() {
                 let _ = fs::write(&dest_path, b"");
             }
+        } else if needs_rebuild {
+            println!(
+                "cargo:warning=Using pre-existing ESP32 stub for {} (set MATCHBOX_REBUILD_EMBEDDED_STUBS=1 to rebuild)",
+                target
+            );
         }
         
         stubs_rs_content.push_str(&format!("    stubs.insert(\"{}\", include_bytes!(\"../stubs/{}\"));\n", target, dest));

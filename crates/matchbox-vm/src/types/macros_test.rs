@@ -45,6 +45,7 @@ mod tests {
     struct MockVM;
     impl BxVM for MockVM {
         fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>> { None }
+        fn current_receiver(&self) -> Option<BxValue> { None }
         fn interpret_chunk(&mut self, _: crate::vm::chunk::Chunk) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
         fn spawn(&mut self, _: Rc<BxCompiledFunction>, _: Vec<BxValue>, _: u8, _: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue { BxValue::new_null() }
         fn spawn_by_value(&mut self, _: &BxValue, _: Vec<BxValue>, _: u8, _: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String> { Ok(BxValue::new_null()) }
@@ -108,6 +109,8 @@ mod tests {
         fn resume_gc(&mut self) {}
         fn push_root(&mut self, _: BxValue) {}
         fn pop_root(&mut self) {}
+        #[cfg(all(target_arch = "wasm32", feature = "js"))]
+        fn js_to_bx_wasm(&mut self, _: wasm_bindgen::JsValue) -> BxValue { BxValue::new_null() }
     }
 
     #[test]

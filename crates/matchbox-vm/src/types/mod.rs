@@ -113,6 +113,7 @@ impl BxValue {
 
 pub trait BxVM {
     fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>>;
+    fn current_receiver(&self) -> Option<BxValue>;
     fn interpret_chunk(&mut self, chunk: crate::vm::chunk::Chunk) -> Result<BxValue, String>;
     fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue;
     fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String>;
@@ -173,6 +174,10 @@ pub trait BxVM {
     fn resume_gc(&mut self);
     fn push_root(&mut self, val: BxValue);
     fn pop_root(&mut self);
+
+    fn get_interner(&mut self) -> &mut crate::vm::intern::StringInterner;
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    fn js_to_bx_wasm(&mut self, val: wasm_bindgen::JsValue) -> BxValue;
 }
 
 pub type BxNativeFunction = fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, String>;
@@ -353,6 +358,9 @@ pub struct BxCompiledFunction {
     pub arity: u32,     // Total parameters
     pub min_arity: u32, // Required parameters
     pub params: Vec<String>, // Parameter names
+    /// Captured `this` for closures created inside class contexts.
+    #[serde(skip)]
+    pub captured_receiver: Option<BxValue>,
     /// The actual bytecode for this function.
     pub chunk: crate::vm::chunk::Chunk,
 }
