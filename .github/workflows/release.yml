@@ -210,19 +210,17 @@ jobs:
       options: --user root
     steps:
       - uses: actions/checkout@v4
-      - name: Show ESP tool versions
-        env:
-          RUSTUP_HOME: /home/esp/.rustup
-          CARGO_HOME: /home/esp/.cargo
+      - name: Setup ESP-IDF Path
         shell: bash
         run: |
-          rustc -V
-          cargo -V
-          python3 --version
-          if command -v idf.py >/dev/null 2>&1; then
-            idf.py --version
-          else
-            echo "idf.py not found on PATH in this container; continuing to smoke-test the actual ESP32 build path"
+          if [[ -z "${IDF_PATH:-}" ]]; then
+            for candidate in /opt/esp/idf /opt/esp-idf /home/esp/esp-idf /esp-idf; do
+              if [[ -f "$candidate/tools/cmake/toolchain-esp32s3.cmake" ]]; then
+                echo "IDF_PATH=$candidate" >> $GITHUB_ENV
+                echo "Detected IDF_PATH at $candidate"
+                break
+              fi
+            done
           fi
 
       - name: Build MatchBox host CLI
@@ -230,7 +228,7 @@ jobs:
           RUSTUP_HOME: /home/esp/.rustup
           CARGO_HOME: /home/esp/.cargo
         shell: bash
-        run: cargo build --release --target x86_64-unknown-linux-gnu
+        run: cargo build --release
 
       - name: Build ESP32 fusion example
         env:
@@ -240,29 +238,8 @@ jobs:
           ESP_IDF_TOOLS_INSTALL_DIR: fromenv
         shell: bash
         run: |
-          if [[ -z "${IDF_PATH:-}" ]]; then
-            for candidate in /opt/esp/idf /opt/esp-idf /home/esp/esp-idf /esp-idf; do
-              if [[ -f "$candidate/tools/cmake/toolchain-esp32s3.cmake" ]]; then
-                export IDF_PATH="$candidate"
-                break
-              fi
-            done
-          fi
-
-          if [[ -z "${IDF_PATH:-}" ]]; then
-            toolchain_file="$(find / -path '*/tools/cmake/toolchain-esp32s3.cmake' 2>/dev/null | head -n1)"
-            if [[ -n "$toolchain_file" ]]; then
-              export IDF_PATH="${toolchain_file%/tools/cmake/toolchain-esp32s3.cmake}"
-            fi
-          fi
-
-          [[ -n "${IDF_PATH:-}" ]] || { echo "Could not determine IDF_PATH inside the ESP32 smoke container"; exit 1; }
-          echo "Using IDF_PATH=$IDF_PATH"
           source "$IDF_PATH/export.sh"
-          command -v idf.py >/dev/null 2>&1 || { echo "idf.py is still not on PATH after sourcing export.sh"; exit 1; }
-          idf.py --version
-
-          ./target/x86_64-unknown-linux-gnu/release/matchbox \
+          ./target/release/matchbox \
             docs/examples/native_fusion/app.bxs \
             --target esp32 \
             --chip esp32s3
