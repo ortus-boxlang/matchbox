@@ -1,16 +1,25 @@
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 use esp_idf_sys::{self, camera};
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 use std::collections::HashMap;
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 use std::sync::{Mutex as StdMutex, OnceLock};
 
@@ -73,9 +82,12 @@ pub struct StoredCaptureMeta {
     pub bytes_len: usize,
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 unsafe fn frame_ptr_as_ref<'a>(ptr: usize) -> &'a camera::camera_fb_t {
     &*(ptr as *const camera::camera_fb_t)
@@ -165,9 +177,12 @@ pub fn low_memory_xiao_esp32s3_sense_print_camera() -> Esp32CameraOptions {
     }
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn ensure_print_camera_ready() -> Result<(), String> {
     let options = low_memory_xiao_esp32s3_sense_print_camera();
@@ -178,9 +193,12 @@ pub fn ensure_print_camera_ready() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn shutdown_camera() -> Result<(), String> {
     Err(
@@ -189,9 +207,12 @@ pub fn shutdown_camera() -> Result<(), String> {
     )
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn shutdown_camera() -> Result<(), String> {
     let state = camera_state();
@@ -213,9 +234,12 @@ pub fn shutdown_camera() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 fn esp_ok(code: i32, action: &str) -> Result<(), String> {
     if code == 0 {
@@ -225,9 +249,12 @@ fn esp_ok(code: i32, action: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 fn parse_frame_size(input: &str) -> Result<camera::framesize_t, String> {
     let normalized = input.trim().to_ascii_lowercase();
@@ -252,9 +279,12 @@ fn parse_frame_size(input: &str) -> Result<camera::framesize_t, String> {
     }
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 fn frame_size_dimensions(input: &str) -> (u32, u32) {
     match input.trim().to_ascii_lowercase().as_str() {
@@ -278,9 +308,12 @@ fn frame_size_dimensions(input: &str) -> (u32, u32) {
     }
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 fn parse_pixel_format(input: &str) -> Result<camera::pixformat_t, String> {
     if input.eq_ignore_ascii_case("jpeg") {
@@ -295,9 +328,12 @@ fn parse_pixel_format(input: &str) -> Result<camera::pixformat_t, String> {
     }
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 #[derive(Clone, Debug)]
 struct CameraRuntimeState {
@@ -307,9 +343,12 @@ struct CameraRuntimeState {
     next_capture_version: u64,
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 fn camera_state() -> &'static StdMutex<CameraRuntimeState> {
     static CAMERA_STATE: OnceLock<StdMutex<CameraRuntimeState>> = OnceLock::new();
@@ -323,18 +362,24 @@ fn camera_state() -> &'static StdMutex<CameraRuntimeState> {
     })
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 fn photo_store() -> &'static StdMutex<HashMap<u64, StoredCapture>> {
     static PHOTO_STORE: OnceLock<StdMutex<HashMap<u64, StoredCapture>>> = OnceLock::new();
     PHOTO_STORE.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 fn options_signature(options: &Esp32CameraOptions) -> String {
     format!(
@@ -364,9 +409,12 @@ fn options_signature(options: &Esp32CameraOptions) -> String {
     )
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 fn build_camera_config(
     options: &Esp32CameraOptions,
@@ -407,9 +455,12 @@ fn build_camera_config(
     config
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 fn ensure_camera_initialized(
     options: &Esp32CameraOptions,
@@ -442,9 +493,12 @@ fn ensure_camera_initialized(
     Ok(())
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn store_latest_capture(capture: &Esp32Capture) -> Result<(), String> {
     let owned = Esp32Capture {
@@ -456,9 +510,12 @@ pub fn store_latest_capture(capture: &Esp32Capture) -> Result<(), String> {
     store_latest_capture_owned(owned).map(|_| ())
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn store_latest_capture_owned(capture: Esp32Capture) -> Result<StoredCaptureMeta, String> {
     let state = camera_state();
@@ -494,9 +551,12 @@ pub fn store_latest_capture_owned(capture: Esp32Capture) -> Result<StoredCapture
     Ok(StoredCaptureMeta { id, version, width, height, format, bytes_len })
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn capture_photo_handle(options: &Esp32CameraOptions) -> Result<StoredCaptureMeta, String> {
     let frame_size = parse_frame_size(options.frame_size)?;
@@ -558,9 +618,12 @@ pub fn capture_photo_handle(options: &Esp32CameraOptions) -> Result<StoredCaptur
     }
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn latest_capture() -> Result<Option<Esp32Capture>, String> {
     let store = photo_store();
@@ -585,9 +648,12 @@ pub fn latest_capture() -> Result<Option<Esp32Capture>, String> {
     }))
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn latest_capture_version() -> Result<Option<u64>, String> {
     let store = photo_store();
@@ -597,17 +663,23 @@ pub fn latest_capture_version() -> Result<Option<u64>, String> {
     Ok(store.values().map(|capture| capture.version).max())
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn clear_latest_capture() -> Result<(), String> {
     free_photo(None)
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn with_latest_capture<R>(
     f: impl FnOnce(Option<(&str, &[u8], u64, u32, u32)>) -> R,
@@ -632,9 +704,12 @@ pub fn with_latest_capture<R>(
     })
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn photo_info(id: u64) -> Result<Option<StoredCaptureMeta>, String> {
     let store = photo_store();
@@ -651,9 +726,12 @@ pub fn photo_info(id: u64) -> Result<Option<StoredCaptureMeta>, String> {
     }))
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn free_photo(id: Option<u64>) -> Result<(), String> {
     let store = photo_store();
@@ -675,9 +753,12 @@ pub fn free_photo(id: Option<u64>) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn with_photo<R>(
     id: u64,
@@ -702,9 +783,12 @@ pub fn with_photo<R>(
     })
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 // This is intentionally runner-owned. The embedded runtime should call direct
 // ESP32 camera primitives here instead of going back through the general
@@ -748,9 +832,12 @@ pub fn capture_frame(options: &Esp32CameraOptions) -> Result<Esp32Capture, Strin
     }
 }
 
-#[cfg(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 ))]
 pub fn capture_jpeg(options: &Esp32CameraOptions) -> Result<Esp32Capture, String> {
     let capture = capture_frame(options)?;
@@ -763,9 +850,12 @@ pub fn capture_jpeg(options: &Esp32CameraOptions) -> Result<Esp32Capture, String
     Ok(capture)
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn capture_jpeg(_options: &Esp32CameraOptions) -> Result<Esp32Capture, String> {
     Err(
@@ -774,9 +864,12 @@ pub fn capture_jpeg(_options: &Esp32CameraOptions) -> Result<Esp32Capture, Strin
     )
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn ensure_print_camera_ready() -> Result<(), String> {
     Err(
@@ -785,9 +878,12 @@ pub fn ensure_print_camera_ready() -> Result<(), String> {
     )
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn capture_frame(_options: &Esp32CameraOptions) -> Result<Esp32Capture, String> {
     Err(
@@ -796,9 +892,12 @@ pub fn capture_frame(_options: &Esp32CameraOptions) -> Result<Esp32Capture, Stri
     )
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn store_latest_capture(_capture: &Esp32Capture) -> Result<(), String> {
     Err(
@@ -807,9 +906,12 @@ pub fn store_latest_capture(_capture: &Esp32Capture) -> Result<(), String> {
     )
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn store_latest_capture_owned(_capture: Esp32Capture) -> Result<StoredCaptureMeta, String> {
     Err(
@@ -818,9 +920,12 @@ pub fn store_latest_capture_owned(_capture: Esp32Capture) -> Result<StoredCaptur
     )
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn capture_photo_handle(_options: &Esp32CameraOptions) -> Result<StoredCaptureMeta, String> {
     Err(
@@ -829,33 +934,45 @@ pub fn capture_photo_handle(_options: &Esp32CameraOptions) -> Result<StoredCaptu
     )
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn latest_capture() -> Result<Option<Esp32Capture>, String> {
     Ok(None)
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn latest_capture_version() -> Result<Option<u64>, String> {
     Ok(None)
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn clear_latest_capture() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn with_latest_capture<R>(
     f: impl FnOnce(Option<(&str, &[u8], u64, u32, u32)>) -> R,
@@ -863,25 +980,34 @@ pub fn with_latest_capture<R>(
     Ok(f(None))
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn photo_info(_id: u64) -> Result<Option<StoredCaptureMeta>, String> {
     Ok(None)
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn free_photo(_id: Option<u64>) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(any(
-    esp_idf_comp_esp32_camera_enabled,
-    esp_idf_comp_espressif__esp32_camera_enabled
+#[cfg(not(all(
+    matchbox_camera_supported,
+    any(
+        esp_idf_comp_esp32_camera_enabled,
+        esp_idf_comp_espressif__esp32_camera_enabled
+    )
 )))]
 pub fn with_photo<R>(
     _id: u64,

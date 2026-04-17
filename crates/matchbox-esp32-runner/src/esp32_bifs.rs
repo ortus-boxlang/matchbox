@@ -145,10 +145,12 @@ fn frame_to_monochrome_bitmap(capture: &Esp32Capture) -> Result<crate::imaging::
     }
 }
 
+#[cfg(matchbox_camera_supported)]
 fn build_default_camera_options() -> Esp32CameraOptions {
     default_xiao_esp32s3_sense_camera()
 }
 
+#[cfg(matchbox_camera_supported)]
 fn esp32_camera_capture(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     println!("[esp32-bif] camera capture start");
     let stored = capture_photo_handle(&build_default_camera_options())?;
@@ -161,6 +163,7 @@ fn esp32_camera_capture(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue,
     Ok(capture_result_value(vm, &stored))
 }
 
+#[cfg(matchbox_camera_supported)]
 fn esp32_camera_capture_bitmap(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     println!("[esp32-bif] camera capture-bitmap start");
     let capture = capture_frame(&low_memory_xiao_esp32s3_sense_print_camera())?;
@@ -279,6 +282,7 @@ fn build_tspl_payload(
     payload
 }
 
+#[cfg(matchbox_camera_supported)]
 fn esp32_capture_and_print(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     println!("[esp32-bif] capture-and-print start");
     let capture = capture_jpeg(&build_default_camera_options())
@@ -329,6 +333,7 @@ fn esp32_capture_and_print(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxVal
     Ok(BxValue::new_ptr(result))
 }
 
+#[cfg(matchbox_camera_supported)]
 fn esp32_printer_capture_bitmap(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
         return Err("esp32PrinterCaptureBitmap requires a connection handle".to_string());
@@ -398,6 +403,7 @@ fn esp32_printer_capture_bitmap(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<B
     Ok(BxValue::new_ptr(result))
 }
 
+#[cfg(matchbox_camera_supported)]
 fn esp32_capture_bitmap_and_print_to(
     vm: &mut dyn BxVM,
     args: &[BxValue],
@@ -698,12 +704,16 @@ fn esp32_printer_print_tspl(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxVal
 
 pub fn register_bifs() -> HashMap<String, BxNativeFunction> {
     let mut map = HashMap::new();
+    #[cfg(matchbox_camera_supported)]
     map.insert("esp32cameracapture".to_string(), esp32_camera_capture as BxNativeFunction);
+    #[cfg(matchbox_camera_supported)]
     map.insert("esp32CameraCapture".to_string(), esp32_camera_capture as BxNativeFunction);
+    #[cfg(matchbox_camera_supported)]
     map.insert(
         "esp32cameracapturebitmap".to_string(),
         esp32_camera_capture_bitmap as BxNativeFunction,
     );
+    #[cfg(matchbox_camera_supported)]
     map.insert(
         "esp32CameraCaptureBitmap".to_string(),
         esp32_camera_capture_bitmap as BxNativeFunction,
@@ -716,20 +726,26 @@ pub fn register_bifs() -> HashMap<String, BxNativeFunction> {
     map.insert("esp32PhotoFree".to_string(), esp32_photo_free as BxNativeFunction);
     map.insert("esp32bitmapfromjpeg".to_string(), esp32_bitmap_from_jpeg as BxNativeFunction);
     map.insert("esp32BitmapFromJpeg".to_string(), esp32_bitmap_from_jpeg as BxNativeFunction);
+    #[cfg(matchbox_camera_supported)]
     map.insert("esp32captureandprint".to_string(), esp32_capture_and_print as BxNativeFunction);
+    #[cfg(matchbox_camera_supported)]
     map.insert("esp32CaptureAndPrint".to_string(), esp32_capture_and_print as BxNativeFunction);
+    #[cfg(matchbox_camera_supported)]
     map.insert(
         "esp32printercapturebitmap".to_string(),
         esp32_printer_capture_bitmap as BxNativeFunction,
     );
+    #[cfg(matchbox_camera_supported)]
     map.insert(
         "esp32PrinterCaptureBitmap".to_string(),
         esp32_printer_capture_bitmap as BxNativeFunction,
     );
+    #[cfg(matchbox_camera_supported)]
     map.insert(
         "esp32capturebitmapandprintto".to_string(),
         esp32_capture_bitmap_and_print_to as BxNativeFunction,
     );
+    #[cfg(matchbox_camera_supported)]
     map.insert(
         "esp32CaptureBitmapAndPrintTo".to_string(),
         esp32_capture_bitmap_and_print_to as BxNativeFunction,

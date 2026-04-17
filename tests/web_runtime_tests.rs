@@ -28,7 +28,7 @@ fn test_vm_output_buffering() {
     vm.output_buffer = Some(String::new());
     
     let source = "writeOutput('Hello ', 'World'); println('!'); print('MatchBox');";
-    let ast = parser::parse(source, None).unwrap();
+    let ast = parser::parse(source, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
     
@@ -54,7 +54,7 @@ fn test_weak_typing_addition() {
         writeOutput("Hello" + 5);
     "#;
     
-    let ast = parser::parse(source, None).unwrap();
+    let ast = parser::parse(source, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
     
@@ -73,7 +73,7 @@ fn test_nested_bxm_interpolation() {
     let mut vm = VM::new();
     vm.output_buffer = Some(String::new());
     
-    let ast = parser::parse(&transpiled, None).unwrap();
+    let ast = parser::parse(&transpiled, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, &transpiled).unwrap();
     
@@ -181,7 +181,7 @@ fn test_native_future_rejection_propagates_value_to_catch() {
         }
     "#;
 
-    let ast = parser::parse(source, None).unwrap();
+    let ast = parser::parse(source, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
@@ -203,7 +203,7 @@ fn test_native_future_resolution_returns_value_from_get() {
         writeOutput(resolvedFuture().get());
     "#;
 
-    let ast = parser::parse(source, None).unwrap();
+    let ast = parser::parse(source, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
@@ -225,7 +225,7 @@ fn test_queued_future_resolution_is_applied_by_scheduler() {
         writeOutput(queuedResolvedFuture().get());
     "#;
 
-    let ast = parser::parse(source, None).unwrap();
+    let ast = parser::parse(source, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
@@ -252,7 +252,7 @@ fn test_queued_future_rejection_is_applied_by_scheduler() {
         }
     "#;
 
-    let ast = parser::parse(source, None).unwrap();
+    let ast = parser::parse(source, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
@@ -274,7 +274,7 @@ fn test_threaded_future_resolution_is_applied_by_scheduler() {
         writeOutput(threadedResolvedFuture().get());
     "#;
 
-    let ast = parser::parse(source, None).unwrap();
+    let ast = parser::parse(source, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
@@ -301,7 +301,7 @@ fn test_threaded_future_rejection_is_applied_by_scheduler() {
         }
     "#;
 
-    let ast = parser::parse(source, None).unwrap();
+    let ast = parser::parse(source, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 

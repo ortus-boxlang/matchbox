@@ -1,8 +1,17 @@
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(matchbox_camera_supported)");
     println!("cargo:rerun-if-env-changed=MATCHBOX_EMBEDDED_ROUTE_TABLE");
+    println!("cargo:rerun-if-env-changed=TARGET");
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let dest_path = out_dir.join("embedded-route-table.json");
     let sdkconfig_dest_path = out_dir.join("sdkconfig.defaults.generated");
+
+    if std::env::var("TARGET")
+        .map(|target| target == "xtensa-esp32s3-espidf")
+        .unwrap_or(false)
+    {
+        println!("cargo:rustc-cfg=matchbox_camera_supported");
+    }
 
     if let Ok(route_table_path) = std::env::var("MATCHBOX_EMBEDDED_ROUTE_TABLE") {
         if !route_table_path.is_empty() {

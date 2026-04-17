@@ -7,7 +7,7 @@ MatchBox itself has no runtime dependencies — that is the point. However, to *
 | Requirement | Version | Purpose |
 | :--- | :--- | :--- |
 | [Rust](https://rustup.rs/) | 1.85+ (2024 edition) | Build from source |
-| `wasm-bindgen-cli` | latest | WASM output targets |
+| `wasm-bindgen-cli` | 0.2.114 | WASM output targets |
 | A C linker (`cc`) | system default | Native binary linking |
 
 ### Install Rust
@@ -74,8 +74,8 @@ Only required if you intend to compile BoxLang to WebAssembly (`--target wasm` o
 # Add the WASM target to your Rust installation
 rustup target add wasm32-unknown-unknown
 
-# Install wasm-bindgen-cli (must match the version in Cargo.toml)
-cargo install wasm-bindgen-cli
+# Install wasm-bindgen-cli (must exactly match the workspace's wasm-bindgen crate)
+cargo install wasm-bindgen-cli --version 0.2.114
 ```
 
 Build the WASM runtime:

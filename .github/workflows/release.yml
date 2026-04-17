@@ -22,6 +22,25 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown, wasm32-wasip1
+      - name: Install wasm-bindgen-cli
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          # Use a pre-compiled binary if possible to save time
+          curl -L https://github.com/rustwasm/wasm-bindgen/releases/download/0.2.114/wasm-bindgen-0.2.114-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          echo "$(pwd)/wasm-bindgen-0.2.114-x86_64-unknown-linux-musl" >> $GITHUB_PATH
+      - name: Setup Firefox
+        if: matrix.os == 'ubuntu-latest'
+        uses: browser-actions/setup-firefox@v1
+      - name: Install Browser Dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          # Ensure basic browser dependencies are met
+          sudo apt-get install -y libdbus-glib-1-2
+          # Use Playwright to install all system dependencies for Firefox
+          npx playwright install-deps firefox
       - name: Run Tests
         run: cargo test
 
@@ -50,7 +69,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.targets }}
+          targets: ${{ matrix.targets }}, wasm32-unknown-unknown, wasm32-wasip1
       
       - name: Install Cross-Compilers (Linux ARM)
         if: matrix.tag == 'linux-arm'
@@ -213,6 +232,9 @@ jobs:
 
           [[ -n "${IDF_PATH:-}" ]] || { echo "Could not determine IDF_PATH inside the ESP32 smoke container"; exit 1; }
           echo "Using IDF_PATH=$IDF_PATH"
+          source "$IDF_PATH/export.sh"
+          command -v idf.py >/dev/null 2>&1 || { echo "idf.py is still not on PATH after sourcing export.sh"; exit 1; }
+          idf.py --version
 
           ./target/x86_64-unknown-linux-gnu/release/matchbox \
             docs/examples/native_fusion/app.bxs \
@@ -280,7 +302,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }}, wasm32-unknown-unknown, wasm32-wasip1
       
       - name: Install Cross-Compilers (Linux ARM)
         if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'

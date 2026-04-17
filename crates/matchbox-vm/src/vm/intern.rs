@@ -15,8 +15,8 @@ impl StringInterner {
         }
     }
 
-    /// Intern a string with case-insensitive lookup while preserving the
-    /// first-seen spelling for later resolution back to text.
+    /// Intern a string: preserve the first casing seen for presentation,
+    /// but use its lowercase form for deduplication (case-insensitivity).
     pub fn intern(&mut self, s: &str) -> InternId {
         let lowered = s.to_lowercase();
         if let Some(&id) = self.lookup.get(&lowered) {
@@ -33,7 +33,7 @@ impl StringInterner {
         id
     }
 
-    /// Resolve an InternId back to its preserved spelling.
+    /// Resolve an InternId back to its original casing string.
     pub fn resolve(&self, id: InternId) -> &str {
         &self.strings[id as usize]
     }

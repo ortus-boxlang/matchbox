@@ -3,8 +3,6 @@ use crate::ast::{Expression, ExpressionKind, Literal, Statement, StatementKind, 
 use matchbox_vm::types::{BxCompiledFunction, BxClass, BxInterface, Constant, box_string::BoxString};
 use matchbox_vm::Chunk;
 use matchbox_vm::vm::opcode::op;
-use std::rc::Rc;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
@@ -102,7 +100,7 @@ impl Compiler {
                             properties.push(prop_name.clone());
                             let null_idx = constructor_compiler.chunk.add_constant(Constant::Null);
                             constructor_compiler.chunk.emit1(op::CONSTANT, null_idx, stmt.line as u32);
-                            let name_idx = constructor_compiler.chunk.add_constant(Constant::String(BoxString::new(&prop_name.clone())));
+                            let name_idx = constructor_compiler.chunk.add_constant(Constant::String(BoxString::new(prop_name.as_str())));
                             constructor_compiler.chunk.emit1(op::SET_PRIVATE, name_idx as u32, stmt.line as u32);
                             constructor_compiler.chunk.emit0(op::POP, stmt.line as u32);
                         }
@@ -138,7 +136,7 @@ impl Compiler {
                         if !methods.contains_key(&getter_name.to_lowercase()) {
                             let mut getter_chunk = Chunk::default();
                             getter_chunk.filename = self.chunk.filename.clone();
-                            let name_idx = getter_chunk.add_constant(Constant::String(BoxString::new(&prop.clone())));
+                            let name_idx = getter_chunk.add_constant(Constant::String(BoxString::new(prop.as_str())));
                             getter_chunk.emit1(op::GET_PRIVATE, name_idx as u32, stmt.line as u32);
                             getter_chunk.emit0(op::RETURN, stmt.line as u32);
                             
@@ -159,7 +157,7 @@ impl Compiler {
                             let mut setter_chunk = Chunk::default();
                             setter_chunk.filename = self.chunk.filename.clone();
                             setter_chunk.emit1(op::GET_LOCAL, 0, stmt.line as u32);
-                            let name_idx = setter_chunk.add_constant(Constant::String(BoxString::new(&prop.clone())));
+                            let name_idx = setter_chunk.add_constant(Constant::String(BoxString::new(prop.as_str())));
                             setter_chunk.emit1(op::SET_PRIVATE, name_idx as u32, stmt.line as u32);
                             setter_chunk.emit0(op::RETURN, stmt.line as u32);
                             
@@ -228,11 +226,11 @@ impl Compiler {
 
                 let class_idx = self.chunk.add_constant(Constant::Class(class));
                 self.chunk.emit1(op::CONSTANT, class_idx, stmt.line as u32);
-                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                 self.chunk.emit1(op::DEFINE_GLOBAL, name_idx as u32, stmt.line as u32);
                 Ok(())
-            }
-            StatementKind::InterfaceDecl { name, members } => {
+                }
+                StatementKind::InterfaceDecl { name, members } => {
                 let mut methods = HashMap::new();
                 for member in members {
                     if let StatementKind::FunctionDecl { name: func_name, attributes: _, access_modifier: _, return_type: _, params, body } = &member.kind {
@@ -252,13 +250,16 @@ impl Compiler {
                         bail!("Only function declarations allowed in interfaces");
                     }
                 }
+
                 let iface = BxInterface {
                     name: name.clone(),
                     methods: methods.into_iter().collect(),
                 };
+
                 let iface_idx = self.chunk.add_constant(Constant::Interface(iface));
                 self.chunk.emit1(op::CONSTANT, iface_idx, stmt.line as u32);
-                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
+
                 self.chunk.emit1(op::DEFINE_GLOBAL, name_idx as u32, stmt.line as u32);
                 Ok(())
             }
@@ -383,7 +384,7 @@ impl Compiler {
                     if self.is_repl && is_last {
                         self.chunk.emit0(op::DUP, stmt.line as u32);
                     }
-                    let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                    let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                     self.chunk.emit1(op::DEFINE_GLOBAL, name_idx as u32, stmt.line as u32);
                 }
                 Ok(())
@@ -495,7 +496,7 @@ impl Compiler {
                                 } else if !self.is_class {
                                     // Global optimized candidate
                                     let name_lower = name.to_lowercase();
-                                    let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name_lower)));
+                                    let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(name_lower.as_str())));
 
                                     // Initial check (standard instructions)
                                     self.compile_expression(cond_expr)?;
@@ -559,7 +560,7 @@ impl Compiler {
                                     }
                                     optimized_update = true;
                                 } else if !self.is_class {
-                                    let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                                    let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                                     self.chunk.emit1(op::INC_GLOBAL, name_idx as u32, update_expr.line);
                                     optimized_update = true;
                                 }
@@ -780,7 +781,7 @@ impl Compiler {
                     self.chunk.emit1(op::CONSTANT, func_idx, stmt.line as u32);
                 }
                 self.chunk.emit1(op::CONSTANT, func_idx, stmt.line as u32);
-                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                 self.chunk.emit1(op::DEFINE_GLOBAL, name_idx as u32, stmt.line as u32);
                 Ok(())
             }
@@ -916,7 +917,7 @@ impl Compiler {
                     let class_idx = self.chunk.add_constant(class_val);
                     self.chunk.emit1(op::CONSTANT, class_idx, expr.line);
                 } else {
-                    let class_idx = self.chunk.add_constant(Constant::String(BoxString::new(&resolved_path)));
+                    let class_idx = self.chunk.add_constant(Constant::String(BoxString::new(resolved_path.as_str())));
                     self.chunk.emit1(op::GET_GLOBAL, class_idx, expr.line);
                 }
                 
@@ -989,7 +990,7 @@ impl Compiler {
                     for (key_expr, val_expr) in members {
                         match &key_expr.kind {
                             ExpressionKind::Identifier(name) => {
-                                let idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                                let idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                                 self.chunk.emit1(op::CONSTANT, idx as u32, expr.line);
                             }
                             _ => self.compile_expression(key_expr)?,
@@ -1168,10 +1169,10 @@ impl Compiler {
                 } else if let Some(slot) = self.resolve_local(&name) {
                     self.chunk.emit1(op::GET_LOCAL, slot as u32, expr.line);
                 } else if self.is_class {
-                    let idx = self.chunk.add_constant(Constant::String(BoxString::new(&lower_name)));
+                    let idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                     self.chunk.emit1(op::GET_PRIVATE, idx as u32, expr.line);
                 } else {
-                    let idx = self.chunk.add_constant(Constant::String(BoxString::new(&lower_name)));
+                    let idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                     self.chunk.emit1(op::GET_GLOBAL, idx as u32, expr.line);
                 }
                 Ok(())
@@ -1187,17 +1188,17 @@ impl Compiler {
                         if let Some(slot) = self.resolve_local(&name) {
                             self.chunk.emit1(op::SET_LOCAL, slot as u32, expr.line);
                         } else if self.is_class {
-                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&lower_name)));
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                             self.chunk.emit1(op::SET_PRIVATE, name_idx as u32, expr.line);
                         } else {
-                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&lower_name)));
-                            self.chunk.emit1(op::SET_GLOBAL, name_idx, expr.line);
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
+                            self.chunk.emit1(op::SET_GLOBAL, name_idx as u32, expr.line);
                         }
                     }
                     crate::ast::AssignmentTarget::Member { base, member } => {
                         self.compile_expression(base)?;
                         self.compile_expression(value)?;
-                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member.as_str())));
                         self.chunk.emit1(op::SET_MEMBER, name_idx as u32, expr.line);
                     }
                     crate::ast::AssignmentTarget::Index { base, index } => {
@@ -1249,7 +1250,7 @@ impl Compiler {
                     for arg in args {
                         self.compile_expression(&arg.value)?;
                     }
-                    let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                    let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member.as_str())));
                     if has_named {
                         let names_idx = self.chunk.add_constant(Constant::StringArray(arg_names));
                         self.chunk.emit3(op::INVOKE_NAMED, name_idx as u32, args.len() as u32, names_idx as u32, expr.line);
@@ -1279,7 +1280,7 @@ impl Compiler {
             }
             ExpressionKind::MemberAccess { base, member } => {
                 self.compile_expression(base)?;
-                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member.as_str())));
                 self.chunk.emit1(op::MEMBER, name_idx, expr.line);
                 Ok(())
             }
@@ -1287,7 +1288,7 @@ impl Compiler {
                 self.compile_expression(base)?;
                 let jmp_null_idx = self.chunk.code.len();
                 self.chunk.emit1(op::JUMP_IF_NULL, 0, expr.line); // if null, leave null on stack and jump over member access
-                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member.as_str())));
                 self.chunk.emit1(op::MEMBER, name_idx, expr.line);
                 let end_target = self.chunk.code.len();
                 self.chunk.code[jmp_null_idx] = op::JUMP_IF_NULL as u32 | (((end_target - jmp_null_idx - 1) as u32) << 8);
@@ -1305,17 +1306,17 @@ impl Compiler {
                         if let Some(slot) = self.resolve_local(&name) {
                             self.chunk.emit1(op::SET_LOCAL, slot as u32, expr.line);
                         } else if self.is_class {
-                            let idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                            let idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                             self.chunk.emit1(op::SET_PRIVATE, idx as u32, expr.line);
                         } else {
-                            let idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                            let idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                             self.chunk.emit1(op::SET_GLOBAL, idx as u32, expr.line);
                         }
                     }
                     crate::ast::AssignmentTarget::Member { base, member } => {
                         self.compile_expression(base)?;
                         self.chunk.emit0(op::DUP, expr.line);
-                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member.as_str())));
                         self.chunk.emit1(op::MEMBER, name_idx, expr.line);
                         if operator == "++" {
                             self.chunk.emit0(op::INC, expr.line);
@@ -1343,10 +1344,10 @@ impl Compiler {
                         if let Some(slot) = self.resolve_local(&name) {
                             self.chunk.emit1(op::SET_LOCAL, slot as u32, expr.line);
                         } else if self.is_class {
-                            let idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                            let idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                             self.chunk.emit1(op::SET_PRIVATE, idx as u32, expr.line);
                         } else {
-                            let idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                            let idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                             self.chunk.emit1(op::SET_GLOBAL, idx as u32, expr.line);
                         }
                         self.chunk.emit0(op::POP, expr.line as u32);
@@ -1354,7 +1355,7 @@ impl Compiler {
                     ExpressionKind::MemberAccess { base: member_base, member } => {
                         self.compile_expression(member_base)?;
                         self.chunk.emit0(op::DUP, expr.line);
-                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member.as_str())));
                         self.chunk.emit1(op::MEMBER, name_idx, expr.line);
                         self.chunk.emit0(op::SWAP, expr.line);
                         self.chunk.emit0(op::OVER, expr.line);
@@ -1376,7 +1377,7 @@ impl Compiler {
     fn compile_string_part(&mut self, part: &StringPart) -> Result<()> {
         match part {
             StringPart::Text(t) => {
-                let idx = self.chunk.add_constant(Constant::String(BoxString::new(&t.clone())));
+                let idx = self.chunk.add_constant(Constant::String(BoxString::new(t.as_str())));
                 self.chunk.emit1(op::CONSTANT, idx as u32, self.current_line);
                 Ok(())
             }
@@ -1488,18 +1489,18 @@ impl Compiler {
                         if let Some(slot) = self.resolve_local(&name) {
                             self.chunk.emit1(op::SET_LOCAL_POP, slot as u32, expr.line);
                         } else if self.is_class {
-                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&lower_name)));
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(lower_name.as_str())));
                             self.chunk.emit1(op::SET_PRIVATE, name_idx as u32, expr.line);
                             self.chunk.emit0(op::POP, expr.line as u32);
                         } else {
-                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&lower_name)));
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(lower_name.as_str())));
                             self.chunk.emit1(op::SET_GLOBAL_POP, name_idx as u32, expr.line);
                         }
                     }
                     crate::ast::AssignmentTarget::Member { base, member } => {
                         self.compile_expression(base)?;
                         self.compile_expression(value)?;
-                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                        let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member.as_str())));
                         self.chunk.emit1(op::SET_MEMBER, name_idx as u32, expr.line);
                         self.chunk.emit0(op::POP, expr.line as u32);
                     }
@@ -1525,7 +1526,7 @@ impl Compiler {
                                 self.chunk.emit1(op::SET_LOCAL_POP, slot as u32, expr.line);
                             }
                         } else if !self.is_class {
-                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                             if *operator == "++" {
                                 self.chunk.emit1(op::INC_GLOBAL, name_idx as u32, expr.line);
                             } else {
@@ -1541,7 +1542,7 @@ impl Compiler {
                     ExpressionKind::MemberAccess { base: member_base, member } => {
                         if *operator == "++" {
                             self.compile_expression(member_base)?;
-                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member.as_str())));
                             self.chunk.emit1(op::INC_MEMBER, name_idx as u32, expr.line);
                             self.chunk.emit0(op::POP, expr.line as u32); // INC_MEMBER pushes NEW value, we pop it
                         } else {
@@ -1568,7 +1569,7 @@ impl Compiler {
                                 self.chunk.emit1(op::SET_LOCAL_POP, slot as u32, expr.line);
                             }
                         } else if !self.is_class {
-                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&name.to_lowercase())));
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
                             if *operator == "++" {
                                 self.chunk.emit1(op::INC_GLOBAL, name_idx as u32, expr.line);
                             } else {
@@ -1584,7 +1585,7 @@ impl Compiler {
                     crate::ast::AssignmentTarget::Member { base: member_base, member } => {
                         if *operator == "++" {
                             self.compile_expression(member_base)?;
-                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(&member.to_lowercase())));
+                            let name_idx = self.chunk.add_constant(Constant::String(BoxString::new(member.as_str())));
                             self.chunk.emit1(op::INC_MEMBER, name_idx as u32, expr.line);
                             self.chunk.emit0(op::POP, expr.line as u32);
                         } else {
