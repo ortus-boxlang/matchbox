@@ -23,11 +23,30 @@ jobs:
         with:
           targets: wasm32-unknown-unknown, wasm32-wasip1
       - name: Install wasm-bindgen-cli
-        if: matrix.os == 'ubuntu-latest'
+        shell: bash
         run: |
-          # Use a pre-compiled binary if possible to save time
-          curl -L https://github.com/rustwasm/wasm-bindgen/releases/download/0.2.114/wasm-bindgen-0.2.114-x86_64-unknown-linux-musl.tar.gz | tar -xz
-          echo "$(pwd)/wasm-bindgen-0.2.114-x86_64-unknown-linux-musl" >> $GITHUB_PATH
+          VERSION="0.2.114"
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            URL="https://github.com/rustwasm/wasm-bindgen/releases/download/$VERSION/wasm-bindgen-$VERSION-x86_64-unknown-linux-musl.tar.gz"
+            DIR="wasm-bindgen-$VERSION-x86_64-unknown-linux-musl"
+          elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            # Check architecture
+            ARCH=$(uname -m)
+            if [[ "$ARCH" == "arm64" ]]; then
+              URL="https://github.com/rustwasm/wasm-bindgen/releases/download/$VERSION/wasm-bindgen-$VERSION-aarch64-apple-darwin.tar.gz"
+              DIR="wasm-bindgen-$VERSION-aarch64-apple-darwin"
+            else
+              URL="https://github.com/rustwasm/wasm-bindgen/releases/download/$VERSION/wasm-bindgen-$VERSION-x86_64-apple-darwin.tar.gz"
+              DIR="wasm-bindgen-$VERSION-x86_64-apple-darwin"
+            fi
+          elif [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            URL="https://github.com/rustwasm/wasm-bindgen/releases/download/$VERSION/wasm-bindgen-$VERSION-x86_64-pc-windows-msvc.tar.gz"
+            DIR="wasm-bindgen-$VERSION-x86_64-pc-windows-msvc"
+          fi
+          
+          echo "Downloading wasm-bindgen from $URL"
+          curl -L "$URL" | tar -xz
+          echo "$(pwd)/$DIR" >> $GITHUB_PATH
       - name: Setup Firefox
         if: matrix.os == 'ubuntu-latest'
         uses: browser-actions/setup-firefox@v1
