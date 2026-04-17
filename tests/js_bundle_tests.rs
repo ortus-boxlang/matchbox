@@ -22,9 +22,33 @@ fn skip_without_wasm_bindgen(test_name: &str) -> bool {
     true
 }
 
+fn web_runner_stub_available() -> bool {
+    let stub_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("stubs")
+        .join("runner_stub_wasm32-unknown-unknown.wasm");
+
+    fs::metadata(stub_path)
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+}
+
+fn skip_without_web_runner_stub(test_name: &str) -> bool {
+    if web_runner_stub_available() {
+        return false;
+    }
+
+    eprintln!(
+        "skipping {test_name}: web runner stub is unavailable; rebuild with wasm32-unknown-unknown installed"
+    );
+    true
+}
+
 #[test]
 fn test_js_bundle_contains_matchbox_namespace() {
     if skip_without_wasm_bindgen("test_js_bundle_contains_matchbox_namespace") {
+        return;
+    }
+    if skip_without_web_runner_stub("test_js_bundle_contains_matchbox_namespace") {
         return;
     }
 
@@ -80,6 +104,9 @@ fn test_js_bundle_isolation() {
     if skip_without_wasm_bindgen("test_js_bundle_isolation") {
         return;
     }
+    if skip_without_web_runner_stub("test_js_bundle_isolation") {
+        return;
+    }
 
     let tmp_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tmp").join("js_isolation_tests");
     if tmp_dir.exists() {
@@ -120,6 +147,9 @@ fn test_js_numerical_interop() {
     if skip_without_wasm_bindgen("test_js_numerical_interop") {
         return;
     }
+    if skip_without_web_runner_stub("test_js_numerical_interop") {
+        return;
+    }
 
     let tmp_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tmp").join("js_num_tests");
     if tmp_dir.exists() {
@@ -155,6 +185,9 @@ fn test_js_to_bx_integer_semantics() {
 #[test]
 fn test_js_bundle_contains_state_helper() {
     if skip_without_wasm_bindgen("test_js_bundle_contains_state_helper") {
+        return;
+    }
+    if skip_without_web_runner_stub("test_js_bundle_contains_state_helper") {
         return;
     }
 
@@ -196,6 +229,9 @@ fn test_js_bundle_contains_state_helper() {
 #[test]
 fn test_js_error_handling() {
     if skip_without_wasm_bindgen("test_js_error_handling") {
+        return;
+    }
+    if skip_without_web_runner_stub("test_js_error_handling") {
         return;
     }
 

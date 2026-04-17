@@ -1156,8 +1156,6 @@ impl VM {
     fn js_to_bx_with_seen(&mut self, val: JsValue, seen: &mut Vec<JsValue>, depth: usize) -> BxValue {
         if val.is_string() {
             let id = self.heap.alloc(GcObject::String(BoxString::new(&val.as_string().unwrap())));
-            BxValue::new_ptr(id)
-        } else if let Some(n) = val.as_f64() {
             return BxValue::new_ptr(id);
         }
 
@@ -1473,7 +1471,7 @@ impl VM {
                     if args.len() < f.min_arity as usize || args.len() > f.arity as usize {
                         anyhow::bail!("Expected {}-{} arguments but got {}", f.min_arity, f.arity, args.len());
                     }
-                    Ok(self.enqueue_function_call(func, f, args, 0, Some(func)))
+                    Ok(self.enqueue_function_call(func, f, args, 0, None))
                 }
                 GcObject::NativeFunction(f) => {
                     let f = *f;
@@ -3823,7 +3821,7 @@ impl VM {
                     if args.len() < f.min_arity as usize || args.len() > f.arity as usize {
                         anyhow::bail!("Expected {}-{} arguments but got {}", f.min_arity, f.arity, args.len());
                     }
-                    let _future = self.enqueue_function_call(func, f, args, 0, Some(func));
+                    let _future = self.enqueue_function_call(func, f, args, 0, None);
                     let fiber_idx = self.fibers.len() - 1;
                     self.current_fiber_idx = Some(fiber_idx);
                     // Loop until the fiber completes — this is a synchronous blocking call.
@@ -4861,7 +4859,10 @@ impl VM {
                 GcObject::Struct(s) => {
                     let js_obj = js_sys::Object::new();
                     let shape = &self.shapes.shapes[s.shape_id as usize];
-                    for (&k, &idx) in shape.fields.iter() {
+                    let mut fields: Vec<(u32, u32)> =
+                        shape.fields.iter().map(|(&k, &idx)| (k, idx)).collect();
+                    fields.sort_by_key(|&(_, idx)| idx);
+                    for (k, idx) in fields {
                         let key_str = self.interner.resolve(k);
                         Reflect::set(&js_obj, &JsValue::from_str(key_str), &self.bx_to_js(&s.properties[idx as usize])).ok();
                     }
@@ -5069,7 +5070,7 @@ impl VM {
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 #[wasm_bindgen]
-pub fn _matchbox_invoke_callback(vm_ptr: usize, callback_id: usize, args: js_sys::Array) -> Result<JsValue, JsValue> {
+pub fn _matchbox_invoke_callback(vm_ptr: usize, callback_id: usize, _this_val: JsValue, args: js_sys::Array) -> Result<JsValue, JsValue> {
     let vm = unsafe { &mut *(vm_ptr as *mut VM) };
     let func = vm.callback_registry.borrow().get(&callback_id).cloned();
     if let Some(func) = func {
@@ -5118,6 +5119,73 @@ pub fn _matchbox_invoke_callback(vm_ptr: usize, callback_id: usize, args: js_sys
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
+fn wasm_instance_prop_get(vm: &mut VM, base_val: BxValue, name: &str) -> BxValue {
+    let Some(id) = base_val.as_gc_id() else {
+        return BxValue::new_null();
+    };
+
+    match vm.heap.get(id) {
+        GcObject::Struct(_) => vm.struct_get(id, name),
+        GcObject::Instance(inst) => {
+            let name_id = vm.interner.intern(name);
+            if let Some(idx) = vm.shapes.get_index(inst.shape_id, name_id) {
+                inst.properties.get(idx as usize).copied().unwrap_or_else(BxValue::new_null)
+            } else if let Some(method) = vm.resolve_method(Rc::clone(&inst.class), name) {
+                BxValue::new_ptr(vm.heap.alloc(GcObject::CompiledFunction(method)))
+            } else {
+                BxValue::new_null()
+            }
+        }
+        GcObject::NativeObject(obj) => obj.borrow().get_property(&name.to_lowercase()),
+        _ => BxValue::new_null(),
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+fn wasm_instance_keys(vm: &mut VM, base_val: BxValue) -> Vec<String> {
+    let Some(id) = base_val.as_gc_id() else {
+        return Vec::new();
+    };
+
+    match vm.heap.get(id) {
+        GcObject::Struct(_) => vm.struct_key_array(id),
+        GcObject::Instance(inst) => {
+            let shape = &vm.shapes.shapes[inst.shape_id as usize];
+            let mut keys = vec![String::new(); shape.fields.len()];
+            for (&fid, &fidx) in &shape.fields {
+                keys[fidx as usize] = vm.interner.resolve(fid).to_string();
+            }
+            keys
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+fn wasm_instance_prop_set(vm: &mut VM, base_val: BxValue, name: &str, val: BxValue) {
+    let Some(id) = base_val.as_gc_id() else {
+        return;
+    };
+
+    match vm.heap.get_mut(id) {
+        GcObject::Struct(_) => vm.struct_set(id, name, val),
+        GcObject::Instance(inst) => {
+            let name_id = vm.interner.intern(name);
+            if let Some(idx) = vm.shapes.get_index(inst.shape_id, name_id) {
+                if let Some(slot) = inst.properties.get_mut(idx as usize) {
+                    *slot = val;
+                }
+            } else {
+                inst.shape_id = vm.shapes.transition(inst.shape_id, name_id);
+                inst.properties.push(val);
+            }
+        }
+        GcObject::NativeObject(obj) => obj.borrow_mut().set_property(&name.to_lowercase(), val),
+        _ => {}
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
 #[wasm_bindgen]
 pub fn _matchbox_pump_vm(vm_ptr: usize) -> Result<(), JsValue> {
     let vm = unsafe { &mut *(vm_ptr as *mut VM) };
@@ -5130,7 +5198,7 @@ pub fn _matchbox_pump_vm(vm_ptr: usize) -> Result<(), JsValue> {
 pub fn _matchbox_get_instance_prop(vm_ptr: usize, gc_id: u32, name: &str) -> JsValue {
     let vm = unsafe { &mut *(vm_ptr as *mut VM) };
     let base_val = BxValue::new_ptr(gc_id as usize);
-    let val = vm.get_member(base_val, name, None, None);
+    let val = wasm_instance_prop_get(vm, base_val, name);
     vm.bx_to_js(&val)
 }
 
@@ -5139,7 +5207,7 @@ pub fn _matchbox_get_instance_prop(vm_ptr: usize, gc_id: u32, name: &str) -> JsV
 pub fn _matchbox_get_instance_keys(vm_ptr: usize, gc_id: u32) -> js_sys::Array {
     let vm = unsafe { &mut *(vm_ptr as *mut VM) };
     let base_val = BxValue::new_ptr(gc_id as usize);
-    let keys = vm.instance_key_array(base_val);
+    let keys = wasm_instance_keys(vm, base_val);
     let js_keys = js_sys::Array::new();
     for key in keys {
         js_keys.push(&JsValue::from_str(&key));
@@ -5153,5 +5221,5 @@ pub fn _matchbox_set_instance_prop(vm_ptr: usize, gc_id: u32, name: &str, val: J
     let vm = unsafe { &mut *(vm_ptr as *mut VM) };
     let base_val = BxValue::new_ptr(gc_id as usize);
     let bx_val = vm.js_to_bx(val);
-    vm.set_member(base_val, name, bx_val, None, None);
+    wasm_instance_prop_set(vm, base_val, name, bx_val);
 }
