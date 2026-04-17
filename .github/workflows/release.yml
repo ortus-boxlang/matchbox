@@ -45,7 +45,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           cargo build --manifest-path crates/matchbox-runner/Cargo.toml --release --target wasm32-unknown-unknown --features js
-          cp target/wasm32-unknown-unknown/release/matchbox_runner.wasm stubs/runner_stub_wasm32-unknown-unknown.wasm
+          cp crates/matchbox-runner/target/wasm32-unknown-unknown/release/matchbox_runner.wasm stubs/runner_stub_wasm32-unknown-unknown.wasm
           test -s stubs/runner_stub_wasm32-unknown-unknown.wasm
       - name: Run Tests
         run: cargo test
