@@ -1701,7 +1701,7 @@ dependencies = [
 
 [[package]]
 name = "matchbox"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1715,6 +1715,7 @@ dependencies = [
  "matchbox_compiler",
  "matchbox_server",
  "matchbox_tui",
+ "matchbox_utility",
  "matchbox_vm",
  "notify",
  "postcard",
@@ -1790,6 +1791,10 @@ dependencies = [
  "matchbox_vm",
  "ratatui",
 ]
+
+[[package]]
+name = "matchbox_utility"
+version = "0.2.0"
 
 [[package]]
 name = "matchbox_vm"

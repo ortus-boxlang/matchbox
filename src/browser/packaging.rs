@@ -7,8 +7,10 @@ use matchbox_vm::Chunk;
 use matchbox_compiler::ast;
 use crate::stubs;
 use crate::browser::bootstrap;
+use matchbox_utility::try_log;
 
 pub fn produce_js_bundle(chunk: &Chunk, source_path: &Path, ast: &[ast::Statement], output: Option<&Path>) -> Result<()> {
+    try_log!("Producing standalone JS bundle...");
     let bytecode = postcard::to_stdvec(chunk)?;
 
     let wasm_bytes = stubs::get_stub("web").unwrap_or(&[]).to_vec();
@@ -19,14 +21,18 @@ pub fn produce_js_bundle(chunk: &Chunk, source_path: &Path, ast: &[ast::Statemen
     let out_path = output
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| source_path.with_extension("js"));
+    try_log!("Output path determined: {}", out_path.display());
+
     let out_dir = out_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
+    try_log!("Output directory created: {}", out_dir.display());
+
     fs::create_dir_all(&out_dir)?;
 
-    let stem = out_path
+    let stem: String = out_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("app")
@@ -48,6 +54,7 @@ pub fn produce_js_bundle(chunk: &Chunk, source_path: &Path, ast: &[ast::Statemen
     }
 
     let generated_js_path = out_dir.join(format!("{}.js", stem));
+    try_log!("Generated JS path: {}", generated_js_path.display());
     let mut generated_js = fs::read_to_string(&generated_js_path)?;
     
     // Rename WASM file to {stem}.wasm
@@ -80,14 +87,17 @@ pub fn produce_fusion_js_bundle(
     ast: &[ast::Statement],
     output: Option<&Path>,
 ) -> Result<()> {
+    try_log!("Producing JS fusion bundle...");
     let out_path = output
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| source_path.with_extension("js"));
+    try_log!("Output path determined: {}", out_path.display());
     let out_dir = out_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
+    try_log!("Output directory created: {}", out_dir.display());
     fs::create_dir_all(&out_dir)?;
 
     let stem = out_path

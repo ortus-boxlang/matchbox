@@ -1,5 +1,6 @@
 use matchbox_compiler::{ast, compiler, parser};
 use matchbox_vm::{types, vm, Chunk};
+use matchbox_utility::{enable_logging};
 
 use std::collections::HashMap;
 use std::env as std_env;
@@ -580,6 +581,10 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
+    if args.contains(&"--verbose".to_string()) {
+        enable_logging();
+    }
+
     let is_build = args.contains(&"--build".to_string());
     let mut is_flash = args.contains(&"--flash".to_string());
     let is_full_flash = args.contains(&"--full-flash".to_string());
@@ -703,6 +708,7 @@ fn print_usage() {
     println!("\nOptions:");
     println!("  -h, --help          Show this help message");
     println!("  -v, --version       Show version information");
+    println!("  --verbose           Emit verbose build logging");
     println!("  --build             Compile to bytecode (.bxb)");
     println!("  --target <native>   Produce a standalone native binary");
     println!("  --target <wasi>     Produce a standalone WASI container binary");
