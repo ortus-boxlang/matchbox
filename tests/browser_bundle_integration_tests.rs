@@ -333,6 +333,700 @@ try {
 
 #[test]
 #[cfg(target_os = "linux")]
+fn browser_bundle_returns_boxlang_class_instances_to_js() {
+    let source = r#"
+class PrinterState {
+    property device;
+    property connection;
+    property characteristic;
+    property status;
+    property isSupported;
+    property error;
+
+    this.device = null;
+    this.connection = null;
+    this.characteristic = null;
+    this.status = "Ready";
+    this.isSupported = true;
+    this.error = "";
+
+    function connect() {
+        this.connection = "connected";
+        this.characteristic = "writeable";
+        this.status = "Connected";
+        return this;
+    }
+}
+
+function createPrinterState() {
+    return new PrinterState();
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { createPrinterState, ready } from "./browser_bundle_returns_boxlang_class_instances_to_js.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", () => report("fail"));
+window.addEventListener("unhandledrejection", () => report("fail"));
+
+try {
+  await ready;
+
+  const printer = await createPrinterState();
+  if (!printer) {
+    await report(`fail-no-printer-${String(printer)}-${typeof printer}`);
+    throw new Error("no-printer");
+  }
+  if (printer.device !== null) {
+    await report(`fail-device-${String(printer.device)}`);
+    throw new Error("bad-device");
+  }
+  if (printer.connection !== null) {
+    await report(`fail-connection-${String(printer.connection)}`);
+    throw new Error("bad-connection");
+  }
+  if (printer.characteristic !== null) {
+    await report(`fail-characteristic-${String(printer.characteristic)}`);
+    throw new Error("bad-characteristic");
+  }
+  if (printer.status !== "Ready") {
+    await report(`fail-status-${String(printer.status)}`);
+    throw new Error("bad-status");
+  }
+  if (printer.isSupported !== true) {
+    await report(`fail-supported-${String(printer.isSupported)}`);
+    throw new Error("bad-supported");
+  }
+  if (printer.error !== "") {
+    await report(`fail-error-${String(printer.error)}`);
+    throw new Error("bad-error");
+  }
+
+  await printer.connect();
+  if (
+    printer.connection !== "connected" ||
+    printer.characteristic !== "writeable" ||
+    printer.status !== "Connected"
+  ) {
+    await report("fail-method-call");
+    throw new Error("bad-method-call");
+  }
+
+  await report("ok");
+} catch (_error) {
+  await report("fail");
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_returns_boxlang_class_instances_to_js",
+        source,
+        html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_exposes_instance_methods_to_alpine_scope() {
+    let source = r#"
+class PrinterState {
+    property connection;
+    property status;
+
+    this.connection = null;
+    this.status = "Ready";
+
+    function connect() {
+        this.connection = "connected";
+        this.status = "Connected";
+        return this;
+    }
+
+    function disconnect() {
+        this.connection = null;
+        this.status = "Disconnected";
+        return this;
+    }
+}
+
+function createPrinterState() {
+    return new PrinterState();
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { createPrinterState, ready } from "./browser_bundle_exposes_instance_methods_to_alpine_scope.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", () => report("fail"));
+window.addEventListener("unhandledrejection", () => report("fail"));
+
+try {
+  await ready;
+  const printer = await createPrinterState();
+
+  const invoke = new Function(
+    "proxy",
+    `
+      with (proxy) {
+        if (typeof connect !== "function" || typeof disconnect !== "function") {
+          return "missing-" + typeof connect + "-" + typeof disconnect;
+        }
+
+        connect();
+
+        if (connection !== "connected" || status !== "Connected") {
+          return "bad-connect-" + String(connection) + "-" + String(status);
+        }
+
+        disconnect();
+
+        if (connection !== null || status !== "Disconnected") {
+          return "bad-disconnect-" + String(connection) + "-" + String(status);
+        }
+
+        return "ok";
+      }
+    `
+  );
+
+  const result = invoke(printer);
+  if (result !== "ok") {
+    await report(`fail-${result}`);
+    throw new Error(result);
+  }
+
+  await report("ok");
+} catch (_error) {
+  await report("fail");
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_exposes_instance_methods_to_alpine_scope",
+        source,
+        html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_allows_unscoped_class_method_variables() {
+    let source = r#"
+class PrinterState {
+    this.device = null;
+    this.connection = null;
+    this.characteristic = null;
+    this.status = "Ready";
+    this.isSupported = !isNull(js.navigator.bluetooth);
+    this.error = "";
+
+    function connect() {
+        println("secure=" & js.window.isSecureContext);
+        println("userActive=" & js.navigator.userActivation.isActive);
+        this.error = "";
+        this.status = "Requesting device...";
+
+        try {
+            if (isNull(js.navigator.bluetooth)) {
+                throw("Web Bluetooth is not available in this browser context.");
+            }
+
+            println("BoxLang: connect() triggered");
+            println("xxxx");
+            println("BoxLang: Calling requestDevice...");
+
+            options = {
+                "acceptAllDevices": true,
+                "optionalServices": ["service-a", "service-b"]
+            };
+
+            js.console.log("option keys", js.Object.keys(options));
+            js.console.log("acceptAllDevices", options.acceptAllDevices);
+            js.console.log("filters", options.filters);
+            js.console.log("optionalServices", options.optionalServices);
+
+            this.device = js.navigator.bluetooth.requestDevice(options).get();
+            this.connection = "connected";
+            this.status = "Connected";
+            return "ok";
+        } catch (e) {
+            this.error = e.message;
+            this.status = "Error";
+            return e.message;
+        }
+    }
+
+    function disconnect() {
+        this.connection = null;
+        this.status = "Disconnected";
+        return "ok";
+    }
+}
+
+function createPrinterState() {
+    return new PrinterState();
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { createPrinterState, ready } from "./browser_bundle_allows_unscoped_class_method_variables.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", () => report("fail"));
+window.addEventListener("unhandledrejection", () => report("fail"));
+window.__capturedOptionsKeys = "";
+Object.defineProperty(window.navigator, "bluetooth", {
+  configurable: true,
+  value: {
+  requestDevice(options) {
+    window.__capturedOptionsKeys = Object.keys(options).join("|");
+    return new Promise((resolve) => {
+      setTimeout(() => resolve({ name: "Mock Printer" }), 0);
+    });
+  }
+  }
+});
+
+try {
+  await ready;
+  const printer = await createPrinterState();
+  const invoke = new Function(
+    "proxy",
+    `
+      with (proxy) {
+        return void (connection ? disconnect() : connect());
+      }
+    `
+  );
+  invoke(printer);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  if (printer.error !== "") {
+    await report(`fail-error-${printer.error}`);
+    throw new Error(printer.error);
+  }
+
+  if (printer.status !== "Connected") {
+    await report(`fail-status-${printer.status}`);
+    throw new Error(printer.status);
+  }
+
+  if (window.__capturedOptionsKeys !== "acceptAllDevices|optionalServices") {
+    await report(`fail-options-${window.__capturedOptionsKeys}`);
+    throw new Error(window.__capturedOptionsKeys);
+  }
+
+  await report("ok");
+} catch (_error) {
+  await report(`fail-${String(_error?.stack || _error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_allows_unscoped_class_method_variables",
+        source,
+        html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_real_btprinter_app_reproduces_options_scope_error() {
+    if !firefox_available() {
+        eprintln!("skipping browser_bundle_real_btprinter_app_reproduces_options_scope_error: firefox is unavailable");
+        return;
+    }
+    if !web_runner_stub_available() {
+        eprintln!(
+            "skipping browser_bundle_real_btprinter_app_reproduces_options_scope_error: web runner stub is unavailable; rebuild with wasm32-unknown-unknown installed"
+        );
+        return;
+    }
+
+    let app_root = Path::new("/home/jacob/dev/jbeers/matchbox-bt-printer");
+    let root = unique_test_dir("browser-bundle-real-btprinter-app");
+    fs::create_dir_all(root.join("modules/tspl/models")).unwrap();
+
+    fs::copy(
+        app_root.join("modules/tspl/ModuleConfig.bx"),
+        root.join("modules/tspl/ModuleConfig.bx"),
+    )
+    .unwrap();
+    fs::copy(
+        app_root.join("modules/tspl/models/TSPLTemplate.bxs"),
+        root.join("modules/tspl/models/TSPLTemplate.bxs"),
+    )
+    .unwrap();
+
+    let mut source = fs::read_to_string(app_root.join("app.bxs")).unwrap();
+    source.push_str("\nfunction createTestPrinter() { return new BTPrinterComponent(); }\n");
+    fs::write(root.join("app.bxs"), source).unwrap();
+
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&root).unwrap();
+    matchbox::process_file(
+        &root.join("app.bxs"),
+        false,
+        Some("js"),
+        vec![],
+        false,
+        false,
+        false,
+        Some(&root.join("app.js")),
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    std::env::set_current_dir(original_dir).unwrap();
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { createTestPrinter, ready } from "./app.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
+window.addEventListener("unhandledrejection", (event) => report(`fail-${String(event.reason?.stack || event.reason)}`));
+
+window.__capturedOptionsKeys = "";
+Object.defineProperty(window.navigator, "bluetooth", {
+  configurable: true,
+  value: {
+    requestDevice(options) {
+      window.__capturedOptionsKeys = Object.keys(options).join("|");
+      const server = {
+        getPrimaryServices() {
+          return Promise.resolve([]);
+        }
+      };
+      return Promise.resolve({
+        name: "Mock Printer",
+        id: "mock-printer",
+        gatt: {
+          connected: false,
+          connect() {
+            return Promise.resolve(server);
+          },
+          disconnect() {}
+        }
+      });
+    }
+  }
+});
+
+try {
+  await ready;
+  const printer = await createTestPrinter();
+  const reactive = new Proxy(printer, {
+    get(target, prop, receiver) {
+      return Reflect.get(target, prop, receiver);
+    },
+    set(target, prop, value, receiver) {
+      return Reflect.set(target, prop, value, receiver);
+    },
+    has(target, prop) {
+      return Reflect.has(target, prop);
+    },
+    ownKeys(target) {
+      return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, prop) {
+      return Reflect.getOwnPropertyDescriptor(target, prop);
+    }
+  });
+  const invoke = new Function(
+    "proxy",
+    `
+      with (proxy) {
+        return void (connection ? disconnect() : connect());
+      }
+    `
+  );
+  invoke(reactive);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  if (printer.error !== "") {
+    await report(`fail-error-${printer.error}`);
+    throw new Error(printer.error);
+  }
+
+  if (window.__capturedOptionsKeys !== "acceptAllDevices|optionalServices") {
+    await report(`fail-options-${window.__capturedOptionsKeys}`);
+    throw new Error(window.__capturedOptionsKeys);
+  }
+
+  await report("ok");
+} catch (_error) {
+  await report(`fail-${String(_error?.stack || _error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    fs::write(root.join("index.html"), html).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener
+        .set_nonblocking(true)
+        .expect("listener should support nonblocking");
+    let address = listener.local_addr().unwrap();
+    let (report_tx, report_rx) = mpsc::channel::<String>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server_root = root.clone();
+
+    let server = thread::spawn(move || {
+        while !server_stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = serve_request(stream, &server_root, &report_tx);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let url = format!("http://{address}/index.html");
+    let profile_dir = root.join("firefox-profile");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let mut firefox = spawn_firefox(&profile_dir, &url).expect("firefox should start");
+    let report = report_rx
+        .recv_timeout(Duration::from_secs(20))
+        .unwrap_or_else(|_| panic!("browser test browser_bundle_real_btprinter_app_reproduces_options_scope_error timed out waiting for report"));
+
+    stop.store(true, Ordering::SeqCst);
+    let _ = firefox.kill();
+    let _ = firefox.wait();
+    let _ = server.join();
+    let _ = fs::remove_dir_all(&root);
+
+    assert_eq!(report, "ok", "browser page reported failure: {report}");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_real_btprinter_alpine_click_reproduces_options_scope_error() {
+    if !firefox_available() {
+        eprintln!("skipping browser_bundle_real_btprinter_alpine_click_reproduces_options_scope_error: firefox is unavailable");
+        return;
+    }
+    if !web_runner_stub_available() {
+        eprintln!(
+            "skipping browser_bundle_real_btprinter_alpine_click_reproduces_options_scope_error: web runner stub is unavailable; rebuild with wasm32-unknown-unknown installed"
+        );
+        return;
+    }
+
+    let app_root = Path::new("/home/jacob/dev/jbeers/matchbox-bt-printer");
+    let root = unique_test_dir("browser-bundle-real-btprinter-alpine");
+    fs::create_dir_all(root.join("modules/tspl/models")).unwrap();
+
+    fs::copy(
+        app_root.join("modules/tspl/ModuleConfig.bx"),
+        root.join("modules/tspl/ModuleConfig.bx"),
+    )
+    .unwrap();
+    fs::copy(
+        app_root.join("modules/tspl/models/TSPLTemplate.bxs"),
+        root.join("modules/tspl/models/TSPLTemplate.bxs"),
+    )
+    .unwrap();
+    fs::write(root.join("app.bxs"), fs::read_to_string(app_root.join("app.bxs")).unwrap()).unwrap();
+
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&root).unwrap();
+    matchbox::process_file(
+        &root.join("app.bxs"),
+        false,
+        Some("js"),
+        vec![],
+        false,
+        false,
+        false,
+        Some(&root.join("app.js")),
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    std::env::set_current_dir(original_dir).unwrap();
+
+    let mut html = fs::read_to_string(app_root.join("index.html")).unwrap();
+    let head_inject = r#"<script>
+window.__capturedOptionsKeys = "";
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
+window.addEventListener("unhandledrejection", (event) => report(`fail-${String(event.reason?.stack || event.reason)}`));
+
+Object.defineProperty(window.navigator, "bluetooth", {
+  configurable: true,
+  value: {
+    requestDevice(options) {
+      window.__capturedOptionsKeys = Object.keys(options).join("|");
+      const server = {
+        getPrimaryServices() {
+          return Promise.resolve([]);
+        }
+      };
+      return Promise.resolve({
+        name: "Mock Printer",
+        id: "mock-printer",
+        gatt: {
+          connected: false,
+          connect() {
+            return Promise.resolve(server);
+          },
+          disconnect() {}
+        }
+      });
+    }
+  }
+});
+</script>
+    <script type="module">"#;
+    html = html.replacen("<script type=\"module\">", head_inject, 1);
+    html = html.replacen(
+        "</body>",
+        r#"<script>
+window.addEventListener("load", () => {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  (async () => {
+    for (let i = 0; i < 160; i++) {
+      const root = document.querySelector('[x-data="btprinter"]');
+      if (root && window.Alpine && typeof window.Alpine.$data === "function") {
+        const data = window.Alpine.$data(root);
+        if (data) {
+          const button = root.querySelector("button");
+          if (!button) {
+            await report("fail-no-button");
+            return;
+          }
+
+          button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+
+          for (let j = 0; j < 100; j++) {
+            if (window.__capturedOptionsKeys !== "" || data.error !== "" || data.status !== "Ready") {
+              break;
+            }
+            await sleep(50);
+          }
+
+          if (data.error !== "") {
+            await report(`fail-error-${data.error}-${data.status}`);
+            return;
+          }
+          if (window.__capturedOptionsKeys !== "acceptAllDevices|optionalServices") {
+            await report(`fail-options-${window.__capturedOptionsKeys}-${data.status}-${data.error}-${typeof data.connect}-${Object.keys(data).join("|")}`);
+            return;
+          }
+          await report("ok");
+          return;
+        }
+      }
+      await sleep(50);
+    }
+    await report("fail-timeout");
+  })().catch((error) => report(`fail-${String(error?.stack || error)}`));
+});
+</script>
+</body>"#,
+        1,
+    );
+
+    fs::write(root.join("index.html"), html).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener
+        .set_nonblocking(true)
+        .expect("listener should support nonblocking");
+    let address = listener.local_addr().unwrap();
+    let (report_tx, report_rx) = mpsc::channel::<String>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server_root = root.clone();
+
+    let server = thread::spawn(move || {
+        while !server_stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = serve_request(stream, &server_root, &report_tx);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let url = format!("http://{address}/index.html");
+    let profile_dir = root.join("firefox-profile");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let mut firefox = spawn_firefox(&profile_dir, &url).expect("firefox should start");
+    let report = report_rx
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap_or_else(|_| panic!("browser test browser_bundle_real_btprinter_alpine_click_reproduces_options_scope_error timed out waiting for report"));
+
+    stop.store(true, Ordering::SeqCst);
+    let _ = firefox.kill();
+    let _ = firefox.wait();
+    let _ = server.join();
+    let _ = fs::remove_dir_all(&root);
+
+    assert_eq!(report, "ok", "browser page reported failure: {report}");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn browser_bundle_supports_multiple_modules_on_one_page() {
     // We need to compile two different modules. 
     // run_browser_page currently only compiles one.
@@ -436,14 +1130,14 @@ try {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn browser_bundle_supports_callbacks_and_error_propagation() {
+fn browser_bundle_wraps_throw_strings_as_exception_objects() {
     let source = r#"
-function runWithCallback(cb) {
-    return cb(42)
-}
-
-function failMe() {
-    throw "BoxLang Error"
+function getThrownException() {
+    try {
+        throw("Boom");
+    } catch (e) {
+        return e.name & "|" & e.type & "|" & e.message;
+    }
 }
 "#;
 
@@ -451,7 +1145,60 @@ function failMe() {
 <html lang="en">
 <body>
 <script type="module">
-import { runWithCallback, failMe, ready } from "./browser_bundle_callbacks_and_errors.js";
+import { getThrownException, ready } from "./browser_bundle_wraps_throw_strings_as_exception_objects.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
+window.addEventListener("unhandledrejection", (event) => report(`fail-${String(event.reason?.stack || event.reason)}`));
+
+try {
+  await ready;
+
+  const result = await getThrownException();
+  if (result !== "CustomException|CustomException|Boom") {
+    await report(`fail-${result}`);
+    throw new Error(result);
+  }
+
+  await report("ok");
+} catch (_error) {
+  await report(`fail-${String(_error?.stack || _error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_wraps_throw_strings_as_exception_objects",
+        source,
+        html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_supports_callbacks_and_error_propagation() {
+    let source = r#"
+function runWithCallback(cb) {
+    return cb(42)
+}
+
+function makeThrower() {
+    return () => {
+        throw "BoxLang Error"
+    }
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { runWithCallback, makeThrower, ready } from "./browser_bundle_callbacks_and_errors.js";
 
 async function report(status) {
   await fetch(`/report/${status}`);
@@ -467,16 +1214,24 @@ try {
     throw new Error("bad-callback");
   }
 
-  // Error propagation test
+  const thrower = await makeThrower();
+  const OriginalError = window.Error;
+  window.Error = 123;
+  let caught = null;
   try {
-    await failMe();
-    await report("fail-no-error");
+    thrower();
   } catch (e) {
-    if (String(e).includes("BoxLang Error")) {
-      await report("ok");
-    } else {
-      await report(`fail-wrong-error-${e}`);
-    }
+    caught = e;
+  } finally {
+    window.Error = OriginalError;
+  }
+
+  if (caught && String(caught).includes("BoxLang Error")) {
+    await report("ok");
+  } else if (caught) {
+    await report(`fail-wrong-error-${caught}`);
+  } else {
+    await report("fail-no-error");
   }
 } catch (e) {
   await report(`fail-exception-${e}`);

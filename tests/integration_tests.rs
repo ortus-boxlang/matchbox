@@ -70,6 +70,7 @@ script_test!(vm_basic, "vm_basic.bxs");
 script_test!(vm_classes, "vm_classes.bxs");
 script_test!(vm_complex_types, "vm_complex_types.bxs");
 script_test!(vm_exceptions, "vm_exceptions.bxs");
+script_test!(vm_throw_structured_exception, "vm_throw_structured_exception.bxs");
 script_test!(vm_functions, "vm_functions.bxs");
 script_test!(vm_if, "vm_if.bxs");
 script_test!(vm_loop, "vm_loop.bxs");

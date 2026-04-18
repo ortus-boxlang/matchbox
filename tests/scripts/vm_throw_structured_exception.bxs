@@ -1,0 +1,16 @@
+try {
+    throw("Boom");
+    throw "expected throw() to stop execution";
+} catch (e) {
+    if (e.name != "CustomException") {
+        throw "unexpected exception name: " & e.name;
+    }
+
+    if (e.type != "CustomException") {
+        throw "unexpected exception type: " & e.type;
+    }
+
+    if (e.message != "Boom") {
+        throw "unexpected exception message: " & e.message;
+    }
+}

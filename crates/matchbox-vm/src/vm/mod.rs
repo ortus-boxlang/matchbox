@@ -19,6 +19,8 @@ use self::shape::ShapeRegistry;
 use self::intern::StringInterner;
 use anyhow::{Result, bail};
 use std::collections::{HashMap, VecDeque};
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -159,6 +161,23 @@ fn schedule_browser_vm_pump(vm_ptr: usize) {
     if let Ok(func) = schedule.dyn_into::<Function>() {
         let _ = func.call1(&matchbox, &JsValue::from_f64(vm_ptr as f64));
     }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
+fn js_error_value(message: &str) -> JsValue {
+    let global = js_sys::global();
+    let error_key = JsValue::from_str("Error");
+
+    if let Ok(error_ctor) = Reflect::get(&global, &error_key) {
+        if let Ok(error_ctor) = error_ctor.dyn_into::<Function>() {
+            let args = Array::of1(&JsValue::from_str(message));
+            if let Ok(value) = Reflect::construct(&error_ctor, &args) {
+                return value;
+            }
+        }
+    }
+
+    JsValue::from_str(message)
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -1464,6 +1483,15 @@ impl VM {
     }
 
     pub fn start_call_function_value(&mut self, func: BxValue, args: Vec<BxValue>) -> Result<BxValue> {
+        self.start_call_function_value_with_receiver(func, args, None)
+    }
+
+    pub fn start_call_function_value_with_receiver(
+        &mut self,
+        func: BxValue,
+        args: Vec<BxValue>,
+        receiver: Option<BxValue>,
+    ) -> Result<BxValue> {
         if let Some(id) = func.as_gc_id() {
             match self.heap.get(id) {
                 GcObject::CompiledFunction(f) => {
@@ -1471,7 +1499,7 @@ impl VM {
                     if args.len() < f.min_arity as usize || args.len() > f.arity as usize {
                         anyhow::bail!("Expected {}-{} arguments but got {}", f.min_arity, f.arity, args.len());
                     }
-                    Ok(self.enqueue_function_call(func, f, args, 0, None))
+                    Ok(self.enqueue_function_call(func, f, args, 0, receiver))
                 }
                 GcObject::NativeFunction(f) => {
                     let f = *f;
@@ -3751,9 +3779,88 @@ impl VM {
     }
 
     fn throw_error(&mut self, fiber_idx: usize, msg: &str) -> Result<()> {
-        let msg_id = self.heap.alloc(GcObject::String(BoxString::new(msg)));
-        let val = BxValue::new_ptr(msg_id);
+        let val = self.exception_from_message("ExpressionException", msg.to_string(), None);
         self.throw_value(fiber_idx, val)
+    }
+
+    fn exception_from_message(
+        &mut self,
+        exception_type: &str,
+        message: String,
+        stack_trace: Option<String>,
+    ) -> BxValue {
+        let struct_id = self.struct_new();
+        let type_id = self.string_new(exception_type.to_string());
+        let message_id = self.string_new(message);
+        let detail_id = self.string_new(String::new());
+        let stack_trace_id = self.string_new(stack_trace.unwrap_or_default());
+        let error_code_id = self.string_new(String::new());
+        let tag_context_id = self.array_new();
+
+        let type_val = BxValue::new_ptr(type_id);
+        self.struct_set(struct_id, "name", type_val);
+        self.struct_set(struct_id, "type", type_val);
+        self.struct_set(struct_id, "message", BxValue::new_ptr(message_id));
+        self.struct_set(struct_id, "detail", BxValue::new_ptr(detail_id));
+        self.struct_set(struct_id, "stackTrace", BxValue::new_ptr(stack_trace_id));
+        self.struct_set(struct_id, "errorCode", BxValue::new_ptr(error_code_id));
+        self.struct_set(struct_id, "extendedInfo", BxValue::new_null());
+        self.struct_set(struct_id, "tagContext", BxValue::new_ptr(tag_context_id));
+        self.struct_set(struct_id, "cause", BxValue::new_null());
+
+        BxValue::new_ptr(struct_id)
+    }
+
+    fn is_exception_object(&self, val: BxValue) -> bool {
+        if let Some(id) = val.as_gc_id() {
+            let is_exception_like = matches!(
+                self.heap.get(id),
+                GcObject::Struct(_) | GcObject::Instance(_) | GcObject::NativeObject(_)
+            );
+            #[cfg(all(target_arch = "wasm32", feature = "js"))]
+            let is_exception_like = is_exception_like || matches!(self.heap.get(id), GcObject::JsValue(_));
+            is_exception_like
+        } else {
+            false
+        }
+    }
+
+    fn normalize_thrown_value(&mut self, val: BxValue, filename: &str, line: u32) -> BxValue {
+        if self.is_exception_object(val) {
+            return val;
+        }
+
+        self.exception_from_message(
+            "CustomException",
+            self.to_string(val),
+            Some(format!("(at {} line {})", filename, line)),
+        )
+    }
+
+    fn exception_summary(&self, val: BxValue) -> String {
+        if let Some(id) = val.as_gc_id() {
+            if let GcObject::Struct(_) = self.heap.get(id) {
+                let message = self.struct_get(id, "message");
+                let message = if !message.is_null() {
+                    Some(self.to_string(message))
+                } else {
+                    None
+                };
+
+                if let Some(message) = message {
+                    let kind = self.struct_get(id, "type");
+                    if !kind.is_null() {
+                        let kind = self.to_string(kind);
+                        if !kind.is_empty() {
+                            return format!("{}: {}", kind, message);
+                        }
+                    }
+                    return message;
+                }
+            }
+        }
+
+        self.to_string(val)
     }
 
     fn throw_value(&mut self, fiber_idx: usize, val: BxValue) -> Result<()> {
@@ -3789,6 +3896,8 @@ impl VM {
             }
         }
 
+        let val = self.normalize_thrown_value(val, &filename, line);
+
         while !self.fibers[fiber_idx].frames.is_empty() {
             let frame_idx = self.fibers[fiber_idx].frames.len() - 1;
             if !self.fibers[fiber_idx].frames[frame_idx].handlers.is_empty() {
@@ -3802,7 +3911,7 @@ impl VM {
             }
             self.fibers[fiber_idx].frames.pop();
         }
-        let val_str = self.to_string(val);
+        let val_str = self.exception_summary(val);
         bail!("VM Runtime Error: {}{}\n(at {} line {})", val_str, source_snippet, filename, line);
     }
 
@@ -4869,6 +4978,30 @@ impl VM {
                     }
                     js_obj.into()
                 }
+                GcObject::Instance(_) => {
+                    let vm_ptr = self as *const VM as usize;
+                    let global = js_sys::global();
+                    let matchbox = match Reflect::get(&global, &JsValue::from_str("MatchBox")) {
+                        Ok(value) if !value.is_undefined() && !value.is_null() => value,
+                        _ => return JsValue::UNDEFINED,
+                    };
+
+                    let create_proxy = match Reflect::get(&matchbox, &JsValue::from_str("createInstanceProxy")) {
+                        Ok(value) => value,
+                        Err(_) => return JsValue::UNDEFINED,
+                    };
+
+                    if let Ok(func) = create_proxy.dyn_into::<Function>() {
+                        func.call2(
+                            &matchbox,
+                            &JsValue::from_f64(vm_ptr as f64),
+                            &JsValue::from_f64(id as f64),
+                        )
+                        .unwrap_or(JsValue::UNDEFINED)
+                    } else {
+                        JsValue::UNDEFINED
+                    }
+                }
                 GcObject::JsValue(js) => js.clone(),
                 GcObject::Future(_) => {
                     let vm_ptr = self as *const VM as usize;
@@ -4898,7 +5031,7 @@ impl VM {
                             let state = {
                                 let vm = unsafe { &*(vm_ptr as *const VM) };
                                 vm.future_state(future)
-                                    .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))?
+                                    .map_err(|e| js_error_value(&e.to_string()))?
                             };
 
                             match state {
@@ -4916,7 +5049,7 @@ impl VM {
                                         vm.bx_to_js(&error)
                                     };
                                     if let Some(msg) = js.as_string() {
-                                        return Err(JsValue::from(js_sys::Error::new(&msg)));
+                                        return Err(js_error_value(&msg));
                                     }
                                     return Err(js);
                                 }
@@ -4951,7 +5084,28 @@ impl VM {
 
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
     pub fn js_to_bx(&mut self, val: JsValue) -> BxValue {
+        if let Some(gc_id) = self.unwrap_matchbox_instance(&val) {
+            return BxValue::new_ptr(gc_id as usize);
+        }
         self.js_to_bx_with_seen(val, &mut Vec::new(), 0)
+    }
+
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    pub fn unwrap_matchbox_instance(&self, val: &JsValue) -> Option<u32> {
+        let vm_ptr = self as *const VM as usize;
+        let js_vm_ptr = Reflect::get(val, &JsValue::from_str("__matchbox_vm_ptr"))
+            .ok()
+            .and_then(|v| v.as_f64())
+            .map(|v| v as usize);
+
+        if js_vm_ptr == Some(vm_ptr) {
+            Reflect::get(val, &JsValue::from_str("__matchbox_gc_id"))
+                .ok()
+                .and_then(|v| v.as_f64())
+                .map(|v| v as u32)
+        } else {
+            None
+        }
     }
 
     fn collect_garbage(&mut self) {
@@ -5071,10 +5225,21 @@ impl VM {
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 #[wasm_bindgen]
-pub fn _matchbox_invoke_callback(vm_ptr: usize, callback_id: usize, _this_val: JsValue, args: js_sys::Array) -> Result<JsValue, JsValue> {
+pub fn _matchbox_invoke_callback(vm_ptr: usize, callback_id: usize, this_val: JsValue, args: js_sys::Array) -> Result<JsValue, JsValue> {
     let vm = unsafe { &mut *(vm_ptr as *mut VM) };
     let func = vm.callback_registry.borrow().get(&callback_id).cloned();
     if let Some(func) = func {
+        let receiver = if !this_val.is_undefined() && !this_val.is_null() {
+            if let Some(gc_id) = vm.unwrap_matchbox_instance(&this_val) {
+                Some(BxValue::new_ptr(gc_id as usize))
+            } else {
+                let id = vm.heap.alloc(GcObject::JsValue(this_val));
+                Some(BxValue::new_ptr(id))
+            }
+        } else {
+            None
+        };
+
         // Determine the function's max arity so we can truncate excess
         // arguments, matching JavaScript's behavior of silently ignoring them.
         let max_arity = if let Some(id) = func.as_gc_id() {
@@ -5096,26 +5261,26 @@ pub fn _matchbox_invoke_callback(vm_ptr: usize, callback_id: usize, _this_val: J
             bx_args.push(vm.js_to_bx(args.get(i)));
         }
         let future = vm
-            .start_call_function_value(func, bx_args)
-            .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))?;
+            .start_call_function_value_with_receiver(func, bx_args, receiver)
+            .map_err(|e| js_error_value(&e.to_string()))?;
         vm.pump_until_blocked()
-            .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))?;
+            .map_err(|e| js_error_value(&e.to_string()))?;
 
         match vm.future_state(future) {
             Ok(HostFutureState::Completed(value)) => Ok(vm.bx_to_js(&value)),
             Ok(HostFutureState::Failed(error)) => {
                 let js_err = vm.bx_to_js(&error);
                 if let Some(msg) = js_err.as_string() {
-                    Err(JsValue::from(js_sys::Error::new(&msg)))
+                    Err(js_error_value(&msg))
                 } else {
                     Err(js_err)
                 }
             }
             Ok(HostFutureState::Pending) => Ok(vm.bx_to_js(&future)),
-            Err(e) => Err(JsValue::from(js_sys::Error::new(&e.to_string()))),
+            Err(e) => Err(js_error_value(&e.to_string())),
         }
     } else {
-        Err(js_sys::Error::new("Callback not found").into())
+        Err(js_error_value("Callback not found"))
     }
 }
 
@@ -5156,6 +5321,46 @@ fn wasm_instance_keys(vm: &mut VM, base_val: BxValue) -> Vec<String> {
             for (&fid, &fidx) in &shape.fields {
                 keys[fidx as usize] = vm.interner.resolve(fid).to_string();
             }
+
+            let mut seen: HashSet<String> = keys.iter().map(|key| key.to_lowercase()).collect();
+            let mut current_class = Rc::clone(&inst.class);
+            loop {
+                let class_ref = current_class.borrow();
+
+                for (name, _) in &class_ref.methods {
+                    let lowered = name.to_lowercase();
+                    if seen.insert(lowered) {
+                        keys.push(name.clone());
+                    }
+                }
+
+                let next_class = if let Some(parent_name) = &class_ref.extends {
+                    if let Some(val) = vm.get_global(parent_name) {
+                        if let Some(parent_id) = val.as_gc_id() {
+                            if let GcObject::Class(parent_class) = vm.heap.get(parent_id) {
+                                Some(Rc::clone(parent_class))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                drop(class_ref);
+
+                if let Some(next_class) = next_class {
+                    current_class = next_class;
+                } else {
+                    break;
+                }
+            }
+
             keys
         }
         _ => Vec::new(),
@@ -5191,7 +5396,7 @@ fn wasm_instance_prop_set(vm: &mut VM, base_val: BxValue, name: &str, val: BxVal
 pub fn _matchbox_pump_vm(vm_ptr: usize) -> Result<(), JsValue> {
     let vm = unsafe { &mut *(vm_ptr as *mut VM) };
     vm.pump_until_blocked()
-        .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))
+        .map_err(|e| js_error_value(&e.to_string()))
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
