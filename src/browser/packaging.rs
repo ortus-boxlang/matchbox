@@ -38,19 +38,27 @@ pub fn produce_js_bundle(chunk: &Chunk, source_path: &Path, ast: &[ast::Statemen
         .unwrap_or("app")
         .to_string();
 
+    try_log!("Using stem: {}", stem);
+
     let raw_wasm_path = out_dir.join(format!("{}.raw.wasm", stem));
+    try_log!("Raw WASM path: {}", raw_wasm_path.display());
     fs::write(&raw_wasm_path, &wasm_bytes)?;
 
+    try_log!( "Running wasm-bindgen to generate JS bindings...");
     let wasm_bindgen_bin = std_env::var("WASM_BINDGEN").unwrap_or_else(|_| "wasm-bindgen".to_string());
-    let status = std::process::Command::new(wasm_bindgen_bin)
+    match std::process::Command::new(wasm_bindgen_bin)
         .arg("--target").arg("web")
         .arg("--out-dir").arg(&out_dir)
         .arg("--out-name").arg(&stem)
         .arg(&raw_wasm_path)
-        .status()?;
-
-    if !status.success() {
-        bail!("Failed to run wasm-bindgen for JS bundle");
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => bail!("wasm-bindgen exited unsuccessfully: {status}"),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            bail!("wasm-bindgen not found. Install `wasm-bindgen-cli` or set `WASM_BINDGEN`.");
+        }
+        Err(err) => return Err(err.into()),
     }
 
     let generated_js_path = out_dir.join(format!("{}.js", stem));
