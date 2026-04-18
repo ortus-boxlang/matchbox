@@ -159,9 +159,22 @@ jobs:
           path: stubs-out/*
 
   build-esp32-stubs:
-    name: Build ESP32 Stubs
+    name: Build ESP32 Stubs - ${{ matrix.tag }}
     needs: test
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: xtensa-esp32-espidf
+            artifact: runner_stub_esp32.elf
+            tag: esp32
+          - target: xtensa-esp32s3-espidf
+            artifact: runner_stub_esp32s3.elf
+            tag: esp32s3
+          - target: riscv32imc-esp-espidf
+            artifact: runner_stub_esp32c3.elf
+            tag: esp32c3
     container:
       # espressif/idf-rust: all chip targets, Rust + ESP-IDF pre-installed.
       # Tag format: espressif/idf-rust:<chips>_<rust_ver> — update when newer versions appear on Docker Hub.
@@ -182,23 +195,14 @@ jobs:
           mkdir -p stubs-out
           cd crates/matchbox-esp32-runner
           # rust-toolchain.toml pins channel = "esp", so cargo auto-selects the right toolchain
-          cargo build --release --target xtensa-esp32-espidf
-          cp target/xtensa-esp32-espidf/release/matchbox-esp32-runner ../../stubs-out/runner_stub_esp32.elf
-
-          cargo build --release --target xtensa-esp32s3-espidf
-          cp target/xtensa-esp32s3-espidf/release/matchbox-esp32-runner ../../stubs-out/runner_stub_esp32s3.elf
-
-          cargo build --release --target riscv32imc-esp-espidf
-          cp target/riscv32imc-esp-espidf/release/matchbox-esp32-runner ../../stubs-out/runner_stub_esp32c3.elf
-
-          for stub in runner_stub_esp32.elf runner_stub_esp32s3.elf runner_stub_esp32c3.elf; do
-            test -s "../../stubs-out/$stub" || { echo "Stub $stub is empty"; exit 1; }
-          done
+          cargo build --release --target ${{ matrix.target }}
+          cp "target/${{ matrix.target }}/release/matchbox-esp32-runner" "../../stubs-out/${{ matrix.artifact }}"
+          test -s "../../stubs-out/${{ matrix.artifact }}"
 
       - name: Upload ESP32 Stubs
         uses: actions/upload-artifact@v4
         with:
-          name: stubs-esp32
+          name: stubs-esp32-${{ matrix.tag }}
           path: stubs-out/*
 
   # TODO: This job is currently disabled because it requires a more complex ESP-IDF configuration
