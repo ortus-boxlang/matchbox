@@ -8,6 +8,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Result, bail, Context};
 use colored::*;
 
@@ -26,6 +27,7 @@ const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
 const ESP32_PARTITIONS_CSV: &str =
     include_str!("../crates/matchbox-esp32-runner/partitions.csv");
 const ESP32_STORAGE_OFFSET: &str = "0x310000";
+static FUSION_BUILD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 mod stubs;
 mod modules;
@@ -1451,15 +1453,21 @@ fn produce_fusion_artifact(
     };
 
     let script_stem = source_path.file_stem().and_then(|s| s.to_str()).unwrap_or("fusion");
-    let project_root = std_env::current_dir().unwrap_or_else(|_| {
-        source_path.parent().unwrap_or(Path::new(".")).to_path_buf()
-    });
-    let build_dir = project_root.join("target").join("fusion").join(script_stem);
+    let build_dir = std_env::temp_dir()
+        .join("matchbox-fusion")
+        .join(script_stem)
+        .join(format!(
+            "{}-{}",
+            std::process::id(),
+            FUSION_BUILD_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
     let mut embedded_route_table_path: Option<PathBuf> = None;
     if build_dir.exists() {
-        fs::remove_dir_all(&build_dir)?;
+        fs::remove_dir_all(&build_dir)
+            .with_context(|| format!("Failed to clear fusion build dir {}", build_dir.display()))?;
     }
-    fs::create_dir_all(&build_dir.join("src"))?;
+    fs::create_dir_all(&build_dir.join("src"))
+        .with_context(|| format!("Failed to create fusion build dir {}", build_dir.display()))?;
     if let Some(manifest) = embedded_manifest {
         let manifest_path = embedded::write_embedded_manifest(&build_dir, manifest)?;
         let route_table_path = embedded::write_embedded_route_table(&build_dir, manifest)?;
@@ -1754,6 +1762,11 @@ impl BoxLangVM {
         let cargo_bin = std_env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
         let mut c = std::process::Command::new(cargo_bin);
         c.arg("build").arg("--release");
+        c.env_remove("RUSTC")
+            .env_remove("CARGO")
+            .env_remove("MAKEFLAGS")
+            .env_remove("CARGO_MAKEFLAGS")
+            .env_remove("CARGO_TARGET_DIR");
         if build_dir.join("Cargo.lock").exists() {
             c.arg("--offline");
         }
@@ -1779,14 +1792,17 @@ impl BoxLangVM {
         }
     }
 
-    let status = cmd.status()?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("Failed to start cargo build in {}", build_dir.display()))?;
     if !status.success() { bail!("Failed to compile native fusion binary"); }
 
     // 5. Handle Artifact
     if is_esp32 {
         let artifact = build_dir.join("target").join(esp_target).join("release").join("fusion_build");
         let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("elf"));
-        fs::copy(&artifact, &out_path)?;
+        fs::copy(&artifact, &out_path)
+            .with_context(|| format!("Failed to copy native fusion artifact {} to {}", artifact.display(), out_path.display()))?;
         println!("ESP32 Fusion binary produced: {}", out_path.display());
         if is_flash {
             let mut flash_cmd = std::process::Command::new("espflash");
@@ -1799,18 +1815,21 @@ impl BoxLangVM {
         let exe_name = if cfg!(windows) { "fusion_build.exe" } else { "fusion_build" };
         let artifact = build_dir.join("target").join("release").join(exe_name);
         let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| if cfg!(windows) { source_path.with_extension("exe") } else { source_path.with_extension("") });
-        fs::copy(artifact, &out_path)?;
+        fs::copy(&artifact, &out_path)
+            .with_context(|| format!("Failed to copy native fusion artifact {} to {}", artifact.display(), out_path.display()))?;
         println!("Native Fusion binary produced: {}", out_path.display());
     } else if target == "wasi" || target == "wasm" {
         let t_folder = if target == "wasi" { "wasm32-wasip1" } else { "wasm32-unknown-unknown" };
         let artifact = build_dir.join("target").join(t_folder).join("release").join("fusion_build.wasm");
         let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("wasm"));
-        fs::copy(artifact, &out_path)?;
+        fs::copy(&artifact, &out_path)
+            .with_context(|| format!("Failed to copy fusion wasm artifact {} to {}", artifact.display(), out_path.display()))?;
         println!("{} Fusion binary produced: {}", target.to_uppercase(), out_path.display());
     } else if target == "js" {
         let artifact = build_dir.join("target").join("wasm32-unknown-unknown").join("release").join("fusion_build.wasm");
         browser::packaging::produce_fusion_js_bundle(&artifact, source_path, ast, output)?;
     }
+    let _ = fs::remove_dir_all(&build_dir);
     Ok(())
 }
 

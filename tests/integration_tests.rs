@@ -1,4 +1,9 @@
-use std::path::Path;
+use std::{
+    fs,
+    path::Path,
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use matchbox::process_file as process_file_impl;
 
 fn process_file(
@@ -379,6 +384,69 @@ fn test_native_fusion_compilation() {
     if let Err(e) = process_file(&path, false, Some("native"), Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
         panic!("Native fusion compilation failed: {}", e);
     }
+}
+
+#[test]
+fn test_native_fusion_compilation_ignores_outer_cargo_target_dir() {
+    let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("native_fusion")
+        .join("script.bxs");
+
+    if std::env::var_os("MATCHBOX_FUSION_CHILD").is_some() {
+        let output_path = std::env::var_os("MATCHBOX_FUSION_OUTPUT_PATH")
+            .map(std::path::PathBuf::from)
+            .expect("MATCHBOX_FUSION_OUTPUT_PATH must be set in the child process");
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+
+        process_file(
+            &source_path,
+            false,
+            Some("native"),
+            Vec::new(),
+            false,
+            false,
+            false,
+            Some(&output_path),
+            &[],
+            false,
+            None,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(output_path.exists());
+        return;
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "matchbox-native-fusion-ci-repro-{}-{}",
+        std::process::id(),
+        nonce
+    ));
+    let cargo_target_dir = root.join("cargo-target");
+    let output_path = root.join("script");
+    fs::create_dir_all(&root).unwrap();
+
+    let status = Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("test_native_fusion_compilation_ignores_outer_cargo_target_dir")
+        .arg("--nocapture")
+        .env("MATCHBOX_FUSION_CHILD", "1")
+        .env("MATCHBOX_FUSION_OUTPUT_PATH", &output_path)
+        .env("CARGO_TARGET_DIR", &cargo_target_dir)
+        .status()
+        .unwrap();
+
+    let _ = fs::remove_dir_all(&root);
+    assert!(status.success(), "child process failed with {status}");
 }
 
 #[test]
