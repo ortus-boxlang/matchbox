@@ -1,5 +1,4 @@
 use std::fs;
-use std::env;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -183,8 +182,6 @@ fn run_browser_page_with_modules(
     fs::write(&source_path, source).unwrap();
     fs::write(root.join("index.html"), html).unwrap();
 
-    let original_cwd = env::current_dir().unwrap();
-    env::set_current_dir(&root).unwrap();
     matchbox::process_file(
         &source_path,
         false,
@@ -203,7 +200,6 @@ fn run_browser_page_with_modules(
         false,
     )
     .unwrap();
-    env::set_current_dir(original_cwd).unwrap();
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener
@@ -796,13 +792,10 @@ try {
 </html>
 "#;
 
-    run_browser_page_with_modules(
+    run_browser_page(
         "browser_bundle_btprinter_dom_reacts_to_plain_js_state_mutations",
         &source,
         html,
-        &[
-            PathBuf::from("/home/jacob/dev/jbeers/matchbox-bt-printer/modules/tspl"),
-        ],
     );
 }
 
