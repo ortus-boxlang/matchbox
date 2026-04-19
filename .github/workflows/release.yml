@@ -215,8 +215,9 @@ jobs:
           path: |
             /home/esp/.cargo/registry
             /home/esp/.cargo/git
-            target/esp32/${{ matrix.tag }}
-          key: esp32-cache-v2-${{ runner.os }}-${{ matrix.tag }}-${{ hashFiles('crates/matchbox-esp32-runner/Cargo.toml', 'crates/matchbox-esp32-runner/Cargo.lock', 'crates/matchbox-esp32-runner/build.rs', 'crates/matchbox-esp32-runner/.cargo/config.toml', 'crates/matchbox-esp32-runner/bindings.h', 'crates/matchbox-esp32-runner/components_esp32s3.lock', 'crates/matchbox-esp32-runner/rust-toolchain.toml', 'crates/matchbox-esp32-runner/sdkconfig.defaults', 'crates/matchbox-esp32-runner/sdkconfig.defaults.psram', 'crates/matchbox-esp32-runner/sdkconfig.xiao-esp32s3-sense') }}
+          # Do not cache target/: esp-idf-sys generates bindings from the ESP-IDF
+          # image and sdkconfig, and reusing them across image/toolchain changes is brittle.
+          key: esp32-cache-v3-${{ runner.os }}-${{ matrix.tag }}-${{ hashFiles('crates/matchbox-esp32-runner/Cargo.toml', 'crates/matchbox-esp32-runner/Cargo.lock', 'crates/matchbox-esp32-runner/build.rs', 'crates/matchbox-esp32-runner/.cargo/config.toml', 'crates/matchbox-esp32-runner/bindings.h', 'crates/matchbox-esp32-runner/components_esp32s3.lock', 'crates/matchbox-esp32-runner/rust-toolchain.toml', 'crates/matchbox-esp32-runner/sdkconfig.defaults', 'crates/matchbox-esp32-runner/sdkconfig.defaults.psram', 'crates/matchbox-esp32-runner/sdkconfig.xiao-esp32s3-sense') }}
       - name: Build ESP32 Stubs
         env:
           BOXLANG_BYTECODE_PATH: ""
