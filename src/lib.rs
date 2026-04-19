@@ -1451,7 +1451,10 @@ fn produce_fusion_artifact(
     };
 
     let script_stem = source_path.file_stem().and_then(|s| s.to_str()).unwrap_or("fusion");
-    let build_dir = std_env::current_dir()?.join("target").join("fusion").join(script_stem);
+    let project_root = std_env::current_dir().unwrap_or_else(|_| {
+        source_path.parent().unwrap_or(Path::new(".")).to_path_buf()
+    });
+    let build_dir = project_root.join("target").join("fusion").join(script_stem);
     let mut embedded_route_table_path: Option<PathBuf> = None;
     if build_dir.exists() {
         fs::remove_dir_all(&build_dir)?;
