@@ -2532,10 +2532,10 @@ impl VM {
                     let val = {
                         let mut found = None;
                         if let Some(receiver) = self.fibers[fiber_idx].frames.last().unwrap().receiver {
-                            if let Some(id) = receiver.as_gc_id() {
-                                if name == "this" {
-                                    found = Some(receiver);
-                                } else if name == "variables" {
+                            if name == "this" {
+                                found = Some(receiver);
+                            } else if let Some(id) = self.receiver_instance_gc_id(receiver) {
+                                if name == "variables" {
                                     if let GcObject::Instance(inst) = self.heap.get(id) {
                                         let proxy = VariablesScopeProxy {
                                             variables: Rc::clone(&inst.variables),
@@ -2570,7 +2570,7 @@ impl VM {
                     let name = self.interner.resolve(name_id).to_string().to_lowercase();
                     let val = *self.fibers[fiber_idx].stack.last().unwrap();
                     if let Some(receiver) = self.fibers[fiber_idx].frames.last().unwrap().receiver {
-                        if let Some(id) = receiver.as_gc_id() {
+                        if let Some(id) = self.receiver_instance_gc_id(receiver) {
                             if let GcObject::Instance(inst) = self.heap.get_mut(id) {
                                 inst.variables.borrow_mut().insert(name, val);
                             }
@@ -5108,6 +5108,16 @@ impl VM {
         }
     }
 
+    fn receiver_instance_gc_id(&self, receiver: BxValue) -> Option<usize> {
+        let id = receiver.as_gc_id()?;
+        match self.heap.get(id) {
+            GcObject::Instance(_) => Some(id),
+            #[cfg(all(target_arch = "wasm32", feature = "js"))]
+            GcObject::JsValue(js) => self.unwrap_matchbox_instance(js).map(|gc_id| gc_id as usize),
+            _ => None,
+        }
+    }
+
     fn collect_garbage(&mut self) {
         if self.gc_suspended {
             return;
@@ -5230,12 +5240,10 @@ pub fn _matchbox_invoke_callback(vm_ptr: usize, callback_id: usize, this_val: Js
     let func = vm.callback_registry.borrow().get(&callback_id).cloned();
     if let Some(func) = func {
         let receiver = if !this_val.is_undefined() && !this_val.is_null() {
-            if let Some(gc_id) = vm.unwrap_matchbox_instance(&this_val) {
-                Some(BxValue::new_ptr(gc_id as usize))
-            } else {
-                let id = vm.heap.alloc(GcObject::JsValue(this_val));
-                Some(BxValue::new_ptr(id))
-            }
+            // Preserve the JS receiver object so reactive wrappers can observe
+            // BoxLang instance writes through normal JS property semantics.
+            let id = vm.heap.alloc(GcObject::JsValue(this_val));
+            Some(BxValue::new_ptr(id))
         } else {
             None
         };

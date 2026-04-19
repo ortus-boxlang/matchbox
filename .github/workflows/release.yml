@@ -14,6 +14,8 @@ jobs:
   test:
     name: Test - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     strategy:
       fail-fast: false
       matrix:
@@ -24,6 +26,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown, wasm32-wasip1
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: host-${{ runner.os }}-test-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            host-${{ runner.os }}-test-
+            host-${{ runner.os }}-
       - name: Install wasm-bindgen-cli
         shell: bash
         run: |
@@ -65,7 +78,7 @@ jobs:
         run: |
           mkdir -p stubs
           cargo build --manifest-path crates/matchbox-runner/Cargo.toml --release --target wasm32-unknown-unknown --features js
-          cp crates/matchbox-runner/target/wasm32-unknown-unknown/release/matchbox_runner.wasm stubs/runner_stub_wasm32-unknown-unknown.wasm
+          cp target/wasm32-unknown-unknown/release/matchbox_runner.wasm stubs/runner_stub_wasm32-unknown-unknown.wasm
           test -s stubs/runner_stub_wasm32-unknown-unknown.wasm
       - name: Run Tests
         run: cargo test
@@ -74,6 +87,8 @@ jobs:
     name: Build Stubs - ${{ matrix.os }}
     needs: test
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     strategy:
       fail-fast: false
       matrix:
@@ -96,6 +111,18 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.targets }}, wasm32-unknown-unknown, wasm32-wasip1
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: host-${{ runner.os }}-stubs-${{ matrix.tag }}-${{ hashFiles('Cargo.lock', 'crates/matchbox-runner/Cargo.lock') }}
+          restore-keys: |
+            host-${{ runner.os }}-stubs-${{ matrix.tag }}-
+            host-${{ runner.os }}-test-
+            host-${{ runner.os }}-
       
       - name: Install Cross-Compilers (Linux ARM)
         if: matrix.tag == 'linux-arm'
@@ -149,7 +176,7 @@ jobs:
             elif [[ "$target" == *"wasm"* ]]; then DEST_NAME="${DEST_NAME}.wasm"
             fi
 
-            cp "target/$target/release/$SRC_NAME" "$ROOT_DIR/stubs-out/$DEST_NAME"
+            cp "$ROOT_DIR/target/$target/release/$SRC_NAME" "$ROOT_DIR/stubs-out/$DEST_NAME"
           done
 
       - name: Upload Stubs
@@ -182,6 +209,17 @@ jobs:
       options: --user root
     steps:
       - uses: actions/checkout@v4
+      - name: Cache ESP32 Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            /home/esp/.cargo/registry
+            /home/esp/.cargo/git
+            target/esp32/${{ matrix.tag }}
+          key: esp32-${{ runner.os }}-${{ matrix.tag }}-${{ hashFiles('crates/matchbox-esp32-runner/Cargo.lock', 'crates/matchbox-esp32-runner/rust-toolchain.toml') }}
+          restore-keys: |
+            esp32-${{ runner.os }}-${{ matrix.tag }}-
+            esp32-${{ runner.os }}-
       - name: Build ESP32 Stubs
         env:
           BOXLANG_BYTECODE_PATH: ""
@@ -190,13 +228,14 @@ jobs:
           # default to empty paths and rustup can't find the 'esp' toolchain.
           RUSTUP_HOME: /home/esp/.rustup
           CARGO_HOME: /home/esp/.cargo
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target/esp32/${{ matrix.tag }}
         shell: bash
         run: |
           mkdir -p stubs-out
           cd crates/matchbox-esp32-runner
           # rust-toolchain.toml pins channel = "esp", so cargo auto-selects the right toolchain
           cargo build --release --target ${{ matrix.target }}
-          cp "target/${{ matrix.target }}/release/matchbox-esp32-runner" "../../stubs-out/${{ matrix.artifact }}"
+          cp "$CARGO_TARGET_DIR/release/matchbox-esp32-runner" "../../stubs-out/${{ matrix.artifact }}"
           test -s "../../stubs-out/${{ matrix.artifact }}"
 
       - name: Upload ESP32 Stubs
@@ -278,6 +317,8 @@ jobs:
     name: Build Fat CLI - ${{ matrix.target }}
     needs: aggregate-stubs
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     strategy:
       fail-fast: false
       matrix:
@@ -313,6 +354,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}, wasm32-unknown-unknown, wasm32-wasip1
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: host-${{ runner.os }}-cli-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            host-${{ runner.os }}-cli-${{ matrix.target }}-
+            host-${{ runner.os }}-stubs-
+            host-${{ runner.os }}-test-
+            host-${{ runner.os }}-
       
       - name: Install Cross-Compilers (Linux ARM)
         if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'

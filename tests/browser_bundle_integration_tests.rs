@@ -1,4 +1,5 @@
 use std::fs;
+use std::env;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -129,7 +130,31 @@ fn spawn_firefox(profile_dir: &Path, url: &str) -> std::io::Result<Child> {
         .spawn()
 }
 
-fn run_browser_page(test_name: &str, source: &str, html: &str) {
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let entry_dst = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry_path, &entry_dst)?;
+        } else if file_type.is_file() {
+            let _ = fs::copy(&entry_path, &entry_dst)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn run_browser_page_with_modules(
+    test_name: &str,
+    source: &str,
+    html: &str,
+    extra_module_paths: &[PathBuf],
+) {
     if !firefox_available() {
         eprintln!("skipping {test_name}: firefox is unavailable");
         return;
@@ -144,11 +169,22 @@ fn run_browser_page(test_name: &str, source: &str, html: &str) {
     let root = unique_test_dir(test_name);
     fs::create_dir_all(&root).unwrap();
 
+    for module_path in extra_module_paths {
+        let module_name = module_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown");
+        let mirrored_path = root.join("modules").join(module_name);
+        copy_dir_recursive(module_path, &mirrored_path).unwrap();
+    }
+
     let source_path = root.join(format!("{test_name}.bxs"));
     let output_path = root.join(format!("{test_name}.js"));
     fs::write(&source_path, source).unwrap();
     fs::write(root.join("index.html"), html).unwrap();
 
+    let original_cwd = env::current_dir().unwrap();
+    env::set_current_dir(&root).unwrap();
     matchbox::process_file(
         &source_path,
         false,
@@ -158,7 +194,7 @@ fn run_browser_page(test_name: &str, source: &str, html: &str) {
         false,
         false,
         Some(&output_path),
-        &[],
+        extra_module_paths,
         false,
         None,
         false,
@@ -167,6 +203,7 @@ fn run_browser_page(test_name: &str, source: &str, html: &str) {
         false,
     )
     .unwrap();
+    env::set_current_dir(original_cwd).unwrap();
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener
@@ -207,6 +244,10 @@ fn run_browser_page(test_name: &str, source: &str, html: &str) {
     let _ = fs::remove_dir_all(&root);
 
     assert_eq!(report, "ok", "browser page reported failure: {report}");
+}
+
+fn run_browser_page(test_name: &str, source: &str, html: &str) {
+    run_browser_page_with_modules(test_name, source, html, &[]);
 }
 
 #[test]
@@ -655,6 +696,113 @@ try {
         "browser_bundle_allows_unscoped_class_method_variables",
         source,
         html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_btprinter_dom_reacts_to_plain_js_state_mutations() {
+    let source = r#"
+class PrinterState {
+    property connection;
+    property characteristic;
+    property status;
+
+    this.connection = null;
+    this.characteristic = null;
+    this.status = "Ready";
+
+    function connect() {
+        this.connection = "connected";
+        this.characteristic = "writeable";
+        this.status = "Connected";
+        return this;
+    }
+}
+
+function createPrinterState() {
+    return new PrinterState();
+}
+"#;
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<div id="app">
+  <div id="dot" class="w-2 h-2 rounded-full bg-red-500"></div>
+  <span id="status"></span>
+</div>
+<script type="module">
+import { createPrinterState, ready } from "./browser_bundle_btprinter_dom_reacts_to_plain_js_state_mutations.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", () => report("fail"));
+window.addEventListener("unhandledrejection", () => report("fail"));
+
+try {
+  await ready;
+  const rawState = await createPrinterState();
+  if (!rawState) {
+    throw new Error("missing printer state");
+  }
+
+  const dot = document.getElementById("dot");
+  const status = document.getElementById("status");
+  let proxy = null;
+  let writeCount = 0;
+
+  const render = () => {
+    dot.className = "w-2 h-2 rounded-full " + (proxy.characteristic ? "bg-green-500 animate-pulse" : (proxy.connection ? "bg-yellow-500" : "bg-red-500"));
+    status.textContent = proxy.status;
+  };
+
+  proxy = new Proxy(rawState, {
+    get(target, prop, receiver) {
+      return Reflect.get(target, prop, receiver);
+    },
+    set(target, prop, value, receiver) {
+      const result = Reflect.set(target, prop, value, receiver);
+      writeCount += 1;
+      return result;
+    }
+  });
+
+  proxy.connect();
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  render();
+
+  if (!dot.className.includes("bg-green-500")) {
+    await report(`fail-dot-${dot.className}-status-${status.textContent}-proxy-${String(proxy.status)}-char-${String(proxy.characteristic)}`);
+    throw new Error(`expected green status dot, got: ${dot.className}`);
+  }
+
+  if (status.textContent !== "Connected") {
+    throw new Error(`expected connected status, got: ${status.textContent}`);
+  }
+
+  if (writeCount < 3) {
+    throw new Error(`expected reactive writes, saw ${writeCount}`);
+  }
+
+  await report("ok");
+} catch (error) {
+  await report(`fail-${String(error?.message || error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page_with_modules(
+        "browser_bundle_btprinter_dom_reacts_to_plain_js_state_mutations",
+        &source,
+        html,
+        &[
+            PathBuf::from("/home/jacob/dev/jbeers/matchbox-bt-printer/modules/tspl"),
+        ],
     );
 }
 

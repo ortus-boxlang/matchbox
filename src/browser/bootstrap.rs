@@ -115,7 +115,8 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
     bootstrap.push_str("                    }\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("                if (typeof val === \"function\") {\n");
-    bootstrap.push_str("                    val = val.bind(target);\n");
+    bootstrap.push_str("                    // Keep methods unbound so `this` stays on the actual JS receiver.\n");
+    bootstrap.push_str("                    // That lets reactive wrappers observe BoxLang instance writes.\n");
     bootstrap.push_str("                    target.__matchbox_cache[prop] = val;\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("                return val !== undefined ? val : target[prop];\n");
@@ -382,7 +383,8 @@ pub fn render_stub_js_bootstrap(functions: &[String], module_name: &str, b64_byt
     bootstrap.push_str("                    }\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("                if (typeof val === \"function\") {\n");
-    bootstrap.push_str("                    val = val.bind(target);\n");
+    bootstrap.push_str("                    // Keep methods unbound so `this` stays on the actual JS receiver.\n");
+    bootstrap.push_str("                    // That lets reactive wrappers observe BoxLang instance writes.\n");
     bootstrap.push_str("                    target.__matchbox_cache[prop] = val;\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("                return val !== undefined ? val : target[prop];\n");
