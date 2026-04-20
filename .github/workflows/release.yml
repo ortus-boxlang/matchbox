@@ -185,7 +185,16 @@ jobs:
           name: stubs-${{ matrix.tag }}
           path: stubs-out/*
 
+  # Temporarily disabled on 2026-04-20.
+  # What we know:
+  # - Cargo resolution drifted into an incompatible ESP Rust stack (`esp32-nimble` vs `esp-idf-*`).
+  # - The idf-rust container also fails during tool setup because `esp-clang` needs `libxml2.so.2`.
+  # Next steps:
+  # - Regenerate and commit `crates/matchbox-esp32-runner/Cargo.lock` from a known-good ESP environment.
+  # - Either install the missing system library in CI or move to a container image with the required runtime libs.
+  # - Re-enable this job after the pinned dependency set and container/toolchain setup are both verified.
   build-esp32-stubs:
+    if: false
     name: Build ESP32 Stubs - ${{ matrix.tag }}
     needs: test
     runs-on: ubuntu-latest
@@ -209,12 +218,6 @@ jobs:
       options: --user root
     steps:
       - uses: actions/checkout@v4
-      - name: Install ESP32 system libraries
-        shell: bash
-        run: |
-          apt-get update
-          apt-get install -y libxml2
-
       - name: Build ESP32 Stubs
         env:
           BOXLANG_BYTECODE_PATH: ""
