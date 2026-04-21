@@ -121,7 +121,7 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
         return new Proxy(value, {
             get(target, nestedProp, receiver) {
                 if (nestedProp === "__matchbox_nested_proxy__") return true;
-                const nestedValue = Reflect.get(target, nestedProp, receiver);
+                const nestedValue = Reflect.get(target, nestedProp, target);
                 return nestedValue != null && typeof nestedValue === "object" ? wrapChild(nestedValue) : nestedValue;
             },
             set(target, nestedProp, nestedValue, receiver) {
@@ -431,7 +431,7 @@ pub fn render_stub_js_bootstrap(functions: &[String], module_name: &str, b64_byt
         return new Proxy(value, {
             get(target, nestedProp, receiver) {
                 if (nestedProp === "__matchbox_nested_proxy__") return true;
-                const nestedValue = Reflect.get(target, nestedProp, receiver);
+                const nestedValue = Reflect.get(target, nestedProp, target);
                 return nestedValue != null && typeof nestedValue === "object" ? wrapChild(nestedValue) : nestedValue;
             },
             set(target, nestedProp, nestedValue, receiver) {
