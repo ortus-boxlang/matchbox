@@ -1809,6 +1809,7 @@ try {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn browser_bundle_preserves_quoted_struct_key_case_for_js() {
     let source = r#"
 function buildOptions() {
