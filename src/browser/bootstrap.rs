@@ -98,6 +98,7 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
     bootstrap.push_str("        if (typeof _matchbox_set_instance_prop !== \"function\") return;\n");
     bootstrap.push_str("        _matchbox_set_instance_prop(vmPtr, gcId, name, value);\n");
     bootstrap.push_str("    };\n");
+    bootstrap.push_str("    window.MatchBox.__matchbox_proxy_targets = window.MatchBox.__matchbox_proxy_targets || new WeakMap();\n");
     bootstrap.push_str(r#"    window.MatchBox.wrapInstancePropertyValue = window.MatchBox.wrapInstancePropertyValue || function(vmPtr, gcId, prop, value, ownerReceiver) {
         if (value == null || typeof value !== "object") return value;
         if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date || value instanceof RegExp || value instanceof Promise) {
@@ -118,7 +119,7 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
                 value[key] = wrapChild(current);
             }
         }
-        return new Proxy(value, {
+        const proxy = new Proxy(value, {
             get(target, nestedProp, receiver) {
                 if (nestedProp === "__matchbox_nested_proxy__") return true;
                 const nestedValue = Reflect.get(target, nestedProp, target);
@@ -136,6 +137,8 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
                 return result;
             }
         });
+        window.MatchBox.__matchbox_proxy_targets.set(proxy, value);
+        return proxy;
     };
 "#);
     bootstrap.push_str("    window.MatchBox.createInstanceProxy = window.MatchBox.createInstanceProxy || function(vmPtr, gcId) {\n");
@@ -408,6 +411,7 @@ pub fn render_stub_js_bootstrap(functions: &[String], module_name: &str, b64_byt
     bootstrap.push_str("        if (typeof _matchbox_set_instance_prop !== \"function\") return;\n");
     bootstrap.push_str("        _matchbox_set_instance_prop(vmPtr, gcId, name, value);\n");
     bootstrap.push_str("    };\n");
+    bootstrap.push_str("    window.MatchBox.__matchbox_proxy_targets = window.MatchBox.__matchbox_proxy_targets || new WeakMap();\n");
     bootstrap.push_str(r#"    window.MatchBox.wrapInstancePropertyValue = window.MatchBox.wrapInstancePropertyValue || function(vmPtr, gcId, prop, value, ownerReceiver) {
         if (value == null || typeof value !== "object") return value;
         if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date || value instanceof RegExp || value instanceof Promise) {
@@ -428,7 +432,7 @@ pub fn render_stub_js_bootstrap(functions: &[String], module_name: &str, b64_byt
                 value[key] = wrapChild(current);
             }
         }
-        return new Proxy(value, {
+        const proxy = new Proxy(value, {
             get(target, nestedProp, receiver) {
                 if (nestedProp === "__matchbox_nested_proxy__") return true;
                 const nestedValue = Reflect.get(target, nestedProp, target);
@@ -446,6 +450,8 @@ pub fn render_stub_js_bootstrap(functions: &[String], module_name: &str, b64_byt
                 return result;
             }
         });
+        window.MatchBox.__matchbox_proxy_targets.set(proxy, value);
+        return proxy;
     };
 "#);
     bootstrap.push_str("    window.MatchBox.createInstanceProxy = window.MatchBox.createInstanceProxy || function(vmPtr, gcId) {\n");

@@ -152,6 +152,53 @@ fn is_plain_js_object(value: &JsValue) -> bool {
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
+fn unwrap_matchbox_js_proxy(value: &JsValue) -> JsValue {
+    let mut current = value.clone();
+    for _ in 0..JS_INTEROP_MAX_DEPTH {
+        let global = js_sys::global();
+        let matchbox = Reflect::get(&global, &JsValue::from_str("MatchBox"))
+            .unwrap_or(JsValue::UNDEFINED);
+        if matchbox.is_undefined() || matchbox.is_null() {
+            break;
+        }
+
+        let proxy_targets = Reflect::get(&matchbox, &JsValue::from_str("__matchbox_proxy_targets"))
+            .unwrap_or(JsValue::UNDEFINED);
+        if proxy_targets.is_undefined() || proxy_targets.is_null() {
+            break;
+        }
+
+        let has_fn = Reflect::get(&proxy_targets, &JsValue::from_str("has"))
+            .unwrap_or(JsValue::UNDEFINED);
+        let get_fn = Reflect::get(&proxy_targets, &JsValue::from_str("get"))
+            .unwrap_or(JsValue::UNDEFINED);
+        let (Ok(has_fn), Ok(get_fn)) = (
+            has_fn.dyn_into::<Function>(),
+            get_fn.dyn_into::<Function>(),
+        ) else {
+            break;
+        };
+
+        let has_current = Reflect::apply(&has_fn, &proxy_targets, &Array::of1(&current))
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !has_current {
+            break;
+        }
+
+        let target = Reflect::apply(&get_fn, &proxy_targets, &Array::of1(&current))
+            .unwrap_or(JsValue::UNDEFINED);
+        if target.is_undefined() || target.is_null() {
+            break;
+        }
+
+        current = target;
+    }
+    current
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "js"))]
 fn schedule_browser_vm_pump(vm_ptr: usize) {
     let global = js_sys::global();
     let matchbox = match Reflect::get(&global, &JsValue::from_str("MatchBox")) {
@@ -2771,7 +2818,7 @@ impl VM {
                     if let Some(id) = base_val.as_gc_id() {
                         #[cfg(all(target_arch = "wasm32", feature = "js"))]
                         if let GcObject::JsValue(js) = self.heap.get(id) {
-                            let js = js.clone();
+                            let js = unwrap_matchbox_js_proxy(js);
                             let name = self.interner.resolve(name_id);
                             let prop = resolve_js_property(&js, name);
                             match Reflect::get(&js, &prop) {
@@ -4512,7 +4559,7 @@ impl VM {
         if let Some(id) = receiver_val.as_gc_id() {
             #[cfg(all(target_arch = "wasm32", feature = "js"))]
             if let GcObject::JsValue(js) = self.heap.get(id) {
-                let js = js.clone();
+                let js = unwrap_matchbox_js_proxy(js);
                 if name.eq_ignore_ascii_case("get") && js.is_instance_of::<js_sys::Promise>() {
                     let future_val = self.bridge_js_promise_to_future(js.clone());
                     let future_id = match future_val.as_gc_id() {

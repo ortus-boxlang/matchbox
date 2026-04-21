@@ -808,6 +808,205 @@ try {
 
 #[test]
 #[cfg(target_os = "linux")]
+fn browser_bundle_invokes_nested_bluetooth_gatt_methods_with_host_receiver() {
+    let source = r#"
+class PrinterState {
+    function connect() {
+        options = {
+            "acceptAllDevices": true,
+            "optionalServices": ["service-a"]
+        };
+
+        device = js.navigator.bluetooth.requestDevice(options).get();
+        server = device.gatt.connect().get();
+        return server.connected;
+    }
+}
+
+function createPrinterState() {
+    return new PrinterState();
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { createPrinterState, ready } from "./browser_bundle_invokes_nested_bluetooth_gatt_methods_with_host_receiver.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
+window.addEventListener("unhandledrejection", (event) => report(`fail-${String(event.reason?.stack || event.reason)}`));
+
+const brandedGattServers = new WeakSet();
+
+class MockGattServer {
+  constructor() {
+    this.connected = false;
+    brandedGattServers.add(this);
+  }
+
+  connect() {
+    if (!brandedGattServers.has(this)) {
+      throw new TypeError("Illegal invocation");
+    }
+    this.connected = true;
+    return Promise.resolve(this);
+  }
+}
+
+class MockBluetoothDevice {
+  constructor() {
+    this._gatt = new MockGattServer();
+  }
+
+  get gatt() {
+    return this._gatt;
+  }
+}
+
+Object.defineProperty(window.navigator, "bluetooth", {
+  configurable: true,
+  value: {
+    requestDevice(_options) {
+      return Promise.resolve(new MockBluetoothDevice());
+    }
+  }
+});
+
+try {
+  await ready;
+  const printer = await createPrinterState();
+  const connected = await printer.connect();
+
+  if (connected !== true) {
+    throw new Error(`bad-connected-${String(connected)}`);
+  }
+
+  await report("ok");
+} catch (error) {
+  await report(`fail-${String(error?.message || error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_invokes_nested_bluetooth_gatt_methods_with_host_receiver",
+        source,
+        html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_invokes_bluetooth_gatt_methods_from_instance_property() {
+    let source = r#"
+class PrinterState {
+    this.device = null;
+
+    function connect() {
+        options = {
+            "acceptAllDevices": true,
+            "optionalServices": ["service-a"]
+        };
+
+        this.device = js.navigator.bluetooth.requestDevice(options).get();
+        server = this.device.gatt.connect().get();
+        return server.connected;
+    }
+}
+
+function createPrinterState() {
+    return new PrinterState();
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { createPrinterState, ready } from "./browser_bundle_invokes_bluetooth_gatt_methods_from_instance_property.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
+window.addEventListener("unhandledrejection", (event) => report(`fail-${String(event.reason?.stack || event.reason)}`));
+
+const brandedGattServers = new WeakSet();
+const brandedDevices = new WeakSet();
+
+class MockGattServer {
+  constructor() {
+    this.connected = false;
+    brandedGattServers.add(this);
+  }
+
+  connect() {
+    if (!brandedGattServers.has(this)) {
+      throw new TypeError("Illegal invocation");
+    }
+    this.connected = true;
+    return Promise.resolve(this);
+  }
+}
+
+class MockBluetoothDevice {
+  constructor() {
+    this._gatt = new MockGattServer();
+    brandedDevices.add(this);
+  }
+
+  get gatt() {
+    if (!brandedDevices.has(this)) {
+      return null;
+    }
+    return this._gatt;
+  }
+}
+
+Object.defineProperty(window.navigator, "bluetooth", {
+  configurable: true,
+  value: {
+    requestDevice(_options) {
+      return Promise.resolve(new MockBluetoothDevice());
+    }
+  }
+});
+
+try {
+  await ready;
+  const printer = await createPrinterState();
+  const connected = await printer.connect();
+
+  if (connected !== true) {
+    throw new Error(`bad-connected-${String(connected)}`);
+  }
+
+  await report("ok");
+} catch (error) {
+  await report(`fail-${String(error?.message || error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_invokes_bluetooth_gatt_methods_from_instance_property",
+        source,
+        html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn browser_bundle_btprinter_dom_reacts_to_plain_js_state_mutations() {
     let source = r#"
 class PrinterState {
