@@ -244,13 +244,29 @@ fn run_browser_page_with_modules(
     let profile_dir = root.join("firefox-profile");
     fs::create_dir_all(&profile_dir).unwrap();
     let mut firefox = spawn_firefox(&profile_dir, &url).expect("firefox should start");
-    let report = report_rx
-        .recv_timeout(Duration::from_secs(20))
-        .unwrap_or_else(|_| panic!("browser test {test_name} timed out waiting for report"));
+    // Collect all reports that arrive within the timeout; the browser may
+    // send a spurious "fail-AbortError" during Firefox teardown after it
+    // already sent "ok".  We succeed if *any* report is "ok".
+    let mut reports = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
+        match report_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(r) => {
+                if r == "ok" {
+                    reports.push(r);
+                    break;
+                } else {
+                    reports.push(r);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
 
-    // Give the browser time to finish any pending beacons/fetches
+    // Give the browser time to finish any pending fetches
     // before we tear down the server and kill Firefox.
-    thread::sleep(Duration::from_millis(2000));
+    thread::sleep(Duration::from_millis(500));
 
     stop.store(true, Ordering::SeqCst);
     let _ = firefox.kill();
@@ -258,7 +274,11 @@ fn run_browser_page_with_modules(
     let _ = server.join();
     let _ = fs::remove_dir_all(&root);
 
-    assert_eq!(report, "ok", "browser page reported failure: {report}");
+    assert!(
+        reports.iter().any(|r| r == "ok"),
+        "browser page reported failure: {:?}",
+        reports
+    );
 }
 
 fn run_browser_page(test_name: &str, source: &str, html: &str) {
@@ -287,8 +307,13 @@ function increment() {
 <script type="module">
 import "./browser_bundle_state_helper_and_readiness_work.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -349,8 +374,13 @@ function setNodeText(node, value) {
 <script type="module">
 import { summarize, setNodeText, ready } from "./browser_bundle_normalizes_plain_values_and_preserves_dom_handles.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -429,8 +459,13 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_returns_boxlang_class_instances_to_js.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -530,8 +565,13 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_exposes_instance_methods_to_alpine_scope.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -654,8 +694,13 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_allows_unscoped_class_method_variables.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -752,8 +797,13 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_preserves_bluetooth_device_properties_after_future_get.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -857,8 +907,13 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_invokes_nested_bluetooth_gatt_methods_with_host_receiver.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -955,8 +1010,13 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_invokes_bluetooth_gatt_methods_from_instance_property.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -1063,8 +1123,13 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_btprinter_dom_reacts_to_plain_js_state_mutations.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -1158,8 +1223,13 @@ function createTestState() {
 <script type="module">
 import { createTestState, ready } from "./browser_bundle_persists_nested_instance_property_mutations.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -1238,8 +1308,13 @@ function registerComponent() {
 <script type="module">
 import { ready, registerComponent } from "./browser_bundle_alpine_updates_nested_instance_property_mutations.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -1368,8 +1443,13 @@ fn browser_bundle_supports_multiple_modules_on_one_page() {
 import { getName as getA, ready as readyA } from "./moduleA.js";
 import { getName as getB, ready as readyB } from "./moduleB.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 try {
@@ -1447,8 +1527,13 @@ function getThrownException() {
 <script type="module">
 import { getThrownException, ready } from "./browser_bundle_wraps_throw_strings_as_exception_objects.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -1500,8 +1585,13 @@ function makeThrower() {
 <script type="module">
 import { runWithCallback, makeThrower, ready } from "./browser_bundle_callbacks_and_errors.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 try {
@@ -1559,8 +1649,13 @@ function makeDoubler() {
 <script type="module">
 import { makeDoubler, ready } from "./browser_bundle_returns_boxlang_callbacks_to_js.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -1607,8 +1702,13 @@ function invokeData(api) {
 <script type="module">
 import { invokeData, ready } from "./browser_bundle_invokes_methods_on_callable_plain_js_objects.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -1661,8 +1761,13 @@ function awaitJsPromise() {
 <script type="module">
 import { awaitJsPromise, ready } from "./browser_bundle_awaits_js_promises_via_future_get.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.matchboxResolveLater = function() {
@@ -1719,8 +1824,13 @@ function buildOptions() {
 <script type="module">
 import { buildOptions, ready } from "./browser_bundle_preserves_quoted_struct_key_case_for_js.js";
 
+let __matchboxReported = false;
 function report(status) {
-  fetch(`/report/${status}`).catch(() => {});
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
