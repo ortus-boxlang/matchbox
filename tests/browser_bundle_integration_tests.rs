@@ -57,7 +57,11 @@ fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
             break;
         }
         filled += read;
-        if filled >= 4 && buffer[..filled].windows(4).any(|window| window == b"\r\n\r\n") {
+        if filled >= 4
+            && buffer[..filled]
+                .windows(4)
+                .any(|window| window == b"\r\n\r\n")
+        {
             break;
         }
         if filled == buffer.len() {
@@ -92,7 +96,12 @@ fn serve_request(
     let target = parts.next().unwrap_or("/");
 
     if method != "GET" {
-        respond(&mut stream, "405 Method Not Allowed", "text/plain", b"method not allowed");
+        respond(
+            &mut stream,
+            "405 Method Not Allowed",
+            "text/plain",
+            b"method not allowed",
+        );
         return Ok(());
     }
 
@@ -233,6 +242,10 @@ fn run_browser_page_with_modules(
         .recv_timeout(Duration::from_secs(20))
         .unwrap_or_else(|_| panic!("browser test {test_name} timed out waiting for report"));
 
+    // Give the browser a moment to finish any pending fetch() calls
+    // before we tear down the server and kill Firefox.
+    thread::sleep(Duration::from_millis(500));
+
     stop.store(true, Ordering::SeqCst);
     let _ = firefox.kill();
     let _ = firefox.wait();
@@ -298,7 +311,11 @@ try {
 </html>
 "#;
 
-    run_browser_page("browser_bundle_state_helper_and_readiness_work", source, html);
+    run_browser_page(
+        "browser_bundle_state_helper_and_readiness_work",
+        source,
+        html,
+    );
 }
 
 #[test]
@@ -1271,10 +1288,10 @@ try {
 #[test]
 #[cfg(target_os = "linux")]
 fn browser_bundle_supports_multiple_modules_on_one_page() {
-    // We need to compile two different modules. 
+    // We need to compile two different modules.
     // run_browser_page currently only compiles one.
     // I'll adjust it or do it manually here.
-    
+
     let test_name = "browser_bundle_multiple_modules";
     if !firefox_available() {
         eprintln!("skipping {test_name}: firefox is unavailable");
@@ -1295,14 +1312,48 @@ fn browser_bundle_supports_multiple_modules_on_one_page() {
     let source_path_a = root.join("moduleA.bxs");
     let output_path_a = root.join("moduleA.js");
     fs::write(&source_path_a, source_a).unwrap();
-    matchbox::process_file(&source_path_a, false, Some("js"), vec![], false, false, false, Some(&output_path_a), &[], false, None, false, false, false, false).unwrap();
+    matchbox::process_file(
+        &source_path_a,
+        false,
+        Some("js"),
+        vec![],
+        false,
+        false,
+        false,
+        Some(&output_path_a),
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
 
     // Module B
     let source_b = "function getName() { return 'ModuleB' }";
     let source_path_b = root.join("moduleB.bxs");
     let output_path_b = root.join("moduleB.js");
     fs::write(&source_path_b, source_b).unwrap();
-    matchbox::process_file(&source_path_b, false, Some("js"), vec![], false, false, false, Some(&output_path_b), &[], false, None, false, false, false, false).unwrap();
+    matchbox::process_file(
+        &source_path_b,
+        false,
+        Some("js"),
+        vec![],
+        false,
+        false,
+        false,
+        Some(&output_path_b),
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
 
     let html = r#"<!DOCTYPE html>
 <html lang="en">
@@ -1605,7 +1656,11 @@ function awaitJsPromise() {
 import { awaitJsPromise, ready } from "./browser_bundle_awaits_js_promises_via_future_get.js";
 
 async function report(status) {
-  await fetch(`/report/${status}`);
+  try {
+    await fetch(`/report/${status}`);
+  } catch (e) {
+    // fetch may be aborted during teardown; ignore
+  }
 }
 
 window.matchboxResolveLater = function() {
@@ -1614,8 +1669,13 @@ window.matchboxResolveLater = function() {
   });
 };
 
-window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
-window.addEventListener("unhandledrejection", (event) => report(`fail-${String(event.reason?.stack || event.reason)}`));
+window.addEventListener("error", (event) => {
+  report(`fail-${String(event.error?.stack || event.message || event.error)}`);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  event.preventDefault();
+  report(`fail-${String(event.reason?.stack || event.reason)}`);
+});
 
 try {
   await ready;
