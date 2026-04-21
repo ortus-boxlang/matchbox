@@ -98,6 +98,46 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
     bootstrap.push_str("        if (typeof _matchbox_set_instance_prop !== \"function\") return;\n");
     bootstrap.push_str("        _matchbox_set_instance_prop(vmPtr, gcId, name, value);\n");
     bootstrap.push_str("    };\n");
+    bootstrap.push_str(r#"    window.MatchBox.wrapInstancePropertyValue = window.MatchBox.wrapInstancePropertyValue || function(vmPtr, gcId, prop, value, ownerReceiver) {
+        if (value == null || typeof value !== "object") return value;
+        if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date || value instanceof RegExp || value instanceof Promise) {
+            return value;
+        }
+        if (value.__matchbox_nested_proxy__) return value;
+        const persist = () => {
+            if (ownerReceiver != null && typeof ownerReceiver === "object") {
+                Reflect.set(ownerReceiver, prop, value, ownerReceiver);
+            } else {
+                window.MatchBox.setInstanceProperty(vmPtr, gcId, prop, value);
+            }
+        };
+        const wrapChild = child => window.MatchBox.wrapInstancePropertyValue(vmPtr, gcId, prop, child, ownerReceiver);
+        for (const key of Reflect.ownKeys(value)) {
+            const current = value[key];
+            if (current != null && typeof current === "object") {
+                value[key] = wrapChild(current);
+            }
+        }
+        return new Proxy(value, {
+            get(target, nestedProp, receiver) {
+                if (nestedProp === "__matchbox_nested_proxy__") return true;
+                const nestedValue = Reflect.get(target, nestedProp, receiver);
+                return nestedValue != null && typeof nestedValue === "object" ? wrapChild(nestedValue) : nestedValue;
+            },
+            set(target, nestedProp, nestedValue, receiver) {
+                const wrapped = nestedValue != null && typeof nestedValue === "object" ? wrapChild(nestedValue) : nestedValue;
+                const result = Reflect.set(target, nestedProp, wrapped, receiver);
+                persist();
+                return result;
+            },
+            deleteProperty(target, nestedProp) {
+                const result = Reflect.deleteProperty(target, nestedProp);
+                persist();
+                return result;
+            }
+        });
+    };
+"#);
     bootstrap.push_str("    window.MatchBox.createInstanceProxy = window.MatchBox.createInstanceProxy || function(vmPtr, gcId) {\n");
     bootstrap.push_str("        const target = { __matchbox_vm_ptr: vmPtr, __matchbox_gc_id: gcId, __matchbox_cache: {} };\n");
     bootstrap.push_str("        return new Proxy(target, {\n");
@@ -118,6 +158,8 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
     bootstrap.push_str("                    // Keep methods unbound so `this` stays on the actual JS receiver.\n");
     bootstrap.push_str("                    // That lets reactive wrappers observe BoxLang instance writes.\n");
     bootstrap.push_str("                    target.__matchbox_cache[prop] = val;\n");
+    bootstrap.push_str("                } else if (val != null && typeof val === \"object\") {\n");
+    bootstrap.push_str("                    val = window.MatchBox.wrapInstancePropertyValue(vmPtr, gcId, prop, val, receiver);\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("                return val !== undefined ? val : target[prop];\n");
     bootstrap.push_str("            },\n");
@@ -366,6 +408,46 @@ pub fn render_stub_js_bootstrap(functions: &[String], module_name: &str, b64_byt
     bootstrap.push_str("        if (typeof _matchbox_set_instance_prop !== \"function\") return;\n");
     bootstrap.push_str("        _matchbox_set_instance_prop(vmPtr, gcId, name, value);\n");
     bootstrap.push_str("    };\n");
+    bootstrap.push_str(r#"    window.MatchBox.wrapInstancePropertyValue = window.MatchBox.wrapInstancePropertyValue || function(vmPtr, gcId, prop, value, ownerReceiver) {
+        if (value == null || typeof value !== "object") return value;
+        if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date || value instanceof RegExp || value instanceof Promise) {
+            return value;
+        }
+        if (value.__matchbox_nested_proxy__) return value;
+        const persist = () => {
+            if (ownerReceiver != null && typeof ownerReceiver === "object") {
+                Reflect.set(ownerReceiver, prop, value, ownerReceiver);
+            } else {
+                window.MatchBox.setInstanceProperty(vmPtr, gcId, prop, value);
+            }
+        };
+        const wrapChild = child => window.MatchBox.wrapInstancePropertyValue(vmPtr, gcId, prop, child, ownerReceiver);
+        for (const key of Reflect.ownKeys(value)) {
+            const current = value[key];
+            if (current != null && typeof current === "object") {
+                value[key] = wrapChild(current);
+            }
+        }
+        return new Proxy(value, {
+            get(target, nestedProp, receiver) {
+                if (nestedProp === "__matchbox_nested_proxy__") return true;
+                const nestedValue = Reflect.get(target, nestedProp, receiver);
+                return nestedValue != null && typeof nestedValue === "object" ? wrapChild(nestedValue) : nestedValue;
+            },
+            set(target, nestedProp, nestedValue, receiver) {
+                const wrapped = nestedValue != null && typeof nestedValue === "object" ? wrapChild(nestedValue) : nestedValue;
+                const result = Reflect.set(target, nestedProp, wrapped, receiver);
+                persist();
+                return result;
+            },
+            deleteProperty(target, nestedProp) {
+                const result = Reflect.deleteProperty(target, nestedProp);
+                persist();
+                return result;
+            }
+        });
+    };
+"#);
     bootstrap.push_str("    window.MatchBox.createInstanceProxy = window.MatchBox.createInstanceProxy || function(vmPtr, gcId) {\n");
     bootstrap.push_str("        const target = { __matchbox_vm_ptr: vmPtr, __matchbox_gc_id: gcId, __matchbox_cache: {} };\n");
     bootstrap.push_str("        return new Proxy(target, {\n");
@@ -386,6 +468,8 @@ pub fn render_stub_js_bootstrap(functions: &[String], module_name: &str, b64_byt
     bootstrap.push_str("                    // Keep methods unbound so `this` stays on the actual JS receiver.\n");
     bootstrap.push_str("                    // That lets reactive wrappers observe BoxLang instance writes.\n");
     bootstrap.push_str("                    target.__matchbox_cache[prop] = val;\n");
+    bootstrap.push_str("                } else if (val != null && typeof val === \"object\") {\n");
+    bootstrap.push_str("                    val = window.MatchBox.wrapInstancePropertyValue(vmPtr, gcId, prop, val, receiver);\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("                return val !== undefined ? val : target[prop];\n");
     bootstrap.push_str("            },\n");
@@ -637,6 +721,7 @@ mod tests {
         assert!(bootstrap.contains("getInstanceProperty"));
         assert!(bootstrap.contains("getInstanceKeys"));
         assert!(bootstrap.contains("setInstanceProperty"));
+        assert!(bootstrap.contains("wrapInstancePropertyValue"));
         assert!(bootstrap.contains("vm = new BoxLangVM();"));
         assert!(bootstrap.contains("vm.load_bytecode(bytecodeBytes);"));
         assert!(bootstrap.contains("return await vm.call(\"hello\", args);"));

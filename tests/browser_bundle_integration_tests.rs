@@ -801,6 +801,165 @@ try {
 
 #[test]
 #[cfg(target_os = "linux")]
+fn browser_bundle_persists_nested_instance_property_mutations() {
+    let source = r#"
+class TestState {
+    this.thing = { message: "not changed" };
+    this.message = "not changed";
+
+    function clickHandler() {
+        this.thing.message = "nested changed";
+        this.message = "top changed";
+        return this;
+    }
+}
+
+function createTestState() {
+    return new TestState();
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { createTestState, ready } from "./browser_bundle_persists_nested_instance_property_mutations.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
+window.addEventListener("unhandledrejection", (event) => report(`fail-${String(event.reason?.stack || event.reason)}`));
+
+try {
+  await ready;
+  const state = await createTestState();
+
+  if (state.thing?.message !== "not changed" || state.message !== "not changed") {
+    throw new Error(`bad-initial-${String(state.thing?.message)}-${String(state.message)}`);
+  }
+
+  await state.clickHandler();
+
+  if (state.message !== "top changed") {
+    throw new Error(`bad-top-${String(state.message)}`);
+  }
+
+  if (state.thing?.message !== "nested changed") {
+    throw new Error(`bad-nested-${String(state.thing?.message)}`);
+  }
+
+  await report("ok");
+} catch (error) {
+  await report(`fail-${String(error?.message || error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_persists_nested_instance_property_mutations",
+        source,
+        html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_alpine_updates_nested_instance_property_mutations() {
+    let source = r#"
+class TestState {
+    this.thing = { message: "not changed" };
+    this.message = "not changed";
+
+    function clickHandler() {
+        this.thing.message = "nested changed";
+        this.message = "top changed";
+        return this;
+    }
+}
+
+function registerComponent() {
+    Alpine = js.Alpine;
+    if ( isNull( Alpine ) || isNull( Alpine.data ) ) {
+        return false;
+    }
+
+    Alpine.data( "testclass", () => {
+        return new TestState();
+    });
+    return true;
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<div x-data="testclass" x-cloak>
+  <p id="nested" x-text="thing.message"></p>
+  <p id="top" x-text="message"></p>
+  <button id="trigger" @click="clickHandler">One</button>
+</div>
+<script type="module">
+import { ready, registerComponent } from "./browser_bundle_alpine_updates_nested_instance_property_mutations.js";
+
+async function report(status) {
+  await fetch(`/report/${status}`);
+}
+
+window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
+window.addEventListener("unhandledrejection", (event) => report(`fail-${String(event.reason?.stack || event.reason)}`));
+
+try {
+  await ready;
+  const { default: Alpine } = await import("https://unpkg.com/alpinejs@3/dist/module.esm.js");
+  window.Alpine = Alpine;
+  await registerComponent();
+  Alpine.start();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const nested = document.getElementById("nested");
+  const top = document.getElementById("top");
+  const trigger = document.getElementById("trigger");
+
+  if (nested.textContent !== "not changed" || top.textContent !== "not changed") {
+    throw new Error(`bad-initial-${nested.textContent}-${top.textContent}`);
+  }
+
+  trigger.click();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  if (top.textContent !== "top changed") {
+    throw new Error(`bad-top-dom-${top.textContent}`);
+  }
+
+  if (nested.textContent !== "nested changed") {
+    throw new Error(`bad-nested-dom-${nested.textContent}`);
+  }
+
+  await report("ok");
+} catch (error) {
+  await report(`fail-${String(error?.message || error)}`);
+}
+</script>
+<style>
+  [x-cloak] { display: none !important; }
+</style>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_alpine_updates_nested_instance_property_mutations",
+        source,
+        html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn browser_bundle_supports_multiple_modules_on_one_page() {
     // We need to compile two different modules. 
     // run_browser_page currently only compiles one.

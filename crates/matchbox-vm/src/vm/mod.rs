@@ -126,6 +126,12 @@ fn is_plain_js_object(value: &JsValue) -> bool {
         return false;
     }
 
+    let nested_proxy_marker = Reflect::get(value, &JsValue::from_str("__matchbox_nested_proxy__"))
+        .unwrap_or(JsValue::UNDEFINED);
+    if nested_proxy_marker.as_bool().unwrap_or(false) {
+        return false;
+    }
+
     let object = Object::from(value.clone());
     let prototype = Object::get_prototype_of(&object);
     if prototype.is_null() || prototype.is_undefined() {
