@@ -287,8 +287,8 @@ function increment() {
 <script type="module">
 import "./browser_bundle_state_helper_and_readiness_work.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -308,9 +308,9 @@ try {
   if (app.count !== 1) {
     throw new Error("bad-call");
   }
-  await report("ok");
+  report("ok");
 } catch (_error) {
-  await report("fail");
+  report("fail");
 }
 </script>
 </body>
@@ -349,8 +349,8 @@ function setNodeText(node, value) {
 <script type="module">
 import { summarize, setNodeText, ready } from "./browser_bundle_normalizes_plain_values_and_preserves_dom_handles.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -364,20 +364,20 @@ try {
     meta: { enabled: true }
   });
   if (summary.kind !== "box" || summary.total !== 3 || summary.enabled !== true) {
-    await report("bad-summary");
+    report("bad-summary");
     throw new Error("bad-summary");
   }
 
   const target = document.getElementById("target");
   const result = await setNodeText(target, "after");
   if (result.text !== "after" || target.textContent !== "after") {
-    await report("bad-node");
+    report("bad-node");
     throw new Error("bad-node");
   }
 
-  await report("ok");
+  report("ok");
 } catch (_error) {
-  await report("fail");
+  report("fail");
 }
 </script>
 </body>
@@ -429,8 +429,8 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_returns_boxlang_class_instances_to_js.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -441,31 +441,31 @@ try {
 
   const printer = await createPrinterState();
   if (!printer) {
-    await report(`fail-no-printer-${String(printer)}-${typeof printer}`);
+    report(`fail-no-printer-${String(printer)}-${typeof printer}`);
     throw new Error("no-printer");
   }
   if (printer.device !== null) {
-    await report(`fail-device-${String(printer.device)}`);
+    report(`fail-device-${String(printer.device)}`);
     throw new Error("bad-device");
   }
   if (printer.connection !== null) {
-    await report(`fail-connection-${String(printer.connection)}`);
+    report(`fail-connection-${String(printer.connection)}`);
     throw new Error("bad-connection");
   }
   if (printer.characteristic !== null) {
-    await report(`fail-characteristic-${String(printer.characteristic)}`);
+    report(`fail-characteristic-${String(printer.characteristic)}`);
     throw new Error("bad-characteristic");
   }
   if (printer.status !== "Ready") {
-    await report(`fail-status-${String(printer.status)}`);
+    report(`fail-status-${String(printer.status)}`);
     throw new Error("bad-status");
   }
   if (printer.isSupported !== true) {
-    await report(`fail-supported-${String(printer.isSupported)}`);
+    report(`fail-supported-${String(printer.isSupported)}`);
     throw new Error("bad-supported");
   }
   if (printer.error !== "") {
-    await report(`fail-error-${String(printer.error)}`);
+    report(`fail-error-${String(printer.error)}`);
     throw new Error("bad-error");
   }
 
@@ -475,13 +475,13 @@ try {
     printer.characteristic !== "writeable" ||
     printer.status !== "Connected"
   ) {
-    await report("fail-method-call");
+    report("fail-method-call");
     throw new Error("bad-method-call");
   }
 
-  await report("ok");
+  report("ok");
 } catch (_error) {
-  await report("fail");
+  report("fail");
 }
 </script>
 </body>
@@ -530,8 +530,8 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_exposes_instance_methods_to_alpine_scope.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -568,13 +568,13 @@ try {
 
   const result = invoke(printer);
   if (result !== "ok") {
-    await report(`fail-${result}`);
+    report(`fail-${result}`);
     throw new Error(result);
   }
 
-  await report("ok");
+  report("ok");
 } catch (_error) {
-  await report("fail");
+  report("fail");
 }
 </script>
 </body>
@@ -654,8 +654,8 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_allows_unscoped_class_method_variables.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -688,23 +688,23 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 100));
 
   if (printer.error !== "") {
-    await report(`fail-error-${printer.error}`);
+    report(`fail-error-${printer.error}`);
     throw new Error(printer.error);
   }
 
   if (printer.status !== "Connected") {
-    await report(`fail-status-${printer.status}`);
+    report(`fail-status-${printer.status}`);
     throw new Error(printer.status);
   }
 
   if (window.__capturedOptionsKeys !== "acceptAllDevices|optionalServices") {
-    await report(`fail-options-${window.__capturedOptionsKeys}`);
+    report(`fail-options-${window.__capturedOptionsKeys}`);
     throw new Error(window.__capturedOptionsKeys);
   }
 
-  await report("ok");
+  report("ok");
 } catch (_error) {
-  await report(`fail-${String(_error?.stack || _error)}`);
+  report(`fail-${String(_error?.stack || _error)}`);
 }
 </script>
 </body>
@@ -752,8 +752,8 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_preserves_bluetooth_device_properties_after_future_get.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -813,9 +813,9 @@ try {
     throw new Error(`bad-summary-${summary}`);
   }
 
-  await report("ok");
+  report("ok");
 } catch (error) {
-  await report(`fail-${String(error?.message || error)}`);
+  report(`fail-${String(error?.message || error)}`);
 }
 </script>
 </body>
@@ -857,8 +857,8 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_invokes_nested_bluetooth_gatt_methods_with_host_receiver.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -909,9 +909,9 @@ try {
     throw new Error(`bad-connected-${String(connected)}`);
   }
 
-  await report("ok");
+  report("ok");
 } catch (error) {
-  await report(`fail-${String(error?.message || error)}`);
+  report(`fail-${String(error?.message || error)}`);
 }
 </script>
 </body>
@@ -955,8 +955,8 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_invokes_bluetooth_gatt_methods_from_instance_property.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -1012,9 +1012,9 @@ try {
     throw new Error(`bad-connected-${String(connected)}`);
   }
 
-  await report("ok");
+  report("ok");
 } catch (error) {
-  await report(`fail-${String(error?.message || error)}`);
+  report(`fail-${String(error?.message || error)}`);
 }
 </script>
 </body>
@@ -1063,8 +1063,8 @@ function createPrinterState() {
 <script type="module">
 import { createPrinterState, ready } from "./browser_bundle_btprinter_dom_reacts_to_plain_js_state_mutations.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -1104,7 +1104,7 @@ try {
   render();
 
   if (!dot.className.includes("bg-green-500")) {
-    await report(`fail-dot-${dot.className}-status-${status.textContent}-proxy-${String(proxy.status)}-char-${String(proxy.characteristic)}`);
+    report(`fail-dot-${dot.className}-status-${status.textContent}-proxy-${String(proxy.status)}-char-${String(proxy.characteristic)}`);
     throw new Error(`expected green status dot, got: ${dot.className}`);
   }
 
@@ -1116,9 +1116,9 @@ try {
     throw new Error(`expected reactive writes, saw ${writeCount}`);
   }
 
-  await report("ok");
+  report("ok");
 } catch (error) {
-  await report(`fail-${String(error?.message || error)}`);
+  report(`fail-${String(error?.message || error)}`);
 }
 </script>
 </body>
@@ -1158,8 +1158,8 @@ function createTestState() {
 <script type="module">
 import { createTestState, ready } from "./browser_bundle_persists_nested_instance_property_mutations.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -1183,9 +1183,9 @@ try {
     throw new Error(`bad-nested-${String(state.thing?.message)}`);
   }
 
-  await report("ok");
+  report("ok");
 } catch (error) {
-  await report(`fail-${String(error?.message || error)}`);
+  report(`fail-${String(error?.message || error)}`);
 }
 </script>
 </body>
@@ -1238,8 +1238,8 @@ function registerComponent() {
 <script type="module">
 import { ready, registerComponent } from "./browser_bundle_alpine_updates_nested_instance_property_mutations.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -1272,9 +1272,9 @@ try {
     throw new Error(`bad-nested-dom-${nested.textContent}`);
   }
 
-  await report("ok");
+  report("ok");
 } catch (error) {
-  await report(`fail-${String(error?.message || error)}`);
+  report(`fail-${String(error?.message || error)}`);
 }
 </script>
 <style>
@@ -1368,8 +1368,8 @@ fn browser_bundle_supports_multiple_modules_on_one_page() {
 import { getName as getA, ready as readyA } from "./moduleA.js";
 import { getName as getB, ready as readyB } from "./moduleB.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 try {
@@ -1378,12 +1378,12 @@ try {
   const nameB = await getB();
   
   if (nameA === 'ModuleA' && nameB === 'ModuleB') {
-    await report("ok");
+    report("ok");
   } else {
-    await report(`fail-${nameA}-${nameB}`);
+    report(`fail-${nameA}-${nameB}`);
   }
 } catch (e) {
-  await report("fail-exception");
+  report("fail-exception");
 }
 </script>
 </body>
@@ -1447,8 +1447,8 @@ function getThrownException() {
 <script type="module">
 import { getThrownException, ready } from "./browser_bundle_wraps_throw_strings_as_exception_objects.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -1459,13 +1459,13 @@ try {
 
   const result = await getThrownException();
   if (result !== "CustomException|CustomException|Boom") {
-    await report(`fail-${result}`);
+    report(`fail-${result}`);
     throw new Error(result);
   }
 
-  await report("ok");
+  report("ok");
 } catch (_error) {
-  await report(`fail-${String(_error?.stack || _error)}`);
+  report(`fail-${String(_error?.stack || _error)}`);
 }
 </script>
 </body>
@@ -1500,8 +1500,8 @@ function makeThrower() {
 <script type="module">
 import { runWithCallback, makeThrower, ready } from "./browser_bundle_callbacks_and_errors.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 try {
@@ -1510,7 +1510,7 @@ try {
   // Callback test
   const result = await runWithCallback((n) => n * 2);
   if (result !== 84) {
-    await report(`fail-callback-${result}`);
+    report(`fail-callback-${result}`);
     throw new Error("bad-callback");
   }
 
@@ -1527,14 +1527,14 @@ try {
   }
 
   if (caught && String(caught).includes("BoxLang Error")) {
-    await report("ok");
+    report("ok");
   } else if (caught) {
-    await report(`fail-wrong-error-${caught}`);
+    report(`fail-wrong-error-${caught}`);
   } else {
-    await report("fail-no-error");
+    report("fail-no-error");
   }
 } catch (e) {
-  await report(`fail-exception-${e}`);
+  report(`fail-exception-${e}`);
 }
 </script>
 </body>
@@ -1559,8 +1559,8 @@ function makeDoubler() {
 <script type="module">
 import { makeDoubler, ready } from "./browser_bundle_returns_boxlang_callbacks_to_js.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -1572,13 +1572,13 @@ try {
   const doubler = await makeDoubler();
   const result = await doubler(21);
   if (result !== 42) {
-    await report(`fail-${result}`);
+    report(`fail-${result}`);
     throw new Error("bad-result");
   }
 
-  await report("ok");
+  report("ok");
 } catch (_error) {
-  await report(`fail-${String(_error?.stack || _error)}`);
+  report(`fail-${String(_error?.stack || _error)}`);
 }
 </script>
 </body>
@@ -1607,8 +1607,8 @@ function invokeData(api) {
 <script type="module">
 import { invokeData, ready } from "./browser_bundle_invokes_methods_on_callable_plain_js_objects.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", () => report("fail"));
@@ -1627,13 +1627,13 @@ try {
 
   const result = await invokeData(api);
   if (result !== 22 || api.value !== 22) {
-    await report(`fail-${result}-${api.value}`);
+    report(`fail-${result}-${api.value}`);
     throw new Error("bad-call");
   }
 
-  await report("ok");
+  report("ok");
 } catch (_error) {
-  await report("fail");
+  report("fail");
 }
 </script>
 </body>
@@ -1683,12 +1683,12 @@ try {
   await ready;
   const result = await awaitJsPromise();
   if (result !== "done") {
-    await report(`fail-${String(result)}`);
+    report(`fail-${String(result)}`);
     throw new Error("bad-result");
   }
-  await report("ok");
+  report("ok");
 } catch (_error) {
-  await report(`fail-${String(_error?.stack || _error)}`);
+  report(`fail-${String(_error?.stack || _error)}`);
 }
 </script>
 </body>
@@ -1719,8 +1719,8 @@ function buildOptions() {
 <script type="module">
 import { buildOptions, ready } from "./browser_bundle_preserves_quoted_struct_key_case_for_js.js";
 
-async function report(status) {
-  await fetch(`/report/${status}`);
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.addEventListener("error", (event) => report(`fail-${String(event.error?.stack || event.message || event.error)}`));
@@ -1731,12 +1731,12 @@ try {
   const options = await buildOptions();
   const keys = Object.keys(options);
   if (keys[0] !== "acceptAllDevices" || keys[1] !== "optionalServices") {
-    await report(`fail-${keys.join("|")}`);
+    report(`fail-${keys.join("|")}`);
     throw new Error(`bad-keys:${keys.join("|")}`);
   }
-  await report("ok");
+  report("ok");
 } catch (_error) {
-  await report(`fail-${String(_error?.stack || _error)}`);
+  report(`fail-${String(_error?.stack || _error)}`);
 }
 </script>
 </body>
