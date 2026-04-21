@@ -95,6 +95,12 @@ fn serve_request(
     let method = parts.next().unwrap_or("");
     let target = parts.next().unwrap_or("/");
 
+    if let Some(result) = target.strip_prefix("/report/") {
+        let _ = report_tx.send(result.to_string());
+        respond(&mut stream, "204 No Content", "text/plain", b"");
+        return Ok(());
+    }
+
     if method != "GET" {
         respond(
             &mut stream,
@@ -242,9 +248,9 @@ fn run_browser_page_with_modules(
         .recv_timeout(Duration::from_secs(20))
         .unwrap_or_else(|_| panic!("browser test {test_name} timed out waiting for report"));
 
-    // Give the browser a moment to finish any pending fetch() calls
+    // Give the browser time to finish any pending beacons/fetches
     // before we tear down the server and kill Firefox.
-    thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(2000));
 
     stop.store(true, Ordering::SeqCst);
     let _ = firefox.kill();
@@ -1655,12 +1661,8 @@ function awaitJsPromise() {
 <script type="module">
 import { awaitJsPromise, ready } from "./browser_bundle_awaits_js_promises_via_future_get.js";
 
-async function report(status) {
-  try {
-    await fetch(`/report/${status}`);
-  } catch (e) {
-    // fetch may be aborted during teardown; ignore
-  }
+function report(status) {
+  fetch(`/report/${status}`).catch(() => {});
 }
 
 window.matchboxResolveLater = function() {
