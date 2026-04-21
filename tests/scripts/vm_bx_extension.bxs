@@ -1,0 +1,4 @@
+import tests.models.BXExtensionTest;
+
+obj = new tests.models.BXExtensionTest(42);
+println(obj.getValue());

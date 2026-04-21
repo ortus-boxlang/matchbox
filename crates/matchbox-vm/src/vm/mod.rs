@@ -328,7 +328,7 @@ pub struct CallFrame {
     pub ip: usize,
     pub stack_base: usize,
     pub receiver: Option<BxValue>,
-    pub handlers: Vec<usize>,
+    pub handlers: Vec<(usize, usize)>,
     pub promoted_constants: Vec<Option<BxValue>>,
 }
 
@@ -3765,7 +3765,8 @@ impl VM {
                 op::PUSH_HANDLER => {
                     let offset = op0;
                     let target_ip = ip + offset as usize;
-                    self.fibers[fiber_idx].frames.last_mut().unwrap().handlers.push(target_ip);
+                    let saved_stack_len = self.fibers[fiber_idx].stack.len();
+                    self.fibers[fiber_idx].frames.last_mut().unwrap().handlers.push((target_ip, saved_stack_len));
                 }
                 op::POP_HANDLER => {
                     self.fibers[fiber_idx].frames.last_mut().unwrap().handlers.pop();
@@ -3954,11 +3955,10 @@ impl VM {
         while !self.fibers[fiber_idx].frames.is_empty() {
             let frame_idx = self.fibers[fiber_idx].frames.len() - 1;
             if !self.fibers[fiber_idx].frames[frame_idx].handlers.is_empty() {
-                let handler_ip = self.fibers[fiber_idx].frames[frame_idx].handlers.pop().unwrap();
-                let stack_base = self.fibers[fiber_idx].frames[frame_idx].stack_base;
+                let (handler_ip, saved_stack_len) = self.fibers[fiber_idx].frames[frame_idx].handlers.pop().unwrap();
                 self.fibers[fiber_idx].frames[frame_idx].ip = handler_ip;
                 
-                self.fibers[fiber_idx].stack.truncate(stack_base);
+                self.fibers[fiber_idx].stack.truncate(saved_stack_len);
                 self.fibers[fiber_idx].stack.push(val);
                 return Ok(());
             }
@@ -4783,11 +4783,12 @@ impl VM {
 
                         let sub_chunk = func.chunk.clone();
                         let constant_count = sub_chunk.constants.len();
+                        let stack_base = self.fibers[fiber_idx].stack.len() - func.arity as usize;
                         let frame = CallFrame {
                             function: func.clone(),
                             chunk: Rc::new(RefCell::new(sub_chunk)),
                             ip: 0,
-                            stack_base: self.fibers[fiber_idx].stack.len() - func.arity as usize,
+                            stack_base,
                             receiver: Some(receiver_val),
                             handlers: Vec::new(),
                             promoted_constants: vec![None; constant_count],

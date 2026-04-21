@@ -1,0 +1,15 @@
+class {
+    function init( numeric dpi = 203 ) {
+        println("init called");
+        variables.dpi = arguments.dpi;
+        println("dpi=" & variables.dpi);
+        variables.dimensions = {
+            width       : 0,
+            height      : "auto",
+            configured  : false,
+            contentLock : false
+        };
+        println("returning this");
+        return this;
+    }
+}

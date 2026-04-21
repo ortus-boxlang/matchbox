@@ -1,0 +1,10 @@
+class {
+    function init() {
+        variables.config = { locked : false };
+        return this;
+    }
+    function test() {
+        println(variables.config.locked);
+        return this;
+    }
+}

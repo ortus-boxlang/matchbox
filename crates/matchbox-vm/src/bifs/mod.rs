@@ -32,6 +32,8 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
 
     // Math BIFs
     bifs.insert("round".to_string(), round as BxNativeFunction);
+    bifs.insert("int".to_string(), int_bif as BxNativeFunction);
+    bifs.insert("ceiling".to_string(), ceiling_bif as BxNativeFunction);
     bifs.insert("abs".to_string(), abs_bif as BxNativeFunction);
     bifs.insert("min".to_string(), min_bif as BxNativeFunction);
     bifs.insert("max".to_string(), max_bif as BxNativeFunction);
@@ -101,11 +103,24 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
         create_object as BxNativeFunction,
     );
     bifs.insert("isnull".to_string(), is_null_bif as BxNativeFunction);
+    bifs.insert("isnumeric".to_string(), is_numeric_bif as BxNativeFunction);
+    bifs.insert(
+        "issimplevalue".to_string(),
+        is_simple_value_bif as BxNativeFunction,
+    );
     bifs.insert("ucase".to_string(), ucase as BxNativeFunction);
     bifs.insert("lcase".to_string(), lcase as BxNativeFunction);
     bifs.insert("trim".to_string(), trim_bif as BxNativeFunction);
+    bifs.insert("tostring".to_string(), to_string_bif as BxNativeFunction);
     bifs.insert("listtoarray".to_string(), list_to_array as BxNativeFunction);
+    bifs.insert(
+        "listfindnocase".to_string(),
+        list_find_no_case as BxNativeFunction,
+    );
     bifs.insert("indexof".to_string(), index_of as BxNativeFunction);
+    bifs.insert("rematch".to_string(), re_match as BxNativeFunction);
+    bifs.insert("mid".to_string(), mid_bif as BxNativeFunction);
+    bifs.insert("replace".to_string(), replace_bif as BxNativeFunction);
     bifs.insert("chr".to_string(), chr_bif as BxNativeFunction);
     bifs.insert(
         "futureonerror".to_string(),
@@ -305,6 +320,14 @@ fn trim_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     Ok(BxValue::new_ptr(vm.string_new(s)))
 }
 
+fn to_string_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 1 {
+        return Err("toString() expects exactly 1 argument".to_string());
+    }
+    let s = vm.to_string(args[0]);
+    Ok(BxValue::new_ptr(vm.string_new(s)))
+}
+
 fn list_to_array(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
         return Err("listToArray() expects at least 1 argument".to_string());
@@ -323,6 +346,26 @@ fn list_to_array(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     }
 
     Ok(BxValue::new_ptr(array_id))
+}
+
+fn list_find_no_case(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 2 {
+        return Err("listFindNoCase() expects at least 2 arguments: (list, value)".to_string());
+    }
+    let list = vm.to_string(args[0]);
+    let value = vm.to_string(args[1]).to_lowercase();
+    let del = if args.len() > 2 {
+        vm.to_string(args[2])
+    } else {
+        ",".to_string()
+    };
+
+    for (idx, part) in list.split(&del).enumerate() {
+        if part.trim().to_lowercase() == value {
+            return Ok(BxValue::new_number((idx + 1) as f64));
+        }
+    }
+    Ok(BxValue::new_number(0.0))
 }
 
 fn index_of(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -348,6 +391,62 @@ fn chr_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     Ok(BxValue::new_ptr(s_id))
 }
 
+fn re_match(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 2 {
+        return Err("reMatch() expects 2 arguments: (regex, string)".to_string());
+    }
+    let pattern = vm.to_string(args[0]);
+    let text = vm.to_string(args[1]);
+    let regex = regex::Regex::new(&pattern).map_err(|e| format!("Invalid regex: {}", e))?;
+    let array_id = vm.array_new();
+    for cap in regex.find_iter(&text) {
+        let s_id = vm.string_new(cap.as_str().to_string());
+        vm.array_push(array_id, BxValue::new_ptr(s_id));
+    }
+    Ok(BxValue::new_ptr(array_id))
+}
+
+fn mid_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 2 {
+        return Err("mid() expects at least 2 arguments: (string, start)".to_string());
+    }
+    let s = vm.to_string(args[0]);
+    let start = args[1].as_number() as usize;
+    if start == 0 {
+        return Err("mid() start index must be 1-based".to_string());
+    }
+    let count = if args.len() > 2 {
+        args[2].as_number() as usize
+    } else {
+        s.len()
+    };
+    let start_idx = start.saturating_sub(1);
+    let result = s.chars().skip(start_idx).take(count).collect::<String>();
+    Ok(BxValue::new_ptr(vm.string_new(result)))
+}
+
+fn replace_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 3 {
+        return Err(
+            "replace() expects at least 3 arguments: (string, substring1, substring2)".to_string(),
+        );
+    }
+    let s = vm.to_string(args[0]);
+    let old = vm.to_string(args[1]);
+    let new = vm.to_string(args[2]);
+    let scope = if args.len() > 3 {
+        vm.to_string(args[3]).to_lowercase()
+    } else {
+        "one".to_string()
+    };
+    let result = if scope == "all" {
+        s.replace(&old, &new)
+    } else {
+        s.replacen(&old, &new, 1)
+    };
+    Ok(BxValue::new_ptr(vm.string_new(result)))
+}
+
 fn round(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 {
         return Err("round() expects exactly 1 argument".to_string());
@@ -356,6 +455,28 @@ fn round(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
         Ok(BxValue::new_number(args[0].as_number().round()))
     } else {
         Err("round() expects a number".to_string())
+    }
+}
+
+fn int_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 1 {
+        return Err("int() expects exactly 1 argument".to_string());
+    }
+    if args[0].is_number() {
+        Ok(BxValue::new_number(args[0].as_number().trunc()))
+    } else {
+        Err("int() expects a number".to_string())
+    }
+}
+
+fn ceiling_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 1 {
+        return Err("ceiling() expects exactly 1 argument".to_string());
+    }
+    if args[0].is_number() {
+        Ok(BxValue::new_number(args[0].as_number().ceil()))
+    } else {
+        Err("ceiling() expects a number".to_string())
     }
 }
 
@@ -560,7 +681,9 @@ fn bytes_new(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
             }
             let byte = value.as_number();
             if !(0.0..=255.0).contains(&byte) || byte.fract() != 0.0 {
-                return Err("bytesNew() byte values must be integers in the range 0..255".to_string());
+                return Err(
+                    "bytesNew() byte values must be integers in the range 0..255".to_string(),
+                );
             }
             out.push(byte as u8);
         }
@@ -778,4 +901,29 @@ fn is_null_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
         return Ok(BxValue::new_bool(true));
     }
     Ok(BxValue::new_bool(args[0].is_null()))
+}
+
+fn is_numeric_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() {
+        return Ok(BxValue::new_bool(false));
+    }
+    let val = &args[0];
+    if val.is_number() {
+        return Ok(BxValue::new_bool(true));
+    }
+    if val.is_null() {
+        return Ok(BxValue::new_bool(false));
+    }
+    let s = vm.to_string(*val);
+    let is_num = s.parse::<f64>().is_ok() || s.parse::<i64>().is_ok();
+    Ok(BxValue::new_bool(is_num))
+}
+
+fn is_simple_value_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() {
+        return Ok(BxValue::new_bool(false));
+    }
+    let val = &args[0];
+    let is_simple = val.is_number() || val.is_bool() || vm.is_string_value(*val);
+    Ok(BxValue::new_bool(is_simple))
 }

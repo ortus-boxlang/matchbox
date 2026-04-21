@@ -24,3 +24,4 @@ docs/examples/boxlang_alpine_js/counter.js
 docs/examples/boxlang_alpine_js/counter.d.ts
 docs/examples/boxlang_alpine_js/panic_debug.txt
 .codex
+panic_debug.txt

@@ -51,7 +51,7 @@ extends_attr = { "extends" ~ "=" ~ string }
 accessors_attr = { "accessors" ~ "=" ~ string }
 implements_attr = { "implements" ~ "=" ~ string }
 class_attr = { extends_attr | accessors_attr | implements_attr }
-class_decl = { class_keyword ~ identifier ~ class_attr* ~ "{" ~ class_member* ~ "}" }
+class_decl = { class_keyword ~ identifier? ~ class_attr* ~ "{" ~ class_member* ~ "}" }
 class_member = { property | statement }
 
 interface_keyword = @{ "interface" ~ !ASCII_ALPHANUMERIC }
@@ -87,7 +87,7 @@ while_keyword = @{ "while" ~ !ASCII_ALPHANUMERIC }
 while_loop = { while_keyword ~ "(" ~ expression ~ ")" ~ (block | statement) }
 
 in_keyword = @{ "in" ~ !ASCII_ALPHANUMERIC }
-for_in = { identifier ~ ("," ~ identifier)? ~ in_keyword ~ expression }
+for_in = { var_keyword? ~ identifier ~ ("," ~ identifier)? ~ in_keyword ~ expression }
 for_classic = { init? ~ ";" ~ condition? ~ ";" ~ update? }
 init = { variable_decl_core | assignment | expression }
 condition = { expression }
@@ -120,7 +120,9 @@ switch_case = { case_keyword ~ expression ~ ":" ~ statement* }
 default_case = { default_keyword ~ ":" ~ statement* }
 
 throw_keyword = @{ "throw" ~ !ASCII_ALPHANUMERIC }
-throw_stmt = { throw_keyword ~ expression? ~ ";"? }
+throw_stmt = { throw_keyword ~ (throw_args | expression)? ~ ";"? }
+throw_args = { "(" ~ throw_arg ~ ("," ~ throw_arg)* ~ ")" }
+throw_arg = { identifier ~ (":" | "=") ~ expression }
 
 expression_stmt = { expression ~ ";"? }
 
@@ -131,7 +133,8 @@ expression = {
 
 conditional_expr = { binary_expr ~ (("?:" ~ expression) | ("?" ~ expression ~ ":" ~ expression))? }
 
-assignment = { target ~ "=" ~ expression }
+compound_op = { "+=" | "-=" | "*=" | "/=" | "%=" }
+assignment = { target ~ (compound_op | "=") ~ expression }
 target = { atom ~ (array_access | member_access)* }
 
 binary_expr = { primary ~ (operator ~ primary)* }

@@ -1,0 +1,4 @@
+import tests.models.AnonymousTest;
+
+obj = new tests.models.AnonymousTest(99);
+println(obj.getValue());

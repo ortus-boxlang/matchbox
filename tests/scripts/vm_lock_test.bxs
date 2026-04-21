@@ -1,0 +1,5 @@
+import tests.models.LockTest;
+
+obj = new tests.models.LockTest()
+    .setConfig()
+    .setConfig();

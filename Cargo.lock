@@ -1820,6 +1820,7 @@ dependencies = [
  "r2d2",
  "r2d2_postgres",
  "rand 0.10.0",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

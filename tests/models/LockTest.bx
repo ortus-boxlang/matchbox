@@ -1,0 +1,17 @@
+class {
+    property name;
+    function init() {
+        variables.config = { locked : false };
+        return this;
+    }
+    function setConfig() {
+        if ( variables.config.locked ) {
+            throw( type : "Locked", message : "Already locked" );
+        }
+        variables.config = { locked : true };
+        return this;
+    }
+    function getLocked() {
+        return variables.config.locked;
+    }
+}

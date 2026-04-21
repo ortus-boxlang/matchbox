@@ -1,0 +1,5 @@
+import tests.models.SimpleTSPL;
+
+obj = new tests.models.SimpleTSPL();
+println(typeof(obj));
+println(obj);

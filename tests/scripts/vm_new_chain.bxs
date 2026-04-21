@@ -1,0 +1,17 @@
+class Test {
+    property value;
+    function init() {
+        this.value = 0;
+        return this;
+    }
+    function setValue(v) {
+        this.value = v;
+        return this;
+    }
+    function getValue() {
+        return this.value;
+    }
+}
+
+obj = new Test().setValue(42);
+println(obj.getValue());

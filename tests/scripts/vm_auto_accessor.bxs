@@ -1,0 +1,7 @@
+class Person accessors="true" {
+    property name
+}
+
+p = new Person()
+p.setName("Luis")
+println(p.getName())

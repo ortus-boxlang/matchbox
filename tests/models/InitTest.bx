@@ -1,0 +1,10 @@
+class {
+    property name;
+    function init() {
+        this.name = "initialized";
+        return this;
+    }
+    function getName() {
+        return this.name;
+    }
+}

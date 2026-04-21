@@ -1,0 +1,4 @@
+import tests.models.NewDebug;
+
+obj = new tests.models.NewDebug();
+println("obj=" & obj);

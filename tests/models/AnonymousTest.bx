@@ -1,0 +1,10 @@
+class {
+    property value;
+    function init(value) {
+        this.value = value;
+        return this;
+    }
+    function getValue() {
+        return this.value;
+    }
+}

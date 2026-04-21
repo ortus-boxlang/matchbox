@@ -1,0 +1,4 @@
+import tests.models.VarsTest;
+
+obj = new tests.models.VarsTest();
+obj.test();

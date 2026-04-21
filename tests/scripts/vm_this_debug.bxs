@@ -1,0 +1,11 @@
+class Test {
+    function test(name) {
+        println("this=" & this)
+        println("name=" & name)
+        return this
+    }
+}
+
+obj = new Test()
+result = obj.test("hello")
+println("result=" & result)

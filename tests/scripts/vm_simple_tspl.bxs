@@ -1,0 +1,7 @@
+import tests.models.SimpleTSPL;
+
+template = new tests.models.SimpleTSPL()
+    .dimensions( 576, "auto" )
+    .moveTo( 0, 20 )
+    .text( "Order 1042", "3" )
+    .print();

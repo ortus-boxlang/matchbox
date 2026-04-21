@@ -1,0 +1,4 @@
+import tests.models.InitTest;
+
+obj = new tests.models.InitTest();
+println(obj.getName());

@@ -1,0 +1,13 @@
+class Test {
+    function setName(name) {
+        this.name = name;
+        return this;
+    }
+    function getName() {
+        return this.name;
+    }
+}
+
+obj = new Test()
+obj.setName("Luis")
+println(obj.getName())

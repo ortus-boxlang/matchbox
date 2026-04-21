@@ -1,0 +1,38 @@
+class {
+    function init( numeric dpi = 203 ) {
+        variables.dpi = arguments.dpi;
+        variables.dimensions = {
+            width       : 0,
+            height      : "auto",
+            configured  : false,
+            contentLock : false
+        };
+        return this;
+    }
+    function dimensions( required any width, any height = "auto" ) {
+        if ( variables.dimensions.contentLock ) {
+            throw(
+                type    : "Locked",
+                message : "Locked!"
+            );
+        }
+        variables.dimensions = {
+            width       : arguments.width,
+            height      : arguments.height,
+            configured  : true,
+            contentLock : false
+        };
+        return this;
+    }
+    function moveTo( required any x, required any y ) {
+        variables.cursor = { x : arguments.x, y : arguments.y };
+        return this;
+    }
+    function text( required any value, string font = "0" ) {
+        return this;
+    }
+    function print() {
+        println("OK");
+        return this;
+    }
+}
