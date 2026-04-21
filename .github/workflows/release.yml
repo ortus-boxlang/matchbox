@@ -293,7 +293,8 @@ jobs:
 
   aggregate-stubs:
     name: Aggregate All Stubs
-    needs: [build-stubs, build-esp32-stubs]
+    # needs: [build-stubs, build-esp32-stubs]
+    needs: [build-stubs]
     runs-on: ubuntu-latest
     steps:
       - name: Download All Stubs
