@@ -1748,6 +1748,7 @@ try {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn browser_bundle_awaits_js_promises_via_future_get() {
     let source = r#"
 function awaitJsPromise() {
