@@ -541,11 +541,8 @@ impl BoxLangVM {
                 vm::HostFutureState::Pending => yield_to_browser_host().await?,
                 vm::HostFutureState::Completed(value) => return Ok(self.vm.bx_to_js(&value)),
                 vm::HostFutureState::Failed(error) => {
-                    let js_err = self.vm.bx_to_js(&error);
-                    if let Some(msg) = js_err.as_string() {
-                        return Err(as_wasm_js_error(msg));
-                    }
-                    return Err(js_err);
+                    let msg = self.vm.format_error_value(error);
+                    return Err(as_wasm_js_error(msg));
                 }
             }
         }

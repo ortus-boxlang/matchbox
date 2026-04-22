@@ -1,6 +1,6 @@
-use matchbox_compiler::{parser, compiler::Compiler};
-use matchbox_vm::vm::VM;
+use matchbox_compiler::{compiler::Compiler, parser};
 use matchbox_vm::types::{BxNativeFunction, BxVM, BxValue, NativeFutureValue};
+use matchbox_vm::vm::VM;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -12,9 +12,9 @@ fn test_bxm_transpilation() {
             <bx:output>Value is #x#</bx:output>
         </bx:if>
     "#;
-    
+
     let transpiled = matchbox_compiler::parser::bxm::transpile_bxm(bxm_source);
-    
+
     // Check if it contains expected BoxLang script
     assert!(transpiled.contains("x = 10;"));
     assert!(transpiled.contains("if (x == 10) {"));
@@ -26,14 +26,14 @@ fn test_bxm_transpilation() {
 fn test_vm_output_buffering() {
     let mut vm = VM::new();
     vm.output_buffer = Some(String::new());
-    
+
     let source = "writeOutput('Hello ', 'World'); println('!'); print('MatchBox');";
     let ast = parser::parse(source, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
-    
+
     vm.interpret(chunk).unwrap();
-    
+
     let output = vm.output_buffer.unwrap();
     assert_eq!(output, "Hello World!\nMatchBox");
 }
@@ -42,7 +42,7 @@ fn test_vm_output_buffering() {
 fn test_weak_typing_addition() {
     let mut vm = VM::new();
     vm.output_buffer = Some(String::new());
-    
+
     // Test: string "10" + number 5 = 15
     // Test: string "1.5" + string "2.5" = 4.0
     // Test: string "Hello" + 5 = "Hello5" (fallback to concat)
@@ -53,13 +53,13 @@ fn test_weak_typing_addition() {
         writeOutput("|");
         writeOutput("Hello" + 5);
     "#;
-    
+
     let ast = parser::parse(source, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
-    
+
     vm.interpret(chunk).unwrap();
-    
+
     let output = vm.output_buffer.unwrap();
     assert_eq!(output, "15|4|Hello5");
 }
@@ -69,16 +69,16 @@ fn test_nested_bxm_interpolation() {
     let bxm_source = r#"<bx:output>#1 + 1# is #2# and ## is literal</bx:output>"#;
     let transpiled = matchbox_compiler::parser::bxm::transpile_bxm(bxm_source);
     println!("Transpiled: {}", transpiled);
-    
+
     let mut vm = VM::new();
     vm.output_buffer = Some(String::new());
-    
+
     let ast = parser::parse(&transpiled, Some("test")).unwrap();
     let compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, &transpiled).unwrap();
-    
+
     vm.interpret(chunk).unwrap();
-    
+
     let output = vm.output_buffer.unwrap();
     assert_eq!(output, "2 is 2 and # is literal");
 }
@@ -164,7 +164,10 @@ fn threaded_rejected_future(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxVa
 #[test]
 fn test_native_future_rejection_propagates_value_to_catch() {
     let mut bifs = HashMap::new();
-    bifs.insert("rejectedfuture".to_string(), rejected_future as BxNativeFunction);
+    bifs.insert(
+        "rejectedfuture".to_string(),
+        rejected_future as BxNativeFunction,
+    );
 
     let mut vm = VM::new_with_bifs(bifs, HashMap::new());
     vm.output_buffer = Some(String::new());
@@ -194,7 +197,10 @@ fn test_native_future_rejection_propagates_value_to_catch() {
 #[test]
 fn test_native_future_resolution_returns_value_from_get() {
     let mut bifs = HashMap::new();
-    bifs.insert("resolvedfuture".to_string(), resolved_future as BxNativeFunction);
+    bifs.insert(
+        "resolvedfuture".to_string(),
+        resolved_future as BxNativeFunction,
+    );
 
     let mut vm = VM::new_with_bifs(bifs, HashMap::new());
     vm.output_buffer = Some(String::new());
@@ -216,7 +222,10 @@ fn test_native_future_resolution_returns_value_from_get() {
 #[test]
 fn test_queued_future_resolution_is_applied_by_scheduler() {
     let mut bifs = HashMap::new();
-    bifs.insert("queuedresolvedfuture".to_string(), queued_resolved_future as BxNativeFunction);
+    bifs.insert(
+        "queuedresolvedfuture".to_string(),
+        queued_resolved_future as BxNativeFunction,
+    );
 
     let mut vm = VM::new_with_bifs(bifs, HashMap::new());
     vm.output_buffer = Some(String::new());
@@ -238,7 +247,10 @@ fn test_queued_future_resolution_is_applied_by_scheduler() {
 #[test]
 fn test_queued_future_rejection_is_applied_by_scheduler() {
     let mut bifs = HashMap::new();
-    bifs.insert("queuedrejectedfuture".to_string(), queued_rejected_future as BxNativeFunction);
+    bifs.insert(
+        "queuedrejectedfuture".to_string(),
+        queued_rejected_future as BxNativeFunction,
+    );
 
     let mut vm = VM::new_with_bifs(bifs, HashMap::new());
     vm.output_buffer = Some(String::new());
@@ -265,7 +277,10 @@ fn test_queued_future_rejection_is_applied_by_scheduler() {
 #[test]
 fn test_threaded_future_resolution_is_applied_by_scheduler() {
     let mut bifs = HashMap::new();
-    bifs.insert("threadedresolvedfuture".to_string(), threaded_resolved_future as BxNativeFunction);
+    bifs.insert(
+        "threadedresolvedfuture".to_string(),
+        threaded_resolved_future as BxNativeFunction,
+    );
 
     let mut vm = VM::new_with_bifs(bifs, HashMap::new());
     vm.output_buffer = Some(String::new());
@@ -287,7 +302,10 @@ fn test_threaded_future_resolution_is_applied_by_scheduler() {
 #[test]
 fn test_threaded_future_rejection_is_applied_by_scheduler() {
     let mut bifs = HashMap::new();
-    bifs.insert("threadedrejectedfuture".to_string(), threaded_rejected_future as BxNativeFunction);
+    bifs.insert(
+        "threadedrejectedfuture".to_string(),
+        threaded_rejected_future as BxNativeFunction,
+    );
 
     let mut vm = VM::new_with_bifs(bifs, HashMap::new());
     vm.output_buffer = Some(String::new());
@@ -309,4 +327,50 @@ fn test_threaded_future_rejection_is_applied_by_scheduler() {
 
     let output = vm.output_buffer.unwrap();
     assert_eq!(output, "threaded-boom");
+}
+
+#[test]
+fn test_js_import_binds_to_global() {
+    let mut vm = VM::new();
+    vm.output_buffer = Some(String::new());
+
+    // Set up a mock js global so the import has something to resolve.
+    let setup = r#"
+        class MockConsole {
+            function log(msg) {
+                writeOutput(msg);
+            }
+        }
+
+        js = {
+            console: new MockConsole(),
+            window: {
+                document: {
+                    title: "Mock Title"
+                }
+            }
+        };
+    "#;
+    let setup_ast = parser::parse(setup, Some("setup")).unwrap();
+    let setup_compiler = Compiler::new("setup");
+    let setup_chunk = setup_compiler.compile(&setup_ast, setup).unwrap();
+    vm.interpret(setup_chunk).unwrap();
+
+    let source = r#"
+        import js:console;
+        console.log("hello from console");
+
+        import js:window.document as doc;
+        writeOutput("|");
+        writeOutput(doc.title);
+    "#;
+
+    let ast = parser::parse(source, Some("test")).unwrap();
+    let compiler = Compiler::new("test");
+    let chunk = compiler.compile(&ast, source).unwrap();
+
+    vm.interpret(chunk).unwrap();
+
+    let output = vm.output_buffer.unwrap();
+    assert_eq!(output, "hello from console|Mock Title");
 }

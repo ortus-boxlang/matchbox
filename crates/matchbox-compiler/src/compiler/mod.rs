@@ -83,11 +83,42 @@ impl Compiler {
         self.current_line = stmt.line as u32;
         match &stmt.kind {
             StatementKind::Import { path, alias } => {
-                let resolved_alias = if let Some(a) = alias {
-                    a.to_lowercase()
+                let dotted_path = if let Some(pos) = path.find(':') {
+                    &path[pos + 1..]
                 } else {
-                    path.split('.').last().unwrap().to_string().to_lowercase()
+                    path.as_str()
                 };
+                let original_alias = if let Some(a) = alias {
+                    a.clone()
+                } else {
+                    dotted_path.split('.').last().unwrap().to_string()
+                };
+                let resolved_alias = original_alias.to_lowercase();
+
+                if path.to_lowercase().starts_with("js:") {
+                    let js_path = &path[3..];
+                    let segments: Vec<&str> = js_path.split('.').collect();
+
+                    let js_global = self
+                        .chunk
+                        .add_constant(Constant::String(BoxString::new("js")));
+                    self.chunk
+                        .emit1(op::GET_GLOBAL, js_global, self.current_line);
+
+                    for segment in segments {
+                        let idx = self
+                            .chunk
+                            .add_constant(Constant::String(BoxString::new(segment)));
+                        self.chunk.emit1(op::MEMBER, idx, self.current_line);
+                    }
+
+                    let alias_idx = self
+                        .chunk
+                        .add_constant(Constant::String(BoxString::new(&original_alias)));
+                    self.chunk
+                        .emit1(op::SET_GLOBAL_POP, alias_idx, self.current_line);
+                }
+
                 self.imports.insert(resolved_alias, path.clone());
                 Ok(())
             }
@@ -650,7 +681,14 @@ impl Compiler {
                 for stmt in body {
                     self.compile_statement(stmt, false)?;
                 }
+                let loop_local_count = self.loop_locals.last().copied().unwrap_or(0);
                 self.loop_locals.pop();
+
+                // Pop any locals declared inside the loop body before update/loop.
+                while self.locals.len() > loop_local_count {
+                    self.chunk.emit0(op::POP, stmt.line as u32);
+                    self.locals.pop();
+                }
 
                 // Patch all continue jumps to land here (before the update step)
                 let continue_target = self.chunk.code.len();
@@ -996,9 +1034,16 @@ impl Compiler {
                 for stmt in body {
                     self.compile_statement(stmt, false)?;
                 }
+                let loop_local_count = self.loop_locals.last().copied().unwrap_or(0);
                 self.loop_locals.pop();
 
-                // Patch continue jumps to land here (before cleanup pops)
+                // Pop any locals declared inside the loop body before looping back.
+                while self.locals.len() > loop_local_count {
+                    self.chunk.emit0(op::POP, stmt.line as u32);
+                    self.locals.pop();
+                }
+
+                // Patch continue jumps to land here (before loop-var pops)
                 let continue_target = self.chunk.code.len();
                 if let Some(patches) = self.continue_patches.pop() {
                     for idx in patches {
@@ -1042,11 +1087,16 @@ impl Compiler {
         match &expr.kind {
             ExpressionKind::New { class_path, args } => {
                 let lower_path = class_path.to_lowercase();
-                let resolved_path = self
+                let mut resolved_path = self
                     .imports
                     .get(&lower_path)
                     .cloned()
                     .unwrap_or(class_path.clone());
+
+                // js: imports are bound to globals at load time; they are not instantiate-able classes.
+                if resolved_path.to_lowercase().starts_with("js:") {
+                    resolved_path = class_path.clone();
+                }
 
                 if resolved_path.to_lowercase().starts_with("java:") {
                     let java_class = &resolved_path[5..];
@@ -2136,7 +2186,7 @@ impl Compiler {
 
         let filename = file_path.to_str().unwrap_or(class_path);
         Self::infer_class_name_from_filename(&mut ast, filename);
-        let mut sub_compiler = Compiler::with_chunk(self.chunk.new_sub_chunk());
+        let mut sub_compiler = Compiler::with_chunk(Chunk::new(filename));
         sub_compiler.imports = self.imports.clone();
         sub_compiler.module_paths = self.module_paths.clone();
         sub_compiler.is_class = true;
@@ -2177,8 +2227,8 @@ impl Compiler {
         let ast = crate::parser::parse(&source, file_path.to_str())
             .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", iface_path, e))?;
 
-        let _filename = file_path.to_str().unwrap_or(iface_path);
-        let mut sub_compiler = Compiler::with_chunk(self.chunk.new_sub_chunk());
+        let filename = file_path.to_str().unwrap_or(iface_path);
+        let mut sub_compiler = Compiler::with_chunk(Chunk::new(filename));
         sub_compiler.imports = self.imports.clone();
         sub_compiler.module_paths = self.module_paths.clone();
         sub_compiler.is_class = true;

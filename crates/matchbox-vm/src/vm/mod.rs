@@ -1631,7 +1631,7 @@ impl VM {
                 HostFutureState::Pending => continue,
                 HostFutureState::Completed(value) => return Ok(value),
                 HostFutureState::Failed(err) => {
-                    let message = self.to_string(err);
+                    let message = self.format_error_value(err);
                     anyhow::bail!("{}", message);
                 }
             }
@@ -3879,15 +3879,21 @@ impl VM {
         }
     }
 
-    fn normalize_thrown_value(&mut self, val: BxValue, filename: &str, line: u32) -> BxValue {
+    fn normalize_thrown_value(&mut self, val: BxValue, stack_trace: &str) -> BxValue {
         if self.is_exception_object(val) {
+            if let Some(id) = val.as_gc_id() {
+                if let GcObject::Struct(_) = self.heap.get(id) {
+                    let stack_trace_id = self.string_new(stack_trace.to_string());
+                    self.struct_set(id, "stackTrace", BxValue::new_ptr(stack_trace_id));
+                }
+            }
             return val;
         }
 
         self.exception_from_message(
             "CustomException",
             self.to_string(val),
-            Some(format!("(at {} line {})", filename, line)),
+            Some(stack_trace.to_string()),
         )
     }
 
@@ -3917,40 +3923,114 @@ impl VM {
         self.to_string(val)
     }
 
+    /// Format an error BxValue into a human-readable string.
+    /// For exception structs this extracts message, type, and stackTrace.
+    pub fn format_error_value(&self, val: BxValue) -> String {
+        if let Some(id) = val.as_gc_id() {
+            if let GcObject::Struct(_) = self.heap.get(id) {
+                let message = self.struct_get(id, "message");
+                let message_str = if !message.is_null() {
+                    self.to_string(message)
+                } else {
+                    String::new()
+                };
+
+                let kind = self.struct_get(id, "type");
+                let kind_str = if !kind.is_null() {
+                    self.to_string(kind)
+                } else {
+                    String::new()
+                };
+
+                let stack_trace = self.struct_get(id, "stackTrace");
+                let stack_trace_str = if !stack_trace.is_null() {
+                    self.to_string(stack_trace)
+                } else {
+                    String::new()
+                };
+
+                let mut result = String::new();
+                if !kind_str.is_empty() {
+                    result.push_str(&format!("{}: {}", kind_str, message_str));
+                } else {
+                    result.push_str(&message_str);
+                }
+                if !stack_trace_str.is_empty() {
+                    result.push_str(&format!("\n\nStack trace:\n{}", stack_trace_str));
+                }
+                return result;
+            }
+        }
+        self.to_string(val)
+    }
+
+    fn build_stack_trace(&self, fiber_idx: usize) -> String {
+        let mut trace = String::new();
+        for (i, frame) in self.fibers[fiber_idx].frames.iter().rev().enumerate() {
+            let chunk = frame.chunk.borrow();
+            let func_name = &frame.function.name;
+            let file = &chunk.filename;
+            let line = if frame.ip > 0 && frame.ip <= chunk.lines.len() {
+                chunk.lines[frame.ip - 1]
+            } else {
+                0
+            };
+            if i == 0 {
+                trace.push_str(&format!("at {}() in {}:{}\n", func_name, file, line));
+            } else {
+                trace.push_str(&format!("  at {}() in {}:{}\n", func_name, file, line));
+            }
+        }
+        trace.trim_end().to_string()
+    }
+
+    fn source_context(&self, chunk: &Chunk, line: u32) -> String {
+        if line == 0 {
+            return String::new();
+        }
+        let source_text: Option<String> = if !chunk.source.is_empty() {
+            Some(chunk.source.clone())
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            { std::fs::read_to_string(&chunk.filename).ok() }
+            #[cfg(target_arch = "wasm32")]
+            { None }
+        };
+
+        if let Some(src) = source_text {
+            let src_lines: Vec<&str> = src.lines().collect();
+            let zero_idx = line as usize - 1;
+            if zero_idx < src_lines.len() {
+                let mut context = String::from("\n");
+                let start = zero_idx.saturating_sub(3);
+                let end = (zero_idx + 4).min(src_lines.len());
+                for i in start..end {
+                    let line_num = i + 1;
+                    let prefix = if line_num == line as usize { "> " } else { "  " };
+                    context.push_str(&format!("{}{:4} | {}\n", prefix, line_num, src_lines[i]));
+                }
+                return context;
+            }
+        }
+        String::new()
+    }
+
     fn throw_value(&mut self, fiber_idx: usize, val: BxValue) -> Result<()> {
-        let mut line = 0;
-        let mut filename = "unknown".to_string();
-        let mut source_snippet = String::new();
+        let mut source_context = String::new();
+
+        // Build full stack trace and source context before unwinding frames
+        let stack_trace = self.build_stack_trace(fiber_idx);
 
         if !self.fibers[fiber_idx].frames.is_empty() {
             let frame = self.fibers[fiber_idx].frames.last().unwrap();
             let chunk = frame.chunk.borrow();
-            filename = chunk.filename.clone();
             if frame.ip > 0 && frame.ip <= chunk.lines.len() {
-                line = chunk.lines[frame.ip - 1];
-                
-                // Extract source snippet — prefer embedded source, fall back to disk
-                let source_text: Option<String> = if !chunk.source.is_empty() {
-                    Some(chunk.source.clone())
-                } else {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    { std::fs::read_to_string(&filename).ok() }
-                    #[cfg(target_arch = "wasm32")]
-                    { None }
-                };
-                if let Some(src) = source_text {
-                    if line > 0 {
-                        let src_lines: Vec<&str> = src.lines().collect();
-                        if line as usize <= src_lines.len() {
-                            let code_line = src_lines[line as usize - 1].trim();
-                            source_snippet = format!("\n\n  |  {}\n  |  {}", line, code_line);
-                        }
-                    }
-                }
+                let line = chunk.lines[frame.ip - 1];
+                source_context = self.source_context(&chunk, line);
             }
         }
 
-        let val = self.normalize_thrown_value(val, &filename, line);
+        let val = self.normalize_thrown_value(val, &stack_trace);
 
         while !self.fibers[fiber_idx].frames.is_empty() {
             let frame_idx = self.fibers[fiber_idx].frames.len() - 1;
@@ -3965,7 +4045,7 @@ impl VM {
             self.fibers[fiber_idx].frames.pop();
         }
         let val_str = self.exception_summary(val);
-        bail!("VM Runtime Error: {}{}\n(at {} line {})", val_str, source_snippet, filename, line);
+        bail!("VM Runtime Error: {}{}\n\nStack trace:\n{}", val_str, source_context, stack_trace);
     }
 
     pub fn call_function(&mut self, name: &str, args: Vec<BxValue>, chunk: Option<Rc<RefCell<Chunk>>>) -> Result<BxValue> {
@@ -5098,14 +5178,11 @@ impl VM {
                                     return Ok(js);
                                 }
                                 HostFutureState::Failed(error) => {
-                                    let js = {
+                                    let msg = {
                                         let vm = unsafe { &*(vm_ptr as *const VM) };
-                                        vm.bx_to_js(&error)
+                                        vm.format_error_value(error)
                                     };
-                                    if let Some(msg) = js.as_string() {
-                                        return Err(js_error_value(&msg));
-                                    }
-                                    return Err(js);
+                                    return Err(js_error_value(&msg));
                                 }
                             }
                         }
@@ -5331,12 +5408,8 @@ pub fn _matchbox_invoke_callback(vm_ptr: usize, callback_id: usize, this_val: Js
         match vm.future_state(future) {
             Ok(HostFutureState::Completed(value)) => Ok(vm.bx_to_js(&value)),
             Ok(HostFutureState::Failed(error)) => {
-                let js_err = vm.bx_to_js(&error);
-                if let Some(msg) = js_err.as_string() {
-                    Err(js_error_value(&msg))
-                } else {
-                    Err(js_err)
-                }
+                let msg = vm.format_error_value(error);
+                Err(js_error_value(&msg))
             }
             Ok(HostFutureState::Pending) => Ok(vm.bx_to_js(&future)),
             Err(e) => Err(js_error_value(&e.to_string())),

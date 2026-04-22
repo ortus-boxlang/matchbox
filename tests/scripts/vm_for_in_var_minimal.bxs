@@ -1,0 +1,10 @@
+// Minimal reproduction of for-in loop var bug
+step = {
+    a: 1,
+    b: 2
+}
+
+for (key in step) {
+    var value = step[key]
+    println("key=", key, "value=", value)
+}

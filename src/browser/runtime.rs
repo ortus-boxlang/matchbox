@@ -125,8 +125,7 @@ impl BoxLangVM {{
                 Ok(HostFutureState::Pending) => yield_to_host().await?,
                 Ok(HostFutureState::Completed(value)) => return Ok(self.vm.bx_to_js(&value)),
                 Ok(HostFutureState::Failed(error)) => {{
-                    let js_err = self.vm.bx_to_js(&error);
-                    let msg = js_err.as_string().unwrap_or_else(|| "Unknown VM error".to_string());
+                    let msg = self.vm.format_error_value(error);
                     log_error(&msg);
                     return Err(as_js_error(msg));
                 }}

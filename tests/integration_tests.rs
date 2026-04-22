@@ -1,10 +1,10 @@
+use matchbox::process_file as process_file_impl;
 use std::{
     fs,
     path::Path,
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
-use matchbox::process_file as process_file_impl;
 
 fn process_file(
     source_path: &Path,
@@ -49,9 +49,24 @@ macro_rules! script_test {
                 .join("tests")
                 .join("scripts")
                 .join($file);
-            
+
             // source_path, is_build, orig_target, keep_symbols, no_shaking, no_std_lib, strip_source, output, extra_module_paths, is_flash, orig_chip, is_fast_deploy, is_watch, is_full_flash
-            if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+            if let Err(e) = process_file(
+                &path,
+                false,
+                None,
+                Vec::new(),
+                false,
+                false,
+                false,
+                None,
+                &[],
+                false,
+                None,
+                false,
+                false,
+                false,
+            ) {
                 panic!("Script test '{}' failed: {}", $file, e);
             }
         }
@@ -75,12 +90,18 @@ script_test!(vm_basic, "vm_basic.bxs");
 script_test!(vm_classes, "vm_classes.bxs");
 script_test!(vm_complex_types, "vm_complex_types.bxs");
 script_test!(vm_exceptions, "vm_exceptions.bxs");
-script_test!(vm_throw_structured_exception, "vm_throw_structured_exception.bxs");
+script_test!(
+    vm_throw_structured_exception,
+    "vm_throw_structured_exception.bxs"
+);
 script_test!(vm_functions, "vm_functions.bxs");
 script_test!(vm_if, "vm_if.bxs");
 script_test!(vm_loop, "vm_loop.bxs");
 script_test!(vm_struct_assign, "vm_struct_assign.bxs");
 script_test!(vm_struct_iter, "vm_struct_iter.bxs");
+script_test!(vm_struct_iter_single_var, "vm_struct_iter_single_var.bxs");
+script_test!(vm_for_classic_var, "vm_for_classic_var.bxs");
+script_test!(vm_for_in_var_minimal, "vm_for_in_var_minimal.bxs");
 script_test!(vm_inheritance, "vm_inheritance.bxs");
 script_test!(vm_accessors, "vm_accessors.bxs");
 script_test!(vm_typed_functions, "vm_typed_functions.bxs");
@@ -107,8 +128,23 @@ fn tui_app_instantiation() {
         .join("tests")
         .join("scripts")
         .join("tui_app_instantiation.bxs");
-    
-    if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+
+    if let Err(e) = process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    ) {
         panic!("Script test 'tui_app_instantiation.bxs' failed: {}", e);
     }
 }
@@ -120,8 +156,23 @@ fn tui_fluent() {
         .join("tests")
         .join("scripts")
         .join("tui_fluent.bxs");
-    
-    if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+
+    if let Err(e) = process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    ) {
         panic!("Script test 'tui_fluent.bxs' failed: {}", e);
     }
 }
@@ -130,17 +181,36 @@ fn jit_type_guards() {
     // Cranelift JIT requires more stack space than the default 2MB test thread stack.
     // 32MB is needed on Windows/macOS where MSVC/Apple Clang debug builds have larger
     // per-frame overhead than Linux, causing stack overflows at 8MB.
-    let builder = std::thread::Builder::new().name("jit_type_guards".into()).stack_size(32 * 1024 * 1024);
-    let handler = builder.spawn(|| {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("scripts")
-            .join("jit_type_guards.bxs");
+    let builder = std::thread::Builder::new()
+        .name("jit_type_guards".into())
+        .stack_size(32 * 1024 * 1024);
+    let handler = builder
+        .spawn(|| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("scripts")
+                .join("jit_type_guards.bxs");
 
-        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
-            panic!("Script execution failed: {}", e);
-        }
-    }).unwrap();
+            if let Err(e) = process_file(
+                &path,
+                false,
+                None,
+                Vec::new(),
+                false,
+                false,
+                false,
+                None,
+                &[],
+                false,
+                None,
+                false,
+                false,
+                false,
+            ) {
+                panic!("Script execution failed: {}", e);
+            }
+        })
+        .unwrap();
     handler.join().unwrap();
 }
 
@@ -148,17 +218,36 @@ fn jit_type_guards() {
 #[cfg(feature = "jit")]
 fn jit_iter() {
     // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
-    let builder = std::thread::Builder::new().name("jit_iter".into()).stack_size(32 * 1024 * 1024);
-    let handler = builder.spawn(|| {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("scripts")
-            .join("jit_iter.bxs");
+    let builder = std::thread::Builder::new()
+        .name("jit_iter".into())
+        .stack_size(32 * 1024 * 1024);
+    let handler = builder
+        .spawn(|| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("scripts")
+                .join("jit_iter.bxs");
 
-        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
-            panic!("jit_iter.bxs failed: {}", e);
-        }
-    }).unwrap();
+            if let Err(e) = process_file(
+                &path,
+                false,
+                None,
+                Vec::new(),
+                false,
+                false,
+                false,
+                None,
+                &[],
+                false,
+                None,
+                false,
+                false,
+                false,
+            ) {
+                panic!("jit_iter.bxs failed: {}", e);
+            }
+        })
+        .unwrap();
     handler.join().unwrap();
 }
 
@@ -166,17 +255,36 @@ fn jit_iter() {
 #[cfg(feature = "jit")]
 fn jit_hot_fn() {
     // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
-    let builder = std::thread::Builder::new().name("jit_hot_fn".into()).stack_size(32 * 1024 * 1024);
-    let handler = builder.spawn(|| {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("scripts")
-            .join("jit_hot_fn.bxs");
+    let builder = std::thread::Builder::new()
+        .name("jit_hot_fn".into())
+        .stack_size(32 * 1024 * 1024);
+    let handler = builder
+        .spawn(|| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("scripts")
+                .join("jit_hot_fn.bxs");
 
-        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
-            panic!("jit_hot_fn.bxs failed: {}", e);
-        }
-    }).unwrap();
+            if let Err(e) = process_file(
+                &path,
+                false,
+                None,
+                Vec::new(),
+                false,
+                false,
+                false,
+                None,
+                &[],
+                false,
+                None,
+                false,
+                false,
+                false,
+            ) {
+                panic!("jit_hot_fn.bxs failed: {}", e);
+            }
+        })
+        .unwrap();
     handler.join().unwrap();
 }
 
@@ -187,17 +295,36 @@ fn jit_osr_loop() {
     // Runs 12,000 iterations (above the 10,000 compile threshold) and verifies the
     // compiled loop produces the correct accumulated sum.
     // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
-    let builder = std::thread::Builder::new().name("jit_osr_loop".into()).stack_size(32 * 1024 * 1024);
-    let handler = builder.spawn(|| {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("scripts")
-            .join("jit_osr_loop.bxs");
+    let builder = std::thread::Builder::new()
+        .name("jit_osr_loop".into())
+        .stack_size(32 * 1024 * 1024);
+    let handler = builder
+        .spawn(|| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("scripts")
+                .join("jit_osr_loop.bxs");
 
-        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
-            panic!("jit_osr_loop.bxs failed: {}", e);
-        }
-    }).unwrap();
+            if let Err(e) = process_file(
+                &path,
+                false,
+                None,
+                Vec::new(),
+                false,
+                false,
+                false,
+                None,
+                &[],
+                false,
+                None,
+                false,
+                false,
+                false,
+            ) {
+                panic!("jit_osr_loop.bxs failed: {}", e);
+            }
+        })
+        .unwrap();
     handler.join().unwrap();
 }
 
@@ -208,17 +335,36 @@ fn jit_leaf_call() {
     // direct pointer dispatch. compute(x, fn) takes fn as a parameter (GET_LOCAL),
     // so the CALL instruction is reachable by fn_is_translatable.
     // Cranelift JIT requires more stack space than the default 2MB test thread stack in debug mode.
-    let builder = std::thread::Builder::new().name("jit_leaf_call".into()).stack_size(32 * 1024 * 1024);
-    let handler = builder.spawn(|| {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("scripts")
-            .join("jit_leaf_call.bxs");
+    let builder = std::thread::Builder::new()
+        .name("jit_leaf_call".into())
+        .stack_size(32 * 1024 * 1024);
+    let handler = builder
+        .spawn(|| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("scripts")
+                .join("jit_leaf_call.bxs");
 
-        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
-            panic!("jit_leaf_call.bxs failed: {}", e);
-        }
-    }).unwrap();
+            if let Err(e) = process_file(
+                &path,
+                false,
+                None,
+                Vec::new(),
+                false,
+                false,
+                false,
+                None,
+                &[],
+                false,
+                None,
+                false,
+                false,
+                false,
+            ) {
+                panic!("jit_leaf_call.bxs failed: {}", e);
+            }
+        })
+        .unwrap();
     handler.join().unwrap();
 }
 
@@ -230,15 +376,32 @@ fn jit_pic_member() {
     let builder = std::thread::Builder::new()
         .name("jit_pic_member".into())
         .stack_size(32 * 1024 * 1024);
-    let handler = builder.spawn(|| {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("scripts")
-            .join("jit_pic_member.bxs");
-        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
-            panic!("jit_pic_member.bxs failed: {}", e);
-        }
-    }).unwrap();
+    let handler = builder
+        .spawn(|| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("scripts")
+                .join("jit_pic_member.bxs");
+            if let Err(e) = process_file(
+                &path,
+                false,
+                None,
+                Vec::new(),
+                false,
+                false,
+                false,
+                None,
+                &[],
+                false,
+                None,
+                false,
+                false,
+                false,
+            ) {
+                panic!("jit_pic_member.bxs failed: {}", e);
+            }
+        })
+        .unwrap();
     handler.join().unwrap();
 }
 
@@ -250,15 +413,32 @@ fn jit_concat() {
     let builder = std::thread::Builder::new()
         .name("jit_concat".into())
         .stack_size(32 * 1024 * 1024);
-    let handler = builder.spawn(|| {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("scripts")
-            .join("jit_concat.bxs");
-        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
-            panic!("jit_concat.bxs failed: {}", e);
-        }
-    }).unwrap();
+    let handler = builder
+        .spawn(|| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("scripts")
+                .join("jit_concat.bxs");
+            if let Err(e) = process_file(
+                &path,
+                false,
+                None,
+                Vec::new(),
+                false,
+                false,
+                false,
+                None,
+                &[],
+                false,
+                None,
+                false,
+                false,
+                false,
+            ) {
+                panic!("jit_concat.bxs failed: {}", e);
+            }
+        })
+        .unwrap();
     handler.join().unwrap();
 }
 
@@ -270,15 +450,32 @@ fn jit_deopt_recompile() {
     let builder = std::thread::Builder::new()
         .name("jit_deopt_recompile".into())
         .stack_size(32 * 1024 * 1024);
-    let handler = builder.spawn(|| {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("scripts")
-            .join("jit_deopt_recompile.bxs");
-        if let Err(e) = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
-            panic!("jit_deopt_recompile.bxs failed: {}", e);
-        }
-    }).unwrap();
+    let handler = builder
+        .spawn(|| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("scripts")
+                .join("jit_deopt_recompile.bxs");
+            if let Err(e) = process_file(
+                &path,
+                false,
+                None,
+                Vec::new(),
+                false,
+                false,
+                false,
+                None,
+                &[],
+                false,
+                None,
+                false,
+                false,
+                false,
+            ) {
+                panic!("jit_deopt_recompile.bxs failed: {}", e);
+            }
+        })
+        .unwrap();
     handler.join().unwrap();
 }
 
@@ -288,8 +485,23 @@ fn test_vm_interface_fail() {
         .join("tests")
         .join("scripts")
         .join("vm_interface_fail.bxs");
-    
-    let result = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false);
+
+    let result = process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    );
     assert!(result.is_err(), "vm_interface_fail.bxs should have failed");
 }
 
@@ -300,7 +512,22 @@ fn test_bytes_bifs_invalid() {
         .join("scripts")
         .join("bytes_bifs_invalid.bxs");
 
-    let result = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false);
+    let result = process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    );
     assert!(result.is_err(), "bytes_bifs_invalid.bxs should have failed");
 }
 
@@ -310,9 +537,24 @@ fn test_java_bxs() {
         .join("tests")
         .join("scripts")
         .join("java_test.bxs");
-    
+
     // This might fail if JRE is not available, but let's try
-    let _ = process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false);
+    let _ = process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    );
 }
 
 #[test]
@@ -321,8 +563,24 @@ fn test_multi_file() {
         .join("tests")
         .join("scripts")
         .join("multi_file.bxs");
-    
-    process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false).unwrap();
+
+    process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -331,13 +589,29 @@ fn test_vm_modules() {
         .join("tests")
         .join("scripts")
         .join("vm_modules.bxs");
-    
+
     let module_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("modules")
         .join("greetings");
 
-    process_file(&script_path, false, None, Vec::new(), false, false, false, None, &[module_path], false, None, false, false, false).unwrap();
+    process_file(
+        &script_path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[module_path],
+        false,
+        None,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -350,16 +624,46 @@ fn test_bytecode_roundtrip() {
         .join("target")
         .join("tmp")
         .join("test_roundtrip.bxb");
-    
+
     std::fs::create_dir_all(out_path.parent().unwrap()).unwrap();
 
     // Compile
-    if let Err(e) = process_file(&script_path, true, None, Vec::new(), false, false, true, Some(&out_path), &[], false, None, false, false, false) {
+    if let Err(e) = process_file(
+        &script_path,
+        true,
+        None,
+        Vec::new(),
+        false,
+        false,
+        true,
+        Some(&out_path),
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    ) {
         panic!("Compilation failed: {}", e);
     }
 
     // Run from bytecode
-    if let Err(e) = process_file(&out_path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+    if let Err(e) = process_file(
+        &out_path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    ) {
         panic!("Running from bytecode failed: {}", e);
     }
 }
@@ -370,8 +674,24 @@ fn test_java_import() {
         .join("tests")
         .join("scripts")
         .join("java_import.bxs");
-    
-    process_file(&path, false, None, Vec::new(), false, false, false, None, &[], false, None, false, false, false).unwrap();
+
+    process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -380,8 +700,23 @@ fn test_native_fusion_compilation() {
         .join("tests")
         .join("native_fusion")
         .join("script.bxs");
-    
-    if let Err(e) = process_file(&path, false, Some("native"), Vec::new(), false, false, false, None, &[], false, None, false, false, false) {
+
+    if let Err(e) = process_file(
+        &path,
+        false,
+        Some("native"),
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    ) {
         panic!("Native fusion compilation failed: {}", e);
     }
 }
@@ -457,7 +792,7 @@ fn test_module_loading() {
         .join("greetings")
         .join("models")
         .join("Greeter.bxs");
-    
+
     let module_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("modules")
@@ -477,7 +812,7 @@ fn test_module_loading() {
         None,
         false,
         false,
-        false
+        false,
     ) {
         panic!("Module loading test failed: {}", e);
     }
@@ -510,8 +845,20 @@ fn run_ds_script(file: &str) {
         .join(file);
 
     if let Err(e) = process_file(
-        &path, false, None, Vec::new(), false, false, false, None, &[], false, None, false,
-        false, false,
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
     ) {
         panic!("Datasource script '{}' failed: {}", file, e);
     }
@@ -578,7 +925,7 @@ fn test_native_math_module() {
         .join("tests")
         .join("scripts")
         .join("vm_module_native_fusion.bxs");
-    
+
     let module_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("modules")
@@ -598,7 +945,7 @@ fn test_native_math_module() {
         None,
         false,
         false,
-        false
+        false,
     ) {
         panic!("Native math module test failed: {}", e);
     }

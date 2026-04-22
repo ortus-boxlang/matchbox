@@ -1,0 +1,48 @@
+// Test single-variable struct iteration (duplicateStep pattern)
+step = {
+    type: "text",
+    value: "20",
+    font: 20,
+    xMultiplier: 3,
+    yMultiplier: 0,
+    cursorX: 0,
+    cursorY: 0,
+    anchor: {
+        horizontal: "left",
+        vertical: "top"
+    }
+}
+
+copy = {}
+for (key in step) {
+    value = step[key]
+    println("key:", key, "value:", value)
+    copy[key] = value
+}
+
+// Verify all keys were copied
+expectedKeys = ["type", "value", "font", "xMultiplier", "yMultiplier", "cursorX", "cursorY", "anchor"]
+for (k in expectedKeys) {
+    if (!structKeyExists(copy, k)) {
+        println("FAIL: missing key", k)
+    }
+}
+
+// Verify specific values
+if (copy.type != "text") {
+    println("FAIL: type should be 'text' but got", copy.type)
+}
+if (copy.value != "20") {
+    println("FAIL: value should be '20' but got", copy.value)
+}
+if (copy.font != 20) {
+    println("FAIL: font should be 20 but got", copy.font)
+}
+if (copy.xMultiplier != 3) {
+    println("FAIL: xMultiplier should be 3 but got", copy.xMultiplier)
+}
+if (copy.cursorX != 0) {
+    println("FAIL: cursorX should be 0 but got", copy.cursorX)
+}
+
+println("done")

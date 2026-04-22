@@ -124,11 +124,8 @@ mod wasm {
                     matchbox_vm::vm::HostFutureState::Pending => yield_to_host().await?,
                     matchbox_vm::vm::HostFutureState::Completed(value) => return Ok(self.vm.bx_to_js(&value)),
                     matchbox_vm::vm::HostFutureState::Failed(error) => {
-                        let js_err = self.vm.bx_to_js(&error);
-                        if let Some(message) = js_err.as_string() {
-                            return Err(as_js_error(message));
-                        }
-                        return Err(js_err);
+                        let message = self.vm.format_error_value(error);
+                        return Err(as_js_error(message));
                     }
                 }
             }
