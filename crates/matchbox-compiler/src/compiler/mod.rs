@@ -33,6 +33,10 @@ pub struct Compiler {
     class_methods: HashSet<String>, // Method names of the current class being compiled
     /// Directory to resolve unqualified source paths against (e.g. sibling interfaces).
     source_dir: Option<PathBuf>,
+    /// Tracks which class names (lowercased) are known to define an init() method.
+    /// Propagated to sub-compilers so that `new` expressions in functions/methods
+    /// can still determine whether to emit an `init` invocation.
+    class_has_init_map: HashMap<String, bool>,
 }
 
 impl Compiler {
@@ -51,6 +55,7 @@ impl Compiler {
             loop_locals: Vec::new(),
             class_methods: HashSet::new(),
             source_dir: None,
+            class_has_init_map: HashMap::new(),
         }
     }
 
@@ -69,6 +74,7 @@ impl Compiler {
             loop_locals: Vec::new(),
             class_methods: HashSet::new(),
             source_dir: None,
+            class_has_init_map: HashMap::new(),
         }
     }
 
@@ -140,6 +146,7 @@ impl Compiler {
                 constructor_compiler.module_paths = self.module_paths.clone();
                 constructor_compiler.source_dir = self.source_dir.clone();
                 constructor_compiler.current_line = stmt.line as u32;
+                constructor_compiler.class_has_init_map = self.class_has_init_map.clone();
 
                 let mut methods = HashMap::new();
                 let mut properties = Vec::new();
@@ -196,6 +203,7 @@ impl Compiler {
                                 method_compiler.source_dir = self.source_dir.clone();
                                 method_compiler.current_line = inner_stmt.line as u32;
                                 method_compiler.class_methods = class_method_names.clone();
+                                method_compiler.class_has_init_map = self.class_has_init_map.clone();
                                 let mut func =
                                     method_compiler.compile_function(&func_name, &params, &body)?;
                                 methods.insert(func_name.to_lowercase(), func);
@@ -304,6 +312,10 @@ impl Compiler {
                     captured_receiver: None,
                     chunk: constructor_compiler.chunk,
                 };
+
+                let has_init = methods.keys().any(|n| n.eq_ignore_ascii_case("init"));
+                self.class_has_init_map
+                    .insert(name.to_lowercase(), has_init);
 
                 let class = BxClass {
                     name: name.clone(),
@@ -1175,18 +1187,26 @@ impl Compiler {
                     let class_idx = self.chunk.add_constant(class_val);
                     self.chunk.emit1(op::CONSTANT, class_idx, expr.line);
                 } else {
-                    // Check inline classes already compiled into this chunk.
-                    class_has_init = self.chunk.constants.iter().any(|c| {
-                        if let Constant::Class(cls) = c {
-                            cls.name.eq_ignore_ascii_case(&resolved_path)
-                                && cls
-                                    .methods
-                                    .iter()
-                                    .any(|(n, _)| n.eq_ignore_ascii_case("init"))
-                        } else {
-                            false
-                        }
-                    });
+                    // Check inline classes in this chunk or any parent chunk tracked
+                    // via the shared class_has_init_map.
+                    class_has_init = self
+                        .class_has_init_map
+                        .get(&resolved_path.to_lowercase())
+                        .copied()
+                        .unwrap_or(false);
+                    if !class_has_init {
+                        class_has_init = self.chunk.constants.iter().any(|c| {
+                            if let Constant::Class(cls) = c {
+                                cls.name.eq_ignore_ascii_case(&resolved_path)
+                                    && cls
+                                        .methods
+                                        .iter()
+                                        .any(|(n, _)| n.eq_ignore_ascii_case("init"))
+                            } else {
+                                false
+                            }
+                        });
+                    }
                     let class_idx = self
                         .chunk
                         .add_constant(Constant::String(BoxString::new(resolved_path.as_str())));
@@ -1477,6 +1497,11 @@ impl Compiler {
             }
             ExpressionKind::Identifier(name) => {
                 let lower_name = name.to_lowercase();
+                let is_js_import = self
+                    .imports
+                    .get(&lower_name)
+                    .map(|p| p.to_lowercase().starts_with("js:"))
+                    == Some(true);
                 if lower_name == "this" {
                     let idx = self
                         .chunk
@@ -1489,7 +1514,7 @@ impl Compiler {
                     self.chunk.emit1(op::GET_PRIVATE, idx as u32, expr.line);
                 } else if let Some(slot) = self.resolve_local(&name) {
                     self.chunk.emit1(op::GET_LOCAL, slot as u32, expr.line);
-                } else if self.is_class {
+                } else if self.is_class && !is_js_import {
                     let idx = self
                         .chunk
                         .add_constant(Constant::String(BoxString::new(name.as_str())));
@@ -1509,10 +1534,15 @@ impl Compiler {
                         if lower_name == "variables" {
                             bail!("Cannot assign to the 'variables' scope directly");
                         }
+                        let is_js_import = self
+                            .imports
+                            .get(&lower_name)
+                            .map(|p| p.to_lowercase().starts_with("js:"))
+                            == Some(true);
                         self.compile_expression(value)?;
                         if let Some(slot) = self.resolve_local(&name) {
                             self.chunk.emit1(op::SET_LOCAL, slot as u32, expr.line);
-                        } else if self.is_class {
+                        } else if self.is_class && !is_js_import {
                             let name_idx = self
                                 .chunk
                                 .add_constant(Constant::String(BoxString::new(name.as_str())));
@@ -1816,6 +1846,7 @@ impl Compiler {
         sub_compiler.source_dir = self.source_dir.clone();
         sub_compiler.class_methods = self.class_methods.clone();
         sub_compiler.current_line = self.current_line;
+        sub_compiler.class_has_init_map = self.class_has_init_map.clone();
 
         let mut min_arity = 0;
         for (i, param) in params.iter().enumerate() {
@@ -2199,6 +2230,47 @@ impl Compiler {
         }
     }
 
+    /// Emit binding bytecode for a `js:` import into the current chunk.
+    /// `path` is the full import path (e.g. "js:TextEncoder"), `alias` is the
+    /// desired global name (e.g. "TextEncoder").
+    fn emit_js_import_binding(&mut self, path: &str, alias: &str) {
+        let js_path = &path[3..];
+        let segments: Vec<&str> = js_path.split('.').collect();
+
+        let js_global = self
+            .chunk
+            .add_constant(Constant::String(BoxString::new("js")));
+        self.chunk
+            .emit1(op::GET_GLOBAL, js_global, self.current_line);
+
+        for segment in segments {
+            let idx = self
+                .chunk
+                .add_constant(Constant::String(BoxString::new(segment)));
+            self.chunk.emit1(op::MEMBER, idx, self.current_line);
+        }
+
+        let alias_idx = self
+            .chunk
+            .add_constant(Constant::String(BoxString::new(alias)));
+        self.chunk
+            .emit1(op::SET_GLOBAL_POP, alias_idx, self.current_line);
+    }
+
+    /// Propagate any `js:` imports discovered by a sub-compiler back into
+    /// this compiler so the binding bytecode is emitted in the chunk that
+    /// will actually be executed by the VM.
+    fn propagate_js_imports(&mut self, sub_imports: &HashMap<String, String>) {
+        for (alias, path) in sub_imports {
+            if path.to_lowercase().starts_with("js:") && !self.imports.contains_key(alias) {
+                let dotted_path = &path[3..];
+                let original_alias = dotted_path.split('.').last().unwrap();
+                self.emit_js_import_binding(path, original_alias);
+                self.imports.insert(alias.clone(), path.clone());
+            }
+        }
+    }
+
     fn load_class_from_path(&mut self, class_path: &str) -> Result<Constant> {
         let file_path = self.resolve_source_file(class_path)?;
 
@@ -2214,6 +2286,7 @@ impl Compiler {
         sub_compiler.source_dir = file_path.parent().map(|p| p.to_path_buf());
         sub_compiler.is_class = true;
         sub_compiler.current_line = self.current_line;
+        sub_compiler.class_has_init_map = self.class_has_init_map.clone();
 
         // Collect method names from the loaded class AST so unqualified calls resolve.
         for stmt in &ast {
@@ -2231,8 +2304,14 @@ impl Compiler {
             }
         }
 
+        // Capture imports before compile consumes the sub-compiler.
+        let sub_imports = sub_compiler.imports.clone();
         let mut chunk = sub_compiler.compile(&ast, &source)?;
         chunk.reconstruct_functions();
+
+        // Pull js: import bindings from the sub-compiler into the parent so
+        // they are available when the VM executes the parent chunk.
+        self.propagate_js_imports(&sub_imports);
 
         for constant in chunk.constants {
             if let Constant::Class(_) = constant {
@@ -2257,9 +2336,14 @@ impl Compiler {
         sub_compiler.source_dir = file_path.parent().map(|p| p.to_path_buf());
         sub_compiler.is_class = true;
         sub_compiler.current_line = self.current_line;
+        sub_compiler.class_has_init_map = self.class_has_init_map.clone();
 
+        let sub_imports = sub_compiler.imports.clone();
         let mut chunk = sub_compiler.compile(&ast, &source)?;
         chunk.reconstruct_functions();
+
+        // Pull js: import bindings from the sub-compiler into the parent.
+        self.propagate_js_imports(&sub_imports);
 
         for constant in chunk.constants {
             if let Constant::Interface(_) = constant {

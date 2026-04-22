@@ -405,3 +405,52 @@ fn test_js_import_constructor_native_mock() {
     let output = vm.output_buffer.unwrap();
     assert_eq!(output, "hello");
 }
+
+#[test]
+fn test_js_import_constructor_inside_class_native() {
+    let mut vm = VM::new();
+    vm.output_buffer = Some(String::new());
+
+    // Mock the js global with a BoxLang class (simulates a JS constructor).
+    // `this.encoding` is set in the class body so it runs in the auto-generated
+    // constructor, matching how JS constructors work without a separate init().
+    let setup = r#"
+        class MockTextEncoder {
+            this.encoding = "utf-8";
+        }
+        js = {
+            TextEncoder: MockTextEncoder
+        };
+    "#;
+    let setup_ast = parser::parse(setup, Some("setup")).unwrap();
+    let setup_compiler = Compiler::new("setup");
+    let setup_chunk = setup_compiler.compile(&setup_ast, setup).unwrap();
+    vm.interpret(setup_chunk).unwrap();
+
+    let source = r#"
+        import js:TextEncoder;
+
+        class Writer {
+            function init() {
+                variables.encoder = new TextEncoder();
+                return this;
+            }
+
+            function getEncoding() {
+                return variables.encoder.encoding;
+            }
+        }
+
+        w = new Writer();
+        writeOutput(w.getEncoding());
+    "#;
+
+    let ast = parser::parse(source, Some("test")).unwrap();
+    let compiler = Compiler::new("test");
+    let chunk = compiler.compile(&ast, source).unwrap();
+
+    vm.interpret(chunk).unwrap();
+
+    let output = vm.output_buffer.unwrap();
+    assert_eq!(output, "utf-8");
+}

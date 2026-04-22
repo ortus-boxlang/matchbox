@@ -2000,3 +2000,87 @@ try {
         html,
     );
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_js_import_constructor_inside_class() {
+    // Reproduces the exact pattern from TSPLJSBluetoothWriter.bx:
+    // import js:TextEncoder at the top level, then inside a class
+    // method do variables.encoder = new TextEncoder().
+    let source = r#"
+import js:TextEncoder;
+
+class Writer {
+    function init() {
+        variables.encoder = new TextEncoder();
+        return this;
+    }
+
+    function getEncoding() {
+        return variables.encoder.encoding;
+    }
+}
+
+function testWriter() {
+    w = new Writer();
+    return w.getEncoding();
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script>
+window.TextEncoder = class MockTextEncoder {
+  constructor() {
+    this.encoding = "utf-8";
+  }
+  encode(str) {
+    return new Uint8Array([1, 2, 3]);
+  }
+};
+</script>
+<script type="module">
+import { testWriter, ready } from "./browser_bundle_js_import_constructor_inside_class.js";
+
+let __matchboxReported = false;
+function report(status) {
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
+}
+
+window.addEventListener("error", (event) => {
+  console.error("[test] window error:", event.error, event.message, event);
+  report(`fail-${String(event.error?.stack || event.message || event.error)}`);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  console.error("[test] unhandled rejection:", event.reason);
+  report(`fail-${String(event.reason?.stack || event.reason)}`);
+});
+
+try {
+  await ready;
+  const result = await testWriter();
+  if (result === "utf-8") {
+    report("ok");
+  } else {
+    report(`fail-result-${result}`);
+  }
+} catch (_error) {
+  console.error("[test] caught error:", _error);
+  report(`fail-${String(_error?.stack || _error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_js_import_constructor_inside_class",
+        source,
+        html,
+    );
+}
