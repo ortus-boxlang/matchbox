@@ -55,7 +55,7 @@ class_decl = { class_keyword ~ identifier? ~ class_attr* ~ "{" ~ class_member* ~
 class_member = { property | statement }
 
 interface_keyword = @{ "interface" ~ !ASCII_ALPHANUMERIC }
-interface_decl = { interface_keyword ~ identifier ~ "{" ~ interface_member* ~ "}" }
+interface_decl = { interface_keyword ~ identifier? ~ "{" ~ interface_member* ~ "}" }
 interface_member = { function_decl }
 
 property_keyword = @{ "property" ~ !ASCII_ALPHANUMERIC }
@@ -67,7 +67,7 @@ attr_identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 function_keyword = @{ "function" ~ !ASCII_ALPHANUMERIC }
 access_modifier = @{ ("public" | "private") ~ !ASCII_ALPHANUMERIC }
 type_name = { !keyword ~ identifier }
-function_decl = { attribute* ~ access_modifier? ~ (type_name ~ function_keyword | function_keyword) ~ identifier ~ "(" ~ params? ~ ")" ~ (block | ";") }
+function_decl = { attribute* ~ access_modifier? ~ (type_name ~ function_keyword | function_keyword) ~ identifier ~ "(" ~ params? ~ ")" ~ (block | ";")? }
 
 return_keyword = @{ "return" ~ !ASCII_ALPHANUMERIC }
 return_stmt = { return_keyword ~ expression? ~ ";"? }

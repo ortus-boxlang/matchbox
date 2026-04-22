@@ -31,6 +31,8 @@ pub struct Compiler {
     break_patches: Vec<Vec<usize>>,
     loop_locals: Vec<usize>,
     class_methods: HashSet<String>, // Method names of the current class being compiled
+    /// Directory to resolve unqualified source paths against (e.g. sibling interfaces).
+    source_dir: Option<PathBuf>,
 }
 
 impl Compiler {
@@ -48,6 +50,7 @@ impl Compiler {
             break_patches: Vec::new(),
             loop_locals: Vec::new(),
             class_methods: HashSet::new(),
+            source_dir: None,
         }
     }
 
@@ -65,6 +68,7 @@ impl Compiler {
             break_patches: Vec::new(),
             loop_locals: Vec::new(),
             class_methods: HashSet::new(),
+            source_dir: None,
         }
     }
 
@@ -134,6 +138,7 @@ impl Compiler {
                 constructor_compiler.scope_depth = 1;
                 constructor_compiler.imports = self.imports.clone();
                 constructor_compiler.module_paths = self.module_paths.clone();
+                constructor_compiler.source_dir = self.source_dir.clone();
                 constructor_compiler.current_line = stmt.line as u32;
 
                 let mut methods = HashMap::new();
@@ -188,6 +193,7 @@ impl Compiler {
                                 method_compiler.is_class = true;
                                 method_compiler.imports = self.imports.clone();
                                 method_compiler.module_paths = self.module_paths.clone();
+                                method_compiler.source_dir = self.source_dir.clone();
                                 method_compiler.current_line = inner_stmt.line as u32;
                                 method_compiler.class_methods = class_method_names.clone();
                                 let mut func =
@@ -255,27 +261,23 @@ impl Compiler {
 
                 // Handle Interfaces (Traits and Contracts)
                 for iface_name in implements {
-                    let iface_val = if let Some(alias_path) =
-                        self.imports.get(&iface_name.to_lowercase())
-                    {
-                        let path = alias_path.clone();
-                        self.load_interface_from_path(&path)?
-                    } else {
-                        // Look in local/global scope
-                        // This POC assumes interfaces are in globals if not qualified
-                        self.chunk
-                            .constants
-                            .iter()
-                            .find_map(|c| {
-                                if let Constant::Interface(i) = c {
-                                    if i.name.to_lowercase() == iface_name.to_lowercase() {
-                                        return Some(Constant::Interface(i.clone()));
-                                    }
+                    let iface_val =
+                        if let Some(alias_path) = self.imports.get(&iface_name.to_lowercase()) {
+                            let path = alias_path.clone();
+                            self.load_interface_from_path(&path)?
+                        } else if let Some(found) = self.chunk.constants.iter().find_map(|c| {
+                            if let Constant::Interface(i) = c {
+                                if i.name.to_lowercase() == iface_name.to_lowercase() {
+                                    return Some(Constant::Interface(i.clone()));
                                 }
-                                None
-                            })
-                            .ok_or_else(|| anyhow::anyhow!("Interface {} not found", iface_name))?
-                    };
+                            }
+                            None
+                        }) {
+                            found
+                        } else {
+                            // Last-ditch: try to load the interface from disk (e.g. sibling file).
+                            self.load_interface_from_path(iface_name)?
+                        };
 
                     if let Constant::Interface(iface) = iface_val {
                         for (method_name, method_opt) in &iface.methods {
@@ -340,6 +342,7 @@ impl Compiler {
                             method_compiler.is_class = true;
                             method_compiler.imports = self.imports.clone();
                             method_compiler.module_paths = self.module_paths.clone();
+                            method_compiler.source_dir = self.source_dir.clone();
                             method_compiler.current_line = member.line;
                             let func = method_compiler.compile_function(func_name, params, body)?;
                             Some(func)
@@ -1810,6 +1813,7 @@ impl Compiler {
         sub_compiler.is_class = self.is_class;
         sub_compiler.imports = self.imports.clone();
         sub_compiler.module_paths = self.module_paths.clone();
+        sub_compiler.source_dir = self.source_dir.clone();
         sub_compiler.class_methods = self.class_methods.clone();
         sub_compiler.current_line = self.current_line;
 
@@ -2149,18 +2153,32 @@ impl Compiler {
         // Try .bxs first, then fall back to .bx for BoxLang compatibility.
         let with_bxs = base_path.with_extension("bxs");
         if with_bxs.exists() {
-            Ok(with_bxs)
-        } else {
-            let with_bx = base_path.with_extension("bx");
-            if with_bx.exists() {
-                Ok(with_bx)
-            } else {
-                bail!(
-                    "Source file not found: {} (tried .bxs and .bx)",
-                    base_path.display()
-                );
+            return Ok(with_bxs);
+        }
+        let with_bx = base_path.with_extension("bx");
+        if with_bx.exists() {
+            return Ok(with_bx);
+        }
+
+        // If the path is a simple name (single component) and source_dir is set,
+        // try resolving relative to that directory (e.g. sibling interfaces).
+        if base_path.components().count() == 1 {
+            if let Some(ref dir) = self.source_dir {
+                let rel_bxs = dir.join(&base_path).with_extension("bxs");
+                if rel_bxs.exists() {
+                    return Ok(rel_bxs);
+                }
+                let rel_bx = dir.join(&base_path).with_extension("bx");
+                if rel_bx.exists() {
+                    return Ok(rel_bx);
+                }
             }
         }
+
+        bail!(
+            "Source file not found: {} (tried .bxs and .bx)",
+            base_path.display()
+        )
     }
 
     fn infer_class_name_from_filename(ast: &mut [Statement], filename: &str) {
@@ -2169,10 +2187,14 @@ impl Compiler {
             .and_then(|s| s.to_str())
             .unwrap_or(filename);
         for stmt in ast.iter_mut() {
-            if let StatementKind::ClassDecl { name, .. } = &mut stmt.kind {
-                if name.is_empty() {
-                    *name = stem.to_string();
+            match &mut stmt.kind {
+                StatementKind::ClassDecl { name, .. }
+                | StatementKind::InterfaceDecl { name, .. } => {
+                    if name.is_empty() {
+                        *name = stem.to_string();
+                    }
                 }
+                _ => {}
             }
         }
     }
@@ -2189,6 +2211,7 @@ impl Compiler {
         let mut sub_compiler = Compiler::with_chunk(Chunk::new(filename));
         sub_compiler.imports = self.imports.clone();
         sub_compiler.module_paths = self.module_paths.clone();
+        sub_compiler.source_dir = file_path.parent().map(|p| p.to_path_buf());
         sub_compiler.is_class = true;
         sub_compiler.current_line = self.current_line;
 
@@ -2231,6 +2254,7 @@ impl Compiler {
         let mut sub_compiler = Compiler::with_chunk(Chunk::new(filename));
         sub_compiler.imports = self.imports.clone();
         sub_compiler.module_paths = self.module_paths.clone();
+        sub_compiler.source_dir = file_path.parent().map(|p| p.to_path_buf());
         sub_compiler.is_class = true;
         sub_compiler.current_line = self.current_line;
 

@@ -286,7 +286,10 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement> {
         Rule::interface_decl => {
             let mut inner_rules = pair.into_inner();
             let _kw = inner_rules.next().unwrap(); // interface_keyword
-            let name = inner_rules.next().unwrap().as_str().to_string();
+            let name = inner_rules
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
             let mut members = Vec::new();
             for member_pair in inner_rules {
                 let member_inner = member_pair.into_inner().next().unwrap();
