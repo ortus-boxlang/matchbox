@@ -3509,9 +3509,40 @@ impl VM {
                             self.fibers[fiber_idx].frames.push(frame);
                             frame_changed = true;
                             continue 'quantum;
-                        } else {
-                            vm_throw!("Can only instantiate classes.");
                         }
+
+                        #[cfg(all(target_arch = "wasm32", feature = "js"))]
+                        {
+                            if let GcObject::JsValue(js) = self.heap.get(id) {
+                                let js = unwrap_matchbox_js_proxy(js);
+                                if let Ok(ctor) = js.dyn_into::<Function>() {
+                                    let js_args = Array::new();
+                                    let mut args = Vec::new();
+                                    for _ in 0..arg_count {
+                                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                                    }
+                                    args.reverse();
+                                    for arg in args {
+                                        js_args.push(&self.bx_to_js(&arg));
+                                    }
+                                    self.fibers[fiber_idx].stack.pop(); // pop constructor
+                                    match Reflect::construct(&ctor, &js_args) {
+                                        Ok(val) => {
+                                            let bx_val = self.js_to_bx(val);
+                                            self.fibers[fiber_idx].stack.push(bx_val);
+                                            flush_ip!();
+                                            frame_changed = true;
+                                            continue 'quantum;
+                                        }
+                                        Err(e) => {
+                                            vm_throw!("JS constructor error: {:?}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        vm_throw!("Can only instantiate classes.");
                     } else {
                         vm_throw!("Can only instantiate classes.");
                     }

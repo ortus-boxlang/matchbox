@@ -4,9 +4,13 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+// Global lock to serialize browser tests: each spawns a Firefox headless
+// instance and an HTTP server, and parallel runs exhaust resources / race.
+static BROWSER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn firefox_available() -> bool {
     Command::new("firefox")
@@ -179,6 +183,8 @@ fn run_browser_page_with_modules(
         );
         return;
     }
+
+    let _guard = BROWSER_TEST_LOCK.lock().unwrap();
 
     let root = unique_test_dir(test_name);
     fs::create_dir_all(&root).unwrap();
@@ -1857,6 +1863,139 @@ try {
 
     run_browser_page(
         "browser_bundle_preserves_quoted_struct_key_case_for_js",
+        source,
+        html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_js_import_constructor_instantiation() {
+    let source = r#"
+import js:MyMockCtor;
+
+function testCtor() {
+    obj = new MyMockCtor();
+    return obj.value;
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script>
+window.MyMockCtor = class MockCtor {
+  constructor() {
+    this.value = "ok";
+  }
+};
+</script>
+<script type="module">
+import { testCtor, ready } from "./browser_bundle_js_import_constructor_instantiation.js";
+
+let __matchboxReported = false;
+function report(status) {
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
+}
+
+window.addEventListener("error", (event) => {
+  console.error("[test] window error:", event.error, event.message, event);
+  report(`fail-${String(event.error?.stack || event.message || event.error)}`);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  console.error("[test] unhandled rejection:", event.reason);
+  report(`fail-${String(event.reason?.stack || event.reason)}`);
+});
+
+try {
+  await ready;
+  const result = await testCtor();
+  if (result === "ok") {
+    report("ok");
+  } else {
+    report(`fail-result-${result}`);
+  }
+} catch (_error) {
+  console.error("[test] caught error:", _error);
+  report(`fail-${String(_error?.stack || _error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_js_import_constructor_instantiation",
+        source,
+        html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_js_import_simple_access() {
+    let source = r#"
+import js:MyMockCtor;
+
+function testAccess() {
+    return isNull(MyMockCtor);
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script>
+window.MyMockCtor = class MockCtor {
+  constructor() {
+    this.value = "ok";
+  }
+};
+</script>
+<script type="module">
+import { testAccess, ready } from "./browser_bundle_js_import_simple_access.js";
+
+let __matchboxReported = false;
+function report(status) {
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
+}
+
+window.addEventListener("error", (event) => {
+  console.error("[test] window error:", event.error, event.message, event);
+  report(`fail-${String(event.error?.stack || event.message || event.error)}`);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  console.error("[test] unhandled rejection:", event.reason);
+  report(`fail-${String(event.reason?.stack || event.reason)}`);
+});
+
+try {
+  await ready;
+  const result = await testAccess();
+  if (result == false) {
+    report("ok");
+  } else {
+    report(`fail-null-${result}`);
+  }
+} catch (_error) {
+  console.error("[test] caught error:", _error);
+  report(`fail-${String(_error?.stack || _error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_js_import_simple_access",
         source,
         html,
     );

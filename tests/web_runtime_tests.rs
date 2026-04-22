@@ -374,3 +374,34 @@ fn test_js_import_binds_to_global() {
     let output = vm.output_buffer.unwrap();
     assert_eq!(output, "hello from console|Mock Title");
 }
+
+#[test]
+fn test_js_import_constructor_native_mock() {
+    let mut vm = VM::new();
+    vm.output_buffer = Some(String::new());
+
+    // Set up a mock js global with a simple value.
+    let setup = r#"
+        js = {
+            MyMockCtor: "hello"
+        };
+    "#;
+
+    let source = r#"
+        import js:MyMockCtor;
+        writeOutput(MyMockCtor);
+    "#;
+    let setup_ast = parser::parse(setup, Some("setup")).unwrap();
+    let setup_compiler = Compiler::new("setup");
+    let setup_chunk = setup_compiler.compile(&setup_ast, setup).unwrap();
+    vm.interpret(setup_chunk).unwrap();
+
+    let ast = parser::parse(source, Some("test")).unwrap();
+    let compiler = Compiler::new("test");
+    let chunk = compiler.compile(&ast, source).unwrap();
+
+    vm.interpret(chunk).unwrap();
+
+    let output = vm.output_buffer.unwrap();
+    assert_eq!(output, "hello");
+}
