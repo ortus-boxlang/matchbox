@@ -2084,3 +2084,157 @@ try {
         html,
     );
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_js_array_indexing() {
+    // Reproduces the exact pattern from TSPLJSBluetoothWriter.bx:
+    // new TextEncoder().encode(str) returns a Uint8Array, then we
+    // index into it with encoded[i].
+    let source = r#"
+import js:TextEncoder;
+
+class Writer {
+    function init() {
+        variables.encoder = new TextEncoder();
+        return this;
+    }
+
+    function getBytes() {
+        var encoded = variables.encoder.encode("hi");
+        var result = [];
+        for (var i = 0; i < encoded.length; i++) {
+            result.append(encoded[i]);
+        }
+        return arrayToList(result, ",");
+    }
+}
+
+function testWriter() {
+    w = new Writer();
+    return w.getBytes();
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script>
+window.TextEncoder = class MockTextEncoder {
+  constructor() {
+    this.encoding = "utf-8";
+  }
+  encode(str) {
+    return new Uint8Array([65, 66, 67]);
+  }
+};
+</script>
+<script type="module">
+import { testWriter, ready } from "./browser_bundle_js_array_indexing.js";
+
+let __matchboxReported = false;
+function report(status) {
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
+}
+
+window.addEventListener("error", (event) => {
+  console.error("[test] window error:", event.error, event.message, event);
+  report(`fail-${String(event.error?.stack || event.message || event.error)}`);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  console.error("[test] unhandled rejection:", event.reason);
+  report(`fail-${String(event.reason?.stack || event.reason)}`);
+});
+
+try {
+  await ready;
+  const result = await testWriter();
+  if (result === "65,66,67") {
+    report("ok");
+  } else {
+    report(`fail-result-${result}`);
+  }
+} catch (_error) {
+  console.error("[test] caught error:", _error);
+  report(`fail-${String(_error?.stack || _error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_js_array_indexing",
+        source,
+        html,
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn browser_bundle_js_import_constructor_with_args() {
+    // JS constructors that take arguments (e.g. new Uint8Array(length))
+    // must not emit an erroneous INVOKE init() after NEW.
+    let source = r#"
+import js:Uint8Array;
+
+function testUint8Array() {
+    var arr = new Uint8Array(3);
+    arr[0] = 65;
+    arr[1] = 66;
+    arr[2] = 67;
+    return arr[0] & "," & arr[1] & "," & arr[2];
+}
+"#;
+
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<body>
+<script type="module">
+import { testUint8Array, ready } from "./browser_bundle_js_import_constructor_with_args.js";
+
+let __matchboxReported = false;
+function report(status) {
+  if (__matchboxReported) return;
+  if (status === "ok" || status.startsWith("fail-")) {
+    __matchboxReported = true;
+  }
+  fetch(`/report/${status}`, { keepalive: true }).catch(() => {});
+}
+
+window.addEventListener("error", (event) => {
+  console.error("[test] window error:", event.error, event.message, event);
+  report(`fail-${String(event.error?.stack || event.message || event.error)}`);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  console.error("[test] unhandled rejection:", event.reason);
+  report(`fail-${String(event.reason?.stack || event.reason)}`);
+});
+
+try {
+  await ready;
+  const result = await testUint8Array();
+  if (result === "65,66,67") {
+    report("ok");
+  } else {
+    report(`fail-result-${result}`);
+  }
+} catch (_error) {
+  console.error("[test] caught error:", _error);
+  report(`fail-${String(_error?.stack || _error)}`);
+}
+</script>
+</body>
+</html>
+"#;
+
+    run_browser_page(
+        "browser_bundle_js_import_constructor_with_args",
+        source,
+        html,
+    );
+}

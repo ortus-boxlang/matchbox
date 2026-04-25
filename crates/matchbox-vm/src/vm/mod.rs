@@ -2713,6 +2713,27 @@ impl VM {
                     let index_val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
                     if let Some(id) = base_val.as_gc_id() {
+                        #[cfg(all(target_arch = "wasm32", feature = "js"))]
+                        if let GcObject::JsValue(js) = self.heap.get(id) {
+                            let js = unwrap_matchbox_js_proxy(js);
+                            let js_index = if index_val.is_int() {
+                                JsValue::from_f64(index_val.as_int() as f64)
+                            } else if index_val.is_number() {
+                                JsValue::from_f64(index_val.as_number())
+                            } else {
+                                JsValue::from_str(&self.to_string(index_val))
+                            };
+                            match Reflect::get(&js, &js_index) {
+                                Ok(val) => {
+                                    let bx_val = self.js_to_bx(val);
+                                    self.fibers[fiber_idx].stack.push(bx_val);
+                                }
+                                Err(_) => self.fibers[fiber_idx].stack.push(BxValue::new_null()),
+                            }
+                            flush_ip!();
+                            continue 'quantum;
+                        }
+
                         match self.heap.get(id) {
                             GcObject::Array(arr) => {
                                 if index_val.is_number() || index_val.is_int() {
@@ -2758,6 +2779,34 @@ impl VM {
                         } else {
                             None
                         };
+
+                        #[cfg(all(target_arch = "wasm32", feature = "js"))]
+                        {
+                            if let GcObject::JsValue(js) = self.heap.get(id) {
+                                let js = unwrap_matchbox_js_proxy(js);
+                                let js_index = if index_val.is_int() {
+                                    JsValue::from_f64(index_val.as_int() as f64)
+                                } else if index_val.is_number() {
+                                    JsValue::from_f64(index_val.as_number())
+                                } else {
+                                    JsValue::from_str(&self.to_string(index_val))
+                                };
+                                let js_val = self.bx_to_js(&val);
+                                match Reflect::set(&js, &js_index, &js_val) {
+                                    Ok(_) => {
+                                        self.fibers[fiber_idx].stack.push(val);
+                                    }
+                                    Err(e) => {
+                                        flush_ip!();
+                                        self.throw_error(fiber_idx, &format!("JS set error: {:?}", e))?;
+                                        frame_changed = true;
+                                        continue 'quantum;
+                                    }
+                                }
+                                flush_ip!();
+                                continue 'quantum;
+                            }
+                        }
 
                         match self.heap.get_mut(id) {
                             GcObject::Array(arr) => {

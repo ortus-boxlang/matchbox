@@ -78,7 +78,7 @@ impl Compiler {
         }
     }
 
-    pub fn compile(mut self, ast: &[Statement], source: &str) -> Result<Chunk> {
+    pub fn compile(&mut self, ast: &[Statement], source: &str) -> Result<Chunk> {
         self.chunk.source = source.to_string();
         let len = ast.len();
         for (i, stmt) in ast.iter().enumerate() {
@@ -86,7 +86,7 @@ impl Compiler {
             self.compile_statement(stmt, is_last)?;
         }
         self.chunk.emit0(op::RETURN, self.current_line as u32);
-        Ok(self.chunk)
+        Ok(self.chunk.clone())
     }
 
     fn compile_statement(&mut self, stmt: &Statement, is_last: bool) -> Result<()> {
@@ -1229,8 +1229,16 @@ impl Compiler {
                 // and sets up the constructor frame
                 self.chunk.emit1(op::NEW, args.len() as u32, expr.line);
 
+                // JS imports are constructors; args are passed directly via Reflect::construct
+                // in the VM's NEW handler. They do not have a separate init() method.
+                let is_js_import = self
+                    .imports
+                    .get(&lower_path)
+                    .map(|p| p.to_lowercase().starts_with("js:"))
+                    == Some(true);
+
                 // Call init() if args were passed or if the class is known to define init().
-                if !args.is_empty() || class_has_init {
+                if (!args.is_empty() || class_has_init) && !is_js_import {
                     let name_idx = self
                         .chunk
                         .add_constant(Constant::String(BoxString::new("init")));
@@ -2304,10 +2312,11 @@ impl Compiler {
             }
         }
 
-        // Capture imports before compile consumes the sub-compiler.
-        let sub_imports = sub_compiler.imports.clone();
         let mut chunk = sub_compiler.compile(&ast, &source)?;
         chunk.reconstruct_functions();
+
+        // Capture imports after compile so we get all js: imports discovered.
+        let sub_imports = sub_compiler.imports.clone();
 
         // Pull js: import bindings from the sub-compiler into the parent so
         // they are available when the VM executes the parent chunk.
@@ -2338,9 +2347,11 @@ impl Compiler {
         sub_compiler.current_line = self.current_line;
         sub_compiler.class_has_init_map = self.class_has_init_map.clone();
 
-        let sub_imports = sub_compiler.imports.clone();
         let mut chunk = sub_compiler.compile(&ast, &source)?;
         chunk.reconstruct_functions();
+
+        // Capture imports after compile so we get all js: imports discovered.
+        let sub_imports = sub_compiler.imports.clone();
 
         // Pull js: import bindings from the sub-compiler into the parent.
         self.propagate_js_imports(&sub_imports);

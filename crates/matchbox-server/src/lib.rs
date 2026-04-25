@@ -280,7 +280,7 @@ pub async fn run_server(args: Args) {
                 Ok(source) => {
                     let ast = parser::parse(&source, Some(&ws_config.handler)).map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", ws_config.handler, e)).ok();
                     let chunk = ast.and_then(|ast| {
-                        let compiler = Compiler::new(&ws_config.handler);
+                        let mut compiler = Compiler::new(&ws_config.handler);
                         compiler.compile(&ast, &source).map_err(|e| eprintln!("Failed to compile {}: {}", ws_config.handler, e)).ok()
                     });
 
@@ -571,7 +571,7 @@ async fn execute_template(
     };
 
     let filename = path.to_string_lossy();
-    let compiler = Compiler::new(&filename);
+    let mut compiler = Compiler::new(&filename);
     let chunk = compiler.compile(&ast, &source)?;
 
     let mut vm = VM::new();

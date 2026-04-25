@@ -29,7 +29,7 @@ fn test_vm_output_buffering() {
 
     let source = "writeOutput('Hello ', 'World'); println('!'); print('MatchBox');";
     let ast = parser::parse(source, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -55,7 +55,7 @@ fn test_weak_typing_addition() {
     "#;
 
     let ast = parser::parse(source, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -74,7 +74,7 @@ fn test_nested_bxm_interpolation() {
     vm.output_buffer = Some(String::new());
 
     let ast = parser::parse(&transpiled, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, &transpiled).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -98,7 +98,7 @@ fn test_quoted_struct_literal_keys_preserve_original_case() {
     "#;
 
     let ast = parser::parse(source, None).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -185,7 +185,7 @@ fn test_native_future_rejection_propagates_value_to_catch() {
     "#;
 
     let ast = parser::parse(source, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -210,7 +210,7 @@ fn test_native_future_resolution_returns_value_from_get() {
     "#;
 
     let ast = parser::parse(source, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -235,7 +235,7 @@ fn test_queued_future_resolution_is_applied_by_scheduler() {
     "#;
 
     let ast = parser::parse(source, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -265,7 +265,7 @@ fn test_queued_future_rejection_is_applied_by_scheduler() {
     "#;
 
     let ast = parser::parse(source, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -290,7 +290,7 @@ fn test_threaded_future_resolution_is_applied_by_scheduler() {
     "#;
 
     let ast = parser::parse(source, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -320,7 +320,7 @@ fn test_threaded_future_rejection_is_applied_by_scheduler() {
     "#;
 
     let ast = parser::parse(source, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -352,7 +352,7 @@ fn test_js_import_binds_to_global() {
         };
     "#;
     let setup_ast = parser::parse(setup, Some("setup")).unwrap();
-    let setup_compiler = Compiler::new("setup");
+    let mut setup_compiler = Compiler::new("setup");
     let setup_chunk = setup_compiler.compile(&setup_ast, setup).unwrap();
     vm.interpret(setup_chunk).unwrap();
 
@@ -366,7 +366,7 @@ fn test_js_import_binds_to_global() {
     "#;
 
     let ast = parser::parse(source, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -392,12 +392,12 @@ fn test_js_import_constructor_native_mock() {
         writeOutput(MyMockCtor);
     "#;
     let setup_ast = parser::parse(setup, Some("setup")).unwrap();
-    let setup_compiler = Compiler::new("setup");
+    let mut setup_compiler = Compiler::new("setup");
     let setup_chunk = setup_compiler.compile(&setup_ast, setup).unwrap();
     vm.interpret(setup_chunk).unwrap();
 
     let ast = parser::parse(source, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
@@ -423,7 +423,7 @@ fn test_js_import_constructor_inside_class_native() {
         };
     "#;
     let setup_ast = parser::parse(setup, Some("setup")).unwrap();
-    let setup_compiler = Compiler::new("setup");
+    let mut setup_compiler = Compiler::new("setup");
     let setup_chunk = setup_compiler.compile(&setup_ast, setup).unwrap();
     vm.interpret(setup_chunk).unwrap();
 
@@ -446,11 +446,58 @@ fn test_js_import_constructor_inside_class_native() {
     "#;
 
     let ast = parser::parse(source, Some("test")).unwrap();
-    let compiler = Compiler::new("test");
+    let mut compiler = Compiler::new("test");
     let chunk = compiler.compile(&ast, source).unwrap();
 
     vm.interpret(chunk).unwrap();
 
     let output = vm.output_buffer.unwrap();
     assert_eq!(output, "utf-8");
+}
+
+#[test]
+fn test_cross_file_js_import_propagation() {
+    use std::fs;
+    use std::path::Path;
+    use std::env;
+    
+    let tmp_dir = Path::new("/tmp/cross_file_test_dir");
+    fs::remove_dir_all(tmp_dir).ok();
+    fs::create_dir_all(tmp_dir).ok();
+    fs::create_dir_all(tmp_dir.join("modules/tspl/models")).ok();
+
+    fs::write(tmp_dir.join("modules/tspl/models/Writer.bx"), r#"
+import js:TextEncoder;
+class Writer {
+    function init() {
+        variables.encoder = new TextEncoder();
+        return this;
+    }
+}
+"#).unwrap();
+
+    fs::write(tmp_dir.join("test.bxs"), r#"
+class MockTextEncoder {
+    this.encoding = "utf-8";
+}
+js = { TextEncoder: MockTextEncoder };
+import modules.tspl.models.Writer;
+writer = new Writer();
+writeOutput("PASS");
+"#).unwrap();
+
+    let orig_dir = env::current_dir().unwrap();
+    env::set_current_dir(tmp_dir).unwrap();
+
+    let source = fs::read_to_string(tmp_dir.join("test.bxs")).unwrap();
+    let ast = matchbox_compiler::parser::parse(&source, Some("test")).unwrap();
+    let mut compiler = matchbox_compiler::compiler::Compiler::new("test");
+    let chunk = compiler.compile(&ast, &source).unwrap();
+
+    env::set_current_dir(orig_dir).unwrap();
+
+    let mut vm = matchbox_vm::vm::VM::new();
+    vm.output_buffer = Some(String::new());
+    vm.interpret(chunk).unwrap();
+    assert_eq!(vm.output_buffer.unwrap(), "PASS");
 }

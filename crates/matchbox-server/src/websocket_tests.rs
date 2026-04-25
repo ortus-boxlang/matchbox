@@ -23,7 +23,7 @@ mod tests {
             }
         "#;
         let ast = parser::parse(source).unwrap();
-        let compiler = Compiler::new("test.bxs");
+        let mut compiler = Compiler::new("test.bxs");
         let chunk = compiler.compile(&ast, source).unwrap();
 
         let config = WebSocketConfig {
@@ -98,7 +98,7 @@ mod tests {
             }
         "#;
         let ast = parser::parse(source).unwrap();
-        let compiler = Compiler::new("test.bxs");
+        let mut compiler = Compiler::new("test.bxs");
         let chunk = compiler.compile(&ast, source).unwrap();
 
         let config = WebSocketConfig {

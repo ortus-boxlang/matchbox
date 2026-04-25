@@ -985,7 +985,7 @@ pub async fn compile_script_app(script_path: &Path) -> anyhow::Result<CompiledSc
                         .unwrap_or(true)
         )
     });
-    let compiler = Compiler::new(&path.to_string_lossy());
+    let mut compiler = Compiler::new(&path.to_string_lossy());
     let chunk = compiler.compile(&ast, &source)?;
     Ok(CompiledScriptApp {
         path,
@@ -1768,7 +1768,7 @@ fn render_template(
         parser::parse(&source, resolved_path.to_str()).map_err(|e| e.to_string())?
     };
 
-    let compiler = Compiler::new(&resolved_path.to_string_lossy());
+    let mut compiler = Compiler::new(&resolved_path.to_string_lossy());
     let chunk = compiler.compile(&ast, &source).map_err(|e| e.to_string())?;
 
     let rc_json = bx_to_json(vm, BxValue::new_ptr(rc_id))?;

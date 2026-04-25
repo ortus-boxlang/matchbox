@@ -436,7 +436,7 @@ pub fn run_boxlang_bytecode(bytes: &[u8]) -> String {
 pub fn run_boxlang(source: &str) -> String {
     let res = (|| -> Result<String> {
         let ast = parser::parse(source, Some("wasm_input"))?;
-        let compiler = compiler::Compiler::new("wasm_input");
+        let mut compiler = compiler::Compiler::new("wasm_input");
         let chunk = compiler.compile(&ast, source)?;
         let mut vm = vm::VM::new();
         let val = vm.interpret(chunk)?;
@@ -1328,7 +1328,7 @@ fn run_repl() -> Result<()> {
     // Load full prelude for REPL
 
     let prelude_ast = parser::parse(matchbox_compiler::PRELUDE_SOURCE, Some("prelude.bxs"))?;
-    let compiler = compiler::Compiler::new("prelude");
+    let mut compiler = compiler::Compiler::new("prelude");
     let prelude_chunk = compiler.compile(&prelude_ast, matchbox_compiler::PRELUDE_SOURCE)?;
     vm.interpret(prelude_chunk)?;
 
