@@ -1,27 +1,31 @@
 mod app_server;
+pub mod webroot_core;
 mod websocket;
 #[cfg(test)]
 mod websocket_tests;
 
 use axum::{
-    extract::{Query, State, Path as AxumPath, Form},
-    http::{header, StatusCode, HeaderMap, Method},
-    response::{IntoResponse},
-    routing::get,
     Router,
+    extract::{Form, Path as AxumPath, Query, State},
+    http::{HeaderMap, Method, StatusCode, header},
+    response::IntoResponse,
+    routing::get,
 };
+use clap::Parser as ClapParser;
+use matchbox_compiler::{compiler::Compiler, parser};
+use matchbox_vm::types::{BxVM, BxValue};
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::thread;
-use matchbox_vm::vm::VM;
-use matchbox_vm::types::{BxVM, BxValue};
-use matchbox_compiler::{parser, compiler::Compiler};
-use clap::Parser as ClapParser;
 use tokio::fs;
-use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use webroot_core::{
+    EmbeddedAssetPackage, EmbeddedAssetStore, FileSystemAssetStore, WebrootConfig, WebrootEngine,
+    WebrootRequest, WebrootResponse,
+};
 use websocket::{WebSocketRuntimeHandle, websocket_handler, websocket_runtime_main};
 
 #[derive(Clone, Debug)]
@@ -211,8 +215,12 @@ pub struct Config {
     pub websocket: Option<websocket::WebSocketConfig>,
 }
 
-fn default_rewrites() -> bool { false }
-fn default_rewrite_file_name() -> String { "index.bxm".to_string() }
+fn default_rewrites() -> bool {
+    false
+}
+fn default_rewrite_file_name() -> String {
+    "index.bxm".to_string()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -224,14 +232,142 @@ impl Default for Config {
     }
 }
 
+pub struct WasiHttpWebrootPackage {
+    pub engine: WebrootEngine<EmbeddedAssetStore>,
+    pub config: WebrootConfig,
+    pub assets: EmbeddedAssetPackage,
+    pub warnings: Vec<String>,
+}
+
+pub fn prepare_wasi_http_webroot(
+    webroot: impl AsRef<Path>,
+    config_path: Option<&Path>,
+) -> anyhow::Result<WasiHttpWebrootPackage> {
+    let webroot = webroot.as_ref();
+    let config_path = config_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| webroot.join("boxlang.json"));
+    let config = read_webroot_config_sync(&config_path)?;
+    let webroot_config = WebrootConfig {
+        rewrites: config.rewrites,
+        rewrite_file_name: config.rewrite_file_name.clone(),
+    };
+    let mut warnings = Vec::new();
+    if config.websocket.is_some() {
+        warnings.push(
+            "WASI HTTP v1 does not support websocket configuration; websocket settings were ignored."
+                .to_string(),
+        );
+    }
+
+    validate_wasi_http_webroot(webroot)?;
+    let store = EmbeddedAssetStore::from_directory(webroot)?;
+    let assets = store.clone().into_package();
+    Ok(WasiHttpWebrootPackage {
+        engine: WebrootEngine::new(store, webroot_config.clone()),
+        config: webroot_config,
+        assets,
+        warnings,
+    })
+}
+
+fn read_webroot_config_sync(config_path: &Path) -> anyhow::Result<Config> {
+    if !config_path.exists() {
+        return Ok(Config::default());
+    }
+
+    let content = std::fs::read_to_string(config_path)?;
+    let mut config: Config = serde_json::from_str(&content).unwrap_or_default();
+    if config.rewrite_file_name.contains("..") || config.rewrite_file_name.starts_with('/') {
+        config.rewrite_file_name = default_rewrite_file_name();
+    }
+    Ok(config)
+}
+
+fn validate_wasi_http_webroot(webroot: &Path) -> anyhow::Result<()> {
+    let native_dir = webroot.join("native");
+    if native_dir.is_dir() {
+        anyhow::bail!(
+            "WASI HTTP webroot builds do not support native fusion directories: {}",
+            native_dir.display()
+        );
+    }
+    validate_wasi_http_native_module_dirs(webroot)?;
+    validate_wasi_http_sources(webroot, webroot)?;
+    Ok(())
+}
+
+fn validate_wasi_http_native_module_dirs(webroot: &Path) -> anyhow::Result<()> {
+    let modules_dir = webroot.join("boxlang_modules");
+    if !modules_dir.is_dir() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(&modules_dir)? {
+        let entry = entry?;
+        let native_dir = entry.path().join("native");
+        if native_dir.is_dir() {
+            anyhow::bail!(
+                "WASI HTTP webroot builds do not support native module directories: {}",
+                native_dir.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_wasi_http_sources(webroot: &Path, current: &Path) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            validate_wasi_http_sources(webroot, &path)?;
+            continue;
+        }
+
+        if !is_boxlang_source_path(&path) {
+            continue;
+        }
+
+        let source = std::fs::read_to_string(&path)?;
+        let lower = source.to_ascii_lowercase();
+        let unsupported = if lower.contains("java:") {
+            Some("java:")
+        } else if lower.contains("rust:") {
+            Some("rust:")
+        } else {
+            None
+        };
+
+        if let Some(feature) = unsupported {
+            let relative = path.strip_prefix(webroot).unwrap_or(&path);
+            anyhow::bail!(
+                "WASI HTTP webroot builds do not support native interop reference '{}' in {}",
+                feature,
+                relative.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn is_boxlang_source_path(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("bx") | Some("bxm") | Some("bxs")
+    )
+}
+
 struct AppState {
-    webroot: PathBuf,
-    config: Config,
-    sessions: Mutex<HashMap<String, HashMap<String, String>>>,
+    engine: WebrootEngine<FileSystemAssetStore>,
     websocket: Option<Arc<WebSocketRuntimeHandle>>,
 }
 
-pub fn find_file_case_insensitive(parent: &std::path::Path, target_name: &str) -> Option<std::path::PathBuf> {
+pub fn find_file_case_insensitive(
+    parent: &std::path::Path,
+    target_name: &str,
+) -> Option<std::path::PathBuf> {
     if let Ok(entries) = std::fs::read_dir(parent) {
         let target_lower = target_name.to_lowercase();
         for entry in entries.flatten() {
@@ -255,9 +391,14 @@ pub async fn run_server(args: Args) {
         return;
     }
 
-    let webroot = PathBuf::from(&args.webroot).canonicalize().unwrap_or_else(|_| PathBuf::from(&args.webroot));
-    
-    let config_path = args.config.map(PathBuf::from).unwrap_or_else(|| webroot.join("boxlang.json"));
+    let webroot = PathBuf::from(&args.webroot)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&args.webroot));
+
+    let config_path = args
+        .config
+        .map(PathBuf::from)
+        .unwrap_or_else(|| webroot.join("boxlang.json"));
     let config = if config_path.exists() {
         match fs::read_to_string(&config_path).await {
             Ok(content) => {
@@ -267,7 +408,7 @@ pub async fn run_server(args: Args) {
                     c.rewrite_file_name = default_rewrite_file_name();
                 }
                 c
-            },
+            }
             Err(_) => Config::default(),
         }
     } else {
@@ -278,10 +419,19 @@ pub async fn run_server(args: Args) {
         if let Some(ws_script_path) = find_file_case_insensitive(&webroot, &ws_config.handler) {
             match std::fs::read_to_string(&ws_script_path) {
                 Ok(source) => {
-                    let ast = parser::parse(&source, Some(&ws_config.handler)).map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", ws_config.handler, e)).ok();
+                    let ast = parser::parse(&source, Some(&ws_config.handler))
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to parse {}: {}", ws_config.handler, e)
+                        })
+                        .ok();
                     let chunk = ast.and_then(|ast| {
                         let mut compiler = Compiler::new(&ws_config.handler);
-                        compiler.compile(&ast, &source).map_err(|e| eprintln!("Failed to compile {}: {}", ws_config.handler, e)).ok()
+                        compiler
+                            .compile(&ast, &source)
+                            .map_err(|e| {
+                                eprintln!("Failed to compile {}: {}", ws_config.handler, e)
+                            })
+                            .ok()
                     });
 
                     if let Some(chunk) = chunk {
@@ -294,7 +444,9 @@ pub async fn run_server(args: Args) {
                         thread::Builder::new()
                             .name("matchbox-websocket-runtime".to_string())
                             .spawn(move || {
-                                if let Err(err) = websocket_runtime_main(chunk, config_clone, commands_rx, None) {
+                                if let Err(err) =
+                                    websocket_runtime_main(chunk, config_clone, commands_rx, None)
+                                {
                                     eprintln!("WebSocket runtime stopped: {}", err);
                                 }
                             })
@@ -317,9 +469,13 @@ pub async fn run_server(args: Args) {
     };
 
     let state = Arc::new(AppState {
-        webroot: webroot.clone(),
-        config,
-        sessions: Mutex::new(HashMap::new()),
+        engine: WebrootEngine::new(
+            FileSystemAssetStore::new(webroot.clone()),
+            WebrootConfig {
+                rewrites: config.rewrites,
+                rewrite_file_name: config.rewrite_file_name.clone(),
+            },
+        ),
         websocket,
     });
 
@@ -328,7 +484,10 @@ pub async fn run_server(args: Args) {
         .route("/*path", get(handler).post(handler));
 
     if let Some(runtime) = &state.websocket {
-        router = router.route(&runtime.uri, get(websocket_handler).with_state(runtime.clone()));
+        router = router.route(
+            &runtime.uri,
+            get(websocket_handler).with_state(runtime.clone()),
+        );
     }
 
     let app = router.with_state(state.clone());
@@ -336,7 +495,14 @@ pub async fn run_server(args: Args) {
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse().unwrap();
     println!("MatchBox Server listening on http://{}", addr);
     println!("Web root: {}", webroot.display());
-    println!("Rewrites: {}", if state.config.rewrites { "Enabled" } else { "Disabled" });
+    println!(
+        "Rewrites: {}",
+        if config.rewrites {
+            "Enabled"
+        } else {
+            "Disabled"
+        }
+    );
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -344,100 +510,63 @@ pub async fn run_server(args: Args) {
 
 async fn handler(
     State(state): State<Arc<AppState>>,
+    method: Method,
     path: Option<AxumPath<String>>,
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
     form_data: Option<Form<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     let path_str = path.map(|AxumPath(p)| p).unwrap_or_default();
-    
-    // Security: Block hidden files or directories starting with a dot
-    if path_str.split('/').any(|s| s.starts_with('.')) {
-        return (StatusCode::FORBIDDEN, "Forbidden: Access to hidden files is denied.").into_response();
-    }
-
-    let mut full_path = state.webroot.join(path_str.trim_start_matches('/'));
-    
-    // Directory Traversal Protection: Ensure the path is within the webroot
-    if let Ok(abs_path) = full_path.canonicalize() {
-        if !abs_path.starts_with(&state.webroot) {
-            return (StatusCode::FORBIDDEN, "Forbidden: Directory traversal attempt.").into_response();
-        }
-        full_path = abs_path;
-    } else if !state.config.rewrites {
-        return (StatusCode::NOT_FOUND, "Not Found").into_response();
-    }
-
-    // Handle directory index
-    if full_path.is_dir() {
-        let index_files = ["index.bxm", "index.bxs"];
-        for index in index_files {
-            let index_path = full_path.join(index);
-            if index_path.exists() {
-                full_path = index_path;
-                break;
-            }
-        }
-    }
-
-    // URL Rewrites logic
-    if !full_path.exists() {
-        if state.config.rewrites {
-            let rewrite_path = state.webroot.join(&state.config.rewrite_file_name);
-            if rewrite_path.exists() {
-                full_path = rewrite_path;
-            } else {
-                return (StatusCode::NOT_FOUND, "Not Found").into_response();
-            }
-        } else {
-            return (StatusCode::NOT_FOUND, "Not Found").into_response();
-        }
-    }
-
-    let ext = full_path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    
-    if ext == "bxm" || ext == "bxs" {
-        let mut form_params = HashMap::new();
-        if let Some(Form(data)) = form_data {
-            form_params = data;
-        }
-        match execute_template(state, &full_path, &params, &form_params, headers.clone()).await {
-            Ok((html, session_id)) => {
-                let mut res = (
-                    [(header::CONTENT_TYPE, "text/html")],
-                    html
-                ).into_response();
-                
-                let cookie = format!("MBX_SESSION_ID={}; Path=/; HttpOnly", session_id);
-                res.headers_mut().insert(header::SET_COOKIE, cookie.parse().unwrap());
-                
-                res
-            },
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e)).into_response(),
-        }
+    let path = if path_str.is_empty() {
+        "/".to_string()
     } else {
-        match fs::read(&full_path).await {
-            Ok(bytes) => {
-                let mime = mime_guess::from_path(&full_path).first_or_octet_stream();
-                (
-                    [(header::CONTENT_TYPE, mime.to_string())],
-                    bytes
-                ).into_response()
-            }
-            Err(_) => (StatusCode::NOT_FOUND, "Not Found").into_response(),
+        format!("/{}", path_str)
+    };
+    let mut header_map = HashMap::new();
+    for (name, value) in headers.iter() {
+        if let Ok(value) = value.to_str() {
+            header_map.insert(name.as_str().to_lowercase(), value.to_string());
         }
     }
+
+    let form = form_data.map(|Form(data)| data).unwrap_or_default();
+    match state.engine.handle(WebrootRequest {
+        method: method.to_string(),
+        path,
+        query: params,
+        form,
+        headers: header_map,
+        body: Vec::new(),
+    }) {
+        Ok(response) => webroot_response_to_axum(response),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", err)).into_response(),
+    }
+}
+
+fn webroot_response_to_axum(response: WebrootResponse) -> axum::response::Response {
+    let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut axum_response = (status, response.body).into_response();
+    for (name, value) in response.headers {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(name.as_bytes()),
+            header::HeaderValue::from_str(&value),
+        ) {
+            axum_response.headers_mut().insert(name, value);
+        }
+    }
+    axum_response
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     fn setup_test_state(webroot: PathBuf) -> Arc<AppState> {
         Arc::new(AppState {
-            webroot,
-            config: Config::default(),
-            sessions: Mutex::new(HashMap::new()),
+            engine: WebrootEngine::new(
+                FileSystemAssetStore::new(webroot),
+                WebrootConfig::default(),
+            ),
             websocket: None,
         })
     }
@@ -446,14 +575,17 @@ mod tests {
     async fn test_not_found() {
         let temp = tempfile::tempdir().unwrap();
         let state = setup_test_state(temp.path().to_path_buf());
-        
+
         let res = handler(
             State(state),
+            Method::GET,
             Some(AxumPath("non-existent.txt".to_string())),
             Query(HashMap::new()),
             HeaderMap::new(),
             None,
-        ).await.into_response();
+        )
+        .await
+        .into_response();
 
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
@@ -465,16 +597,19 @@ mod tests {
         // Canonicalize the temp path to match what run_server does
         let webroot = webroot.canonicalize().unwrap();
         std::fs::write(webroot.join("index.bxm"), "<h1>Index</h1>").unwrap();
-        
+
         let state = setup_test_state(webroot);
-        
+
         let res = handler(
             State(state),
+            Method::GET,
             None, // root path
             Query(HashMap::new()),
             HeaderMap::new(),
             None,
-        ).await.into_response();
+        )
+        .await
+        .into_response();
 
         // This SHOULD be OK (Green)
         assert_eq!(res.status(), StatusCode::OK);
@@ -485,16 +620,19 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let webroot = temp.path().to_path_buf().canonicalize().unwrap();
         std::fs::write(webroot.join(".env"), "SECRET=123").unwrap();
-        
+
         let state = setup_test_state(webroot);
-        
+
         let res = handler(
             State(state),
+            Method::GET,
             Some(AxumPath(".env".to_string())),
             Query(HashMap::new()),
             HeaderMap::new(),
             None,
-        ).await.into_response();
+        )
+        .await
+        .into_response();
 
         // Should be 403 Forbidden
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
@@ -506,19 +644,22 @@ mod tests {
         let webroot = temp_root.path().join("webroot");
         std::fs::create_dir(&webroot).unwrap();
         let webroot = webroot.canonicalize().unwrap();
-        
+
         // File outside webroot
         std::fs::write(temp_root.path().join("outside.txt"), "outside").unwrap();
-        
+
         let state = setup_test_state(webroot);
-        
+
         let res = handler(
             State(state),
+            Method::GET,
             Some(AxumPath("../outside.txt".to_string())),
             Query(HashMap::new()),
             HeaderMap::new(),
             None,
-        ).await.into_response();
+        )
+        .await
+        .into_response();
 
         // Should be 403 Forbidden
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
@@ -529,159 +670,145 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let webroot = temp.path().to_path_buf().canonicalize().unwrap();
         std::fs::write(webroot.join("index.bxm"), "<h1>Index</h1>").unwrap();
-        
+
         let state = Arc::new(AppState {
-            webroot,
-            config: Config {
-                rewrites: true,
-                rewrite_file_name: "index.bxm".to_string(),
-                websocket: None,
-            },
-            sessions: Mutex::new(HashMap::new()),
+            engine: WebrootEngine::new(
+                FileSystemAssetStore::new(webroot),
+                WebrootConfig {
+                    rewrites: true,
+                    rewrite_file_name: "index.bxm".to_string(),
+                },
+            ),
             websocket: None,
         });
-        
+
         let res = handler(
             State(state),
+            Method::GET,
             Some(AxumPath("non-existent".to_string())),
             Query(HashMap::new()),
             HeaderMap::new(),
             None,
-        ).await.into_response();
+        )
+        .await
+        .into_response();
 
         // Should be 200 OK because of rewrite
         assert_eq!(res.status(), StatusCode::OK);
     }
-}
 
-async fn execute_template(
-    state: Arc<AppState>,
-    path: &Path,
-    url_params: &HashMap<String, String>,
-    form_params: &HashMap<String, String>,
-    headers: HeaderMap,
-) -> anyhow::Result<(String, String)> {
-    let source = fs::read_to_string(path).await?;
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    
-    let ast = if ext == "bxm" {
-        parser::parse_bxm(&source, path.to_str())?
-    } else {
-        parser::parse(&source, path.to_str())?
-    };
-
-    let filename = path.to_string_lossy();
-    let mut compiler = Compiler::new(&filename);
-    let chunk = compiler.compile(&ast, &source)?;
-
-    let mut vm = VM::new();
-    vm.output_buffer = Some(String::new());
-
-    let mut session_id = None;
-    if let Some(cookie_header) = headers.get(header::COOKIE) {
-        if let Ok(cookie_str) = cookie_header.to_str() {
-            for cookie in cookie_str.split(';') {
-                let mut parts = cookie.splitn(2, '=');
-                if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
-                    if k.trim() == "MBX_SESSION_ID" {
-                        session_id = Some(v.trim().to_string());
-                    }
+    #[test]
+    fn test_prepare_wasi_http_webroot_warns_and_ignores_websocket_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().to_path_buf().canonicalize().unwrap();
+        std::fs::write(webroot.join("index.bxm"), "<bx:output>wasi</bx:output>").unwrap();
+        std::fs::write(
+            webroot.join("boxlang.json"),
+            r#"{
+                "rewrites": true,
+                "rewriteFileName": "index.bxm",
+                "websocket": {
+                    "uri": "/ws",
+                    "handler": "WebSocket.bx",
+                    "listenerClass": "EchoListener",
+                    "listenerState": {}
                 }
-            }
-        }
+            }"#,
+        )
+        .unwrap();
+
+        let package = prepare_wasi_http_webroot(&webroot, None).unwrap();
+        let response = package
+            .engine
+            .handle(WebrootRequest {
+                method: "GET".to_string(),
+                path: "/missing".to_string(),
+                query: Default::default(),
+                form: Default::default(),
+                headers: Default::default(),
+                body: Vec::new(),
+            })
+            .unwrap();
+
+        assert!(package.config.rewrites);
+        assert_eq!(package.warnings.len(), 1);
+        assert!(package.warnings[0].contains("websocket"));
+        assert_eq!(String::from_utf8(response.body).unwrap(), "wasi");
     }
-    
-    let sid = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    let scopes = setup_scopes(&mut vm, &state, &sid, url_params, form_params, headers)?;
+    #[test]
+    fn test_prepare_wasi_http_webroot_rejects_native_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().to_path_buf().canonicalize().unwrap();
+        std::fs::write(webroot.join("index.bxm"), "<bx:output>wasi</bx:output>").unwrap();
+        std::fs::create_dir(webroot.join("native")).unwrap();
 
-    vm.interpret(chunk)?;
+        let err = match prepare_wasi_http_webroot(&webroot, None) {
+            Ok(_) => panic!("expected native directory to be rejected"),
+            Err(err) => err,
+        };
 
-    persist_session(&mut vm, &state, &sid, scopes.session_id)?;
-
-    Ok((vm.output_buffer.unwrap_or_default(), sid))
-}
-
-struct RequestScopes {
-    session_id: usize,
-}
-
-fn setup_scopes(
-    vm: &mut VM,
-    state: &AppState,
-    session_id: &str,
-    url_params: &HashMap<String, String>,
-    form_params: &HashMap<String, String>,
-    headers: HeaderMap,
-) -> anyhow::Result<RequestScopes> {
-    // URL Scope
-    let url_scope_id = vm.struct_new();
-    for (k, v) in url_params {
-        let val_ptr = vm.string_new(v.clone());
-        vm.struct_set(url_scope_id, k, matchbox_vm::types::BxValue::new_ptr(val_ptr));
+        assert!(err.to_string().contains("native"));
+        assert!(err.to_string().contains("WASI HTTP"));
     }
-    vm.insert_global("url".to_string(), matchbox_vm::types::BxValue::new_ptr(url_scope_id));
 
-    // FORM Scope
-    let form_scope_id = vm.struct_new();
-    for (k, v) in form_params {
-        let val_ptr = vm.string_new(v.clone());
-        vm.struct_set(form_scope_id, k, matchbox_vm::types::BxValue::new_ptr(val_ptr));
+    #[test]
+    fn test_prepare_wasi_http_webroot_rejects_native_module_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().to_path_buf().canonicalize().unwrap();
+        std::fs::write(webroot.join("index.bxm"), "<bx:output>wasi</bx:output>").unwrap();
+        let module_native = webroot
+            .join("boxlang_modules")
+            .join("crypto")
+            .join("native");
+        std::fs::create_dir_all(&module_native).unwrap();
+
+        let err = match prepare_wasi_http_webroot(&webroot, None) {
+            Ok(_) => panic!("expected native module directory to be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("native module"));
+        assert!(err.to_string().contains("WASI HTTP"));
     }
-    vm.insert_global("form".to_string(), matchbox_vm::types::BxValue::new_ptr(form_scope_id));
 
-    // COOKIE Scope
-    let cookie_scope_id = vm.struct_new();
-    // Inject session ID first so it's always there
-    let sid_ptr = vm.string_new(session_id.to_string());
-    vm.struct_set(cookie_scope_id, "MBX_SESSION_ID", matchbox_vm::types::BxValue::new_ptr(sid_ptr));
-    
-    if let Some(cookie_header) = headers.get(header::COOKIE) {
-        if let Ok(cookie_str) = cookie_header.to_str() {
-            for cookie in cookie_str.split(';') {
-                let mut parts = cookie.splitn(2, '=');
-                if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
-                    let val_ptr = vm.string_new(v.trim().to_string());
-                    vm.struct_set(cookie_scope_id, k.trim(), matchbox_vm::types::BxValue::new_ptr(val_ptr));
-                }
-            }
-        }
+    #[test]
+    fn test_prepare_wasi_http_webroot_rejects_java_interop_imports() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().to_path_buf().canonicalize().unwrap();
+        std::fs::write(
+            webroot.join("index.bxs"),
+            "import java:java.util.ArrayList as List;\nwriteOutput(\"bad\");",
+        )
+        .unwrap();
+
+        let err = match prepare_wasi_http_webroot(&webroot, None) {
+            Ok(_) => panic!("expected Java interop import to be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("java:"));
+        assert!(err.to_string().contains("WASI HTTP"));
+        assert!(err.to_string().contains("index.bxs"));
     }
-    vm.insert_global("cookie".to_string(), matchbox_vm::types::BxValue::new_ptr(cookie_scope_id));
 
-    // SESSION Scope
-    let session_scope_id = vm.struct_new();
-    {
-        let sessions = state.sessions.lock().unwrap();
-        if let Some(data) = sessions.get(session_id) {
-            for (k, v) in data {
-                let val_ptr = vm.string_new(v.clone());
-                vm.struct_set(session_scope_id, k, matchbox_vm::types::BxValue::new_ptr(val_ptr));
-            }
-        }
+    #[test]
+    fn test_prepare_wasi_http_webroot_rejects_rust_interop_imports() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().to_path_buf().canonicalize().unwrap();
+        std::fs::write(
+            webroot.join("index.bxs"),
+            "import rust:crypto.Vault;\nwriteOutput(\"bad\");",
+        )
+        .unwrap();
+
+        let err = match prepare_wasi_http_webroot(&webroot, None) {
+            Ok(_) => panic!("expected Rust interop import to be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("rust:"));
+        assert!(err.to_string().contains("WASI HTTP"));
+        assert!(err.to_string().contains("index.bxs"));
     }
-    vm.insert_global("session".to_string(), matchbox_vm::types::BxValue::new_ptr(session_scope_id));
-
-    // CGI Scope
-    let cgi_scope_id = vm.struct_new();
-    vm.struct_set(cgi_scope_id, "server_port", matchbox_vm::types::BxValue::new_int(8080));
-    vm.insert_global("cgi".to_string(), matchbox_vm::types::BxValue::new_ptr(cgi_scope_id));
-
-    Ok(RequestScopes { session_id: session_scope_id })
-}
-
-fn persist_session(
-    vm: &mut VM,
-    state: &AppState,
-    session_id: &str,
-    scope_id: usize,
-) -> anyhow::Result<()> {
-    let mut data = HashMap::new();
-    for key in vm.struct_key_array(scope_id) {
-        let val = vm.struct_get(scope_id, &key);
-        data.insert(key, vm.to_string(val));
-    }
-    let mut sessions = state.sessions.lock().unwrap();
-    sessions.insert(session_id.to_string(), data);
-    Ok(())
 }

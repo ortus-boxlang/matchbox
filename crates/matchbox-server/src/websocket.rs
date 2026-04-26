@@ -1,7 +1,8 @@
+use crate::{RequestData, bx_to_json, request_data_from_parts};
 use axum::{
     extract::{
-        ws::{Message as WebSocketMessage, WebSocket, WebSocketUpgrade},
         State,
+        ws::{Message as WebSocketMessage, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, Method},
     response::IntoResponse,
@@ -15,12 +16,11 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     rc::Rc,
+    sync::Arc,
     sync::mpsc::{Receiver as StdReceiver, Sender as StdSender},
-    sync::{Arc},
 };
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use uuid::Uuid;
-use crate::{RequestData, request_data_from_parts, bx_to_json};
 
 use serde::{Deserialize, Serialize};
 
@@ -68,10 +68,7 @@ pub enum IncomingWebSocketMessage {
 pub enum WebSocketOutbound {
     Text(String),
     Binary(Vec<u8>),
-    Close {
-        code: u16,
-        reason: String,
-    },
+    Close { code: u16, reason: String },
 }
 
 #[derive(Debug)]
@@ -184,7 +181,10 @@ impl BxNativeObject for WebSocketChannelObject {
                     .first()
                     .map(|value| vm.to_string(*value).parse::<u16>().unwrap_or(1000))
                     .unwrap_or(1000);
-                let reason = args.get(1).map(|value| vm.to_string(*value)).unwrap_or_default();
+                let reason = args
+                    .get(1)
+                    .map(|value| vm.to_string(*value))
+                    .unwrap_or_default();
                 if let Some(sender) = self.outbound.borrow().get(&self.connection_id) {
                     sender
                         .send(WebSocketOutbound::Close { code, reason })
@@ -196,7 +196,9 @@ impl BxNativeObject for WebSocketChannelObject {
             }
             "getid" => Ok(BxValue::new_ptr(vm.string_new(self.connection_id.clone()))),
             "getpath" => Ok(BxValue::new_ptr(vm.string_new(self.request.path.clone()))),
-            "geturl" => Ok(BxValue::new_ptr(vm.string_new(self.request.full_url.clone()))),
+            "geturl" => Ok(BxValue::new_ptr(
+                vm.string_new(self.request.full_url.clone()),
+            )),
             "gethttpheader" => {
                 if args.is_empty() {
                     return Err("getHTTPHeader() requires a header name".to_string());
@@ -313,9 +315,9 @@ pub async fn websocket_connection_loop(
         .send(WebSocketRuntimeCommand::Close { connection_id });
 }
 
+use crate::app_server::{BuildState, install_web_namespace};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use crate::app_server::{BuildState, install_web_namespace};
 
 pub fn websocket_runtime_main(
     chunk: matchbox_vm::vm::chunk::Chunk,
@@ -360,7 +362,12 @@ pub fn websocket_runtime_main(
                 vm.struct_set(channel_registry_id, &connection_id, channel);
                 if let Err(err) = vm.call_method_value(listener, "onconnect", vec![channel]) {
                     eprintln!("WebSocket onConnect error: {}", err);
-                    send_websocket_close(outbound_senders.clone(), &connection_id, 1011, "Internal error");
+                    send_websocket_close(
+                        outbound_senders.clone(),
+                        &connection_id,
+                        1011,
+                        "Internal error",
+                    );
                 }
             }
             WebSocketRuntimeCommand::Message {
@@ -373,11 +380,20 @@ pub fn websocket_runtime_main(
                 }
                 let message_value = match message {
                     IncomingWebSocketMessage::Text(text) => BxValue::new_ptr(vm.string_new(text)),
-                    IncomingWebSocketMessage::Binary(bytes) => BxValue::new_ptr(vm.bytes_new(bytes)),
+                    IncomingWebSocketMessage::Binary(bytes) => {
+                        BxValue::new_ptr(vm.bytes_new(bytes))
+                    }
                 };
-                if let Err(err) = vm.call_method_value(listener, "onmessage", vec![message_value, channel]) {
+                if let Err(err) =
+                    vm.call_method_value(listener, "onmessage", vec![message_value, channel])
+                {
                     eprintln!("WebSocket onMessage error: {}", err);
-                    send_websocket_close(outbound_senders.clone(), &connection_id, 1011, "Internal error");
+                    send_websocket_close(
+                        outbound_senders.clone(),
+                        &connection_id,
+                        1011,
+                        "Internal error",
+                    );
                 }
             }
             WebSocketRuntimeCommand::Close { connection_id } => {

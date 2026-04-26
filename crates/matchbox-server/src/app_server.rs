@@ -1,18 +1,20 @@
+use crate::websocket::{
+    WebSocketConfig, WebSocketRuntimeHandle, websocket_handler, websocket_runtime_main,
+};
+use crate::{RequestData, bx_to_json, json_to_bx, request_data_from_parts};
 use axum::{
-    body::{to_bytes, Body},
-    extract::{
-        State,
-    },
-    http::{header, Request, Response, StatusCode},
+    Router,
+    body::{Body, to_bytes},
+    extract::State,
+    http::{Request, Response, StatusCode, header},
     response::IntoResponse,
     routing::{any, get},
-    Router,
 };
 use hmac::{Hmac, Mac};
 use matchbox_compiler::{compiler::Compiler, parser};
 use matchbox_vm::{
-    vm::{chunk::Chunk, VM},
     types::{BxNativeObject, BxVM, BxValue},
+    vm::{VM, chunk::Chunk},
 };
 use serde_json::Value as JsonValue;
 use sha2::Sha256;
@@ -30,11 +32,6 @@ use std::{
 use tokio::fs;
 use url::form_urlencoded;
 use uuid::Uuid;
-use crate::{RequestData, request_data_from_parts, bx_to_json, json_to_bx};
-use crate::websocket::{
-    WebSocketConfig, WebSocketRuntimeHandle,
-    websocket_handler, websocket_runtime_main
-};
 
 const SESSION_COOKIE_NAME: &str = "MBX_SESSION_ID";
 const DEFAULT_WEBHOOK_REPLAY_TTL_SECONDS: i64 = 3600;
@@ -206,11 +203,10 @@ impl BxNativeObject for WebNamespace {
                     listen: None,
                 }));
                 self.build_state.lock().unwrap().apps.push(app.clone());
-                let middleware_id = vm.native_object_new(Rc::new(RefCell::new(
-                    AppMiddlewareNamespaceObject {
+                let middleware_id =
+                    vm.native_object_new(Rc::new(RefCell::new(AppMiddlewareNamespaceObject {
                         app_root: self.app_root.clone(),
-                    },
-                )));
+                    })));
                 let object_id = vm.native_object_new(Rc::new(RefCell::new(ServerAppObject {
                     app,
                     middleware_namespace: BxValue::new_ptr(middleware_id),
@@ -249,7 +245,8 @@ impl BxNativeObject for ServerAppObject {
                 Ok(BxValue::new_null())
             }
             "buildwebhook" => {
-                let object_id = vm.native_object_new(Rc::new(RefCell::new(WebhookBuilderObject::default())));
+                let object_id =
+                    vm.native_object_new(Rc::new(RefCell::new(WebhookBuilderObject::default())));
                 Ok(BxValue::new_ptr(object_id))
             }
             "use" => {
@@ -303,7 +300,8 @@ impl BxNativeObject for RouteGroupObject {
                 Ok(BxValue::new_null())
             }
             "buildwebhook" => {
-                let object_id = vm.native_object_new(Rc::new(RefCell::new(WebhookBuilderObject::default())));
+                let object_id =
+                    vm.native_object_new(Rc::new(RefCell::new(WebhookBuilderObject::default())));
                 Ok(BxValue::new_ptr(object_id))
             }
             "use" => {
@@ -356,7 +354,9 @@ impl BxNativeObject for WebhookBuilderObject {
                     .copied()
                     .filter(|value| vm.is_string_value(*value))
                     .map(|value| vm.to_string(value))
-                    .ok_or_else(|| "buildWebhook().secret() requires a string secret".to_string())?;
+                    .ok_or_else(|| {
+                        "buildWebhook().secret() requires a string secret".to_string()
+                    })?;
                 self.secret = Some(secret);
                 Ok(BxValue::new_ptr(id))
             }
@@ -366,7 +366,9 @@ impl BxNativeObject for WebhookBuilderObject {
                     .copied()
                     .filter(|value| vm.is_string_value(*value))
                     .map(|value| vm.to_string(value))
-                    .ok_or_else(|| "buildWebhook().signatureHeader() requires a string header name".to_string())?;
+                    .ok_or_else(|| {
+                        "buildWebhook().signatureHeader() requires a string header name".to_string()
+                    })?;
                 self.signature_header = Some(header);
                 Ok(BxValue::new_ptr(id))
             }
@@ -376,7 +378,9 @@ impl BxNativeObject for WebhookBuilderObject {
                     .copied()
                     .filter(|value| vm.is_string_value(*value))
                     .map(|value| vm.to_string(value))
-                    .ok_or_else(|| "buildWebhook().prefix() requires a string prefix".to_string())?;
+                    .ok_or_else(|| {
+                        "buildWebhook().prefix() requires a string prefix".to_string()
+                    })?;
                 self.prefix = Some(prefix);
                 Ok(BxValue::new_ptr(id))
             }
@@ -386,21 +390,22 @@ impl BxNativeObject for WebhookBuilderObject {
                     .copied()
                     .filter(|value| vm.is_string_value(*value))
                     .map(|value| vm.to_string(value))
-                    .ok_or_else(|| "buildWebhook().timestampHeader() requires a string header name".to_string())?;
+                    .ok_or_else(|| {
+                        "buildWebhook().timestampHeader() requires a string header name".to_string()
+                    })?;
                 self.timestamp_header = Some(header);
                 Ok(BxValue::new_ptr(id))
             }
             "toleranceseconds" => {
-                let tolerance = args
-                    .first()
-                    .copied()
-                    .ok_or_else(|| "buildWebhook().toleranceSeconds() requires a number".to_string())?;
+                let tolerance = args.first().copied().ok_or_else(|| {
+                    "buildWebhook().toleranceSeconds() requires a number".to_string()
+                })?;
                 let value = if tolerance.is_number() || tolerance.is_int() {
                     tolerance.as_number() as i64
                 } else {
-                    vm.to_string(tolerance)
-                        .parse::<i64>()
-                        .map_err(|_| "buildWebhook().toleranceSeconds() requires a number".to_string())?
+                    vm.to_string(tolerance).parse::<i64>().map_err(|_| {
+                        "buildWebhook().toleranceSeconds() requires a number".to_string()
+                    })?
                 };
                 self.tolerance_seconds = Some(value);
                 Ok(BxValue::new_ptr(id))
@@ -411,21 +416,22 @@ impl BxNativeObject for WebhookBuilderObject {
                     .copied()
                     .filter(|value| vm.is_string_value(*value))
                     .map(|value| vm.to_string(value))
-                    .ok_or_else(|| "buildWebhook().replayHeader() requires a string header name".to_string())?;
+                    .ok_or_else(|| {
+                        "buildWebhook().replayHeader() requires a string header name".to_string()
+                    })?;
                 self.replay_header = Some(header);
                 Ok(BxValue::new_ptr(id))
             }
             "replayttlseconds" => {
-                let ttl = args
-                    .first()
-                    .copied()
-                    .ok_or_else(|| "buildWebhook().replayTtlSeconds() requires a number".to_string())?;
+                let ttl = args.first().copied().ok_or_else(|| {
+                    "buildWebhook().replayTtlSeconds() requires a number".to_string()
+                })?;
                 let value = if ttl.is_number() || ttl.is_int() {
                     ttl.as_number() as i64
                 } else {
-                    vm.to_string(ttl)
-                        .parse::<i64>()
-                        .map_err(|_| "buildWebhook().replayTtlSeconds() requires a number".to_string())?
+                    vm.to_string(ttl).parse::<i64>().map_err(|_| {
+                        "buildWebhook().replayTtlSeconds() requires a number".to_string()
+                    })?
                 };
                 self.replay_ttl_seconds = Some(value.max(0));
                 Ok(BxValue::new_ptr(id))
@@ -461,11 +467,7 @@ impl BxNativeObject for WebhookBuilderObject {
                 let header_id = vm.string_new(signature_header);
                 vm.struct_set(config_id, "path", BxValue::new_ptr(path_id));
                 vm.struct_set(config_id, "secret", BxValue::new_ptr(secret_id));
-                vm.struct_set(
-                    config_id,
-                    "signatureHeader",
-                    BxValue::new_ptr(header_id),
-                );
+                vm.struct_set(config_id, "signatureHeader", BxValue::new_ptr(header_id));
                 if let Some(prefix) = self.prefix.clone().filter(|value| !value.is_empty()) {
                     let prefix_id = vm.string_new(prefix);
                     vm.struct_set(config_id, "prefix", BxValue::new_ptr(prefix_id));
@@ -533,7 +535,7 @@ impl BxNativeObject for AppMiddlewareNamespaceObject {
             "buildstaticfiles" => {
                 if args.len() < 2 {
                     return Err(
-                        "buildStaticFiles() requires a mount path and directory".to_string(),
+                        "buildStaticFiles() requires a mount path and directory".to_string()
                     );
                 }
                 let mount = args
@@ -549,12 +551,11 @@ impl BxNativeObject for AppMiddlewareNamespaceObject {
                     .map(|value| vm.to_string(value))
                     .ok_or_else(|| "buildStaticFiles() directory must be a string".to_string())?;
                 let resolved_directory = resolve_static_directory(&self.app_root, &directory)?;
-                let middleware_id = vm.native_object_new(Rc::new(RefCell::new(
-                    StaticFilesMiddlewareObject {
+                let middleware_id =
+                    vm.native_object_new(Rc::new(RefCell::new(StaticFilesMiddlewareObject {
                         mount,
                         directory: resolved_directory,
-                    },
-                )));
+                    })));
                 Ok(BxValue::new_ptr(middleware_id))
             }
             _ => Err(format!("Method {} not found on app middleware.", name)),
@@ -588,9 +589,9 @@ impl BxNativeObject for StaticFilesMiddlewareObject {
                 let path = vm.to_string(path_value);
                 if !path_matches_mount(&path, &self.mount) {
                     return vm.native_object_call_method(
-                        args[3]
-                            .as_gc_id()
-                            .ok_or_else(|| "Static file middleware requires a next object".to_string())?,
+                        args[3].as_gc_id().ok_or_else(|| {
+                            "Static file middleware requires a next object".to_string()
+                        })?,
                         "run",
                         &[],
                     );
@@ -602,9 +603,9 @@ impl BxNativeObject for StaticFilesMiddlewareObject {
                     Ok(path) => path,
                     Err(err) if err.contains("outside the mounted directory") => {
                         return vm.native_object_call_method(
-                            args[3]
-                                .as_gc_id()
-                                .ok_or_else(|| "Static file middleware requires a next object".to_string())?,
+                            args[3].as_gc_id().ok_or_else(|| {
+                                "Static file middleware requires a next object".to_string()
+                            })?,
                             "run",
                             &[],
                         );
@@ -613,16 +614,20 @@ impl BxNativeObject for StaticFilesMiddlewareObject {
                 };
                 if !resolved_path.is_file() {
                     return vm.native_object_call_method(
-                        args[3]
-                            .as_gc_id()
-                            .ok_or_else(|| "Static file middleware requires a next object".to_string())?,
+                        args[3].as_gc_id().ok_or_else(|| {
+                            "Static file middleware requires a next object".to_string()
+                        })?,
                         "run",
                         &[],
                     );
                 }
 
                 let body = stdfs::read(&resolved_path).map_err(|e| {
-                    format!("Failed to read static file '{}': {}", resolved_path.display(), e)
+                    format!(
+                        "Failed to read static file '{}': {}",
+                        resolved_path.display(),
+                        e
+                    )
                 })?;
                 let mime = mime_guess::from_path(&resolved_path)
                     .first_or_octet_stream()
@@ -636,7 +641,10 @@ impl BxNativeObject for StaticFilesMiddlewareObject {
                 )?;
                 Ok(BxValue::new_null())
             }
-            _ => Err(format!("Method {} not found on static files middleware.", name)),
+            _ => Err(format!(
+                "Method {} not found on static files middleware.",
+                name
+            )),
         }
     }
 }
@@ -661,7 +669,11 @@ impl BxNativeObject for RequestContextObject {
             "getsession" => Ok(BxValue::new_ptr(self.session_id)),
             "valueexists" => Ok(BxValue::new_bool(struct_key_exists(vm, self.rc_id, args))),
             "privatevalueexists" => Ok(BxValue::new_bool(struct_key_exists(vm, self.prc_id, args))),
-            "sessionexists" => Ok(BxValue::new_bool(struct_key_exists(vm, self.session_id, args))),
+            "sessionexists" => Ok(BxValue::new_bool(struct_key_exists(
+                vm,
+                self.session_id,
+                args,
+            ))),
             "getvalue" => Ok(struct_lookup(vm, self.rc_id, args)),
             "getprivatevalue" => Ok(struct_lookup(vm, self.prc_id, args)),
             "getsessionvalue" => Ok(struct_lookup(vm, self.session_id, args)),
@@ -710,9 +722,9 @@ impl BxNativeObject for RequestContextObject {
                 }
                 Ok(BxValue::new_ptr(result_id))
             }
-            "getcurrentroute" => Ok(BxValue::new_ptr(vm.string_new(
-                self.request.matched_route.clone().unwrap_or_default(),
-            ))),
+            "getcurrentroute" => Ok(BxValue::new_ptr(
+                vm.string_new(self.request.matched_route.clone().unwrap_or_default()),
+            )),
             "gethttpmethod" => Ok(BxValue::new_ptr(vm.string_new(self.request.method.clone()))),
             "getrequestmethod" => Ok(BxValue::new_ptr(vm.string_new(self.request.method.clone()))),
             "isjson" => Ok(BxValue::new_bool(is_json_body(&self.request.headers))),
@@ -761,11 +773,7 @@ impl BxNativeObject for RequestContextObject {
             "sethttpheader" => {
                 let name = arg_string(vm, args, 0);
                 let value = arg_string(vm, args, 1);
-                self.response
-                    .lock()
-                    .unwrap()
-                    .headers
-                    .insert(name, value);
+                self.response.lock().unwrap().headers.insert(name, value);
                 Ok(BxValue::new_null())
             }
             "sethttpcookie" | "setcookie" => {
@@ -788,7 +796,10 @@ impl BxNativeObject for RequestContextObject {
                     let is_http_only = if http_only.is_bool() {
                         http_only.as_bool()
                     } else {
-                        matches!(vm.to_string(*http_only).to_lowercase().as_str(), "true" | "yes" | "1")
+                        matches!(
+                            vm.to_string(*http_only).to_lowercase().as_str(),
+                            "true" | "yes" | "1"
+                        )
                     };
                     if is_http_only {
                         cookie.push_str("; HttpOnly");
@@ -810,12 +821,20 @@ impl BxNativeObject for RequestContextObject {
             }
             "rendertext" => {
                 let text = arg_string(vm, args, 0);
-                render_response(&self.response, "text/plain; charset=utf-8", text.into_bytes());
+                render_response(
+                    &self.response,
+                    "text/plain; charset=utf-8",
+                    text.into_bytes(),
+                );
                 Ok(BxValue::new_null())
             }
             "renderhtml" => {
                 let html = arg_string(vm, args, 0);
-                render_response(&self.response, "text/html; charset=utf-8", html.into_bytes());
+                render_response(
+                    &self.response,
+                    "text/html; charset=utf-8",
+                    html.into_bytes(),
+                );
                 Ok(BxValue::new_null())
             }
             "renderjson" => {
@@ -842,7 +861,11 @@ impl BxNativeObject for RequestContextObject {
                     &template_path,
                     view_args,
                 )?;
-                render_response(&self.response, "text/html; charset=utf-8", html.into_bytes());
+                render_response(
+                    &self.response,
+                    "text/html; charset=utf-8",
+                    html.into_bytes(),
+                );
                 Ok(BxValue::new_null())
             }
             "renderdata" => {
@@ -917,7 +940,10 @@ impl BxNativeObject for NextMiddlewareObject {
                 )?;
                 Ok(BxValue::new_null())
             }
-            _ => Err(format!("Method {} not found on middleware next object.", name)),
+            _ => Err(format!(
+                "Method {} not found on middleware next object.",
+                name
+            )),
         }
     }
 }
@@ -943,13 +969,14 @@ impl BxNativeObject for NotFoundHandlerObject {
     }
 }
 
-
-
 pub async fn run_script_server(script_path: &Path) -> anyhow::Result<()> {
     let compiled = Arc::new(compile_script_app(script_path).await?);
     let listen = load_listen_config(&compiled)?;
     let websocket = load_websocket_runtime(compiled.clone())?;
-    let state = Arc::new(ScriptServerState { compiled, websocket });
+    let state = Arc::new(ScriptServerState {
+        compiled,
+        websocket,
+    });
     let router = build_script_router(state.clone());
     let addr: std::net::SocketAddr = format!("{}:{}", listen.host, listen.port).parse()?;
     println!("MatchBox App Server listening on http://{}", addr);
@@ -962,7 +989,10 @@ pub async fn run_script_server(script_path: &Path) -> anyhow::Result<()> {
 pub fn build_script_router(state: Arc<ScriptServerState>) -> Router {
     let mut router = Router::new();
     if let Some(runtime) = state.websocket.clone() {
-        router = router.route(&runtime.uri, get(websocket_handler).with_state(runtime.clone()));
+        router = router.route(
+            &runtime.uri,
+            get(websocket_handler).with_state(runtime.clone()),
+        );
     }
     router
         .route("/", any(script_handler))
@@ -1007,11 +1037,9 @@ fn instantiate_app_definition(compiled: &CompiledScriptApp) -> anyhow::Result<Ap
 }
 
 pub fn load_listen_config(compiled: &CompiledScriptApp) -> anyhow::Result<ListenConfig> {
-    Ok(
-        instantiate_app_definition(compiled)?
-            .listen
-            .unwrap_or_default(),
-    )
+    Ok(instantiate_app_definition(compiled)?
+        .listen
+        .unwrap_or_default())
 }
 
 fn load_websocket_runtime(
@@ -1033,11 +1061,19 @@ fn load_websocket_runtime(
         .name("matchbox-websocket-runtime".to_string())
         .spawn(move || {
             let web_context = if runtime_compiled.web_imported {
-                Some((Arc::new(Mutex::new(BuildState::default())), runtime_app_root))
+                Some((
+                    Arc::new(Mutex::new(BuildState::default())),
+                    runtime_app_root,
+                ))
             } else {
                 None
             };
-            if let Err(err) = websocket_runtime_main(runtime_compiled.chunk.clone(), config, commands_rx, web_context) {
+            if let Err(err) = websocket_runtime_main(
+                runtime_compiled.chunk.clone(),
+                config,
+                commands_rx,
+                web_context,
+            ) {
                 eprintln!("WebSocket runtime stopped: {}", err);
             }
         })?;
@@ -1102,7 +1138,12 @@ pub fn dispatch_script_request(
         .cookies
         .get(SESSION_COOKIE_NAME)
         .cloned()
-        .or_else(|| request.cookies.get(&SESSION_COOKIE_NAME.to_lowercase()).cloned());
+        .or_else(|| {
+            request
+                .cookies
+                .get(&SESSION_COOKIE_NAME.to_lowercase())
+                .cloned()
+        });
     let session_key = existing_session_cookie
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -1191,11 +1232,17 @@ async fn script_handler(
                 StatusCode::BAD_REQUEST,
                 format!("Failed to read request body: {}", err),
             )
-                .into_response()
+                .into_response();
         }
     };
 
-    let request = request_data_from_parts(parts.method, parts.uri.path(), parts.uri.query(), &parts.headers, body.to_vec());
+    let request = request_data_from_parts(
+        parts.method,
+        parts.uri.path(),
+        parts.uri.query(),
+        &parts.headers,
+        body.to_vec(),
+    );
     match dispatch_script_request(&state.compiled, request.clone()) {
         Ok(response) => response_to_http(response),
         Err(err) if err.to_string() == "No route matched" => {
@@ -1221,12 +1268,6 @@ async fn script_handler(
     }
 }
 
-
-
-
-
-
-
 fn response_to_http(response: ResponseData) -> Response<Body> {
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut builder = Response::builder().status(status);
@@ -1241,7 +1282,6 @@ fn response_to_http(response: ResponseData) -> Response<Body> {
     }
     http_response
 }
-
 
 pub fn install_web_namespace(vm: &mut VM, build_state: Arc<Mutex<BuildState>>, app_root: PathBuf) {
     let web_id = vm.native_object_new(Rc::new(RefCell::new(WebNamespace {
@@ -1379,7 +1419,10 @@ fn register_group_webhook_route(
     Ok(())
 }
 
-fn register_app_middleware(app: &Arc<Mutex<AppDefinition>>, args: &[BxValue]) -> Result<(), String> {
+fn register_app_middleware(
+    app: &Arc<Mutex<AppDefinition>>,
+    args: &[BxValue],
+) -> Result<(), String> {
     if args.is_empty() {
         return Err("use() requires at least one middleware function".to_string());
     }
@@ -1411,12 +1454,14 @@ fn parse_webhook_definition(
     let handler = *args.last().unwrap();
 
     if args.len() == 2 {
-        let builder_id = args[0]
-            .as_gc_id()
-            .ok_or_else(|| "webhook() requires a webhook builder as the first argument".to_string())?;
+        let builder_id = args[0].as_gc_id().ok_or_else(|| {
+            "webhook() requires a webhook builder as the first argument".to_string()
+        })?;
         let config = vm
             .native_object_call_method(builder_id, "__webhookconfig", &[])
-            .map_err(|_| "webhook() requires a webhook builder or path/config arguments".to_string())?;
+            .map_err(|_| {
+                "webhook() requires a webhook builder or path/config arguments".to_string()
+            })?;
         let config_id = config
             .as_gc_id()
             .ok_or_else(|| "webhook() builder did not produce a valid config".to_string())?;
@@ -1427,8 +1472,8 @@ fn parse_webhook_definition(
         let timestamp_header = optional_struct_string(vm, config_id, "timestampHeader")
             .map(|value| value.to_lowercase());
         let tolerance_seconds = optional_struct_i64(vm, config_id, "toleranceSeconds")?;
-        let replay_header = optional_struct_string(vm, config_id, "replayHeader")
-            .map(|value| value.to_lowercase());
+        let replay_header =
+            optional_struct_string(vm, config_id, "replayHeader").map(|value| value.to_lowercase());
         let replay_ttl_seconds = optional_struct_i64(vm, config_id, "replayTtlSeconds")?;
         return Ok((
             path,
@@ -1557,7 +1602,10 @@ fn arg_bool(vm: &dyn BxVM, args: &[BxValue], index: usize) -> bool {
     match args.get(index).copied() {
         Some(val) if val.is_bool() => val.as_bool(),
         Some(val) if val.is_number() || val.is_int() => val.as_number() != 0.0,
-        Some(val) => matches!(vm.to_string(val).to_lowercase().as_str(), "true" | "yes" | "1"),
+        Some(val) => matches!(
+            vm.to_string(val).to_lowercase().as_str(),
+            "true" | "yes" | "1"
+        ),
         None => false,
     }
 }
@@ -1730,7 +1778,9 @@ fn scoped_struct_subset(
     let keys = parse_key_list(vm, args);
     let result_id = vm.struct_new();
     for key in vm.struct_key_array(scope_id) {
-        let listed = keys.iter().any(|candidate| candidate.eq_ignore_ascii_case(&key));
+        let listed = keys
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(&key));
         if (include && listed) || (!include && !listed) {
             let value = vm.struct_get(scope_id, &key);
             vm.struct_set(result_id, &key, value);
@@ -1761,7 +1811,10 @@ fn render_template(
 ) -> Result<String, String> {
     let resolved_path = resolve_template_path(&app_root, template_path)?;
     let source = stdfs::read_to_string(&resolved_path).map_err(|e| e.to_string())?;
-    let ext = resolved_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = resolved_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
     let ast = if ext.eq_ignore_ascii_case("bxm") {
         parser::parse_bxm(&source, resolved_path.to_str()).map_err(|e| e.to_string())?
     } else {
@@ -1844,9 +1897,12 @@ fn resolve_static_directory(app_root: &Path, directory: &str) -> Result<PathBuf,
     } else {
         app_root.join(directory)
     };
-    let canonical = candidate
-        .canonicalize()
-        .map_err(|e| format!("Static directory '{}' could not be resolved: {}", directory, e))?;
+    let canonical = candidate.canonicalize().map_err(|e| {
+        format!(
+            "Static directory '{}' could not be resolved: {}",
+            directory, e
+        )
+    })?;
     let root = app_root
         .canonicalize()
         .unwrap_or_else(|_| app_root.to_path_buf());
@@ -1872,9 +1928,12 @@ fn resolve_static_file_path(directory: &Path, relative_path: &str) -> Result<Pat
     if !candidate.exists() {
         return Ok(candidate);
     }
-    let canonical = candidate
-        .canonicalize()
-        .map_err(|e| format!("Static file '{}' could not be resolved: {}", relative_path, e))?;
+    let canonical = candidate.canonicalize().map_err(|e| {
+        format!(
+            "Static file '{}' could not be resolved: {}",
+            relative_path, e
+        )
+    })?;
     if !canonical.starts_with(&root) {
         return Err(format!(
             "Static file '{}' resolves outside the mounted directory",
@@ -1898,8 +1957,7 @@ fn path_relative_to_mount(path: &str, mount: &str) -> String {
     if path == mount {
         return String::new();
     }
-    path
-        .strip_prefix(mount.trim_end_matches('/'))
+    path.strip_prefix(mount.trim_end_matches('/'))
         .unwrap_or(path)
         .trim_start_matches('/')
         .to_string()
@@ -1924,7 +1982,6 @@ fn sync_struct_from_vm(
         _ => Err("Expected struct value while syncing template scope".to_string()),
     }
 }
-
 
 fn is_form_encoded(headers: &HashMap<String, String>) -> bool {
     headers
@@ -2047,7 +2104,11 @@ fn join_route_paths(prefix: &str, path: &str) -> String {
     )
 }
 
-fn match_route(app: &AppDefinition, method: &str, path: &str) -> Option<(RouteDefinition, HashMap<String, String>)> {
+fn match_route(
+    app: &AppDefinition,
+    method: &str,
+    path: &str,
+) -> Option<(RouteDefinition, HashMap<String, String>)> {
     for route in &app.routes {
         if route.method != method.to_uppercase() {
             continue;
@@ -2094,7 +2155,7 @@ mod tests {
     use super::*;
     use axum::http::HeaderMap;
     use futures_util::{SinkExt, StreamExt};
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
     use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     fn request(
@@ -2205,7 +2266,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.status, 201);
-        assert_eq!(String::from_utf8(response.body).unwrap(), r#"{"name":"MatchBox"}"#);
+        assert_eq!(
+            String::from_utf8(response.body).unwrap(),
+            r#"{"name":"MatchBox"}"#
+        );
     }
 
     #[tokio::test]
@@ -2231,7 +2295,13 @@ mod tests {
         let compiled = compile_script_app(&script_path).await.unwrap();
         let response = dispatch_script_request(
             &compiled,
-            request("GET", "/api/v1/health", None, &[("host", "localhost:8082")], &[]),
+            request(
+                "GET",
+                "/api/v1/health",
+                None,
+                &[("host", "localhost:8082")],
+                &[],
+            ),
         )
         .unwrap();
 
@@ -2272,7 +2342,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.status, 200);
-        assert_eq!(String::from_utf8(response.body).unwrap(), r#"{"order":"app,route"}"#);
+        assert_eq!(
+            String::from_utf8(response.body).unwrap(),
+            r#"{"order":"app,route"}"#
+        );
     }
 
     #[tokio::test]
@@ -2303,7 +2376,9 @@ mod tests {
             .body(Body::from(br#"{ "broken": "#.to_vec()))
             .unwrap();
 
-        let response = script_handler(State(app_state(compiled)), request).await.into_response();
+        let response = script_handler(State(app_state(compiled)), request)
+            .await
+            .into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -2332,14 +2407,20 @@ mod tests {
                 "GET",
                 "/cookie",
                 None,
-                &[("host", "localhost:8085"), ("cookie", "theme=dark; session=abc")],
+                &[
+                    ("host", "localhost:8085"),
+                    ("cookie", "theme=dark; session=abc"),
+                ],
                 &[],
             ),
         )
         .unwrap();
 
         assert_eq!(response.status, 200);
-        assert_eq!(String::from_utf8(response.body).unwrap(), r#"{"theme":"dark"}"#);
+        assert_eq!(
+            String::from_utf8(response.body).unwrap(),
+            r#"{"theme":"dark"}"#
+        );
     }
 
     #[tokio::test]
@@ -2369,7 +2450,9 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = script_handler(State(app_state(compiled)), request).await.into_response();
+        let response = script_handler(State(app_state(compiled)), request)
+            .await
+            .into_response();
         assert_eq!(response.status(), StatusCode::OK);
         let cookies: Vec<_> = response
             .headers()
@@ -2382,7 +2465,8 @@ mod tests {
         assert!(
             cookies
                 .iter()
-                .any(|cookie| cookie.starts_with("MBX_SESSION_ID=") && cookie.ends_with("; Path=/; HttpOnly"))
+                .any(|cookie| cookie.starts_with("MBX_SESSION_ID=")
+                    && cookie.ends_with("; Path=/; HttpOnly"))
         );
     }
 
@@ -2412,7 +2496,10 @@ mod tests {
             request("GET", "/session", None, &[("host", "localhost:8087")], &[]),
         )
         .unwrap();
-        assert_eq!(String::from_utf8(first.body.clone()).unwrap(), r#"{"count":1.0}"#);
+        assert_eq!(
+            String::from_utf8(first.body.clone()).unwrap(),
+            r#"{"count":1.0}"#
+        );
         assert_eq!(first.cookies.len(), 1);
 
         let second = dispatch_script_request(
@@ -2458,7 +2545,13 @@ mod tests {
         let compiled = compile_script_app(&script_path).await.unwrap();
         let response = dispatch_script_request(
             &compiled,
-            request("GET", "/hello/Jacob", None, &[("host", "localhost:8088")], &[]),
+            request(
+                "GET",
+                "/hello/Jacob",
+                None,
+                &[("host", "localhost:8088")],
+                &[],
+            ),
         )
         .unwrap();
 
@@ -2662,7 +2755,10 @@ mod tests {
         let app = instantiate_app_definition(&compiled).unwrap();
 
         assert_eq!(listen.port, 8092);
-        assert_eq!(app.websocket.as_ref().map(|runtime| runtime.uri.as_str()), Some("/ws"));
+        assert_eq!(
+            app.websocket.as_ref().map(|runtime| runtime.uri.as_str()),
+            Some("/ws")
+        );
         assert_eq!(
             app.websocket
                 .as_ref()
@@ -2766,7 +2862,10 @@ mod tests {
         let welcome = stream.next().await.unwrap().unwrap();
         assert_eq!(welcome.into_text().unwrap(), "welcome");
 
-        stream.send(Message::Text("ping".to_string())).await.unwrap();
+        stream
+            .send(Message::Text("ping".to_string()))
+            .await
+            .unwrap();
         let reply = stream.next().await.unwrap().unwrap();
         assert_eq!(reply.into_text().unwrap(), "echo:ping");
 
@@ -2829,7 +2928,10 @@ mod tests {
         let second_welcome = second.next().await.unwrap().unwrap().into_text().unwrap();
         assert_eq!(second_welcome, r#"{"count":2.0,"prefix":"clicks:"}"#);
 
-        first.send(Message::Text("increment".to_string())).await.unwrap();
+        first
+            .send(Message::Text("increment".to_string()))
+            .await
+            .unwrap();
 
         let first_broadcast = first.next().await.unwrap().unwrap().into_text().unwrap();
         let second_broadcast = second.next().await.unwrap().unwrap().into_text().unwrap();
@@ -2928,7 +3030,9 @@ mod tests {
             .body(Body::from(br#"{}"#.to_vec()))
             .unwrap();
 
-        let response = script_handler(State(app_state(compiled)), request).await.into_response();
+        let response = script_handler(State(app_state(compiled)), request)
+            .await
+            .into_response();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             response
@@ -2985,7 +3089,9 @@ mod tests {
             .header("x-timestamp", &now)
             .body(Body::from(body.to_vec()))
             .unwrap();
-        let ok_response = script_handler(State(app_state(compiled.clone())), ok_request).await.into_response();
+        let ok_response = script_handler(State(app_state(compiled.clone())), ok_request)
+            .await
+            .into_response();
         assert_eq!(ok_response.status(), StatusCode::OK);
 
         let stale_request = Request::builder()
@@ -2997,7 +3103,9 @@ mod tests {
             .header("x-timestamp", "1")
             .body(Body::from(body.to_vec()))
             .unwrap();
-        let stale_response = script_handler(State(app_state(compiled)), stale_request).await.into_response();
+        let stale_response = script_handler(State(app_state(compiled)), stale_request)
+            .await
+            .into_response();
         assert_eq!(stale_response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -3112,7 +3220,9 @@ mod tests {
             .header("x-delivery-id", "evt-expired")
             .body(Body::from(body.to_vec()))
             .unwrap();
-        let response = script_handler(State(app_state(compiled)), request).await.into_response();
+        let response = script_handler(State(app_state(compiled)), request)
+            .await
+            .into_response();
         assert_eq!(response.status(), StatusCode::OK);
     }
 

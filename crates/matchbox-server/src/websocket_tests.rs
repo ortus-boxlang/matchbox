@@ -22,7 +22,7 @@ mod tests {
                 function onClose(channel) {}
             }
         "#;
-        let ast = parser::parse(source).unwrap();
+        let ast = parser::parse(source, Some("test.bxs")).unwrap();
         let mut compiler = Compiler::new("test.bxs");
         let chunk = compiler.compile(&ast, source).unwrap();
 
@@ -30,6 +30,7 @@ mod tests {
             uri: "/ws".to_string(),
             listener_class: "EchoListener".to_string(),
             listener_state: serde_json::json!({}),
+            handler: "WebSocket.bx".to_string(),
         };
 
         let (cmd_tx, cmd_rx) = mpsc::channel();
@@ -97,7 +98,7 @@ mod tests {
                 function onClose(channel) {}
             }
         "#;
-        let ast = parser::parse(source).unwrap();
+        let ast = parser::parse(source, Some("test.bxs")).unwrap();
         let mut compiler = Compiler::new("test.bxs");
         let chunk = compiler.compile(&ast, source).unwrap();
 
@@ -105,6 +106,7 @@ mod tests {
             uri: "/ws".to_string(),
             listener_class: "BroadcastListener".to_string(),
             listener_state: serde_json::json!({}),
+            handler: "WebSocket.bx".to_string(),
         };
 
         let (cmd_tx, cmd_rx) = mpsc::channel();

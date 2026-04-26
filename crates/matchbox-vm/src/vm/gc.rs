@@ -19,7 +19,7 @@ pub enum GcObject {
     NativeObject(Rc<RefCell<dyn BxNativeObject>>),
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
     JsValue(wasm_bindgen::JsValue),
-    #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+    #[cfg(all(target_arch = "wasm32", feature = "js-host-abi", not(feature = "js")))]
     JsHandle(u32),
 }
 
@@ -202,7 +202,7 @@ impl Heap {
             }
             #[cfg(all(target_arch = "wasm32", feature = "js"))]
             GcObject::JsValue(_) => {}
-            #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+            #[cfg(all(target_arch = "wasm32", feature = "js-host-abi", not(feature = "js")))]
             GcObject::JsHandle(_) => {}
             GcObject::Array(arr) => {
                 for val in arr {
@@ -243,7 +243,7 @@ impl Heap {
             }
             #[cfg(all(target_arch = "wasm32", feature = "js"))]
             GcObject::JsValue(_) => {}
-            #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+            #[cfg(all(target_arch = "wasm32", feature = "js-host-abi", not(feature = "js")))]
             GcObject::JsHandle(_) => {}
             GcObject::Array(arr) => {
                 for val in arr {

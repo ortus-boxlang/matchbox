@@ -1,7 +1,9 @@
 use matchbox_compiler::{ast, compiler, parser};
-use matchbox_vm::{types, vm, Chunk};
-use matchbox_utility::{enable_logging};
+use matchbox_utility::enable_logging;
+use matchbox_vm::{Chunk, types, vm};
 
+use anyhow::{Context, Result, bail};
+use colored::*;
 use std::collections::HashMap;
 use std::env as std_env;
 use std::fs;
@@ -9,30 +11,30 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use anyhow::{Result, bail, Context};
-use colored::*;
 
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
+use js_sys::{Array, Error, Function, Promise};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
 #[cfg(target_arch = "wasm32")]
-use js_sys::{Array, Error, Function, Promise};
+use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::JsFuture;
 #[cfg(target_arch = "wasm32")]
 use web_sys::window;
 
 const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
-const ESP32_PARTITIONS_CSV: &str =
-    include_str!("../crates/matchbox-esp32-runner/partitions.csv");
+const WASI_HTTP_EMBED_MAGIC: &[u8; 8] = b"MBWH\0\0\0\x01";
+const WASI_HTTP_EMBED_CAPACITY: usize = 4 * 1024 * 1024;
+const WASI_HTTP_EMBED_DATA_CAPACITY: usize = WASI_HTTP_EMBED_CAPACITY - 12;
+const ESP32_PARTITIONS_CSV: &str = include_str!("../crates/matchbox-esp32-runner/partitions.csv");
 const ESP32_STORAGE_OFFSET: &str = "0x310000";
 static FUSION_BUILD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-mod stubs;
-mod modules;
-mod embedded;
 mod browser;
+mod embedded;
+mod modules;
+mod stubs;
 
 use postcard;
 
@@ -119,7 +121,11 @@ fn collect_esp32_unsupported_features_in_stmt(
         StatementKind::ClassDecl { members, .. } => {
             for member in members {
                 if let ast::ClassMember::Statement(statement) = member {
-                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                    collect_esp32_unsupported_features_in_stmt(
+                        statement,
+                        findings,
+                        embedded_web_enabled,
+                    );
                 }
             }
         }
@@ -129,14 +135,22 @@ fn collect_esp32_unsupported_features_in_stmt(
             }
         }
         StatementKind::FunctionDecl { body, .. } => {
-            collect_esp32_unsupported_features_in_function_body(body, findings, embedded_web_enabled);
+            collect_esp32_unsupported_features_in_function_body(
+                body,
+                findings,
+                embedded_web_enabled,
+            );
         }
         StatementKind::ForLoop {
             collection, body, ..
         } => {
             collect_esp32_unsupported_features_in_expr(collection, findings, embedded_web_enabled);
             for statement in body {
-                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_stmt(
+                    statement,
+                    findings,
+                    embedded_web_enabled,
+                );
             }
         }
         StatementKind::ForClassic {
@@ -149,19 +163,31 @@ fn collect_esp32_unsupported_features_in_stmt(
                 collect_esp32_unsupported_features_in_stmt(init, findings, embedded_web_enabled);
             }
             if let Some(condition) = condition {
-                collect_esp32_unsupported_features_in_expr(condition, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_expr(
+                    condition,
+                    findings,
+                    embedded_web_enabled,
+                );
             }
             if let Some(update) = update {
                 collect_esp32_unsupported_features_in_expr(update, findings, embedded_web_enabled);
             }
             for statement in body {
-                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_stmt(
+                    statement,
+                    findings,
+                    embedded_web_enabled,
+                );
             }
         }
         StatementKind::WhileLoop { condition, body } => {
             collect_esp32_unsupported_features_in_expr(condition, findings, embedded_web_enabled);
             for statement in body {
-                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_stmt(
+                    statement,
+                    findings,
+                    embedded_web_enabled,
+                );
             }
         }
         StatementKind::If {
@@ -171,11 +197,19 @@ fn collect_esp32_unsupported_features_in_stmt(
         } => {
             collect_esp32_unsupported_features_in_expr(condition, findings, embedded_web_enabled);
             for statement in then_branch {
-                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_stmt(
+                    statement,
+                    findings,
+                    embedded_web_enabled,
+                );
             }
             if let Some(else_branch) = else_branch {
                 for statement in else_branch {
-                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                    collect_esp32_unsupported_features_in_stmt(
+                        statement,
+                        findings,
+                        embedded_web_enabled,
+                    );
                 }
             }
         }
@@ -186,14 +220,26 @@ fn collect_esp32_unsupported_features_in_stmt(
         } => {
             collect_esp32_unsupported_features_in_expr(value, findings, embedded_web_enabled);
             for case in cases {
-                collect_esp32_unsupported_features_in_expr(&case.value, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_expr(
+                    &case.value,
+                    findings,
+                    embedded_web_enabled,
+                );
                 for statement in &case.body {
-                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                    collect_esp32_unsupported_features_in_stmt(
+                        statement,
+                        findings,
+                        embedded_web_enabled,
+                    );
                 }
             }
             if let Some(default_case) = default_case {
                 for statement in default_case {
-                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                    collect_esp32_unsupported_features_in_stmt(
+                        statement,
+                        findings,
+                        embedded_web_enabled,
+                    );
                 }
             }
         }
@@ -208,16 +254,28 @@ fn collect_esp32_unsupported_features_in_stmt(
             finally_branch,
         } => {
             for statement in try_branch {
-                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_stmt(
+                    statement,
+                    findings,
+                    embedded_web_enabled,
+                );
             }
             for catch in catches {
                 for statement in &catch.body {
-                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                    collect_esp32_unsupported_features_in_stmt(
+                        statement,
+                        findings,
+                        embedded_web_enabled,
+                    );
                 }
             }
             if let Some(finally_branch) = finally_branch {
                 for statement in finally_branch {
-                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                    collect_esp32_unsupported_features_in_stmt(
+                        statement,
+                        findings,
+                        embedded_web_enabled,
+                    );
                 }
             }
         }
@@ -235,7 +293,11 @@ fn collect_esp32_unsupported_features_in_function_body(
     match body {
         ast::FunctionBody::Block(statements) => {
             for statement in statements {
-                collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_stmt(
+                    statement,
+                    findings,
+                    embedded_web_enabled,
+                );
             }
         }
         ast::FunctionBody::Expression(expr) => {
@@ -255,7 +317,11 @@ fn collect_esp32_unsupported_features_in_expr(
     match &expr.kind {
         ExpressionKind::New { args, .. } => {
             for arg in args {
-                collect_esp32_unsupported_features_in_expr(&arg.value, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_expr(
+                    &arg.value,
+                    findings,
+                    embedded_web_enabled,
+                );
             }
         }
         ExpressionKind::Assignment { target, value } => {
@@ -288,14 +354,19 @@ fn collect_esp32_unsupported_features_in_expr(
             }
             collect_esp32_unsupported_features_in_expr(base, findings, embedded_web_enabled);
             for arg in args {
-                collect_esp32_unsupported_features_in_expr(&arg.value, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_expr(
+                    &arg.value,
+                    findings,
+                    embedded_web_enabled,
+                );
             }
         }
         ExpressionKind::ArrayAccess { base, index } => {
             collect_esp32_unsupported_features_in_expr(base, findings, embedded_web_enabled);
             collect_esp32_unsupported_features_in_expr(index, findings, embedded_web_enabled);
         }
-        ExpressionKind::MemberAccess { base, .. } | ExpressionKind::SafeMemberAccess { base, .. } => {
+        ExpressionKind::MemberAccess { base, .. }
+        | ExpressionKind::SafeMemberAccess { base, .. } => {
             collect_esp32_unsupported_features_in_expr(base, findings, embedded_web_enabled);
         }
         ExpressionKind::Prefix { target, .. } => {
@@ -306,23 +377,39 @@ fn collect_esp32_unsupported_features_in_expr(
             Literal::String(parts) => {
                 for part in parts {
                     if let StringPart::Expression(inner) = part {
-                        collect_esp32_unsupported_features_in_expr(inner, findings, embedded_web_enabled);
+                        collect_esp32_unsupported_features_in_expr(
+                            inner,
+                            findings,
+                            embedded_web_enabled,
+                        );
                     }
                 }
             }
             Literal::Array(items) => {
                 for item in items {
-                    collect_esp32_unsupported_features_in_expr(item, findings, embedded_web_enabled);
+                    collect_esp32_unsupported_features_in_expr(
+                        item,
+                        findings,
+                        embedded_web_enabled,
+                    );
                 }
             }
             Literal::Struct(entries) => {
                 for (key, value) in entries {
                     collect_esp32_unsupported_features_in_expr(key, findings, embedded_web_enabled);
-                    collect_esp32_unsupported_features_in_expr(value, findings, embedded_web_enabled);
+                    collect_esp32_unsupported_features_in_expr(
+                        value,
+                        findings,
+                        embedded_web_enabled,
+                    );
                 }
             }
             Literal::Function { body, .. } => {
-                collect_esp32_unsupported_features_in_function_body(body, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_function_body(
+                    body,
+                    findings,
+                    embedded_web_enabled,
+                );
             }
             Literal::Number(_) | Literal::Boolean(_) | Literal::Null => {}
         },
@@ -351,7 +438,11 @@ fn classify_esp32_unsupported_call(
     embedded_web_enabled: bool,
 ) -> Option<(&'static str, &'static str)> {
     let chain = member_call_chain(base)?;
-    if !embedded_web_enabled && chain.len() == 2 && chain[0].eq_ignore_ascii_case("web") && chain[1].eq_ignore_ascii_case("server") {
+    if !embedded_web_enabled
+        && chain.len() == 2
+        && chain[0].eq_ignore_ascii_case("web")
+        && chain[1].eq_ignore_ascii_case("server")
+    {
         return Some((
             "`web.server()`",
             "ESP32 routed web support is behind `--esp32-web`. Rebuild with that flag to opt into the embedded web runtime.",
@@ -380,13 +471,8 @@ fn classify_esp32_unsupported_call(
             "cookie helpers",
             "Cookie helpers are not supported in the lean ESP32 app-server subset yet.",
         )),
-        "getsession"
-        | "getsessionvalue"
-        | "paramsessionvalue"
-        | "setsessionvalue"
-        | "sessionexists"
-        | "clearsession"
-        | "invalidatesession" => Some((
+        "getsession" | "getsessionvalue" | "paramsessionvalue" | "setsessionvalue"
+        | "sessionexists" | "clearsession" | "invalidatesession" => Some((
             "session helpers",
             "Sessions are not supported in the lean ESP32 app-server subset yet.",
         )),
@@ -486,7 +572,7 @@ async fn yield_to_browser_host() -> Result<(), JsValue> {
 impl BoxLangVM {
     #[wasm_bindgen(constructor)]
     pub fn new() -> BoxLangVM {
-        BoxLangVM { 
+        BoxLangVM {
             vm: vm::VM::new(),
             chunk: None,
         }
@@ -521,7 +607,9 @@ impl BoxLangVM {
             bx_args.push(self.vm.js_to_bx(args.get(i)));
         }
 
-        let func = self.vm.get_global(name)
+        let func = self
+            .vm
+            .get_global(name)
             .ok_or_else(|| as_wasm_js_error(format!("Function {} not found", name)))?;
 
         let future = self
@@ -537,7 +625,8 @@ impl BoxLangVM {
             match self
                 .vm
                 .future_state(future)
-                .map_err(|e| as_wasm_js_error(format!("Error: {}", e)))? {
+                .map_err(|e| as_wasm_js_error(format!("Error: {}", e)))?
+            {
                 vm::HostFutureState::Pending => yield_to_browser_host().await?,
                 vm::HostFutureState::Completed(value) => return Ok(self.vm.bx_to_js(&value)),
                 vm::HostFutureState::Failed(error) => {
@@ -613,26 +702,31 @@ pub fn run() -> Result<()> {
     let no_std_lib = args.contains(&"--no-std-lib".to_string());
     let strip_source = args.contains(&"--strip-source".to_string());
     let is_serve = args.contains(&"--serve".to_string());
+    let webroot = if let Some(idx) = args.iter().position(|a| a == "--webroot") {
+        args.get(idx + 1)
+            .cloned()
+            .unwrap_or_else(|| ".".to_string())
+    } else {
+        ".".to_string()
+    };
 
     if is_serve {
         #[cfg(feature = "server")]
         {
             let port = if let Some(idx) = args.iter().position(|a| a == "--port") {
-                args.get(idx + 1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(8080)
+                args.get(idx + 1)
+                    .and_then(|s| s.parse::<u16>().ok())
+                    .unwrap_or(8080)
             } else {
                 8080
             };
             let host = if let Some(idx) = args.iter().position(|a| a == "--host") {
-                args.get(idx + 1).cloned().unwrap_or_else(|| "127.0.0.1".to_string())
+                args.get(idx + 1)
+                    .cloned()
+                    .unwrap_or_else(|| "127.0.0.1".to_string())
             } else {
                 "127.0.0.1".to_string()
             };
-            let webroot = if let Some(idx) = args.iter().position(|a| a == "--webroot") {
-                args.get(idx + 1).cloned().unwrap_or_else(|| ".".to_string())
-            } else {
-                ".".to_string()
-            };
-
             let server_args = matchbox_server::Args {
                 port,
                 host,
@@ -666,28 +760,96 @@ pub fn run() -> Result<()> {
         None
     };
 
+    if target == Some("wasi-http") {
+        let out_path = output
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(&webroot).with_extension("wasm"));
+        produce_wasi_http_webroot_artifact(Path::new(&webroot), &out_path)?;
+        return Ok(());
+    }
+
     // Collect --module <path> flags.
-    let extra_module_paths: Vec<PathBuf> = args.iter().enumerate()
+    let extra_module_paths: Vec<PathBuf> = args
+        .iter()
+        .enumerate()
         .filter(|(_, a)| *a == "--module")
         .filter_map(|(i, _)| args.get(i + 1).map(|p| PathBuf::from(p)))
         .collect();
 
-    let filename = args.iter().skip(1)
-        .find(|a| !a.starts_with("--") && *a != "native" && *a != "wasm" && *a != "wasi" && *a != "js" && *a != "esp32"
-              && (args.iter().position(|arg| arg == *a).map(|pos| pos == 0 || args[pos-1] != "--target").unwrap_or(true))
-              && (args.iter().position(|arg| arg == *a).map(|pos| pos == 0 || args[pos-1] != "--keep").unwrap_or(true))
-              && (args.iter().position(|arg| arg == *a).map(|pos| pos == 0 || args[pos-1] != "--output").unwrap_or(true))
-              && (args.iter().position(|arg| arg == *a).map(|pos| pos == 0 || args[pos-1] != "--module").unwrap_or(true))
-              && (args.iter().position(|arg| arg == *a).map(|pos| pos == 0 || args[pos-1] != "--chip").unwrap_or(true))
-        );
+    let filename = args.iter().skip(1).find(|a| {
+        !a.starts_with("--")
+            && *a != "native"
+            && *a != "wasm"
+            && *a != "wasi"
+            && *a != "wasi-http"
+            && *a != "js"
+            && *a != "esp32"
+            && (args
+                .iter()
+                .position(|arg| arg == *a)
+                .map(|pos| pos == 0 || args[pos - 1] != "--target")
+                .unwrap_or(true))
+            && (args
+                .iter()
+                .position(|arg| arg == *a)
+                .map(|pos| pos == 0 || args[pos - 1] != "--keep")
+                .unwrap_or(true))
+            && (args
+                .iter()
+                .position(|arg| arg == *a)
+                .map(|pos| pos == 0 || args[pos - 1] != "--output")
+                .unwrap_or(true))
+            && (args
+                .iter()
+                .position(|arg| arg == *a)
+                .map(|pos| pos == 0 || args[pos - 1] != "--module")
+                .unwrap_or(true))
+            && (args
+                .iter()
+                .position(|arg| arg == *a)
+                .map(|pos| pos == 0 || args[pos - 1] != "--chip")
+                .unwrap_or(true))
+    });
 
     match filename {
         Some(name) => {
             let path = Path::new(name);
             if path.is_dir() {
-                process_directory(path, is_build, target, keep_symbols, no_shaking, no_std_lib, strip_source, output.as_deref(), &extra_module_paths, is_flash, chip, is_fast_deploy, is_watch, is_full_flash, esp32_web)?;
+                process_directory(
+                    path,
+                    is_build,
+                    target,
+                    keep_symbols,
+                    no_shaking,
+                    no_std_lib,
+                    strip_source,
+                    output.as_deref(),
+                    &extra_module_paths,
+                    is_flash,
+                    chip,
+                    is_fast_deploy,
+                    is_watch,
+                    is_full_flash,
+                    esp32_web,
+                )?;
             } else {
-                process_file(path, is_build, target, keep_symbols, no_shaking, no_std_lib, strip_source, output.as_deref(), &extra_module_paths, is_flash, chip, is_fast_deploy, is_watch, is_full_flash, esp32_web)?;
+                process_file(
+                    path,
+                    is_build,
+                    target,
+                    keep_symbols,
+                    no_shaking,
+                    no_std_lib,
+                    strip_source,
+                    output.as_deref(),
+                    &extra_module_paths,
+                    is_flash,
+                    chip,
+                    is_fast_deploy,
+                    is_watch,
+                    is_full_flash,
+                    esp32_web,
+                )?;
             }
         }
         None => {
@@ -711,25 +873,34 @@ fn print_usage() {
     println!("  --build             Compile to bytecode (.bxb)");
     println!("  --target <native>   Produce a standalone native binary");
     println!("  --target <wasi>     Produce a standalone WASI container binary");
+    println!("  --target <wasi-http> Produce a WASI HTTP component from --webroot");
     println!("  --target <wasm>     Produce a standalone WASM binary (Web)");
     println!("  --target <js>       Produce a JavaScript module wrapper");
     println!("  --target <esp32>    Produce an ESP32 firmware binary");
     println!("  --esp32-web         Enable the embedded routed web runtime build flavor for ESP32");
-    println!("  --flash             Flash to device. Defaults to fast bytecode-only flash for ESP32.");
+    println!(
+        "  --flash             Flash to device. Defaults to fast bytecode-only flash for ESP32."
+    );
     println!("  --full-flash        Force a full firmware flash (includes VM/Runner)");
-    println!("  --fast-deploy       (Deprecated) Use --flash instead, which is now fast by default.");
+    println!(
+        "  --fast-deploy       (Deprecated) Use --flash instead, which is now fast by default."
+    );
     println!("  --chip <name>       The target ESP32 chip (e.g. esp32, esp32s3, esp32c3)");
     println!("  --keep <symbols>    Comma-separated list of BIFs to preserve");
     println!("  --no-shaking        Disable tree-shaking and include all prelude BIFs");
     println!("  --no-std-lib        Exclude the standard library (prelude) entirely");
     println!("  --output <path>     Set the output file path for compiled artifacts");
     println!("  --strip-source      Strip embedded source text from compiled output");
-    println!("                      Errors still report file:line; native binaries fall back to disk for snippets");
+    println!(
+        "                      Errors still report file:line; native binaries fall back to disk for snippets"
+    );
     println!("  --serve             Start the built-in web server");
     println!("  --port <number>     Web server port (default: 8080)");
     println!("  --host <address>    Web server host (default: 127.0.0.1)");
     println!("  --webroot <path>    Web server root directory (default: .)");
-    println!("  --module <path>     Load a BoxLang module directory (may be specified multiple times)");
+    println!(
+        "  --module <path>     Load a BoxLang module directory (may be specified multiple times)"
+    );
     println!("\nCommands:");
     println!("  esp32-doctor        Check ESP32 build/flash prerequisites and print fixes");
     println!("\nIf no file is provided, matchbox starts in REPL mode.");
@@ -793,7 +964,11 @@ fn run_esp32_doctor() -> Result<()> {
 
     let idf_version = command_output("idf.py", &["--version"]);
     match idf_version {
-        Some(version) => doctor_report(&mut worst, DoctorLevel::Ok, format!("idf.py --version => {version}")),
+        Some(version) => doctor_report(
+            &mut worst,
+            DoctorLevel::Ok,
+            format!("idf.py --version => {version}"),
+        ),
         None => doctor_report(
             &mut worst,
             DoctorLevel::Fail,
@@ -802,7 +977,9 @@ fn run_esp32_doctor() -> Result<()> {
     }
 
     match std_env::var("RUSTUP_TOOLCHAIN") {
-        Ok(toolchain) if toolchain == "esp" => doctor_report(&mut worst, DoctorLevel::Ok, "RUSTUP_TOOLCHAIN=esp"),
+        Ok(toolchain) if toolchain == "esp" => {
+            doctor_report(&mut worst, DoctorLevel::Ok, "RUSTUP_TOOLCHAIN=esp")
+        }
         Ok(toolchain) => doctor_report(
             &mut worst,
             DoctorLevel::Warn,
@@ -819,7 +996,11 @@ fn run_esp32_doctor() -> Result<()> {
 
     for tool in ["cargo", "cmake", "ninja", "ldproxy", "espflash"] {
         match find_in_path(tool) {
-            Some(path) => doctor_report(&mut worst, DoctorLevel::Ok, format!("{tool} => {}", path.display())),
+            Some(path) => doctor_report(
+                &mut worst,
+                DoctorLevel::Ok,
+                format!("{tool} => {}", path.display()),
+            ),
             None => doctor_report(
                 &mut worst,
                 if tool == "ldproxy" || tool == "espflash" {
@@ -833,7 +1014,11 @@ fn run_esp32_doctor() -> Result<()> {
     }
 
     match std_env::var("LIBCLANG_PATH") {
-        Ok(value) => doctor_report(&mut worst, DoctorLevel::Ok, format!("LIBCLANG_PATH={value}")),
+        Ok(value) => doctor_report(
+            &mut worst,
+            DoctorLevel::Ok,
+            format!("LIBCLANG_PATH={value}"),
+        ),
         Err(_) => doctor_report(
             &mut worst,
             DoctorLevel::Warn,
@@ -842,9 +1027,11 @@ fn run_esp32_doctor() -> Result<()> {
     }
 
     match std_env::var("ESP_IDF_ESPUP_CLANG_SYMLINK") {
-        Ok(value) if value == "ignore" => {
-            doctor_report(&mut worst, DoctorLevel::Ok, "ESP_IDF_ESPUP_CLANG_SYMLINK=ignore")
-        }
+        Ok(value) if value == "ignore" => doctor_report(
+            &mut worst,
+            DoctorLevel::Ok,
+            "ESP_IDF_ESPUP_CLANG_SYMLINK=ignore",
+        ),
         Ok(value) => doctor_report(
             &mut worst,
             DoctorLevel::Warn,
@@ -912,7 +1099,10 @@ fn run_esp32_doctor() -> Result<()> {
                 Ok(_) => doctor_report(
                     &mut worst,
                     DoctorLevel::Ok,
-                    format!("{} found, but it does not force an ESP target.", cargo_config.display()),
+                    format!(
+                        "{} found, but it does not force an ESP target.",
+                        cargo_config.display()
+                    ),
                 ),
                 Err(error) => doctor_report(
                     &mut worst,
@@ -928,8 +1118,12 @@ fn run_esp32_doctor() -> Result<()> {
     println!();
     match worst {
         DoctorLevel::Ok => println!("ESP32 doctor found no blocking issues."),
-        DoctorLevel::Warn => println!("ESP32 doctor found warnings. Builds may still work, but the shell setup is not ideal."),
-        DoctorLevel::Fail => println!("ESP32 doctor found blocking issues. Fix the failing items above before using `--target esp32`."),
+        DoctorLevel::Warn => println!(
+            "ESP32 doctor found warnings. Builds may still work, but the shell setup is not ideal."
+        ),
+        DoctorLevel::Fail => println!(
+            "ESP32 doctor found blocking issues. Fix the failing items above before using `--target esp32`."
+        ),
     }
 
     Ok(())
@@ -985,7 +1179,8 @@ fn report_serial_devices(report: &mut impl FnMut(DoctorLevel, String)) {
     if devices.is_empty() {
         report(
             DoctorLevel::Warn,
-            "No common serial devices were found under /dev (ttyACM*, ttyUSB*, cu.usb*).".to_string(),
+            "No common serial devices were found under /dev (ttyACM*, ttyUSB*, cu.usb*)."
+                .to_string(),
         );
         return;
     }
@@ -1021,7 +1216,13 @@ fn report_serial_devices(report: &mut impl FnMut(DoctorLevel, String)) {
                         })
                         .unwrap_or(false);
                     if has_access {
-                        report(DoctorLevel::Ok, format!("Serial device {} is readable/writable in this shell.", device.display()));
+                        report(
+                            DoctorLevel::Ok,
+                            format!(
+                                "Serial device {} is readable/writable in this shell.",
+                                device.display()
+                            ),
+                        );
                     } else {
                         report(
                             DoctorLevel::Warn,
@@ -1034,7 +1235,11 @@ fn report_serial_devices(report: &mut impl FnMut(DoctorLevel, String)) {
                 }
                 Err(error) => report(
                     DoctorLevel::Warn,
-                    format!("Could not inspect serial device {}: {}", device.display(), error),
+                    format!(
+                        "Could not inspect serial device {}: {}",
+                        device.display(),
+                        error
+                    ),
                 ),
             }
         }
@@ -1042,7 +1247,10 @@ fn report_serial_devices(report: &mut impl FnMut(DoctorLevel, String)) {
 
     #[cfg(not(unix))]
     for device in devices {
-        report(DoctorLevel::Ok, format!("Detected serial device {}", device.display()));
+        report(
+            DoctorLevel::Ok,
+            format!("Detected serial device {}", device.display()),
+        );
     }
 }
 
@@ -1066,7 +1274,23 @@ fn serial_devices() -> Vec<PathBuf> {
     devices
 }
 
-pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str>, keep_symbols: Vec<String>, no_shaking: bool, no_std_lib: bool, strip_source: bool, output: Option<&Path>, extra_module_paths: &[PathBuf], is_flash: bool, orig_chip: Option<&str>, is_fast_deploy: bool, is_watch: bool, is_full_flash: bool, esp32_web: bool) -> Result<()> {
+pub fn process_file(
+    source_path: &Path,
+    is_build: bool,
+    orig_target: Option<&str>,
+    keep_symbols: Vec<String>,
+    no_shaking: bool,
+    no_std_lib: bool,
+    strip_source: bool,
+    output: Option<&Path>,
+    extra_module_paths: &[PathBuf],
+    is_flash: bool,
+    orig_chip: Option<&str>,
+    is_fast_deploy: bool,
+    is_watch: bool,
+    is_full_flash: bool,
+    esp32_web: bool,
+) -> Result<()> {
     if source_path.extension().and_then(|s| s.to_str()) == Some("bxb") {
         let bytes = fs::read(source_path)?;
         let mut chunk: Chunk = postcard::from_bytes(&bytes)?;
@@ -1074,23 +1298,23 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
         run_chunk(chunk, &[])?;
     } else {
         let source = fs::read_to_string(source_path)?;
-        let ext = source_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let ext = source_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
         let ast = if ext == "bxm" {
-            parser::parse_bxm(&source, source_path.to_str()).map_err(|e| {
-                anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e)
-            })?
+            parser::parse_bxm(&source, source_path.to_str())
+                .map_err(|e| anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e))?
         } else {
-            parser::parse(&source, source_path.to_str()).map_err(|e| {
-                anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e)
-            })?
+            parser::parse(&source, source_path.to_str())
+                .map_err(|e| anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e))?
         };
         if orig_target == Some("esp32") {
             validate_esp32_target(&ast, esp32_web)?;
         }
         // Discover modules from matchbox.toml (in CWD) and any --module flags.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| {
-            source_path.parent().unwrap_or(Path::new(".")).to_path_buf()
-        });
+        let cwd = std::env::current_dir()
+            .unwrap_or_else(|_| source_path.parent().unwrap_or(Path::new(".")).to_path_buf());
         let modules_info = modules::discover_modules(&cwd, extra_module_paths)?;
         let embedded_manifest = if orig_target == Some("esp32") {
             embedded::discover_embedded_app(&cwd)?
@@ -1098,10 +1322,12 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
             None
         };
 
-        let module_mappings: Vec<(String, PathBuf)> = modules_info.iter()
+        let module_mappings: Vec<(String, PathBuf)> = modules_info
+            .iter()
             .map(|m| (m.name.clone(), m.path.clone()))
             .collect();
-        let mut extra_preludes: Vec<String> = modules_info.iter()
+        let mut extra_preludes: Vec<String> = modules_info
+            .iter()
             .flat_map(|m| m.bif_sources.iter().cloned())
             .collect();
         // Inject a getModuleSettings(name) function whose body is baked from the
@@ -1119,7 +1345,8 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
             no_std_lib,
             &module_mappings,
             &extra_preludes,
-        ).map_err(|e| anyhow::anyhow!("Compiler Error: {}", e))?;
+        )
+        .map_err(|e| anyhow::anyhow!("Compiler Error: {}", e))?;
 
         chunk.reconstruct_functions();
 
@@ -1129,16 +1356,18 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
 
         if is_build {
             let bytes = postcard::to_stdvec(&chunk)?;
-            let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("bxb"));
+            let out_path = output
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| source_path.with_extension("bxb"));
             fs::write(&out_path, bytes)?;
             println!("Compiled to {}", out_path.display());
         } else if let Some(t) = orig_target {
             let project_root = source_path.parent().unwrap_or(Path::new("."));
             let native_dir = project_root.join("native");
-            
+
             let has_native_modules = modules_info.iter().any(|m| m.has_native);
-            let should_use_fusion =
-                ((native_dir.exists() && native_dir.is_dir()) || has_native_modules)
+            let should_use_fusion = ((native_dir.exists() && native_dir.is_dir())
+                || has_native_modules)
                 && !(t == "esp32" && esp32_web);
             if should_use_fusion {
                 return produce_fusion_artifact(
@@ -1197,14 +1426,33 @@ pub fn process_file(source_path: &Path, is_build: bool, orig_target: Option<&str
                 bail!("--watch is currently only supported for --target esp32");
             }
             let chip_str = orig_chip.map(|s| s.to_string());
-            println!("WATCH MODE ENABLED: Watching for changes in {}...", source_path.parent().unwrap().display());
+            println!(
+                "WATCH MODE ENABLED: Watching for changes in {}...",
+                source_path.parent().unwrap().display()
+            );
             return watch_mode(source_path, chip_str, is_full_flash, esp32_web);
         }
     }
     Ok(())
 }
 
-fn process_directory(path: &Path, is_build: bool, orig_target: Option<&str>, keep_symbols: Vec<String>, no_shaking: bool, no_std_lib: bool, strip_source: bool, output: Option<&Path>, extra_module_paths: &[PathBuf], is_flash: bool, orig_chip: Option<&str>, is_fast_deploy: bool, is_watch: bool, is_full_flash: bool, esp32_web: bool) -> Result<()> {
+fn process_directory(
+    path: &Path,
+    is_build: bool,
+    orig_target: Option<&str>,
+    keep_symbols: Vec<String>,
+    no_shaking: bool,
+    no_std_lib: bool,
+    strip_source: bool,
+    output: Option<&Path>,
+    extra_module_paths: &[PathBuf],
+    is_flash: bool,
+    orig_chip: Option<&str>,
+    is_fast_deploy: bool,
+    is_watch: bool,
+    is_full_flash: bool,
+    esp32_web: bool,
+) -> Result<()> {
     let entry_points = ["index.bxs", "main.bxs", "Application.bx"];
     let mut entry_file = None;
     for ep in entry_points {
@@ -1215,7 +1463,23 @@ fn process_directory(path: &Path, is_build: bool, orig_target: Option<&str>, kee
         }
     }
     let entry_file = entry_file.context("No entry point found in directory")?;
-    process_file(&entry_file, is_build, orig_target, keep_symbols, no_shaking, no_std_lib, strip_source, output, extra_module_paths, is_flash, orig_chip, is_fast_deploy, is_watch, is_full_flash, esp32_web)
+    process_file(
+        &entry_file,
+        is_build,
+        orig_target,
+        keep_symbols,
+        no_shaking,
+        no_std_lib,
+        strip_source,
+        output,
+        extra_module_paths,
+        is_flash,
+        orig_chip,
+        is_fast_deploy,
+        is_watch,
+        is_full_flash,
+        esp32_web,
+    )
 }
 
 /// Recursively clear embedded source text from a chunk tree.
@@ -1263,11 +1527,7 @@ fn register_datasources_from_config(project_dir: &Path) -> Result<()> {
                 let driver =
                     matchbox_vm::datasource::drivers::postgres::PostgresDriver::new(&config)
                         .map_err(|e| {
-                            anyhow::anyhow!(
-                                "Failed to create datasource '{}': {}",
-                                name,
-                                e
-                            )
+                            anyhow::anyhow!("Failed to create datasource '{}': {}", name, e)
                         })?;
                 matchbox_vm::datasource::registry::register(&name, Arc::new(driver));
             }
@@ -1284,7 +1544,7 @@ fn register_datasources_from_config(project_dir: &Path) -> Result<()> {
 
 pub fn run_chunk(chunk: Chunk, modules: &[modules::ModuleInfo]) -> Result<()> {
     let args: Vec<String> = std_env::args().collect();
-    
+
     let mut external_bifs = HashMap::new();
     let mut native_classes = HashMap::new();
 
@@ -1298,15 +1558,20 @@ pub fn run_chunk(chunk: Chunk, modules: &[modules::ModuleInfo]) -> Result<()> {
         if m.name == "native-math" {
             // HACK for tests: since we can't easily dynamic-load from the same binary's crate
             // we just manually register what we know is in there.
-            fn cube(_vm: &mut dyn types::BxVM, args: &[types::BxValue]) -> std::result::Result<types::BxValue, String> {
-                if args.len() != 1 { return Err("cube requires 1 argument".to_string()); }
+            fn cube(
+                _vm: &mut dyn types::BxVM,
+                args: &[types::BxValue],
+            ) -> std::result::Result<types::BxValue, String> {
+                if args.len() != 1 {
+                    return Err("cube requires 1 argument".to_string());
+                }
                 let n = args[0].as_number();
                 Ok(types::BxValue::new_number(n * n * n))
             }
             external_bifs.insert("cube".to_string(), cube as types::BxNativeFunction);
         }
     }
-    
+
     let mut vm = vm::VM::new_with_bifs(external_bifs, native_classes);
     vm.cli_args = args.clone();
 
@@ -1316,7 +1581,6 @@ pub fn run_chunk(chunk: Chunk, modules: &[modules::ModuleInfo]) -> Result<()> {
     vm.interpret(chunk)?;
     Ok(())
 }
-
 
 fn run_repl() -> Result<()> {
     println!("BoxLang REPL (Rust)");
@@ -1356,16 +1620,14 @@ fn run_repl() -> Result<()> {
                 let mut compiler = compiler::Compiler::new("repl");
                 compiler.is_repl = true;
                 match compiler.compile(&ast, input) {
-                    Ok(chunk) => {
-                        match vm.interpret(chunk) {
-                            Ok(val) => {
-                                if val != types::BxValue::new_null() {
-                                    println!("=> {}", val);
-                                }
+                    Ok(chunk) => match vm.interpret(chunk) {
+                        Ok(val) => {
+                            if val != types::BxValue::new_null() {
+                                println!("=> {}", val);
                             }
-                            Err(e) => println!("{} {}", "Error:".red().bold(), e),
                         }
-                    }
+                        Err(e) => println!("{} {}", "Error:".red().bold(), e),
+                    },
                     Err(e) => println!("{} {}", "Compiler Error:".red().bold(), e),
                 }
             }
@@ -1379,9 +1641,13 @@ fn run_repl() -> Result<()> {
 fn load_embedded_bytecode() -> Result<Chunk> {
     let self_path = std_env::current_exe().map_err(|_| anyhow::anyhow!("Not an executable"))?;
     let bytes = fs::read(self_path)?;
-    if bytes.len() < 16 { bail!("Too small"); }
+    if bytes.len() < 16 {
+        bail!("Too small");
+    }
     let footer_start = bytes.len() - 8;
-    if &bytes[footer_start..] != MAGIC_FOOTER { bail!("No footer"); }
+    if &bytes[footer_start..] != MAGIC_FOOTER {
+        bail!("No footer");
+    }
     let len_start = bytes.len() - 16;
     let mut len_bytes = [0u8; 8];
     len_bytes.copy_from_slice(&bytes[len_start..footer_start]);
@@ -1398,11 +1664,19 @@ fn load_wasm_custom_section() -> Result<Chunk> {
     bail!("Custom section loading requires host support in this POC")
 }
 
-fn produce_native_binary(chunk: &Chunk, source_path: &Path, target: &str, output: Option<&Path>) -> Result<()> {
+fn produce_native_binary(
+    chunk: &Chunk,
+    source_path: &Path,
+    target: &str,
+    output: Option<&Path>,
+) -> Result<()> {
     let stub_key = if target == "native" { "host" } else { target };
     let native_bytes = stubs::get_stub(stub_key).unwrap_or(&[]);
     if native_bytes.is_empty() {
-        bail!("Runner stub for target '{}' is missing. Please ensure the cross-compile feature is enabled and the target is supported.", target);
+        bail!(
+            "Runner stub for target '{}' is missing. Please ensure the cross-compile feature is enabled and the target is supported.",
+            target
+        );
     }
     let mut binary_bytes = native_bytes.to_vec();
     let chunk_bytes = postcard::to_stdvec(chunk)?;
@@ -1411,7 +1685,11 @@ fn produce_native_binary(chunk: &Chunk, source_path: &Path, target: &str, output
     binary_bytes.extend_from_slice(&chunk_len.to_le_bytes());
     binary_bytes.extend_from_slice(MAGIC_FOOTER);
     let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| {
-        if cfg!(windows) { source_path.with_extension("exe") } else { source_path.with_extension("") }
+        if cfg!(windows) {
+            source_path.with_extension("exe")
+        } else {
+            source_path.with_extension("")
+        }
     });
     fs::write(&out_path, binary_bytes)?;
     #[cfg(unix)]
@@ -1438,8 +1716,11 @@ fn produce_fusion_artifact(
     chip: Option<&str>,
     esp32_web: bool,
 ) -> Result<()> {
-    println!("Native Fusion detected! Target: {}. Building hybrid artifact...", target);
-    
+    println!(
+        "Native Fusion detected! Target: {}. Building hybrid artifact...",
+        target
+    );
+
     let is_esp32 = target == "esp32";
     let chip = chip.unwrap_or("esp32");
     let esp_target = match chip {
@@ -1449,7 +1730,10 @@ fn produce_fusion_artifact(
         _ => "xtensa-esp32-espidf",
     };
 
-    let script_stem = source_path.file_stem().and_then(|s| s.to_str()).unwrap_or("fusion");
+    let script_stem = source_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("fusion");
     let build_dir = std_env::temp_dir()
         .join("matchbox-fusion")
         .join(script_stem)
@@ -1469,16 +1753,21 @@ fn produce_fusion_artifact(
         let manifest_path = embedded::write_embedded_manifest(&build_dir, manifest)?;
         let route_table_path = embedded::write_embedded_route_table(&build_dir, manifest)?;
         embedded_route_table_path = Some(route_table_path.clone());
-        println!("Embedded route manifest produced: {}", manifest_path.display());
-        println!("Embedded route table produced: {}", route_table_path.display());
+        println!(
+            "Embedded route manifest produced: {}",
+            manifest_path.display()
+        );
+        println!(
+            "Embedded route table produced: {}",
+            route_table_path.display()
+        );
     }
 
     let is_wasm = target == "wasm" || target == "js";
     let is_wasi = target == "wasi";
 
     // 1. Generate Cargo.toml
-    let vm_path = concat!(env!("CARGO_MANIFEST_DIR"), "/crates/matchbox-vm")
-        .replace('\\', "/");
+    let vm_path = concat!(env!("CARGO_MANIFEST_DIR"), "/crates/matchbox-vm").replace('\\', "/");
 
     let mut extra_dep_lines = String::new();
     for module in modules.iter().filter(|m| m.has_native) {
@@ -1490,14 +1779,15 @@ fn produce_fusion_artifact(
         let rust_name = crate_name.replace('-', "_");
         extra_dep_lines.push_str(&format!(
             "{} = {{ package = \"{}\", path = \"{}\" }}\n",
-            rust_name,
-            crate_name,
-            dep_str,
+            rust_name, crate_name, dep_str,
         ));
     }
 
     let vm_dependency = if target == "js" {
-        format!("matchbox_vm = {{ path = \"{}\", features = [\"js\"] }}", vm_path)
+        format!(
+            "matchbox_vm = {{ path = \"{}\", features = [\"js\"] }}",
+            vm_path
+        )
     } else {
         format!("matchbox_vm = {{ path = \"{}\" }}", vm_path)
     };
@@ -1514,7 +1804,8 @@ web-sys = { version = "0.3", features = ["Window"] }
         ""
     };
 
-    let mut cargo_toml = format!(r#"[package]
+    let mut cargo_toml = format!(
+        r#"[package]
 name = "fusion_build"
 version = "0.1.0"
 edition = "2021"
@@ -1528,27 +1819,41 @@ bincode = "1.3.3"
 anyhow = "1.0"
 {wasm_extra_dependencies}
 {extra_dep_lines}
-"#);
+"#
+    );
 
     if is_esp32 {
         cargo_toml.push_str("esp-idf-svc = { version = \"0.52\", features = [\"binstart\", \"critical-section\", \"embassy-time-driver\"] }\n");
         cargo_toml.push_str("esp-idf-sys = \"0.37\"\n");
         cargo_toml.push_str("embedded-svc = \"0.29\"\n");
-        cargo_toml.push_str("embassy-time = { version = \"0.5\", features = [\"generic-queue-8\"] }\n");
+        cargo_toml
+            .push_str("embassy-time = { version = \"0.5\", features = [\"generic-queue-8\"] }\n");
         cargo_toml.push_str("log = \"0.4\"\n");
         cargo_toml.push_str("serde_json = \"1.0\"\n");
         cargo_toml.push_str("url = \"2.5\"\n");
         cargo_toml.push_str("\n[features]\ndefault = []\nembedded-web = []\n");
-        cargo_toml.push_str("\n[build-dependencies]\nembuild = { version = \"0.33\", features = [\"espidf\"] }\n");
-        
+        cargo_toml.push_str(
+            "\n[build-dependencies]\nembuild = { version = \"0.33\", features = [\"espidf\"] }\n",
+        );
+
         // Copy partitions and toolchain
-        let runner_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/matchbox-esp32-runner");
-        fs::copy(runner_root.join("partitions.csv"), build_dir.join("partitions.csv"))?;
-        fs::copy(runner_root.join("rust-toolchain.toml"), build_dir.join("rust-toolchain.toml"))?;
-        
+        let runner_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/matchbox-esp32-runner");
+        fs::copy(
+            runner_root.join("partitions.csv"),
+            build_dir.join("partitions.csv"),
+        )?;
+        fs::copy(
+            runner_root.join("rust-toolchain.toml"),
+            build_dir.join("rust-toolchain.toml"),
+        )?;
+
         // Create .cargo/config.toml
         fs::create_dir_all(build_dir.join(".cargo"))?;
-        fs::write(build_dir.join(".cargo/config.toml"), format!(r#"[build]
+        fs::write(
+            build_dir.join(".cargo/config.toml"),
+            format!(
+                r#"[build]
 target = "{esp_target}"
 
 [target.{esp_target}]
@@ -1556,10 +1861,14 @@ linker = "ldproxy"
 
 [unstable]
 build-std = ["std", "panic_abort"]
-"#))?;
+"#
+            ),
+        )?;
 
         // Create build.rs
-        fs::write(build_dir.join("build.rs"), r#"use std::env;
+        fs::write(
+            build_dir.join("build.rs"),
+            r#"use std::env;
 use std::fs;
 use std::path::PathBuf;
 
@@ -1574,7 +1883,8 @@ fn main() {
     }
     embuild::espidf::sysenv::output();
 }
-"#)?;
+"#,
+        )?;
 
         let mut sdkconfig_defaults = String::new();
         for module in modules.iter().filter(|m| m.has_native) {
@@ -1595,14 +1905,16 @@ fn main() {
         }
     }
 
-    cargo_toml.push_str(r#"
+    cargo_toml.push_str(
+        r#"
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
-"#);
+"#,
+    );
 
     if is_wasm {
         cargo_toml.push_str("\n[lib]\ncrate-type = [\"cdylib\", \"rlib\"]\n");
@@ -1624,7 +1936,10 @@ strip = true
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("rs") {
                 let mod_name = path.file_stem().unwrap().to_str().unwrap();
-                fs::copy(&path, build_dir.join("src").join(format!("{}.rs", mod_name)))?;
+                fs::copy(
+                    &path,
+                    build_dir.join("src").join(format!("{}.rs", mod_name)),
+                )?;
                 mod_decls.push_str(&format!("mod {};\n", mod_name));
 
                 let content = fs::read_to_string(&path)?;
@@ -1657,8 +1972,12 @@ strip = true
                 let p = entry.path();
                 if p.extension().and_then(|s| s.to_str()) == Some("rs") {
                     let content = fs::read_to_string(&p).unwrap_or_default();
-                    if content.contains("pub fn register_bifs") { has_bifs = true; }
-                    if content.contains("pub fn register_classes") { has_classes = true; }
+                    if content.contains("pub fn register_bifs") {
+                        has_bifs = true;
+                    }
+                    if content.contains("pub fn register_classes") {
+                        has_classes = true;
+                    }
                 }
             }
         }
@@ -1681,10 +2000,12 @@ strip = true
     let mut code = String::new();
 
     if !is_esp32 && target != "js" {
-        code.push_str(r#"
+        code.push_str(
+            r#"
 use matchbox_vm::{vm::VM, types::{BxValue, BxNativeFunction}, Chunk};
 use std::collections::HashMap;
-"#);
+"#,
+        );
     }
 
     code.push_str(&mod_decls);
@@ -1693,9 +2014,13 @@ use std::collections::HashMap;
     if is_esp32 {
         code.push_str(&render_esp32_fusion_runner_source(&registration_calls));
     } else if target == "js" {
-        code.push_str(&browser::runtime::render_fusion_web_host_source(&registration_calls, &bytecode));
+        code.push_str(&browser::runtime::render_fusion_web_host_source(
+            &registration_calls,
+            &bytecode,
+        ));
     } else {
-        code.push_str(&format!(r#"
+        code.push_str(&format!(
+            r#"
 fn run_interpreted() -> anyhow::Result<()> {{
     let mut bifs = HashMap::new();
     let mut classes = HashMap::new();
@@ -1707,7 +2032,9 @@ fn run_interpreted() -> anyhow::Result<()> {{
     vm.interpret(chunk)?;
     Ok(())
 }}
-"#, registration_calls, bytecode));
+"#,
+            registration_calls, bytecode
+        ));
     }
 
     if is_wasm && target != "js" {
@@ -1751,9 +2078,17 @@ impl BoxLangVM {
     // 4. Build
     let mut cmd = if is_esp32 {
         let mut c = std::process::Command::new("rustup");
-        c.arg("run").arg("esp").arg("cargo").arg("build").arg("--release");
+        c.arg("run")
+            .arg("esp")
+            .arg("cargo")
+            .arg("build")
+            .arg("--release");
         c.env("BOXLANG_BYTECODE_PATH", build_dir.join("bytecode.bxb")); // Dummy or real
-        c.env_remove("RUSTC").env_remove("CARGO").env_remove("MAKEFLAGS").env_remove("CARGO_MAKEFLAGS").env_remove("CARGO_TARGET_DIR");
+        c.env_remove("RUSTC")
+            .env_remove("CARGO")
+            .env_remove("MAKEFLAGS")
+            .env_remove("CARGO_MAKEFLAGS")
+            .env_remove("CARGO_TARGET_DIR");
         c
     } else {
         let cargo_bin = std_env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
@@ -1771,18 +2106,26 @@ impl BoxLangVM {
     };
 
     cmd.current_dir(&build_dir);
-    if is_wasm { cmd.arg("--target").arg("wasm32-unknown-unknown"); }
-    else if is_wasi { cmd.arg("--target").arg("wasm32-wasip1"); }
-    else if is_esp32 { 
+    if is_wasm {
+        cmd.arg("--target").arg("wasm32-unknown-unknown");
+    } else if is_wasi {
+        cmd.arg("--target").arg("wasm32-wasip1");
+    } else if is_esp32 {
         let bytecode_path = build_dir.join("bytecode.bxb");
         fs::write(&bytecode_path, bytecode)?;
         cmd.env("BOXLANG_BYTECODE_PATH", bytecode_path.to_str().unwrap());
         if let Some(route_table_path) = embedded_route_table_path.as_ref() {
-            cmd.env("MATCHBOX_EMBEDDED_ROUTE_TABLE", route_table_path.to_str().unwrap());
+            cmd.env(
+                "MATCHBOX_EMBEDDED_ROUTE_TABLE",
+                route_table_path.to_str().unwrap(),
+            );
         }
         let sdkconfig_defaults_path = build_dir.join("sdkconfig.defaults");
         if sdkconfig_defaults_path.exists() {
-            cmd.env("ESP_IDF_SDKCONFIG_DEFAULTS", sdkconfig_defaults_path.to_str().unwrap());
+            cmd.env(
+                "ESP_IDF_SDKCONFIG_DEFAULTS",
+                sdkconfig_defaults_path.to_str().unwrap(),
+            );
         }
         if esp32_web {
             cmd.arg("--features").arg("embedded-web");
@@ -1792,38 +2135,91 @@ impl BoxLangVM {
     let status = cmd
         .status()
         .with_context(|| format!("Failed to start cargo build in {}", build_dir.display()))?;
-    if !status.success() { bail!("Failed to compile native fusion binary"); }
+    if !status.success() {
+        bail!("Failed to compile native fusion binary");
+    }
 
     // 5. Handle Artifact
     if is_esp32 {
-        let artifact = build_dir.join("target").join(esp_target).join("release").join("fusion_build");
-        let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("elf"));
-        fs::copy(&artifact, &out_path)
-            .with_context(|| format!("Failed to copy native fusion artifact {} to {}", artifact.display(), out_path.display()))?;
+        let artifact = build_dir
+            .join("target")
+            .join(esp_target)
+            .join("release")
+            .join("fusion_build");
+        let out_path = output
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| source_path.with_extension("elf"));
+        fs::copy(&artifact, &out_path).with_context(|| {
+            format!(
+                "Failed to copy native fusion artifact {} to {}",
+                artifact.display(),
+                out_path.display()
+            )
+        })?;
         println!("ESP32 Fusion binary produced: {}", out_path.display());
         if is_flash {
             let mut flash_cmd = std::process::Command::new("espflash");
-            flash_cmd.arg("flash")
-                .arg("--chip").arg(chip)
+            flash_cmd
+                .arg("flash")
+                .arg("--chip")
+                .arg(chip)
                 .arg(&out_path);
             flash_cmd.status()?;
         }
     } else if target == "native" {
-        let exe_name = if cfg!(windows) { "fusion_build.exe" } else { "fusion_build" };
+        let exe_name = if cfg!(windows) {
+            "fusion_build.exe"
+        } else {
+            "fusion_build"
+        };
         let artifact = build_dir.join("target").join("release").join(exe_name);
-        let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| if cfg!(windows) { source_path.with_extension("exe") } else { source_path.with_extension("") });
-        fs::copy(&artifact, &out_path)
-            .with_context(|| format!("Failed to copy native fusion artifact {} to {}", artifact.display(), out_path.display()))?;
+        let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+            if cfg!(windows) {
+                source_path.with_extension("exe")
+            } else {
+                source_path.with_extension("")
+            }
+        });
+        fs::copy(&artifact, &out_path).with_context(|| {
+            format!(
+                "Failed to copy native fusion artifact {} to {}",
+                artifact.display(),
+                out_path.display()
+            )
+        })?;
         println!("Native Fusion binary produced: {}", out_path.display());
     } else if target == "wasi" || target == "wasm" {
-        let t_folder = if target == "wasi" { "wasm32-wasip1" } else { "wasm32-unknown-unknown" };
-        let artifact = build_dir.join("target").join(t_folder).join("release").join("fusion_build.wasm");
-        let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("wasm"));
-        fs::copy(&artifact, &out_path)
-            .with_context(|| format!("Failed to copy fusion wasm artifact {} to {}", artifact.display(), out_path.display()))?;
-        println!("{} Fusion binary produced: {}", target.to_uppercase(), out_path.display());
+        let t_folder = if target == "wasi" {
+            "wasm32-wasip1"
+        } else {
+            "wasm32-unknown-unknown"
+        };
+        let artifact = build_dir
+            .join("target")
+            .join(t_folder)
+            .join("release")
+            .join("fusion_build.wasm");
+        let out_path = output
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| source_path.with_extension("wasm"));
+        fs::copy(&artifact, &out_path).with_context(|| {
+            format!(
+                "Failed to copy fusion wasm artifact {} to {}",
+                artifact.display(),
+                out_path.display()
+            )
+        })?;
+        println!(
+            "{} Fusion binary produced: {}",
+            target.to_uppercase(),
+            out_path.display()
+        );
     } else if target == "js" {
-        let artifact = build_dir.join("target").join("wasm32-unknown-unknown").join("release").join("fusion_build.wasm");
+        let artifact = build_dir
+            .join("target")
+            .join("wasm32-unknown-unknown")
+            .join("release")
+            .join("fusion_build.wasm");
         browser::packaging::produce_fusion_js_bundle(&artifact, source_path, ast, output)?;
     }
     let _ = fs::remove_dir_all(&build_dir);
@@ -1837,7 +2233,9 @@ fn read_crate_name(cargo_toml_path: &Path) -> Result<String> {
         let line = line.trim();
         if line.starts_with("name") {
             if let Some(eq) = line.find('=') {
-                let value = line[eq + 1..].trim().trim_matches(|c| c == '"' || c == '\'');
+                let value = line[eq + 1..]
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'');
                 if !value.is_empty() {
                     return Ok(value.to_string());
                 }
@@ -1850,7 +2248,9 @@ fn read_crate_name(cargo_toml_path: &Path) -> Result<String> {
 fn produce_wasi_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>) -> Result<()> {
     let mut wasm_bytes = stubs::get_stub("wasi").unwrap_or(&[]).to_vec();
     if wasm_bytes.is_empty() {
-        bail!("WASI runner stub is empty. The matchbox CLI must be rebuilt with the wasm32-wasip1 target installed.");
+        bail!(
+            "WASI runner stub is empty. The matchbox CLI must be rebuilt with the wasm32-wasip1 target installed."
+        );
     }
 
     let chunk_bytes = postcard::to_stdvec(chunk)?;
@@ -1867,9 +2267,11 @@ fn produce_wasi_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>)
     let sentinel_pos = wasm_bytes
         .windows(SENTINEL.len())
         .position(|w| w == SENTINEL)
-        .context("WASI stub is missing the BOXLANG_EMBED sentinel. \
+        .context(
+            "WASI stub is missing the BOXLANG_EMBED sentinel. \
                   Rebuild the runner stub: \
-                  cargo build --release --target wasm32-wasip1 -p matchbox_runner")?;
+                  cargo build --release --target wasm32-wasip1 -p matchbox_runner",
+        )?;
 
     if chunk_bytes.len() > EMBED_DATA_CAPACITY {
         bail!(
@@ -1880,27 +2282,133 @@ fn produce_wasi_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>)
         );
     }
 
-    let len_offset  = sentinel_pos + 8;
+    let len_offset = sentinel_pos + 8;
     let data_offset = sentinel_pos + 12;
 
     let len_bytes = (chunk_bytes.len() as u32).to_le_bytes();
     wasm_bytes[len_offset..len_offset + 4].copy_from_slice(&len_bytes);
     wasm_bytes[data_offset..data_offset + chunk_bytes.len()].copy_from_slice(&chunk_bytes);
 
-    let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("wasm"));
+    let out_path = output
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| source_path.with_extension("wasm"));
     fs::write(&out_path, wasm_bytes)?;
 
     println!("WASI container binary produced: {}", out_path.display());
     Ok(())
 }
 
+#[cfg(feature = "server")]
+#[derive(serde::Serialize)]
+struct WasiHttpPayload {
+    config: matchbox_server::webroot_core::WebrootConfig,
+    assets: matchbox_server::webroot_core::EmbeddedAssetPackage,
+}
+
+#[cfg(feature = "server")]
+pub fn produce_wasi_http_webroot_artifact(webroot: &Path, output: &Path) -> Result<()> {
+    let package = matchbox_server::prepare_wasi_http_webroot(webroot, None)?;
+    for warning in &package.warnings {
+        eprintln!("warning: {warning}");
+    }
+
+    let payload = WasiHttpPayload {
+        config: package.config,
+        assets: package.assets,
+    };
+    let payload_bytes = bincode::serialize(&payload)?;
+    if payload_bytes.len() > WASI_HTTP_EMBED_DATA_CAPACITY {
+        bail!(
+            "WASI HTTP webroot payload ({} bytes) exceeds the embed capacity ({} bytes).",
+            payload_bytes.len(),
+            WASI_HTTP_EMBED_DATA_CAPACITY
+        );
+    }
+
+    let mut wasm_bytes = read_or_build_wasi_http_runner()?;
+    patch_wasi_http_runner_payload(&mut wasm_bytes, &payload_bytes)?;
+    fs::write(output, wasm_bytes)?;
+    println!("WASI HTTP component produced: {}", output.display());
+    Ok(())
+}
+
+#[cfg(not(feature = "server"))]
+pub fn produce_wasi_http_webroot_artifact(_webroot: &Path, _output: &Path) -> Result<()> {
+    bail!("WASI HTTP target requires the server feature.");
+}
+
+fn read_or_build_wasi_http_runner() -> Result<Vec<u8>> {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let runner_path = workspace_root
+        .join("target")
+        .join("wasm32-wasip2")
+        .join("release")
+        .join("matchbox_wasi_http_runner.wasm");
+
+    if !runner_path.exists() {
+        let status = Command::new("cargo")
+            .current_dir(&workspace_root)
+            .args([
+                "build",
+                "--release",
+                "--target",
+                "wasm32-wasip2",
+                "-p",
+                "matchbox_wasi_http_runner",
+            ])
+            .status()
+            .context("failed to invoke cargo to build the WASI HTTP runner")?;
+        if !status.success() {
+            bail!(
+                "failed to build WASI HTTP runner. Install the target with `rustup target add wasm32-wasip2` and retry."
+            );
+        }
+    }
+
+    fs::read(&runner_path).with_context(|| {
+        format!(
+            "failed to read WASI HTTP runner at {}",
+            runner_path.display()
+        )
+    })
+}
+
+fn patch_wasi_http_runner_payload(wasm_bytes: &mut [u8], payload_bytes: &[u8]) -> Result<()> {
+    let sentinel_pos = wasm_bytes
+        .windows(WASI_HTTP_EMBED_MAGIC.len())
+        .enumerate()
+        .filter(|(_, window)| *window == WASI_HTTP_EMBED_MAGIC)
+        .find_map(|(pos, _)| {
+            let data_offset = pos + 12;
+            wasm_bytes
+                .get(data_offset)
+                .copied()
+                .filter(|byte| *byte == 0xA5)
+                .map(|_| pos)
+        })
+        .context("WASI HTTP runner is missing the embedded webroot sentinel")?;
+    let len_offset = sentinel_pos + 8;
+    let data_offset = sentinel_pos + 12;
+    let end = data_offset + payload_bytes.len();
+    if end > wasm_bytes.len() {
+        bail!("WASI HTTP runner embedded payload region is too small");
+    }
+
+    wasm_bytes[len_offset..len_offset + 4]
+        .copy_from_slice(&(payload_bytes.len() as u32).to_le_bytes());
+    wasm_bytes[data_offset..end].copy_from_slice(payload_bytes);
+    Ok(())
+}
+
 fn produce_wasm_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>) -> Result<()> {
     let wasm_bytes = stubs::get_stub("wasi").unwrap_or(&[]).to_vec();
     if wasm_bytes.is_empty() {
-        bail!("WASI runner stub is empty. The matchbox CLI must be rebuilt with the wasm32-wasip1 target installed.");
+        bail!(
+            "WASI runner stub is empty. The matchbox CLI must be rebuilt with the wasm32-wasip1 target installed."
+        );
     }
     let chunk_bytes = postcard::to_stdvec(chunk)?;
-    
+
     let mut out_bytes = wasm_bytes;
     use wasm_encoder::Encode;
     let custom_section = wasm_encoder::CustomSection {
@@ -1910,10 +2418,12 @@ fn produce_wasm_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>)
     let mut section_bytes = Vec::new();
     custom_section.encode(&mut section_bytes);
     out_bytes.extend_from_slice(&section_bytes);
-    
-    let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("wasm"));
+
+    let out_path = output
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| source_path.with_extension("wasm"));
     fs::write(&out_path, out_bytes)?;
-    
+
     println!("WASM binary produced: {}", out_path.display());
     Ok(())
 }
@@ -1971,7 +2481,7 @@ fn produce_esp32_binary(
     let chip = chip.unwrap_or("esp32");
     let bytecode_bytes = postcard::to_stdvec(chunk)?;
 
-    // ESP32 targets: 
+    // ESP32 targets:
     let target = match chip {
         "esp32c3" | "esp32c6" | "esp32h2" => "riscv32imc-esp-espidf",
         "esp32s2" => "xtensa-esp32s2-espidf",
@@ -1994,7 +2504,10 @@ fn produce_esp32_binary(
     };
 
     if is_fast_deploy && !esp32_web {
-        println!("FAST DEPLOY: Sending {} bytes of bytecode to ESP32 'storage' partition...", bytecode_bytes.len());
+        println!(
+            "FAST DEPLOY: Sending {} bytes of bytecode to ESP32 'storage' partition...",
+            bytecode_bytes.len()
+        );
         write_storage_payload(chip, &bytecode_bytes, "fast_deploy")?;
         println!("Fast deploy successful!");
         return Ok(());
@@ -2017,73 +2530,93 @@ fn produce_esp32_binary(
     // Attempt to use a pre-built stub if available
     if !esp32_web {
         if let Some(stub_bytes) = stubs::get_stub(target) {
-        if !stub_bytes.is_empty() {
-            println!("Using pre-built ESP32 stub for target '{}'...", target);
-            let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("elf"));
-            
-            // The ELF stub expects bytecode to be appended with a footer, or embedded via a specific mechanism.
-            // For now, we use the same "append to end" logic used for native binaries, 
-            // but the matchbox-esp32-runner needs to know how to find it if load_from_flash fails.
-            let mut binary_bytes = stub_bytes.to_vec();
-            let chunk_bytes = postcard::to_stdvec(chunk)?;
-            let chunk_len = chunk_bytes.len() as u64;
-            binary_bytes.extend_from_slice(&chunk_bytes);
-            binary_bytes.extend_from_slice(&chunk_len.to_le_bytes());
-            binary_bytes.extend_from_slice(MAGIC_FOOTER);
+            if !stub_bytes.is_empty() {
+                println!("Using pre-built ESP32 stub for target '{}'...", target);
+                let out_path = output
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| source_path.with_extension("elf"));
 
-            fs::write(&out_path, binary_bytes)?;
-            
-            if is_flash {
-                println!("Flashing stub and then bytecode...");
-                let partition_csv = write_embedded_esp32_partitions_csv()?;
-                
-                // 1. Flash the stub firmware with the partition table
-                let mut flash_cmd = std::process::Command::new("espflash");
-                flash_cmd.arg("flash")
-                    .arg("--chip").arg(chip)
-                    .arg("--partition-table").arg(partition_csv)
-                    .arg(&out_path);
-                let status = flash_cmd.status()?;
-                if !status.success() { bail!("Failed to flash stub."); }
-                
-                // 2. Automatically perform fast-deploy for the bytecode
-                return produce_esp32_binary(
-                    chunk,
-                    source_path,
-                    output,
-                    false,
-                    Some(chip),
-                    true,
-                    is_full_flash,
-                    esp32_web,
-                    embedded_manifest,
-                    esp32_config,
-                );
+                // The ELF stub expects bytecode to be appended with a footer, or embedded via a specific mechanism.
+                // For now, we use the same "append to end" logic used for native binaries,
+                // but the matchbox-esp32-runner needs to know how to find it if load_from_flash fails.
+                let mut binary_bytes = stub_bytes.to_vec();
+                let chunk_bytes = postcard::to_stdvec(chunk)?;
+                let chunk_len = chunk_bytes.len() as u64;
+                binary_bytes.extend_from_slice(&chunk_bytes);
+                binary_bytes.extend_from_slice(&chunk_len.to_le_bytes());
+                binary_bytes.extend_from_slice(MAGIC_FOOTER);
+
+                fs::write(&out_path, binary_bytes)?;
+
+                if is_flash {
+                    println!("Flashing stub and then bytecode...");
+                    let partition_csv = write_embedded_esp32_partitions_csv()?;
+
+                    // 1. Flash the stub firmware with the partition table
+                    let mut flash_cmd = std::process::Command::new("espflash");
+                    flash_cmd
+                        .arg("flash")
+                        .arg("--chip")
+                        .arg(chip)
+                        .arg("--partition-table")
+                        .arg(partition_csv)
+                        .arg(&out_path);
+                    let status = flash_cmd.status()?;
+                    if !status.success() {
+                        bail!("Failed to flash stub.");
+                    }
+
+                    // 2. Automatically perform fast-deploy for the bytecode
+                    return produce_esp32_binary(
+                        chunk,
+                        source_path,
+                        output,
+                        false,
+                        Some(chip),
+                        true,
+                        is_full_flash,
+                        esp32_web,
+                        embedded_manifest,
+                        esp32_config,
+                    );
+                } else {
+                    println!("ESP32 firmware produced (stub): {}", out_path.display());
+                    println!(
+                        "NOTE: To run this, you must also flash the bytecode to the 'storage' partition."
+                    );
+                    return Ok(());
+                }
             } else {
-                println!("ESP32 firmware produced (stub): {}", out_path.display());
-                println!("NOTE: To run this, you must also flash the bytecode to the 'storage' partition.");
-                return Ok(());
+                println!(
+                    "Note: Pre-built stub for '{}' is empty/missing. Falling back to local build...",
+                    target
+                );
             }
-        } else {
-            println!("Note: Pre-built stub for '{}' is empty/missing. Falling back to local build...", target);
         }
     }
-    }
 
-    println!("Building custom ESP32 firmware for chip: {} (no stub found)...", chip);
-    println!("Using activated ESP-IDF environment (`ESP_IDF_TOOLS_INSTALL_DIR=fromenv`) for ESP32 runner build.");
+    println!(
+        "Building custom ESP32 firmware for chip: {} (no stub found)...",
+        chip
+    );
+    println!(
+        "Using activated ESP-IDF environment (`ESP_IDF_TOOLS_INSTALL_DIR=fromenv`) for ESP32 runner build."
+    );
 
     let bytecode_path = temp_dir.join("bytecode.bxb");
     fs::write(&bytecode_path, bytecode_bytes)?;
 
-    let runner_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates").join("matchbox-esp32-runner");
-    
+    let runner_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("crates")
+        .join("matchbox-esp32-runner");
+
     let cargo_bin = std_env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let mut cmd = std::process::Command::new(cargo_bin);
-    
+
     cmd.arg("build")
         .arg("--release")
-        .arg("--target").arg(target)
+        .arg("--target")
+        .arg(target)
         .current_dir(&runner_path)
         .env("BOXLANG_BYTECODE_PATH", bytecode_path.to_str().unwrap())
         .env("ESP_IDF_TOOLS_INSTALL_DIR", "fromenv")
@@ -2119,17 +2652,16 @@ fn produce_esp32_binary(
     if esp32_web {
         cmd.arg("--features").arg("embedded-web");
     }
-    let psram_enabled = esp32_config.and_then(|config| config.psram).unwrap_or(false)
+    let psram_enabled = esp32_config
+        .and_then(|config| config.psram)
+        .unwrap_or(false)
         || std_env::var_os("MATCHBOX_ESP32_PSRAM").is_some();
     if psram_enabled {
         cmd.arg("--features").arg("psram");
         match esp32_config.and_then(|config| config.board.as_deref()) {
             Some("xiao-esp32s3-sense") => {
                 let sdkconfig_path = runner_path.join("sdkconfig.xiao-esp32s3-sense");
-                cmd.env(
-                    "ESP_IDF_SDKCONFIG",
-                    sdkconfig_path.to_str().unwrap(),
-                );
+                cmd.env("ESP_IDF_SDKCONFIG", sdkconfig_path.to_str().unwrap());
                 cmd.env("SDKCONFIG", sdkconfig_path.to_str().unwrap());
             }
             _ => {
@@ -2152,9 +2684,15 @@ fn produce_esp32_binary(
         );
     }
 
-    let elf_path = runner_path.join("target").join(target).join("release").join("matchbox-esp32-runner");
-    let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| source_path.with_extension("elf"));
-    
+    let elf_path = runner_path
+        .join("target")
+        .join(target)
+        .join("release")
+        .join("matchbox-esp32-runner");
+    let out_path = output
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| source_path.with_extension("elf"));
+
     fs::copy(&elf_path, &out_path)?;
     println!("ESP32 firmware produced: {}", out_path.display());
 
@@ -2163,11 +2701,14 @@ fn produce_esp32_binary(
         let partition_csv = write_embedded_esp32_partitions_csv()?;
 
         let mut flash_cmd = std::process::Command::new("espflash");
-        flash_cmd.arg("flash")
-            .arg("--chip").arg(chip)
-            .arg("--partition-table").arg(partition_csv)
+        flash_cmd
+            .arg("flash")
+            .arg("--chip")
+            .arg(chip)
+            .arg("--partition-table")
+            .arg(partition_csv)
             .arg(&elf_path);
-        
+
         let flash_status = flash_cmd.status()?;
         if !flash_status.success() {
             bail!("Failed to flash to ESP32 device.");
@@ -2218,14 +2759,19 @@ fn wait_for_port(port: &str, timeout: std::time::Duration) -> bool {
     false
 }
 
-fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp32_web: bool) -> Result<()> {
-    use notify::{Watcher, RecursiveMode, event::EventKind};
-    use std::sync::mpsc::channel;
-    use std::time::Duration;
-    use std::process::{Child, Stdio};
-    use std::sync::{Arc, Mutex};
+fn watch_mode(
+    source_path: &Path,
+    chip: Option<String>,
+    is_full_flash: bool,
+    esp32_web: bool,
+) -> Result<()> {
+    use notify::{RecursiveMode, Watcher, event::EventKind};
     #[cfg(unix)]
     use std::os::unix::process::CommandExt;
+    use std::process::{Child, Stdio};
+    use std::sync::mpsc::channel;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     let (tx, rx) = channel();
     let mut watcher = notify::recommended_watcher(move |res| {
@@ -2235,7 +2781,9 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
     })?;
 
     let source_path_abs = fs::canonicalize(source_path)?;
-    let watch_dir = source_path_abs.parent().context("Failed to get source directory")?;
+    let watch_dir = source_path_abs
+        .parent()
+        .context("Failed to get source directory")?;
     watcher.watch(watch_dir, RecursiveMode::NonRecursive)?;
 
     let monitor_child: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
@@ -2247,20 +2795,26 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
         if let Ok(mut child_opt) = monitor_ctrlc.lock() {
             if let Some(mut child) = child_opt.take() {
                 #[cfg(unix)]
-                unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
                 #[cfg(not(unix))]
-                { child.kill().ok(); }
+                {
+                    child.kill().ok();
+                }
                 let _ = child.wait();
             }
         }
         std::process::exit(0);
-    }).expect("Error setting Ctrl+C handler");
+    })
+    .expect("Error setting Ctrl+C handler");
 
     // Detect the serial port once using espflash's board-info (quick probe)
     let serial_port = {
         let output = std::process::Command::new("espflash")
             .arg("board-info")
-            .arg("--before").arg("no-reset-no-sync")
+            .arg("--before")
+            .arg("no-reset-no-sync")
             .output();
         let mut port = None;
         if let Ok(out) = &output {
@@ -2275,8 +2829,15 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
             }
         }
         port.unwrap_or_else(|| {
-            for p in &["/dev/ttyACM0", "/dev/ttyUSB0", "/dev/ttyACM1", "/dev/ttyUSB1"] {
-                if Path::new(p).exists() { return p.to_string(); }
+            for p in &[
+                "/dev/ttyACM0",
+                "/dev/ttyUSB0",
+                "/dev/ttyACM1",
+                "/dev/ttyUSB1",
+            ] {
+                if Path::new(p).exists() {
+                    return p.to_string();
+                }
             }
             "/dev/ttyACM0".to_string()
         })
@@ -2292,8 +2853,11 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
     let start_monitor = |port: &str| -> Option<Child> {
         // Configure serial port for raw mode at 115200 baud
         let _ = std::process::Command::new("stty")
-            .arg("-F").arg(port)
-            .arg("115200").arg("raw").arg("-echo")
+            .arg("-F")
+            .arg(port)
+            .arg("115200")
+            .arg("raw")
+            .arg("-echo")
             .status();
 
         let mut cmd = std::process::Command::new("cat");
@@ -2330,7 +2894,11 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
     loop {
         if let Ok(event) = rx.recv() {
             if let EventKind::Modify(_) = event.kind {
-                if event.paths.iter().any(|p| fs::canonicalize(p).map(|cp| cp == source_path_abs).unwrap_or(false)) {
+                if event.paths.iter().any(|p| {
+                    fs::canonicalize(p)
+                        .map(|cp| cp == source_path_abs)
+                        .unwrap_or(false)
+                }) {
                     // Debounce: drain the channel and wait for silence
                     std::thread::sleep(Duration::from_millis(200));
                     while let Ok(_) = rx.try_recv() {}
@@ -2341,9 +2909,13 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
                     if let Ok(mut child_opt) = monitor_child.lock() {
                         if let Some(mut child) = child_opt.take() {
                             #[cfg(unix)]
-                            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+                            unsafe {
+                                libc::kill(-(child.id() as i32), libc::SIGKILL);
+                            }
                             #[cfg(not(unix))]
-                            { child.kill().ok(); }
+                            {
+                                child.kill().ok();
+                            }
                             let _ = child.wait();
                         }
                     }
@@ -2354,15 +2926,19 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
                     let mut flash_success = false;
                     for attempt in 1..=3 {
                         if !wait_for_port(&serial_port, Duration::from_secs(5)) {
-                            println!("Attempt {}: port {} not available, retrying...", attempt, serial_port);
+                            println!(
+                                "Attempt {}: port {} not available, retrying...",
+                                attempt, serial_port
+                            );
                             continue;
                         }
 
                         let res = (|| -> Result<()> {
                             let source_text = fs::read_to_string(source_path)?;
-                            let ast = parser::parse(&source_text, source_path.to_str()).map_err(|e| {
-                                anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e)
-                            })?;
+                            let ast =
+                                parser::parse(&source_text, source_path.to_str()).map_err(|e| {
+                                    anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e)
+                                })?;
                             let cwd = std::env::current_dir().unwrap_or_else(|_| {
                                 source_path.parent().unwrap_or(Path::new(".")).to_path_buf()
                             });
@@ -2376,12 +2952,13 @@ fn watch_mode(source_path: &Path, chip: Option<String>, is_full_flash: bool, esp
                                 source_path.to_str().unwrap_or("unknown"),
                                 &ast,
                                 &source_text,
-                                Vec::new(),  // keep_symbols
-                                false,       // no_shaking
-                                false,       // no_std_lib
-                                &[],         // module_mappings
-                                &[],         // extra_preludes
-                            ).map_err(|e| anyhow::anyhow!("Compiler Error: {}", e))?;
+                                Vec::new(), // keep_symbols
+                                false,      // no_shaking
+                                false,      // no_std_lib
+                                &[],        // module_mappings
+                                &[],        // extra_preludes
+                            )
+                            .map_err(|e| anyhow::anyhow!("Compiler Error: {}", e))?;
                             produce_esp32_binary(
                                 &chunk,
                                 source_path,
@@ -2518,5 +3095,31 @@ mod tests {
         let err = validate_esp32_target(&ast, true).unwrap_err().to_string();
         assert!(err.contains("cookie helpers"));
         assert!(err.contains("session helpers"));
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn wasi_http_webroot_artifact_embeds_prepared_webroot() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().join("webroot");
+        std::fs::create_dir(&webroot).unwrap();
+        std::fs::write(
+            webroot.join("index.bxm"),
+            "<bx:output>Hello WASI HTTP</bx:output>",
+        )
+        .unwrap();
+        let output = temp.path().join("app.wasm");
+
+        produce_wasi_http_webroot_artifact(&webroot, &output).unwrap();
+
+        let wasm = std::fs::read(&output).unwrap();
+        assert!(wasm.starts_with(b"\0asm"));
+        let sentinel = wasm
+            .windows(WASI_HTTP_EMBED_MAGIC.len())
+            .position(|window| window == WASI_HTTP_EMBED_MAGIC)
+            .expect("runner sentinel should remain present");
+        let len_offset = sentinel + 8;
+        let payload_len = u32::from_le_bytes(wasm[len_offset..len_offset + 4].try_into().unwrap());
+        assert!(payload_len > 0);
     }
 }

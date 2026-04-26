@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 /// A resolved, validated module ready for use in compilation.
@@ -62,9 +62,15 @@ pub struct DatasourceEntry {
     pub max_connections: u32,
 }
 
-fn default_ds_host() -> String { "localhost".to_string() }
-fn default_ds_port() -> u16 { 5432 }
-fn default_max_connections() -> u32 { 10 }
+fn default_ds_host() -> String {
+    "localhost".to_string()
+}
+fn default_ds_port() -> u16 {
+    5432
+}
+fn default_max_connections() -> u32 {
+    10
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -95,7 +101,7 @@ pub fn discover_modules(
             .with_context(|| format!("Failed to read {}", box_json_path.display()))?;
         let box_json: BoxJson = serde_json::from_str(&text)
             .with_context(|| format!("Failed to parse {}", box_json_path.display()))?;
-        
+
         // Merge dependencies and devDependencies
         let mut all_deps = box_json.dependencies;
         all_deps.extend(box_json.dev_dependencies);
@@ -155,7 +161,11 @@ pub fn discover_modules(
                 for entry in dir_entries.flatten() {
                     let path = entry.path();
                     if path.is_dir() && path.join("ModuleConfig.bx").exists() {
-                        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
+                        let name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown")
+                            .to_string();
                         if !entries.iter().any(|(n, _)| n == &name) {
                             entries.push((name, path));
                         }
@@ -273,21 +283,27 @@ pub fn execute_module_lifecycle(name: &str, path: &Path) -> serde_json::Value {
     let source = match std::fs::read_to_string(&descriptor) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Warning: Module '{}': could not read ModuleConfig.bx: {}", name, e);
+            eprintln!(
+                "Warning: Module '{}': could not read ModuleConfig.bx: {}",
+                name, e
+            );
             return empty;
         }
     };
 
     // Build a wrapper that instantiates ModuleConfig, runs onLoad(), then calls
     // configure() and returns its result (the settings struct).
-    let wrapper = format!(
-        "{source}\nmc = new ModuleConfig()\nmc.onLoad()\nreturn mc.configure()\n"
-    );
+    let wrapper =
+        format!("{source}\nmc = new ModuleConfig()\nmc.onLoad()\nreturn mc.configure()\n");
 
-    let ast = match matchbox_compiler::parser::parse(&wrapper, Some(&descriptor.to_string_lossy())) {
+    let ast = match matchbox_compiler::parser::parse(&wrapper, Some(&descriptor.to_string_lossy()))
+    {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("Warning: Module '{}': failed to parse ModuleConfig.bx: {}", name, e);
+            eprintln!(
+                "Warning: Module '{}': failed to parse ModuleConfig.bx: {}",
+                name, e
+            );
             return empty;
         }
     };
@@ -304,7 +320,10 @@ pub fn execute_module_lifecycle(name: &str, path: &Path) -> serde_json::Value {
     ) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Warning: Module '{}': failed to compile ModuleConfig.bx: {}", name, e);
+            eprintln!(
+                "Warning: Module '{}': failed to compile ModuleConfig.bx: {}",
+                name, e
+            );
             return empty;
         }
     };
@@ -315,7 +334,10 @@ pub fn execute_module_lifecycle(name: &str, path: &Path) -> serde_json::Value {
     let result = match vm.interpret(chunk) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Warning: Module '{}': ModuleConfig.bx lifecycle error: {}", name, e);
+            eprintln!(
+                "Warning: Module '{}': ModuleConfig.bx lifecycle error: {}",
+                name, e
+            );
             return empty;
         }
     };

@@ -6,15 +6,14 @@ use std::fs::File;
 #[cfg(all(feature = "bif-http", not(target_arch = "wasm32")))]
 use std::io::copy;
 
-#[cfg(all(feature = "bif-http", target_arch = "wasm32"))]
-use wasm_bindgen_futures::JsFuture;
-#[cfg(all(feature = "bif-http", target_arch = "wasm32"))]
+#[cfg(all(feature = "bif-http", target_arch = "wasm32", feature = "js"))]
 use web_sys::{Request, RequestInit, RequestMode};
 
 #[cfg(feature = "bif-http")]
 pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     let mut url = String::new();
     let mut method = "GET".to_string();
+    #[cfg(not(target_arch = "wasm32"))]
     let mut path = None;
 
     if args.len() == 1 && args[0].as_gc_id().is_some() {
@@ -27,7 +26,10 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
             }
             let p = vm.to_string(vm.struct_get(id, "path"));
             if !p.is_empty() && p != "null" {
-                path = Some(p);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    path = Some(p);
+                }
             }
         } else {
             url = vm.to_string(args[0]);
@@ -38,7 +40,10 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
             method = vm.to_string(args[1]).to_uppercase();
         }
         if args.len() > 2 {
-            path = Some(vm.to_string(args[2]));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                path = Some(vm.to_string(args[2]));
+            }
         }
     }
 
@@ -83,11 +88,11 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
         Ok(BxValue::new_ptr(result_id))
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
     {
-        let mut opts = RequestInit::new();
-        opts.method(&method);
-        opts.mode(RequestMode::Cors);
+        let opts = RequestInit::new();
+        opts.set_method(&method);
+        opts.set_mode(RequestMode::Cors);
 
         let request = Request::new_with_str_and_init(&url, &opts)
             .map_err(|e| format!("Failed to create request: {:?}", e))?;
@@ -96,5 +101,11 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
         let _request_promise = window.fetch_with_request(&request);
 
         Err("http() on WASM (fetch) is only supported in async contexts. Return values are not yet synchronous on the web.".to_string())
+    }
+
+    #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+    {
+        let _ = &method;
+        Err("http() on wasm requires the `js` feature for browser fetch support.".to_string())
     }
 }

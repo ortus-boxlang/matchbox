@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use matchbox_compiler::{compile_with_treeshaking, parser};
 use matchbox_embedded::{
-    route_from_app_file, validate_embedded_app, EmbeddedAppDefinition, EmbeddedRoute,
-    EmbeddedSourceKind,
+    EmbeddedAppDefinition, EmbeddedRoute, EmbeddedSourceKind, route_from_app_file,
+    validate_embedded_app,
 };
 use serde::Serialize;
 use std::fs;
@@ -52,7 +52,10 @@ pub fn discover_embedded_app(project_root: &Path) -> Result<Option<EmbeddedBuild
     Ok(Some(EmbeddedBuildManifest { app_root, app }))
 }
 
-pub fn write_embedded_manifest(build_dir: &Path, manifest: &EmbeddedBuildManifest) -> Result<PathBuf> {
+pub fn write_embedded_manifest(
+    build_dir: &Path,
+    manifest: &EmbeddedBuildManifest,
+) -> Result<PathBuf> {
     let manifest_path = build_dir.join("embedded-app-manifest.json");
     let json = serde_json::to_vec_pretty(manifest)?;
     fs::write(&manifest_path, json)
@@ -68,7 +71,10 @@ pub fn build_embedded_route_table(manifest: &EmbeddedBuildManifest) -> Result<Em
     Ok(EmbeddedRouteTable { routes })
 }
 
-pub fn write_embedded_route_table(build_dir: &Path, manifest: &EmbeddedBuildManifest) -> Result<PathBuf> {
+pub fn write_embedded_route_table(
+    build_dir: &Path,
+    manifest: &EmbeddedBuildManifest,
+) -> Result<PathBuf> {
     let route_table = build_embedded_route_table(manifest)?;
     let path = build_dir.join("embedded-route-table.json");
     let bytes = postcard::to_stdvec(&route_table)?;
@@ -85,7 +91,11 @@ fn collect_embedded_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
             continue;
         }
 
-        match path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()) {
+        match path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+        {
             Some(ext) if ext == "bxm" || ext == "bxs" => files.push(path),
             _ => {}
         }
@@ -99,10 +109,16 @@ fn route_to_table_entry(route: &EmbeddedRoute) -> Result<EmbeddedRouteTableEntry
     let source = fs::read_to_string(&route.source_path)
         .with_context(|| format!("Failed to read {}", route.source_path.display()))?;
     let ast = match route.source_kind {
-        EmbeddedSourceKind::Template => parser::parse_bxm(&source, Some(&route.source_path.to_string_lossy()))
-            .with_context(|| format!("Failed to parse template {}", route.source_path.display()))?,
-        EmbeddedSourceKind::Script => parser::parse(&source, Some(&route.source_path.to_string_lossy()))
-            .with_context(|| format!("Failed to parse script {}", route.source_path.display()))?,
+        EmbeddedSourceKind::Template => {
+            parser::parse_bxm(&source, Some(&route.source_path.to_string_lossy())).with_context(
+                || format!("Failed to parse template {}", route.source_path.display()),
+            )?
+        }
+        EmbeddedSourceKind::Script => {
+            parser::parse(&source, Some(&route.source_path.to_string_lossy())).with_context(
+                || format!("Failed to parse script {}", route.source_path.display()),
+            )?
+        }
     };
 
     let mut chunk = compile_with_treeshaking(
@@ -148,7 +164,11 @@ mod tests {
         fs::create_dir_all(&app_dir).unwrap();
         fs::write(root.join("app").join("index.bxm"), "<h1>Home</h1>").unwrap();
         fs::write(app_dir.join("[id].bxm"), "<h1>#url.id#</h1>").unwrap();
-        fs::write(root.join("app").join("print.post.bxs"), "writeOutput( 'ok' );").unwrap();
+        fs::write(
+            root.join("app").join("print.post.bxs"),
+            "writeOutput( 'ok' );",
+        )
+        .unwrap();
 
         let manifest = discover_embedded_app(&root).unwrap().unwrap();
         let routes: Vec<(String, String)> = manifest

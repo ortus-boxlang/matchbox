@@ -301,7 +301,7 @@ use wasm_bindgen_futures::{future_to_promise, JsFuture};
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use web_sys::window;
 
-#[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+#[cfg(all(target_arch = "wasm32", feature = "js-host-abi", not(feature = "js")))]
 #[link(wasm_import_module = "matchbox_js_host")]
 unsafe extern "C" {
     fn bx_js_get_prop(
@@ -1065,7 +1065,7 @@ impl VM {
                 GcObject::NativeObject(o) => format!("<native object {:?}>", o.borrow()),
                 #[cfg(all(target_arch = "wasm32", feature = "js"))]
                 GcObject::JsValue(js) => format!("<js value {:?}>", js),
-                #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+                #[cfg(all(target_arch = "wasm32", feature = "js-host-abi", not(feature = "js")))]
                 GcObject::JsHandle(h) => format!("<js object #{}>", h),
             }
         } else {
@@ -1131,7 +1131,7 @@ impl VM {
                 vm.insert_global("js".to_string(), BxValue::new_ptr(id));
             }
         }
-        #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+        #[cfg(all(target_arch = "wasm32", feature = "js-host-abi", not(feature = "js")))]
         {
             // WASI build: register `js` as handle 1 (window) for browser JS interop
             let id = vm.heap.alloc(GcObject::JsHandle(1));
@@ -2881,7 +2881,7 @@ impl VM {
                             continue 'quantum;
                         }
 
-                        #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+                        #[cfg(all(target_arch = "wasm32", feature = "js-host-abi", not(feature = "js")))]
                         {
                             let maybe_handle = if let GcObject::JsHandle(h) = self.heap.get(id) { Some(*h) } else { None };
                             if let Some(handle) = maybe_handle {
@@ -3076,7 +3076,7 @@ impl VM {
                             continue 'quantum;
                         }
 
-                        #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+                        #[cfg(all(target_arch = "wasm32", feature = "js-host-abi", not(feature = "js")))]
                         {
                             let maybe_handle = if let GcObject::JsHandle(h) = self.heap.get(id) { Some(*h) } else { None };
                             if let Some(handle) = maybe_handle {
@@ -3456,7 +3456,7 @@ impl VM {
                     let arg_count = next_word!();
                     let name_id = self.read_intern_id(fiber_idx, name_idx as usize);
                     let name = self.interner.resolve(name_id).to_string();
-                    #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+                    #[cfg(all(target_arch = "wasm32", feature = "js-host-abi", not(feature = "js")))]
                     {
                         let receiver_idx = self.fibers[fiber_idx].stack.len() - 1 - arg_count as usize;
                         let receiver_val = self.fibers[fiber_idx].stack[receiver_idx];
@@ -4654,7 +4654,7 @@ impl VM {
         }
     }
 
-    #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+    #[cfg(all(target_arch = "wasm32", feature = "js-host-abi", not(feature = "js")))]
     fn js_result_to_bx(&mut self, rtype: i32, str_buf: &[u8], str_len: usize, num: f64, b: i32, obj_id: u32) -> BxValue {
         match rtype {
             1 => BxValue::new_bool(b != 0),
@@ -4672,7 +4672,7 @@ impl VM {
         }
     }
 
-    #[cfg(all(target_arch = "wasm32", not(feature = "js")))]
+    #[cfg(all(target_arch = "wasm32", feature = "js-host-abi", not(feature = "js")))]
     fn bx_args_to_json(&self, args: &[BxValue]) -> Vec<u8> {
         let mut out = b"[".to_vec();
         for (i, v) in args.iter().enumerate() {
