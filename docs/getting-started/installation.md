@@ -99,8 +99,11 @@ Release tags:
 Only required if you intend to compile BoxLang to WebAssembly (`--target wasm` or `--target js`).
 
 ```bash
-# Add the WASM target to your Rust installation
+# Add the browser WASM target to your Rust installation
 rustup target add wasm32-unknown-unknown
+
+# Add the WASI HTTP/component target if you use --target wasi-http
+rustup target add wasm32-wasip2
 
 # Install wasm-bindgen-cli (must exactly match the workspace's wasm-bindgen crate)
 cargo install wasm-bindgen-cli --version 0.2.114

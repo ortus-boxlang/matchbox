@@ -6,7 +6,7 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY crates ./crates
 COPY src ./src
 
-RUN rustup target add wasm32-wasip1 wasm32-unknown-unknown \
+RUN rustup target add wasm32-wasip1 wasm32-wasip2 wasm32-unknown-unknown \
     && cargo build --release --bin matchbox
 
 FROM debian:bookworm-slim

@@ -24,7 +24,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown, wasm32-wasip1
+          targets: wasm32-unknown-unknown, wasm32-wasip1, wasm32-wasip2
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
@@ -109,7 +109,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.targets }}, wasm32-unknown-unknown, wasm32-wasip1
+          targets: ${{ matrix.targets }}, wasm32-unknown-unknown, wasm32-wasip1, wasm32-wasip2
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
@@ -351,7 +351,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}, wasm32-unknown-unknown, wasm32-wasip1
+          targets: ${{ matrix.target }}, wasm32-unknown-unknown, wasm32-wasip1, wasm32-wasip2
       - name: Cache Cargo
         uses: actions/cache@v4
         with:

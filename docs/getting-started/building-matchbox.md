@@ -20,6 +20,7 @@ To build MatchBox, you need the [Rust toolchain](https://rustup.rs/).
 ### Standard Build
 - **Rust**: 1.85+ (2024 Edition)
 - **Target**: `rustup target add wasm32-wasip1` (required for the default runner stub)
+- **Target**: `rustup target add wasm32-wasip2` (required for WASI HTTP/component builds)
 
 ### Web & WASM Build
 - **Target**: `rustup target add wasm32-unknown-unknown`
