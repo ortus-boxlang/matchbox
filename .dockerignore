@@ -1,0 +1,15 @@
+.git
+.github
+target
+pkg
+stubs
+stubs-out
+all-stubs
+release-assets
+docs
+docker
+*.png
+*.svg
+*.wasm
+panic_debug.txt
+presigned.txt

@@ -10,7 +10,6 @@ target/
 /test.js
 /test.wasm
 /pkg/
-/Dockerfile
 /fusion_build/
 docs/examples/native_fusion/app
 tests/native_fusion/script

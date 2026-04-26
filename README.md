@@ -16,6 +16,14 @@ curl -sSL https://raw.githubusercontent.com/ortus-boxlang/matchbox/master/instal
 iex (Invoke-RestMethod -Uri https://raw.githubusercontent.com/ortus-boxlang/matchbox/master/install/install.ps1)
 ```
 
+**Docker / GHCR:**
+```bash
+docker pull ghcr.io/ortus-boxlang/matchbox:latest
+docker run --rm -v "$PWD:/app" ghcr.io/ortus-boxlang/matchbox:latest --help
+```
+
+The Docker image uses `matchbox` as its entrypoint, so it can run scripts, build bytecode, produce standalone artifacts, or serve a mounted webroot.
+
 ## Core Features
 
 - **Bytecode VM**: Fast, stack-based execution engine with a multi-tier JIT compiler.
@@ -38,6 +46,7 @@ MatchBox is distributed in three distinct variants to suit different deployment 
 | **Fat CLI** | `matchbox` | The complete developer tool. Includes the VM, Compiler, REPL, and embedded runner stubs for all targets (Native, WASM, ESP32). | Local development, cross-compiling, and building standalone apps. |
 | **Slim CLI** | `matchbox-slim` | VM, Compiler, and REPL. Excludes embedded cross-compilation stubs to reduce binary size by ~20MB. | CI/CD pipelines and environments where only local execution is needed. |
 | **Server** | `matchbox-server` | An optimized, standalone web runtime for both webroot/BXM serving and routed app-server workloads. | Production web deployments, Docker containers, APIs, and edge hosting. |
+| **Docker Image** | `ghcr.io/ortus-boxlang/matchbox` | Containerized Fat CLI with `matchbox` as the entrypoint. | CI builds, direct script execution, webroot serving, and environments where you do not want to install MatchBox locally. |
 
 ## Quick Start
 
@@ -68,6 +77,25 @@ cargo run -p matchbox_server -- --app docs/examples/websocket_counter/app.bxs
 Bundle your BoxLang code into a single, zero-dependency executable for your current OS:
 ```bash
 matchbox --target native my_app.bxs
+```
+
+### 5. Using the Docker Image
+Run a script from the current directory:
+```bash
+docker run --rm -v "$PWD:/app" ghcr.io/ortus-boxlang/matchbox:latest my_app.bxs
+```
+
+Build artifacts into the mounted directory:
+```bash
+docker run --rm -v "$PWD:/app" ghcr.io/ortus-boxlang/matchbox:latest --build my_app.bxs
+docker run --rm -v "$PWD:/app" ghcr.io/ortus-boxlang/matchbox:latest --target wasm my_app.bxs
+docker run --rm -v "$PWD:/app" ghcr.io/ortus-boxlang/matchbox:latest --target native my_app.bxs
+```
+
+Serve a webroot from a container:
+```bash
+docker run --rm -p 8080:8080 -v "$PWD/www:/app" \
+  ghcr.io/ortus-boxlang/matchbox:latest --serve --host 0.0.0.0 --webroot /app
 ```
 
 ## Deployment Targets

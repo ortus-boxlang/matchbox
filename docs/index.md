@@ -21,6 +21,7 @@ Welcome to the MatchBox documentation. MatchBox is a native Rust implementation 
 | | |
 | :--- | :--- |
 | [Native Builds](building-and-deploying/native-builds.md) | Standalone OS binaries, cross-compilation, and Native Fusion (Rust interop). |
+| [Docker Image](building-and-deploying/docker-image.md) | Use the GHCR image for CI builds, direct execution, and webroot serving. |
 | [JavaScript + WASM](building-and-deploying/javascript-and-wasm.md) | ES modules, raw WASM, and runtime (dynamic) execution in the browser. |
 | [WASM Container](building-and-deploying/wasm-container.md) | Wasmtime, WasmEdge, Docker OCI containers, and edge platforms. |
 | [ESP32 Firmware](building-and-deploying/esp32.md) | Cross-compiling and flashing for ESP32/S3/C3 microcontrollers. |
@@ -52,6 +53,14 @@ matchbox --target native app.bxs  # Standalone native binary
 matchbox --target js     lib.bxs  # ES module + .wasm
 matchbox --target wasm   app.bxs  # Raw .wasm binary
 matchbox --target esp32  app.bxs  # Build and flash ESP32
+```
+
+### Docker
+
+```bash
+docker run --rm -v "$PWD:/app" ghcr.io/ortus-boxlang/matchbox:latest my_script.bxs
+docker run --rm -v "$PWD:/app" ghcr.io/ortus-boxlang/matchbox:latest --target wasm app.bxs
+docker run --rm -p 8080:8080 -v "$PWD/www:/app" ghcr.io/ortus-boxlang/matchbox:latest --serve --host 0.0.0.0 --webroot /app
 ```
 
 ### Language at a Glance

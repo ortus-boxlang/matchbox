@@ -66,6 +66,34 @@ mv matchbox /usr/local/bin/matchbox
 
 ---
 
+## Option 3: Docker Image
+
+MatchBox images are published to GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/ortus-boxlang/matchbox:latest
+```
+
+The image uses `matchbox` as its entrypoint and `/app` as the working directory. Mount your project into `/app` and pass normal MatchBox CLI arguments:
+
+```bash
+docker run --rm -v "$PWD:/app" ghcr.io/ortus-boxlang/matchbox:latest --help
+docker run --rm -v "$PWD:/app" ghcr.io/ortus-boxlang/matchbox:latest my_script.bxs
+docker run --rm -v "$PWD:/app" ghcr.io/ortus-boxlang/matchbox:latest --build my_script.bxs
+```
+
+Release tags:
+
+| Tag | Use |
+| :--- | :--- |
+| `latest` | Latest stable release image |
+| `vX.Y.Z` | Specific stable release image |
+| `develop` | Rolling develop branch image |
+| `snapshot` | Rolling snapshot image |
+| `be` | Rolling BE/development image alias |
+
+---
+
 ## Installing the WASM Toolchain (optional)
 
 Only required if you intend to compile BoxLang to WebAssembly (`--target wasm` or `--target js`).
