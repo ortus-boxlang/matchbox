@@ -18,12 +18,7 @@ pub fn produce_js_bundle(
     try_log!("Producing standalone JS bundle...");
     let bytecode = postcard::to_stdvec(chunk)?;
 
-    let wasm_bytes = stubs::get_stub("web").unwrap_or(&[]).to_vec();
-    if wasm_bytes.is_empty() {
-        bail!(
-            "Web runner stub is empty. The matchbox CLI must be rebuilt with the wasm32-unknown-unknown target installed."
-        );
-    }
+    let wasm_bytes = stubs::get_stub("web")?.to_vec();
 
     let out_path = output
         .map(|p| p.to_path_buf())

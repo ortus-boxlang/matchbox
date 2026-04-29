@@ -1,3 +1,4 @@
 {
-    "boxlang.lsp.lspVersion": "bx-lsp@1.9.0+8"
+    "boxlang.lsp.lspVersion": "bx-lsp@1.9.0+8",
+    "boxlang.debugger.moduleVersion": "1.1.1+2"
 }

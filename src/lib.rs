@@ -1671,13 +1671,7 @@ fn produce_native_binary(
     output: Option<&Path>,
 ) -> Result<()> {
     let stub_key = if target == "native" { "host" } else { target };
-    let native_bytes = stubs::get_stub(stub_key).unwrap_or(&[]);
-    if native_bytes.is_empty() {
-        bail!(
-            "Runner stub for target '{}' is missing. Please ensure the cross-compile feature is enabled and the target is supported.",
-            target
-        );
-    }
+    let native_bytes = stubs::get_stub(stub_key)?;
     let mut binary_bytes = native_bytes.to_vec();
     let chunk_bytes = postcard::to_stdvec(chunk)?;
     let chunk_len = chunk_bytes.len() as u64;
@@ -2246,12 +2240,7 @@ fn read_crate_name(cargo_toml_path: &Path) -> Result<String> {
 }
 
 fn produce_wasi_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>) -> Result<()> {
-    let mut wasm_bytes = stubs::get_stub("wasi").unwrap_or(&[]).to_vec();
-    if wasm_bytes.is_empty() {
-        bail!(
-            "WASI runner stub is empty. The matchbox CLI must be rebuilt with the wasm32-wasip1 target installed."
-        );
-    }
+    let mut wasm_bytes = stubs::get_stub("wasi")?.to_vec();
 
     let chunk_bytes = postcard::to_stdvec(chunk)?;
 
@@ -2401,12 +2390,7 @@ fn patch_wasi_http_runner_payload(wasm_bytes: &mut [u8], payload_bytes: &[u8]) -
 }
 
 fn produce_wasm_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>) -> Result<()> {
-    let wasm_bytes = stubs::get_stub("wasi").unwrap_or(&[]).to_vec();
-    if wasm_bytes.is_empty() {
-        bail!(
-            "WASI runner stub is empty. The matchbox CLI must be rebuilt with the wasm32-wasip1 target installed."
-        );
-    }
+    let wasm_bytes = stubs::get_stub("wasi")?.to_vec();
     let chunk_bytes = postcard::to_stdvec(chunk)?;
 
     let mut out_bytes = wasm_bytes;
@@ -2529,69 +2513,67 @@ fn produce_esp32_binary(
 
     // Attempt to use a pre-built stub if available
     if !esp32_web {
-        if let Some(stub_bytes) = stubs::get_stub(target) {
-            if !stub_bytes.is_empty() {
-                println!("Using pre-built ESP32 stub for target '{}'...", target);
-                let out_path = output
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| source_path.with_extension("elf"));
+        if let Ok(stub_bytes) = stubs::get_stub(target) {
+            println!("Using pre-built ESP32 stub for target '{}'...", target);
+            let out_path = output
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| source_path.with_extension("elf"));
 
-                // The ELF stub expects bytecode to be appended with a footer, or embedded via a specific mechanism.
-                // For now, we use the same "append to end" logic used for native binaries,
-                // but the matchbox-esp32-runner needs to know how to find it if load_from_flash fails.
-                let mut binary_bytes = stub_bytes.to_vec();
-                let chunk_bytes = postcard::to_stdvec(chunk)?;
-                let chunk_len = chunk_bytes.len() as u64;
-                binary_bytes.extend_from_slice(&chunk_bytes);
-                binary_bytes.extend_from_slice(&chunk_len.to_le_bytes());
-                binary_bytes.extend_from_slice(MAGIC_FOOTER);
+            // The ELF stub expects bytecode to be appended with a footer, or embedded via a specific mechanism.
+            // For now, we use the same "append to end" logic used for native binaries,
+            // but the matchbox-esp32-runner needs to know how to find it if load_from_flash fails.
+            let mut binary_bytes = stub_bytes.to_vec();
+            let chunk_bytes = postcard::to_stdvec(chunk)?;
+            let chunk_len = chunk_bytes.len() as u64;
+            binary_bytes.extend_from_slice(&chunk_bytes);
+            binary_bytes.extend_from_slice(&chunk_len.to_le_bytes());
+            binary_bytes.extend_from_slice(MAGIC_FOOTER);
 
-                fs::write(&out_path, binary_bytes)?;
+            fs::write(&out_path, binary_bytes)?;
 
-                if is_flash {
-                    println!("Flashing stub and then bytecode...");
-                    let partition_csv = write_embedded_esp32_partitions_csv()?;
+            if is_flash {
+                println!("Flashing stub and then bytecode...");
+                let partition_csv = write_embedded_esp32_partitions_csv()?;
 
-                    // 1. Flash the stub firmware with the partition table
-                    let mut flash_cmd = std::process::Command::new("espflash");
-                    flash_cmd
-                        .arg("flash")
-                        .arg("--chip")
-                        .arg(chip)
-                        .arg("--partition-table")
-                        .arg(partition_csv)
-                        .arg(&out_path);
-                    let status = flash_cmd.status()?;
-                    if !status.success() {
-                        bail!("Failed to flash stub.");
-                    }
-
-                    // 2. Automatically perform fast-deploy for the bytecode
-                    return produce_esp32_binary(
-                        chunk,
-                        source_path,
-                        output,
-                        false,
-                        Some(chip),
-                        true,
-                        is_full_flash,
-                        esp32_web,
-                        embedded_manifest,
-                        esp32_config,
-                    );
-                } else {
-                    println!("ESP32 firmware produced (stub): {}", out_path.display());
-                    println!(
-                        "NOTE: To run this, you must also flash the bytecode to the 'storage' partition."
-                    );
-                    return Ok(());
+                // 1. Flash the stub firmware with the partition table
+                let mut flash_cmd = std::process::Command::new("espflash");
+                flash_cmd
+                    .arg("flash")
+                    .arg("--chip")
+                    .arg(chip)
+                    .arg("--partition-table")
+                    .arg(partition_csv)
+                    .arg(&out_path);
+                let status = flash_cmd.status()?;
+                if !status.success() {
+                    bail!("Failed to flash stub.");
                 }
-            } else {
-                println!(
-                    "Note: Pre-built stub for '{}' is empty/missing. Falling back to local build...",
-                    target
+
+                // 2. Automatically perform fast-deploy for the bytecode
+                return produce_esp32_binary(
+                    chunk,
+                    source_path,
+                    output,
+                    false,
+                    Some(chip),
+                    true,
+                    is_full_flash,
+                    esp32_web,
+                    embedded_manifest,
+                    esp32_config,
                 );
             }
+
+            println!("ESP32 firmware produced (stub): {}", out_path.display());
+            println!(
+                "NOTE: To run this, you must also flash the bytecode to the 'storage' partition."
+            );
+            return Ok(());
+        } else {
+            println!(
+                "Note: Pre-built stub for '{}' is unavailable. Falling back to local build...",
+                target
+            );
         }
     }
 
@@ -3100,6 +3082,20 @@ mod tests {
     #[cfg(feature = "server")]
     #[test]
     fn wasi_http_webroot_artifact_embeds_prepared_webroot() {
+        let has_wasip2_target = std::process::Command::new("rustup")
+            .args(["target", "list", "--installed"])
+            .output()
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|targets| targets.lines().any(|target| target == "wasm32-wasip2"))
+            .unwrap_or(false);
+        if !has_wasip2_target {
+            eprintln!(
+                "skipping wasi_http_webroot_artifact_embeds_prepared_webroot: wasm32-wasip2 target is not installed"
+            );
+            return;
+        }
+
         let temp = tempfile::tempdir().unwrap();
         let webroot = temp.path().join("webroot");
         std::fs::create_dir(&webroot).unwrap();

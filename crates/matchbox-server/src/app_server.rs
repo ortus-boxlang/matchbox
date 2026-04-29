@@ -2225,7 +2225,7 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(
             String::from_utf8(response.body).unwrap(),
-            r#"{"fromprc":"42","id":"42"}"#
+            r#"{"fromPrc":"42","id":"42"}"#
         );
     }
 
@@ -2677,7 +2677,7 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(
             String::from_utf8(response.body).unwrap(),
-            r#"{"cleared":true,"except":{"extra":"1","fromsetvalue":"yes","id":"42"},"hasid":true,"hasmissing":false,"invalidated":true,"methodalias":"GET","only":{"fromsetvalue":"yes","id":"42"},"secret":"private","sessionexists":true}"#
+            r#"{"cleared":true,"except":{"extra":"1","fromSetValue":"yes","id":"42"},"hasId":true,"hasMissing":false,"invalidated":true,"methodAlias":"GET","only":{"fromSetValue":"yes","id":"42"},"secret":"private","sessionExists":true}"#
         );
     }
 
@@ -2724,7 +2724,7 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(
             String::from_utf8(response.body).unwrap(),
-            r#"{"currentroute":"/meta/:id","isajax":true,"isjson":true,"routeparams":{"id":"42"}}"#
+            r#"{"currentRoute":"/meta/:id","isAjax":true,"isJSON":true,"routeParams":{"id":"42"}}"#
         );
     }
 

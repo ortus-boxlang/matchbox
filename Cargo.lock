@@ -1791,6 +1791,7 @@ dependencies = [
  "crossterm",
  "matchbox_vm",
  "ratatui",
+ "serde_json",
 ]
 
 [[package]]
@@ -1847,6 +1848,7 @@ dependencies = [
  "mime_guess",
  "postcard",
  "serde",
+ "tempfile",
  "url",
  "uuid",
  "wasi 0.14.7+wasi-0.2.4",
