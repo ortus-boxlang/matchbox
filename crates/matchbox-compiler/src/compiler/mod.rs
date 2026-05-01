@@ -204,7 +204,7 @@ impl Compiler {
                                 method_compiler.current_line = inner_stmt.line as u32;
                                 method_compiler.class_methods = class_method_names.clone();
                                 method_compiler.class_has_init_map = self.class_has_init_map.clone();
-                                let mut func =
+                                let func =
                                     method_compiler.compile_function(&func_name, &params, &body)?;
                                 methods.insert(func_name.to_lowercase(), func);
                             }

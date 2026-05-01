@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use matchbox::process_file as process_file_impl;
 use std::{
     fs,

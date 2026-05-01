@@ -89,7 +89,7 @@ pub unsafe extern "C" fn jit_ic_member_fallback(
         return 1;
     }
 
-    let heap = &*(heap_ptr as *const crate::vm::gc::Heap);
+    let heap = unsafe { &*(heap_ptr as *const crate::vm::gc::Heap) };
     let id = (gc_id & crate::types::BxValue::PAYLOAD_MASK) as usize;
     // Basic bounds check, although BxValue guarantees validity unless collected
     // but better safe than sorry in JIT.
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn jit_ic_member_fallback(
             crate::vm::gc::GcObject::Struct(s) => {
                 if s.shape_id == expected_shape {
                     if let Some(v) = s.properties.get(prop_idx as usize) {
-                        *out_val = v.to_bits();
+                        unsafe { *out_val = v.to_bits(); }
                         return 0; // Success
                     }
                 }
@@ -106,7 +106,7 @@ pub unsafe extern "C" fn jit_ic_member_fallback(
             crate::vm::gc::GcObject::Instance(i) => {
                 if i.shape_id == expected_shape {
                     if let Some(v) = i.properties.get(prop_idx as usize) {
-                        *out_val = v.to_bits();
+                        unsafe { *out_val = v.to_bits(); }
                         return 0; // Success
                     }
                 }
@@ -125,7 +125,7 @@ pub unsafe extern "C" fn jit_get_shape_id(
         (crate::types::BxValue::TAGGED_BASE | (crate::types::BxValue::TAG_PTR << crate::types::BxValue::TAG_SHIFT)) {
         return u32::MAX;
     }
-    let heap = &*(heap_ptr as *const crate::vm::gc::Heap);
+    let heap = unsafe { &*(heap_ptr as *const crate::vm::gc::Heap) };
     let id = (gc_id & crate::types::BxValue::PAYLOAD_MASK) as usize;
     match heap.get_opt(id) {
         Some(crate::vm::gc::GcObject::Struct(s))   => s.shape_id as u32,
@@ -140,7 +140,7 @@ pub unsafe extern "C" fn jit_load_prop_at(
     prop_idx: u32,
     out_val: *mut u64,
 ) -> u64 {
-    let heap = &*(heap_ptr as *const crate::vm::gc::Heap);
+    let heap = unsafe { &*(heap_ptr as *const crate::vm::gc::Heap) };
     let id = (gc_id & crate::types::BxValue::PAYLOAD_MASK) as usize;
     let props = match heap.get_opt(id) {
         Some(crate::vm::gc::GcObject::Struct(s))   => &s.properties,
@@ -148,7 +148,7 @@ pub unsafe extern "C" fn jit_load_prop_at(
         _ => return 1,
     };
     match props.get(prop_idx as usize) {
-        Some(v) => { *out_val = v.to_bits(); 0 }
+        Some(v) => { unsafe { *out_val = v.to_bits(); } 0 }
         None    => 1,
     }
 }
@@ -197,11 +197,11 @@ pub unsafe extern "C" fn jit_concat(
     val_b: u64,
     out_val: *mut u64,
 ) -> u64 {
-    let heap = &mut *(heap_ptr as *mut crate::vm::gc::Heap);
+    let heap = unsafe { &mut *(heap_ptr as *mut crate::vm::gc::Heap) };
     let a_s = match bx_val_to_box_string(val_a, heap) { Some(s) => s, None => return 1 };
     let b_s = match bx_val_to_box_string(val_b, heap) { Some(s) => s, None => return 1 };
     let res_id = heap.alloc(crate::vm::gc::GcObject::String(a_s.concat(&b_s)));
-    *out_val = crate::types::BxValue::new_ptr(res_id).to_bits();
+    unsafe { *out_val = crate::types::BxValue::new_ptr(res_id).to_bits(); }
     0
 }
 
@@ -213,10 +213,10 @@ macro_rules! jit_fallback_math {
             val_b: u64,
             out_val: *mut u64,
         ) -> u64 {
-            let heap = &mut *(heap_ptr as *mut crate::vm::gc::Heap);
+            let heap = unsafe { &mut *(heap_ptr as *mut crate::vm::gc::Heap) };
             let a = unsafe { std::mem::transmute::<u64, crate::types::BxValue>(val_a) };
             let b = unsafe { std::mem::transmute::<u64, crate::types::BxValue>(val_b) };
-            
+
             let a_num = if a.is_number() { Some(a.as_number()) } else {
                 bx_val_to_box_string(val_a, heap).and_then(|s| s.to_string().parse::<f64>().ok())
             };
@@ -225,7 +225,7 @@ macro_rules! jit_fallback_math {
             };
 
             if let (Some(na), Some(nb)) = (a_num, b_num) {
-                *out_val = crate::types::BxValue::new_number(na $op nb).to_bits();
+                unsafe { *out_val = crate::types::BxValue::new_number(na $op nb).to_bits(); }
                 0
             } else {
                 1 // deopt
@@ -240,10 +240,10 @@ pub unsafe extern "C" fn jit_fallback_add(
     val_b: u64,
     out_val: *mut u64,
 ) -> u64 {
-    let heap = &mut *(heap_ptr as *mut crate::vm::gc::Heap);
+    let heap = unsafe { &mut *(heap_ptr as *mut crate::vm::gc::Heap) };
     let a = unsafe { std::mem::transmute::<u64, crate::types::BxValue>(val_a) };
     let b = unsafe { std::mem::transmute::<u64, crate::types::BxValue>(val_b) };
-    
+
     let a_num = if a.is_number() { Some(a.as_number()) } else {
         bx_val_to_box_string(val_a, heap).and_then(|s| s.to_string().parse::<f64>().ok())
     };
@@ -252,13 +252,13 @@ pub unsafe extern "C" fn jit_fallback_add(
     };
 
     if let (Some(na), Some(nb)) = (a_num, b_num) {
-        *out_val = crate::types::BxValue::new_number(na + nb).to_bits();
+        unsafe { *out_val = crate::types::BxValue::new_number(na + nb).to_bits(); }
         0
     } else {
         let a_s = match bx_val_to_box_string(val_a, heap) { Some(s) => s, None => return 1 };
         let b_s = match bx_val_to_box_string(val_b, heap) { Some(s) => s, None => return 1 };
         let res_id = heap.alloc(crate::vm::gc::GcObject::String(a_s.concat(&b_s)));
-        *out_val = crate::types::BxValue::new_ptr(res_id).to_bits();
+        unsafe { *out_val = crate::types::BxValue::new_ptr(res_id).to_bits(); }
         0
     }
 }

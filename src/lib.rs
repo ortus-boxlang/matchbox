@@ -1681,6 +1681,7 @@ pub fn run_chunk(chunk: Chunk, modules: &[modules::ModuleInfo]) -> Result<()> {
     let args: Vec<String> = std_env::args().collect();
 
     let mut external_bifs = HashMap::new();
+    #[allow(unused_mut)]
     let mut native_classes = HashMap::new();
 
     #[cfg(feature = "bif-tui")]
@@ -2130,7 +2131,8 @@ strip = true
 
     if !is_esp32 && target != "js" {
         code.push_str(
-            r#"
+            r#"#![allow(unused_imports)]
+
 use matchbox_vm::{vm::VM, types::{BxValue, BxNativeFunction}, Chunk};
 use std::collections::HashMap;
 "#,

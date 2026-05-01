@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use matchbox_vm::types::{BxNativeFunction, BxNativeObject, BxVM, BxValue};
+use matchbox_vm::types::{BxNativeFunction, BxVM, BxValue};
 use matchbox_vm::{BxObject, bx_methods};
 
 mod terminal;
@@ -171,7 +171,7 @@ pub fn create_input_widget(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxVal
     Ok(BxValue::new_ptr(id))
 }
 
-pub fn create_custom_widget(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+pub fn create_custom_widget(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
         return Err("Custom widget requires an object".to_string());
     }

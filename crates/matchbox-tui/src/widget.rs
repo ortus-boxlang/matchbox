@@ -882,38 +882,6 @@ impl TableWidget {
     }
 }
 
-impl RenderInAreaWithRegistry for BlockWidget {
-    fn render_in_area(&self, vm: &mut dyn BxVM, frame: &mut Frame, area: Rect, _widget_registry: &WidgetRegistry) {
-        use ratatui::widgets::{Block, BorderType as RatatuiBorderType, Widget};
-
-        let mut block = Block::bordered();
-        if !self.title.is_empty() {
-            block = block.title(self.title.clone());
-        }
-
-        match self.border_type {
-            BorderType::Plain => block = block.border_type(RatatuiBorderType::Plain),
-            BorderType::Rounded => block = block.border_type(RatatuiBorderType::Rounded),
-            BorderType::Double => block = block.border_type(RatatuiBorderType::Double),
-            BorderType::Thick => block = block.border_type(RatatuiBorderType::Thick),
-        }
-
-        if let Some(inner) = self.inner_widget {
-            if let Some(inner_id) = inner.as_gc_id() {
-                let inner_area = block.inner(area);
-                block.render(area, frame.buffer_mut());
-                
-                if let Some(widget) = WidgetRegistry::get(inner_id) {
-                    widget.render_in_area(vm, frame, inner_area, _widget_registry);
-                }
-                return;
-            }
-        }
-
-        block.render(area, frame.buffer_mut());
-    }
-}
-
 fn parse_color(color: &str) -> ratatui::style::Color {
     use ratatui::style::Color;
     match color.to_lowercase().as_str() {
@@ -993,6 +961,4 @@ impl WidgetRegistry {
     }
 }
 
-pub trait RenderInAreaWithRegistry {
-    fn render_in_area(&self, vm: &mut dyn BxVM, frame: &mut Frame, area: Rect, widget_registry: &WidgetRegistry);
-}
+

@@ -149,7 +149,7 @@ fn main() {
                         success = true;
                         use_stub = true;
                         println!(
-                            "cargo:warning=Runner stub built and copied to {}",
+                            "Runner stub built and copied to {}",
                             dest_path.display()
                         );
                     } else {
@@ -162,26 +162,37 @@ fn main() {
                 } else {
                     let stderr = String::from_utf8_lossy(&out.stderr);
                     let stdout = String::from_utf8_lossy(&out.stdout);
-                    println!(
-                        "cargo:warning=Failed to build stub: {}. Error: {}",
-                        dest_name, stderr
-                    );
-                    if !stdout.is_empty() {
-                        println!("cargo:warning=Stdout: {}", stdout);
+                    if target.is_some() {
+                        println!("Failed to build stub: {}. Error: {}", dest_name, stderr);
+                        if !stdout.is_empty() {
+                            println!("Stdout: {}", stdout);
+                        }
+                    } else {
+                        println!(
+                            "cargo:warning=Failed to build stub: {}. Error: {}",
+                            dest_name, stderr
+                        );
+                        if !stdout.is_empty() {
+                            println!("cargo:warning=Stdout: {}", stdout);
+                        }
                     }
                 }
             } else if let Err(e) = output {
-                println!(
-                    "cargo:warning=Failed to execute build command for {}: {}",
-                    dest_name, e
-                );
+                if target.is_some() {
+                    println!("Failed to execute build command for {}: {}", dest_name, e);
+                } else {
+                    println!(
+                        "cargo:warning=Failed to execute build command for {}: {}",
+                        dest_name, e
+                    );
+                }
             }
 
             if !success {
-                println!("cargo:warning=Runner stub was not built: {}.", dest_name);
+                println!("Runner stub was not built: {}.", dest_name);
             }
         } else {
-            println!("cargo:warning=Using pre-existing stub for {}", dest_name);
+            println!("Using pre-existing stub for {}", dest_name);
         }
 
         let available = use_stub && dest_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
@@ -198,7 +209,7 @@ fn main() {
             }
         } else {
             println!(
-                "cargo:warning=Runner stub {} is unavailable; it will not be embedded",
+                "Runner stub {} is unavailable; it will not be embedded",
                 dest_name
             );
         }
@@ -238,6 +249,13 @@ fn main() {
 
     let rebuild_embedded_stubs = truthy_env("MATCHBOX_REBUILD_EMBEDDED_STUBS");
 
+    // Only attempt ESP32 builds when the toolchain is present.
+    let has_esp_toolchain = Command::new("rustup")
+        .args(["run", "esp", "cargo", "--version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
     for (target, dest) in esp32_targets {
         let dest_path = stub_dest_dir.join(dest);
 
@@ -266,8 +284,12 @@ fn main() {
         });
 
         if needs_rebuild && (is_empty || rebuild_embedded_stubs) {
+            if !has_esp_toolchain {
+                println!("ESP32 toolchain not installed; skipping stub for {}", target);
+                continue;
+            }
             println!(
-                "cargo:warning=Building ESP32 stub for {} (this may take a few minutes)...",
+                "Building ESP32 stub for {} (this may take a few minutes)...",
                 target
             );
             let mut success = false;
@@ -297,7 +319,6 @@ fn main() {
                 .env_remove("MAKEFLAGS")
                 .env_remove("CARGO_TARGET_DIR")
                 .env_remove("RUSTC")
-                .env_remove("CARGO")
                 .env_remove("RUSTDOC")
                 .env_remove("RUSTFLAGS")
                 .env_remove("CARGO_ENCODED_RUSTFLAGS")
@@ -312,7 +333,7 @@ fn main() {
                         .join("matchbox-esp32-runner");
                     if fs::copy(&src_path, &dest_path).is_ok() {
                         success = true;
-                        println!("cargo:warning=ESP32 stub successfully built for {}", target);
+                        println!("ESP32 stub successfully built for {}", target);
                     } else {
                         println!(
                             "cargo:warning=Failed to copy ESP32 stub from {} to {}",
@@ -342,23 +363,23 @@ fn main() {
             }
 
             if !success {
-                println!("cargo:warning=ESP32 stub was not built: {}.", dest);
+                println!("ESP32 stub was not built: {}.", dest);
             }
         } else if needs_rebuild {
             println!(
-                "cargo:warning=Using pre-existing ESP32 stub for {} (set MATCHBOX_REBUILD_EMBEDDED_STUBS=1 to rebuild)",
+                "Using pre-existing ESP32 stub for {} (set MATCHBOX_REBUILD_EMBEDDED_STUBS=1 to rebuild)",
                 target
             );
         }
 
         if dest_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
             stubs_rs_content.push_str(&format!(
-                "    (\n        \"{}\",\n        include_bytes!(\"../stubs/{}\"),\n    ),\n",
+                "    (\n        \"{}\",\n                include_bytes!(\"../stubs/{}\"),\n    ),\n",
                 target, dest
             ));
         } else {
             println!(
-                "cargo:warning=ESP32 stub {} is unavailable; it will not be embedded",
+                "ESP32 stub {} is unavailable; it will not be embedded",
                 dest
             );
         }
@@ -424,7 +445,7 @@ fn main() {
                     ));
                 } else {
                     println!(
-                        "cargo:warning=Cross-compile stub {} is unavailable; it will not be embedded",
+                        "Cross-compile stub {} is unavailable; it will not be embedded",
                         dest
                     );
                 }

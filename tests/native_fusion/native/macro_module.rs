@@ -1,4 +1,4 @@
-use matchbox_vm::{matchbox_fn, BxObject, bx_methods, types::{BxValue, BxVM, BxNativeFunction, BxNativeObject}};
+use matchbox_vm::{matchbox_fn, BxObject, bx_methods, types::{BxValue, BxVM, BxNativeFunction}};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;

@@ -10,6 +10,7 @@ pub fn exported_function_names(ast: &[ast::Statement]) -> Vec<String> {
     functions
 }
 
+#[allow(dead_code)]
 pub fn render_pure_js_bootstrap(
     functions: &[String],
     b64_wasm: &str,

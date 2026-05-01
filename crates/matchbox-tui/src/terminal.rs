@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::io;
-use std::rc::Rc;
 
 use crossterm::event::DisableMouseCapture as DisableMouseCaptureEvent;
 use crossterm::event::EnableMouseCapture as EnableMouseCaptureEvent;

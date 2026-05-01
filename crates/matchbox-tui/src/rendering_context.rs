@@ -1,4 +1,3 @@
-use matchbox_vm::types::BxNativeObject;
 use matchbox_vm::{BxObject, bx_methods};
 
 #[derive(Debug, Clone)]

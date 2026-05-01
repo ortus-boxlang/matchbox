@@ -29,6 +29,7 @@ pub struct ModuleInfo {
 struct Manifest {
     #[serde(default)]
     modules: HashMap<String, ManifestEntry>,
+    #[allow(dead_code)]
     #[serde(default)]
     datasources: HashMap<String, DatasourceEntry>,
 }
@@ -49,6 +50,7 @@ struct BoxJson {
 
 /// A datasource configuration entry from `matchbox.toml`.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct DatasourceEntry {
     pub driver: String,
     #[serde(default = "default_ds_host")]
@@ -255,6 +257,7 @@ pub fn discover_modules(
 /// Returns a map of `datasource_name → DatasourceEntry`. Returns an empty map
 /// when no matchbox.toml is found or when the file contains no `[datasources]`
 /// section.
+#[allow(dead_code)]
 pub fn read_datasource_configs(project_dir: &Path) -> Result<HashMap<String, DatasourceEntry>> {
     let manifest_path = project_dir.join("matchbox.toml");
     if !manifest_path.exists() {
