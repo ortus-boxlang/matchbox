@@ -2,7 +2,10 @@
 use anyhow::{Result, anyhow, bail};
 
 static STUBS: &[(&str, &[u8])] = &[
-    ("wasi", include_bytes!("../stubs/runner_stub_wasip1.wasm")),
+    (
+        "wasi",
+        include_bytes!("../stubs/runner_stub_wasip1.wasm"),
+    ),
     (
         "wasm32-wasip1",
         include_bytes!("../stubs/runner_stub_wasip1.wasm"),

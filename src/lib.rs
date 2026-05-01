@@ -659,6 +659,10 @@ pub fn run() -> Result<()> {
         run_esp32_doctor()?;
         return Ok(());
     }
+    if args.get(1).map(|s| s.as_str()) == Some("lambda") {
+        run_lambda_command(&args[2..])?;
+        return Ok(());
+    }
     if args.contains(&"--help".to_string()) || args.contains(&"-h".to_string()) {
         print_usage();
         return Ok(());
@@ -903,7 +907,138 @@ fn print_usage() {
     );
     println!("\nCommands:");
     println!("  esp32-doctor        Check ESP32 build/flash prerequisites and print fixes");
+    println!("  lambda invoke <path> --event <event.json>");
+    println!(
+        "  lambda deploy <path> --function <name> --bootstrap <path> [--role <arn>] [--public] [--url]"
+    );
     println!("\nIf no file is provided, matchbox starts in REPL mode.");
+}
+
+fn run_lambda_command(args: &[String]) -> Result<()> {
+    match args.first().map(|arg| arg.as_str()) {
+        Some("invoke") => run_lambda_invoke(&args[1..]),
+        Some("deploy") => run_lambda_deploy(&args[1..]),
+        Some(command) => bail!(
+            "Unknown lambda command '{}'. Expected 'invoke' or 'deploy'.",
+            command
+        ),
+        None => bail!("Missing lambda command. Expected 'invoke' or 'deploy'."),
+    }
+}
+
+fn run_lambda_invoke(args: &[String]) -> Result<()> {
+    let source_path = args
+        .iter()
+        .find(|arg| !arg.starts_with("--"))
+        .ok_or_else(|| {
+            anyhow::anyhow!("lambda invoke requires a Lambda.bx file or project path")
+        })?;
+    let event_path = value_after(args, "--event")
+        .ok_or_else(|| anyhow::anyhow!("lambda invoke requires --event <event.json>"))?;
+
+    let event_source = fs::read_to_string(event_path)
+        .with_context(|| format!("failed to read event file {}", event_path))?;
+    let event: serde_json::Value = serde_json::from_str(&event_source)
+        .with_context(|| format!("failed to parse event JSON {}", event_path))?;
+    let runtime = matchbox_lambda_runner::LambdaRuntime::discover(Path::new(source_path))?;
+    let response = runtime.invoke_json(event)?;
+    println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(())
+}
+
+fn value_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|arg| arg == flag)
+        .and_then(|idx| args.get(idx + 1))
+        .map(String::as_str)
+}
+
+fn run_lambda_deploy(args: &[String]) -> Result<()> {
+    use matchbox_lambda_runner::{
+        deploy::{DeployOptions, FunctionUrlAuth, ProcessAwsCli, deploy_with_cli},
+        packaging::{BootstrapStubs, LambdaArchitecture},
+    };
+
+    let source_path = args
+        .iter()
+        .find(|arg| !arg.starts_with("--"))
+        .ok_or_else(|| {
+            anyhow::anyhow!("lambda deploy requires a Lambda.bx file or project path")
+        })?;
+    let function_name = value_after(args, "--function")
+        .ok_or_else(|| anyhow::anyhow!("lambda deploy requires --function <name>"))?
+        .to_string();
+    let bootstrap_path = value_after(args, "--bootstrap").ok_or_else(|| {
+        anyhow::anyhow!(
+            "lambda deploy currently requires --bootstrap <path> until release stubs are embedded"
+        )
+    })?;
+    let bootstrap = fs::read(bootstrap_path)
+        .with_context(|| format!("failed to read bootstrap {}", bootstrap_path))?;
+    let architecture = match value_after(args, "--arch").unwrap_or("arm64") {
+        "arm64" => LambdaArchitecture::Arm64,
+        "x86_64" => LambdaArchitecture::X86_64,
+        other => bail!("unsupported Lambda architecture '{}'", other),
+    };
+    let zip_path = value_after(args, "--out")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from("target")
+                .join("lambda")
+                .join(format!("{function_name}.zip"))
+        });
+    let function_url = match (
+        args.contains(&"--public".to_string()),
+        args.contains(&"--url".to_string()),
+    ) {
+        (true, true) => bail!("Use only one of --public or --url"),
+        (true, false) => Some(FunctionUrlAuth::None),
+        (false, true) => Some(FunctionUrlAuth::AwsIam),
+        (false, false) => None,
+    };
+    let memory = value_after(args, "--memory")
+        .map(|value| value.parse::<u16>())
+        .transpose()
+        .context("--memory must be a number")?;
+    let timeout = value_after(args, "--timeout")
+        .map(|value| value.parse::<u16>())
+        .transpose()
+        .context("--timeout must be a number")?;
+
+    let stubs = match architecture {
+        LambdaArchitecture::Arm64 => BootstrapStubs {
+            arm64: &bootstrap,
+            x86_64: &[],
+        },
+        LambdaArchitecture::X86_64 => BootstrapStubs {
+            arm64: &[],
+            x86_64: &bootstrap,
+        },
+    };
+    let options = DeployOptions {
+        source_path: PathBuf::from(source_path),
+        zip_path,
+        function_name,
+        role: value_after(args, "--role").map(str::to_string),
+        profile: value_after(args, "--profile").map(str::to_string),
+        region: value_after(args, "--region").map(str::to_string),
+        architecture,
+        memory,
+        timeout,
+        function_url,
+    };
+
+    let mut cli = ProcessAwsCli;
+    let result = deploy_with_cli(&options, stubs, &mut cli)?;
+    println!(
+        "{} {}",
+        if result.created { "Created" } else { "Updated" },
+        options.function_name
+    );
+    if let Some(url) = result.function_url {
+        println!("{}", url);
+    }
+    Ok(())
 }
 
 fn print_version() {

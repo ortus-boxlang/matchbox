@@ -1,0 +1,27 @@
+{
+  "version": "2.0",
+  "routeKey": "$default",
+  "rawPath": "/",
+  "rawQueryString": "name=Lambda",
+  "queryStringParameters": {
+    "name": "Lambda"
+  },
+  "headers": {
+    "host": "example.lambda-url.us-east-1.on.aws",
+    "user-agent": "curl/8.0"
+  },
+  "requestContext": {
+    "domainName": "example.lambda-url.us-east-1.on.aws",
+    "http": {
+      "method": "GET",
+      "path": "/",
+      "protocol": "HTTP/1.1",
+      "sourceIp": "127.0.0.1",
+      "userAgent": "curl/8.0"
+    },
+    "requestId": "local-request",
+    "routeKey": "$default",
+    "stage": "$default"
+  },
+  "isBase64Encoded": false
+}

@@ -1,0 +1,16 @@
+[package]
+name = "matchbox_lambda_runner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+base64 = "0.22"
+matchbox_compiler = { path = "../matchbox-compiler" }
+matchbox_vm = { path = "../matchbox-vm" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde_json = "1.0"
+zip = "2.2"
+
+[dev-dependencies]
+tempfile = "3.10"

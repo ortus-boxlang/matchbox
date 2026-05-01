@@ -1713,6 +1713,7 @@ dependencies = [
  "libc",
  "matchbox-embedded",
  "matchbox_compiler",
+ "matchbox_lambda_runner",
  "matchbox_server",
  "matchbox_tui",
  "matchbox_utility",
@@ -1756,6 +1757,20 @@ dependencies = [
  "pest_derive",
  "regex",
  "serde",
+]
+
+[[package]]
+name = "matchbox_lambda_runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "matchbox_compiler",
+ "matchbox_vm",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "zip",
 ]
 
 [[package]]

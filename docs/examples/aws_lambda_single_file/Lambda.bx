@@ -1,0 +1,31 @@
+class {
+    function run(event, context, response) {
+        response.headers = {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization"
+        };
+
+        if (event.requestContext.http.method == "OPTIONS") {
+            response.statusCode = 200;
+            response.body = {};
+            return;
+        }
+
+        name = "MatchBox";
+
+        if (event.queryStringParameters.name != null) {
+            name = event.queryStringParameters.name;
+        } else if (event.name != null) {
+            name = event.name;
+        }
+
+        response.statusCode = 200;
+        response.body = {
+            "message": "Hello from " & name,
+            "requestId": context.getAwsRequestId(),
+            "path": event.rawPath
+        };
+    }
+}
