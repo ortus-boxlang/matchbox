@@ -20,11 +20,29 @@ The response contains:
 | Field | Meaning |
 | :--- | :--- |
 | `status` | Numeric HTTP status, such as `200` or `404`. |
+| `headers` | Response headers as a struct of lowercase names to arrays of string values. |
 | `body` | Response text, when not downloading to a file. |
 | `file_content` | The same response text as `body`. |
 | `file_path` | Destination path, when downloading to a file instead of returning text. |
 
 For a JSON API, deserialize `response.body` separately to obtain the API's data. HTTP 4xx/5xx statuses are returned normally; check `status` before using the body or downloaded file.
+
+### Response Headers
+
+Every response, including 4xx/5xx responses and downloads, includes `headers`. Header names are lowercase, and every value is an array, even when the header appeared once. Repeated headers such as `Set-Cookie` keep each value separately, in the order received. Header bytes that are not valid UTF-8 are decoded with replacement characters (`�`).
+
+```boxlang
+response = jsonDeserialize(http({ url: "https://example.com/" }).get());
+println(response.headers["content-type"][1]);
+
+if (structKeyExists(response.headers, "set-cookie")) {
+    for (cookie in response.headers["set-cookie"]) {
+        println(cookie);
+    }
+}
+```
+
+With `redirect: true`, `headers` belongs to the final response. With `redirect: false`, it belongs to the original 3xx response, so its `location` header names the redirect target. Headers from intermediate redirects are not kept.
 
 ## Request Options
 

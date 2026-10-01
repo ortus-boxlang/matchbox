@@ -149,6 +149,31 @@ fn send_http(
     request.send().map_err(request_error)
 }
 
+/// Builds the `headers` struct for an http() result: lowercase header name -> array of values.
+/// Scripts can then inspect content types, redirect locations, cookies, and other metadata
+/// that were previously discarded. Every value is an array, even for single-value headers,
+/// so scripts always see the same shape.
+#[cfg(all(feature = "bif-http", not(target_arch = "wasm32")))]
+fn response_headers(headers: &reqwest::header::HeaderMap) -> serde_json::Value {
+    let mut result = serde_json::Map::new();
+    // HeaderMap yields one entry per received value, in order, so repeated headers such as
+    // Set-Cookie stay separate instead of being joined or overwritten. Names are already
+    // lowercase in HeaderMap.
+    for (name, value) in headers {
+        // Header values are raw bytes and may not be valid UTF-8. Lossy decoding substitutes
+        // U+FFFD for invalid bytes instead of failing or panicking.
+        let value = String::from_utf8_lossy(value.as_bytes()).into_owned();
+        // Create the array the first time a name appears, then append each later value.
+        if let serde_json::Value::Array(values) = result
+            .entry(name.as_str())
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+        {
+            values.push(value.into());
+        }
+    }
+    serde_json::Value::Object(result)
+}
+
 #[cfg(feature = "bif-http")]
 pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     let mut url = String::new();
@@ -210,15 +235,27 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
             let result = (|| {
                 let mut response = send_http(&url, &method, &headers, body, &options)?;
                 let status = response.status().as_u16();
+                // Capture headers before reading the body: copy_to()/text() consume the
+                // response. reqwest returns the final response when redirects are followed
+                // and the original 3xx when they are disabled, so these are the correct
+                // headers in both cases. Error statuses (4xx/5xx) also reach this point.
+                let response_headers = response_headers(response.headers());
                 if let Some(p) = path {
                     let mut file =
                         File::create(&p).map_err(|e| format!("Failed to create file: {e}"))?;
                     response.copy_to(&mut file).map_err(request_error)?;
-                    Ok(serde_json::json!({ "status": status, "file_path": p }))
+                    Ok(serde_json::json!({
+                        "status": status,
+                        // Downloads expose headers too (e.g. content-type of the saved file).
+                        "headers": response_headers,
+                        "file_path": p
+                    }))
                 } else {
                     let text = response.text().map_err(request_error)?;
                     Ok(serde_json::json!({
                         "status": status,
+                        // Text responses expose the same headers struct as downloads.
+                        "headers": response_headers,
                         "file_content": text,
                         "body": text
                     }))
