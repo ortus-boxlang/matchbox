@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-02
+
 ### Added
 - **Expanded BoxLang Compatibility**: Added hundreds of BIFs across arrays, structs, strings, lists, queries, sets, binary operations, encryption, conversion, decision, formatting, i18n, filesystem, JDBC, cache, system, temporal, XML, ZIP, and stream APIs.
 - **Compatibility Transfer Suite**: Added more than 500 black-box tests transferred from the BoxLang JVM implementation, including operators, scopes, casters, runtime types, and global BIFs.
