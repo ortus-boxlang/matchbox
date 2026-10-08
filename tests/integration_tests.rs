@@ -1171,3 +1171,137 @@ fn test_native_math_module() {
         panic!("Native math module test failed: {}", e);
     }
 }
+
+
+// --eval: inline script execution (issue #47)
+
+mod eval_flag {
+    use std::fs;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn matchbox() -> Command {
+        Command::new(env!("CARGO_BIN_EXE_matchbox"))
+    }
+
+    fn eval(src: &str) -> std::process::Output {
+        matchbox().arg("--eval").arg(src).output().unwrap()
+    }
+
+    #[test]
+    fn arithmetic_prints_and_exits_zero() {
+        let out = eval("println(1 + 2);");
+        assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n");
+    }
+
+    #[test]
+    fn short_flag_works() {
+        let out = matchbox().arg("-e").arg("println(\"hi\");").output().unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n");
+    }
+
+    #[test]
+    fn multiple_statements_and_udfs() {
+        let out = eval("function double(n) { return n * 2; } var x = 5; println(double(x));");
+        assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "10");
+    }
+
+    #[test]
+    fn no_repl_prompt_and_no_artifacts() {
+        let dir = tempdir().unwrap();
+        let out = matchbox()
+            .current_dir(dir.path())
+            .arg("--eval")
+            .arg("println(1);")
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(!stdout.contains("bx>"));
+        assert!(!stdout.contains("REPL"));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0, "artifacts left behind");
+    }
+
+    #[test]
+    fn parse_error_reports_eval_source_on_stderr() {
+        let out = eval("function broken( {");
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("<eval>"), "missing <eval> marker in: {stderr}");
+    }
+
+    #[test]
+    fn runtime_error_exits_nonzero() {
+        let out = eval("thisFunctionDoesNotExistAnywhere();");
+        assert!(!out.status.success());
+        assert!(!String::from_utf8_lossy(&out.stderr).is_empty());
+    }
+
+    #[test]
+    fn rejects_missing_empty_and_conflicting_input() {
+        assert!(!matchbox().arg("--eval").status().unwrap().success());
+        assert!(!eval("   ").status.success());
+
+        // File argument alongside --eval
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("x.bxs");
+        fs::write(&file, "println(1);\n").unwrap();
+        assert!(!matchbox()
+            .arg("--eval").arg("println(1);")
+            .arg(&file)
+            .status().unwrap().success());
+
+        for conflict in ["--build", "--serve", "--watch"] {
+            assert!(!matchbox()
+                .arg("--eval").arg("println(1);")
+                .arg(conflict)
+                .status().unwrap().success(),
+                "{conflict} was accepted");
+        }
+    }
+
+    #[test]
+    fn prelude_function_works() {
+        // arrayUnique is implemented in the BoxLang prelude, not as a native BIF.
+        let out = eval("println(arrayUnique([1, 1, 2]).len());");
+        assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "2");
+    }
+
+    #[test]
+    fn compilation_error_exits_nonzero_and_names_eval() {
+        // Parses fine, but the compiler rejects `break` outside a loop.
+        let out = eval("break;");
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("Compiler Error"), "unexpected stderr: {stderr}");
+        assert!(stderr.contains("<eval>"), "missing <eval> marker in: {stderr}");
+    }
+
+    #[test]
+    fn uncaught_runtime_error_reports_eval_location() {
+        let out = eval("throw(\"boom\");");
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("boom"), "unexpected stderr: {stderr}");
+        assert!(stderr.contains("<eval>"), "missing <eval> marker in: {stderr}");
+    }
+
+    #[test]
+    fn failures_leave_no_artifacts() {
+        let dir = tempdir().unwrap();
+        for src in ["function broken( {", "break;", "throw(\"boom\");"] {
+            let out = matchbox()
+                .current_dir(dir.path())
+                .arg("--eval")
+                .arg(src)
+                .output()
+                .unwrap();
+            assert!(!out.status.success(), "{src:?} unexpectedly succeeded");
+        }
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0, "artifacts left behind");
+    }
+}
