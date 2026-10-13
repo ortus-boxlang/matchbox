@@ -1675,7 +1675,11 @@ impl Compiler {
                     }
                     Ok(())
                 }
-                Literal::Function { params, body, is_lambda } => {
+                Literal::Function {
+                    params,
+                    body,
+                    is_lambda,
+                } => {
                     let anon_name = format!("anonymous@{}@{}", expr.line, self.chunk.code.len());
                     let func = self.compile_function(
                         &anon_name,
@@ -1848,7 +1852,7 @@ impl Compiler {
                             self.chunk.emit0(op::MULTIPLY, expr.line);
                         }
                     }
-                     "/" => {
+                    "/" => {
                         let mut specialized = false;
                         if let (
                             ExpressionKind::Literal(Literal::Number(_)),
@@ -1858,17 +1862,17 @@ impl Compiler {
                             self.chunk.emit0(op::DIV_FLOAT, expr.line);
                             specialized = true;
                         }
-                         if !specialized {
-                             self.chunk.emit0(op::DIVIDE, expr.line);
-                         }
-                     }
-                     "\\" => self.chunk.emit0(op::INTEGER_DIVIDE, expr.line),
-                     "%" => self.chunk.emit0(op::MODULO, expr.line),
-                     "&" => self.chunk.emit0(op::STRING_CONCAT, expr.line),
-                     "==" => self.chunk.emit0(op::EQUAL, expr.line),
-                     "===" => self.chunk.emit0(op::STRICT_EQUAL, expr.line),
-                     "!=" => self.chunk.emit0(op::NOT_EQUAL, expr.line),
-                     "!==" => self.chunk.emit0(op::STRICT_NOT_EQUAL, expr.line),
+                        if !specialized {
+                            self.chunk.emit0(op::DIVIDE, expr.line);
+                        }
+                    }
+                    "\\" => self.chunk.emit0(op::INTEGER_DIVIDE, expr.line),
+                    "%" => self.chunk.emit0(op::MODULO, expr.line),
+                    "&" => self.chunk.emit0(op::STRING_CONCAT, expr.line),
+                    "==" => self.chunk.emit0(op::EQUAL, expr.line),
+                    "===" => self.chunk.emit0(op::STRICT_EQUAL, expr.line),
+                    "!=" => self.chunk.emit0(op::NOT_EQUAL, expr.line),
+                    "!==" => self.chunk.emit0(op::STRICT_NOT_EQUAL, expr.line),
                     "<" => self.chunk.emit0(op::LESS, expr.line),
                     "<=" => self.chunk.emit0(op::LESS_EQUAL, expr.line),
                     ">" => self.chunk.emit0(op::GREATER, expr.line),
@@ -2061,10 +2065,7 @@ impl Compiler {
                         self.chunk.emit1(op::CONSTANT, null_idx, expr.line);
                         return Ok(());
                     }
-                    if lower_name == "isnull"
-                        && args.len() == 1
-                        && args[0].name.is_none()
-                    {
+                    if lower_name == "isnull" && args.len() == 1 && args[0].name.is_none() {
                         self.compile_expression(&base)?;
                         if let ExpressionKind::ArrayAccess { base, index } = &args[0].value.kind {
                             self.compile_expression(base)?;

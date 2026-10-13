@@ -1,4 +1,4 @@
-use crate::tokenizer::{lex, lex_template, Span, SyntaxToken, TokenKind, Trivia};
+use crate::tokenizer::{Span, SyntaxToken, TokenKind, Trivia, lex, lex_template};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxKind {
@@ -227,12 +227,15 @@ fn group_expression_nodes(node: &mut SyntaxNode) {
         | SyntaxKind::Param
         | SyntaxKind::Include
         | SyntaxKind::Not => wrap_after_first_token(children),
-        SyntaxKind::If | SyntaxKind::While | SyntaxKind::Do | SyntaxKind::Switch | SyntaxKind::For => {
-            wrap_first_parenthesized_region(children)
-        }
-        SyntaxKind::Interpolation | SyntaxKind::ScriptIsland | SyntaxKind::Root | SyntaxKind::Block => {
-            children
-        }
+        SyntaxKind::If
+        | SyntaxKind::While
+        | SyntaxKind::Do
+        | SyntaxKind::Switch
+        | SyntaxKind::For => wrap_first_parenthesized_region(children),
+        SyntaxKind::Interpolation
+        | SyntaxKind::ScriptIsland
+        | SyntaxKind::Root
+        | SyntaxKind::Block => children,
         _ => children,
     };
 }
@@ -258,7 +261,9 @@ fn wrap_after_token(children: Vec<SyntaxElement>, token_kind: TokenKind) -> Vec<
     let len = children.len();
     let expr_start = children
         .iter()
-        .position(|element| matches!(element, SyntaxElement::Token(token) if token.kind == token_kind))
+        .position(
+            |element| matches!(element, SyntaxElement::Token(token) if token.kind == token_kind),
+        )
         .map(|idx| idx + 1)
         .unwrap_or(len);
     let end = expression_end_index(&children).unwrap_or(len);
@@ -272,13 +277,20 @@ fn expression_end_index(children: &[SyntaxElement]) -> Option<usize> {
 }
 
 fn wrap_first_parenthesized_region(children: Vec<SyntaxElement>) -> Vec<SyntaxElement> {
-    let Some(open_idx) = children.iter().position(|element| matches!(
-        element,
-        SyntaxElement::Token(token) if token.kind == TokenKind::LeftParen
-    )) else {
+    let Some(open_idx) = children.iter().position(|element| {
+        matches!(
+            element,
+            SyntaxElement::Token(token) if token.kind == TokenKind::LeftParen
+        )
+    }) else {
         return children;
     };
-    let Some(close_idx) = find_matching_token(&children, open_idx, TokenKind::LeftParen, TokenKind::RightParen) else {
+    let Some(close_idx) = find_matching_token(
+        &children,
+        open_idx,
+        TokenKind::LeftParen,
+        TokenKind::RightParen,
+    ) else {
         return children;
     };
 
@@ -294,7 +306,11 @@ fn wrap_first_parenthesized_region(children: Vec<SyntaxElement>) -> Vec<SyntaxEl
     output
 }
 
-fn wrap_expression_slice(children: Vec<SyntaxElement>, start: usize, end: usize) -> Vec<SyntaxElement> {
+fn wrap_expression_slice(
+    children: Vec<SyntaxElement>,
+    start: usize,
+    end: usize,
+) -> Vec<SyntaxElement> {
     if start >= end || start >= children.len() {
         return children;
     }
@@ -318,10 +334,15 @@ fn structure_expression_slice(elements: &[SyntaxElement]) -> Vec<SyntaxElement> 
         return elements;
     }
 
-    if let Some(open_idx) = find_postfix_open(&elements, TokenKind::LeftParen, TokenKind::RightParen) {
-        if let Some(close_idx) =
-            find_matching_token(&elements, open_idx, TokenKind::LeftParen, TokenKind::RightParen)
-        {
+    if let Some(open_idx) =
+        find_postfix_open(&elements, TokenKind::LeftParen, TokenKind::RightParen)
+    {
+        if let Some(close_idx) = find_matching_token(
+            &elements,
+            open_idx,
+            TokenKind::LeftParen,
+            TokenKind::RightParen,
+        ) {
             if open_idx > 0 {
                 let base = structure_expression_slice(&elements[..open_idx]);
                 let inner = structure_expression_slice(&elements[open_idx + 1..close_idx]);
@@ -340,10 +361,15 @@ fn structure_expression_slice(elements: &[SyntaxElement]) -> Vec<SyntaxElement> 
         }
     }
 
-    if let Some(open_idx) = find_postfix_open(&elements, TokenKind::LeftBracket, TokenKind::RightBracket) {
-        if let Some(close_idx) =
-            find_matching_token(&elements, open_idx, TokenKind::LeftBracket, TokenKind::RightBracket)
-        {
+    if let Some(open_idx) =
+        find_postfix_open(&elements, TokenKind::LeftBracket, TokenKind::RightBracket)
+    {
+        if let Some(close_idx) = find_matching_token(
+            &elements,
+            open_idx,
+            TokenKind::LeftBracket,
+            TokenKind::RightBracket,
+        ) {
             if open_idx > 0 {
                 let base = structure_expression_slice(&elements[..open_idx]);
                 let inner = structure_expression_slice(&elements[open_idx + 1..close_idx]);
@@ -478,11 +504,13 @@ fn find_top_level_token(elements: &[SyntaxElement], kind: TokenKind) -> Option<u
 }
 
 fn enclosing_pair(elements: &[SyntaxElement]) -> Option<(usize, usize, TokenKind)> {
-    let first = elements.iter().position(|element| matches!(
-        element,
-        SyntaxElement::Token(token)
-            if matches!(token.kind, TokenKind::LeftParen | TokenKind::LeftBracket)
-    ))?;
+    let first = elements.iter().position(|element| {
+        matches!(
+            element,
+            SyntaxElement::Token(token)
+                if matches!(token.kind, TokenKind::LeftParen | TokenKind::LeftBracket)
+        )
+    })?;
     let kind = match elements[first] {
         SyntaxElement::Token(token) => token.kind,
         _ => unreachable!(),
@@ -630,10 +658,12 @@ fn group_template_regions(source: &str, elements: &[SyntaxElement]) -> Vec<Synta
                         let body_start = elements
                             .get(start_index + 1)
                             .map(SyntaxElement::span)
-                            .map(|span| if matches!(elements[start_index + 1], SyntaxElement::Source(_)) {
-                                span.end
-                            } else {
-                                span.start
+                            .map(|span| {
+                                if matches!(elements[start_index + 1], SyntaxElement::Source(_)) {
+                                    span.end
+                                } else {
+                                    span.start
+                                }
                             })
                             .unwrap_or(open_start);
                         let mut body = parse_script(&source[body_start..script_end]).root.clone();
@@ -685,7 +715,9 @@ fn shift_node_with_base(node: &mut SyntaxNode, base_start: usize, base_line: u32
     node.span = shift_span(node.span, base_start, base_line, base_col);
     for child in &mut node.children {
         match child {
-            SyntaxElement::Node(node) => shift_node_with_base(node, base_start, base_line, base_col),
+            SyntaxElement::Node(node) => {
+                shift_node_with_base(node, base_start, base_line, base_col)
+            }
             SyntaxElement::Token(token) => {
                 token.span = shift_span(token.span, base_start, base_line, base_col);
             }

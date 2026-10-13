@@ -1,7 +1,7 @@
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use serde::{Serialize, Serializer, Deserialize, Deserializer};
 
 pub const SSO_CAPACITY: usize = 22;
 
@@ -31,7 +31,10 @@ impl BoxString {
             let mut buf = [0; SSO_CAPACITY];
             buf[..len].copy_from_slice(s.as_bytes());
             BoxString {
-                repr: StringRepr::Inline { len: len as u8, buf },
+                repr: StringRepr::Inline {
+                    len: len as u8,
+                    buf,
+                },
             }
         } else {
             BoxString {
@@ -68,7 +71,10 @@ impl BoxString {
             self.write_to_slice(&mut buf[..self.len()]);
             other.write_to_slice(&mut buf[self.len()..total_len]);
             BoxString {
-                repr: StringRepr::Inline { len: total_len as u8, buf },
+                repr: StringRepr::Inline {
+                    len: total_len as u8,
+                    buf,
+                },
             }
         } else {
             BoxString {
@@ -105,9 +111,9 @@ impl BoxString {
         }
 
         match &self.repr {
-            StringRepr::Inline { len, buf } => {
-                unsafe { std::str::from_utf8_unchecked(&buf[..*len as usize]) }
-            }
+            StringRepr::Inline { len, buf } => unsafe {
+                std::str::from_utf8_unchecked(&buf[..*len as usize])
+            },
             StringRepr::Flat(s) => s,
             StringRepr::Rope(_) => unreachable!(),
         }
@@ -165,13 +171,13 @@ impl PartialEq for BoxString {
         if self.len() != other.len() {
             return false;
         }
-        
+
         let mut iter1 = BoxStringChunkIter::new(self);
         let mut iter2 = BoxStringChunkIter::new(other);
-        
+
         let mut chunk1 = iter1.next().unwrap_or(&[]);
         let mut chunk2 = iter2.next().unwrap_or(&[]);
-        
+
         while !chunk1.is_empty() && !chunk2.is_empty() {
             let min_len = chunk1.len().min(chunk2.len());
             if chunk1[..min_len] != chunk2[..min_len] {
@@ -186,7 +192,7 @@ impl PartialEq for BoxString {
                 chunk2 = iter2.next().unwrap_or(&[]);
             }
         }
-        
+
         chunk1.is_empty() && chunk2.is_empty()
     }
 }
@@ -281,7 +287,10 @@ mod tests {
 
     #[test]
     fn test_size() {
-        assert!(std::mem::size_of::<BoxString>() <= 32, "BoxString size is strictly optimal");
+        assert!(
+            std::mem::size_of::<BoxString>() <= 32,
+            "BoxString size is strictly optimal"
+        );
     }
 
     #[test]
@@ -298,7 +307,10 @@ mod tests {
         let s = BoxString::new("this string is definitely longer than 22 characters");
         assert!(matches!(s.repr, StringRepr::Flat(_)));
         assert_eq!(s.len(), 51);
-        assert_eq!(s.to_string(), "this string is definitely longer than 22 characters");
+        assert_eq!(
+            s.to_string(),
+            "this string is definitely longer than 22 characters"
+        );
         assert_eq!(s.depth(), 0);
     }
 
@@ -320,7 +332,10 @@ mod tests {
         let c = a.concat(&b);
         assert!(matches!(c.repr, StringRepr::Rope(_)));
         assert_eq!(c.len(), a.len() + b.len());
-        assert_eq!(c.to_string(), "this is a somewhat long string that will definitely create a rope when concatenated.");
+        assert_eq!(
+            c.to_string(),
+            "this is a somewhat long string that will definitely create a rope when concatenated."
+        );
         assert_eq!(c.depth(), 1);
     }
 
@@ -331,7 +346,7 @@ mod tests {
         let c = BoxString::new("this is a long string to force rope.");
         let mut rope = a.concat(&b).concat(&c);
         assert!(matches!(rope.repr, StringRepr::Rope(_)));
-        
+
         let flat_str = rope.flatten();
         assert_eq!(flat_str, "hello world this is a long string to force rope.");
         assert!(matches!(rope.repr, StringRepr::Flat(_)));
@@ -343,11 +358,11 @@ mod tests {
         let long_part2 = "b".repeat(15);
         let rope1 = BoxString::new(&long_part1).concat(&BoxString::new(&long_part2));
         let flat1 = BoxString::new(&format!("{}{}", long_part1, long_part2));
-        
+
         assert!(matches!(rope1.repr, StringRepr::Rope(_)));
         assert!(matches!(flat1.repr, StringRepr::Flat(_)));
         assert_eq!(rope1, flat1);
-        
+
         let flat_diff = BoxString::new(&format!("{}X{}", long_part1, long_part2));
         assert_ne!(rope1, flat_diff);
     }
@@ -358,7 +373,7 @@ mod tests {
         let long_part2 = "b".repeat(15);
         let rope1 = BoxString::new(&long_part1).concat(&BoxString::new(&long_part2));
         let flat1 = BoxString::new(&format!("{}{}", long_part1, long_part2));
-        
+
         assert_eq!(calculate_hash(&rope1), calculate_hash(&flat1));
     }
 }

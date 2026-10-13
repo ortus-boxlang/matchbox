@@ -1,0 +1,3 @@
+[datasources.db]
+driver = "sqlite"
+database = "app.db"

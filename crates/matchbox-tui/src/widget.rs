@@ -1,11 +1,11 @@
-use ratatui::layout::Rect;
 use ratatui::Frame;
+use ratatui::layout::Rect;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use matchbox_vm::{BxObject, bx_methods};
-use matchbox_vm::types::{BxVM, BxValue, Tracer};
 use crate::terminal::TUI;
+use matchbox_vm::types::{BxVM, BxValue, Tracer};
+use matchbox_vm::{BxObject, bx_methods};
 
 #[derive(Clone, Debug)]
 pub enum TextAlignment {
@@ -82,14 +82,22 @@ impl TextWidget {
     pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue, _area: BxValue) -> Result<(), String> {
         if let Some(ctx_id) = ctx.as_gc_id() {
             if self.z_index != 0 {
-                let _ = vm.native_object_call_method(ctx_id, "setZIndex", &[BxValue::new_number(self.z_index as f64)]);
+                let _ = vm.native_object_call_method(
+                    ctx_id,
+                    "setZIndex",
+                    &[BxValue::new_number(self.z_index as f64)],
+                );
             }
             let text_id = vm.string_new(self.text.clone());
-            vm.native_object_call_method(ctx_id, "drawText", &[
-                BxValue::new_number(0.0),
-                BxValue::new_number(0.0),
-                BxValue::new_ptr(text_id),
-            ])?;
+            vm.native_object_call_method(
+                ctx_id,
+                "drawText",
+                &[
+                    BxValue::new_number(0.0),
+                    BxValue::new_number(0.0),
+                    BxValue::new_ptr(text_id),
+                ],
+            )?;
         }
         Ok(())
     }
@@ -132,14 +140,22 @@ impl ButtonWidget {
     pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue, _area: BxValue) -> Result<(), String> {
         if let Some(ctx_id) = ctx.as_gc_id() {
             if self.z_index != 0 {
-                let _ = vm.native_object_call_method(ctx_id, "setZIndex", &[BxValue::new_number(self.z_index as f64)]);
+                let _ = vm.native_object_call_method(
+                    ctx_id,
+                    "setZIndex",
+                    &[BxValue::new_number(self.z_index as f64)],
+                );
             }
             let label_id = vm.string_new(format!("[ {} ]", self.label));
-            vm.native_object_call_method(ctx_id, "drawText", &[
-                BxValue::new_number(0.0),
-                BxValue::new_number(0.0),
-                BxValue::new_ptr(label_id),
-            ])?;
+            vm.native_object_call_method(
+                ctx_id,
+                "drawText",
+                &[
+                    BxValue::new_number(0.0),
+                    BxValue::new_number(0.0),
+                    BxValue::new_ptr(label_id),
+                ],
+            )?;
         }
         Ok(())
     }
@@ -201,12 +217,16 @@ impl ListWidget {
     pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue, area: BxValue) -> Result<(), String> {
         if let Some(ctx_id) = ctx.as_gc_id() {
             if self.z_index != 0 {
-                let _ = vm.native_object_call_method(ctx_id, "setZIndex", &[BxValue::new_number(self.z_index as f64)]);
+                let _ = vm.native_object_call_method(
+                    ctx_id,
+                    "setZIndex",
+                    &[BxValue::new_number(self.z_index as f64)],
+                );
             }
-            
+
             let area_id = area.as_gc_id().ok_or("Invalid area")?;
             let h = vm.struct_get(area_id, "h").as_number() as usize;
-            
+
             for i in 0..self.items.len().min(h) {
                 let prefix = if i == self.selected { "> " } else { "  " };
                 let text = match self.style {
@@ -214,13 +234,17 @@ impl ListWidget {
                     ListStyle::Bulleted => format!("{}• {}", prefix, self.items[i]),
                     ListStyle::Numbered => format!("{}{}. {}", prefix, i + 1, self.items[i]),
                 };
-                
+
                 let text_id = vm.string_new(text);
-                vm.native_object_call_method(ctx_id, "drawText", &[
-                    BxValue::new_number(0.0),
-                    BxValue::new_number(i as f64),
-                    BxValue::new_ptr(text_id),
-                ])?;
+                vm.native_object_call_method(
+                    ctx_id,
+                    "drawText",
+                    &[
+                        BxValue::new_number(0.0),
+                        BxValue::new_number(i as f64),
+                        BxValue::new_ptr(text_id),
+                    ],
+                )?;
             }
         }
         Ok(())
@@ -271,29 +295,41 @@ impl ProgressBarWidget {
     pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue, area: BxValue) -> Result<(), String> {
         if let Some(ctx_id) = ctx.as_gc_id() {
             if self.z_index != 0 {
-                let _ = vm.native_object_call_method(ctx_id, "setZIndex", &[BxValue::new_number(self.z_index as f64)]);
+                let _ = vm.native_object_call_method(
+                    ctx_id,
+                    "setZIndex",
+                    &[BxValue::new_number(self.z_index as f64)],
+                );
             }
-            
+
             let area_id = area.as_gc_id().ok_or("Invalid area")?;
             let w = vm.struct_get(area_id, "w").as_number();
-            
+
             let pct = if self.total > 0 {
                 (self.completed as f64 / self.total as f64).clamp(0.0, 1.0)
             } else {
                 0.0
             };
-            
+
             let filled_w = (w * pct) as usize;
             let mut bar = String::new();
-            for _ in 0..filled_w { bar.push('█'); }
-            for _ in filled_w..(w as usize) { bar.push('░'); }
-            
+            for _ in 0..filled_w {
+                bar.push('█');
+            }
+            for _ in filled_w..(w as usize) {
+                bar.push('░');
+            }
+
             let text_id = vm.string_new(bar);
-            vm.native_object_call_method(ctx_id, "drawText", &[
-                BxValue::new_number(0.0),
-                BxValue::new_number(0.0),
-                BxValue::new_ptr(text_id),
-            ])?;
+            vm.native_object_call_method(
+                ctx_id,
+                "drawText",
+                &[
+                    BxValue::new_number(0.0),
+                    BxValue::new_number(0.0),
+                    BxValue::new_ptr(text_id),
+                ],
+            )?;
         }
         Ok(())
     }
@@ -349,32 +385,44 @@ impl BlockWidget {
     pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue, area: BxValue) -> Result<(), String> {
         if let Some(ctx_id) = ctx.as_gc_id() {
             if self.z_index != 0 {
-                let _ = vm.native_object_call_method(ctx_id, "setZIndex", &[BxValue::new_number(self.z_index as f64)]);
+                let _ = vm.native_object_call_method(
+                    ctx_id,
+                    "setZIndex",
+                    &[BxValue::new_number(self.z_index as f64)],
+                );
             }
-            
+
             let area_id = area.as_gc_id().ok_or("Invalid area")?;
             let w = vm.struct_get(area_id, "w").as_number();
             let h = vm.struct_get(area_id, "h").as_number();
-            
+
             // 1. Draw border
-            vm.native_object_call_method(ctx_id, "drawRect", &[
-                BxValue::new_number(0.0),
-                BxValue::new_number(0.0),
-                BxValue::new_number(w),
-                BxValue::new_number(h),
-            ])?;
-            
+            vm.native_object_call_method(
+                ctx_id,
+                "drawRect",
+                &[
+                    BxValue::new_number(0.0),
+                    BxValue::new_number(0.0),
+                    BxValue::new_number(w),
+                    BxValue::new_number(h),
+                ],
+            )?;
+
             // 2. Draw title
             if !self.title.is_empty() {
                 let title_text = format!(" {} ", self.title);
                 let title_id = vm.string_new(title_text);
-                vm.native_object_call_method(ctx_id, "drawText", &[
-                    BxValue::new_number(2.0),
-                    BxValue::new_number(0.0),
-                    BxValue::new_ptr(title_id),
-                ])?;
+                vm.native_object_call_method(
+                    ctx_id,
+                    "drawText",
+                    &[
+                        BxValue::new_number(2.0),
+                        BxValue::new_number(0.0),
+                        BxValue::new_ptr(title_id),
+                    ],
+                )?;
             }
-            
+
             // 3. Inner widget via double dispatch
             if let Some(inner) = self.inner_widget {
                 if let Some(inner_obj_id) = inner.as_gc_id() {
@@ -387,15 +435,20 @@ impl BlockWidget {
                     // Root the temporary area struct
                     vm.push_root(BxValue::new_ptr(inner_area_id));
 
-                    vm.native_object_call_method(ctx_id, "pushOrigin", &[
-                        BxValue::new_number(1.0),
-                        BxValue::new_number(1.0),
-                    ])?;
+                    vm.native_object_call_method(
+                        ctx_id,
+                        "pushOrigin",
+                        &[BxValue::new_number(1.0), BxValue::new_number(1.0)],
+                    )?;
 
-                    let _ = vm.native_object_call_method(inner_obj_id, "__render", &[ctx, BxValue::new_ptr(inner_area_id)]);
+                    let _ = vm.native_object_call_method(
+                        inner_obj_id,
+                        "__render",
+                        &[ctx, BxValue::new_ptr(inner_area_id)],
+                    );
 
                     vm.native_object_call_method(ctx_id, "popOrigin", &[])?;
-                    
+
                     vm.pop_root();
                 }
             }
@@ -448,34 +501,46 @@ impl InputWidget {
     pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue, area: BxValue) -> Result<(), String> {
         if let Some(ctx_id) = ctx.as_gc_id() {
             if self.z_index != 0 {
-                let _ = vm.native_object_call_method(ctx_id, "setZIndex", &[BxValue::new_number(self.z_index as f64)]);
+                let _ = vm.native_object_call_method(
+                    ctx_id,
+                    "setZIndex",
+                    &[BxValue::new_number(self.z_index as f64)],
+                );
             }
-            
+
             let area_id = area.as_gc_id().ok_or("Invalid area")?;
             let w = vm.struct_get(area_id, "w").as_number();
             let h = vm.struct_get(area_id, "h").as_number();
-            
+
             // Draw a rectangle for the input box
-            vm.native_object_call_method(ctx_id, "drawRect", &[
-                BxValue::new_number(0.0),
-                BxValue::new_number(0.0),
-                BxValue::new_number(w),
-                BxValue::new_number(h),
-            ])?;
-            
+            vm.native_object_call_method(
+                ctx_id,
+                "drawRect",
+                &[
+                    BxValue::new_number(0.0),
+                    BxValue::new_number(0.0),
+                    BxValue::new_number(w),
+                    BxValue::new_number(h),
+                ],
+            )?;
+
             // Draw prompt + value
             let display_text = if self.value.is_empty() {
                 format!("{} {}", self.prompt, self.placeholder)
             } else {
                 format!("{} {}", self.prompt, self.value)
             };
-            
+
             let text_id = vm.string_new(display_text);
-            vm.native_object_call_method(ctx_id, "drawText", &[
-                BxValue::new_number(1.0), // Padding inside border
-                BxValue::new_number(1.0),
-                BxValue::new_ptr(text_id),
-            ])?;
+            vm.native_object_call_method(
+                ctx_id,
+                "drawText",
+                &[
+                    BxValue::new_number(1.0), // Padding inside border
+                    BxValue::new_number(1.0),
+                    BxValue::new_ptr(text_id),
+                ],
+            )?;
         }
         Ok(())
     }
@@ -509,41 +574,51 @@ impl VBoxWidget {
 
     #[allow(non_snake_case)]
     pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue, area: BxValue) -> Result<(), String> {
-        if self.children.is_empty() { return Ok(()); }
-        
+        if self.children.is_empty() {
+            return Ok(());
+        }
+
         let area_id = area.as_gc_id().ok_or("Invalid area")?;
         let w = vm.struct_get(area_id, "w").as_number();
         let h = vm.struct_get(area_id, "h").as_number();
-        
+
         let child_h = h / self.children.len() as f64;
-        
+
         for (i, child) in self.children.iter().enumerate() {
             let child_y_offset = i as f64 * child_h;
-            
+
             let child_area_id = vm.struct_new();
             vm.struct_set(child_area_id, "x", BxValue::new_number(0.0));
             vm.struct_set(child_area_id, "y", BxValue::new_number(0.0));
             vm.struct_set(child_area_id, "w", BxValue::new_number(w));
             vm.struct_set(child_area_id, "h", BxValue::new_number(child_h));
-            
+
             // Root temporary area
             vm.push_root(BxValue::new_ptr(child_area_id));
 
             if let Some(child_obj_id) = child.as_gc_id() {
                 if let Some(ctx_id) = ctx.as_gc_id() {
-                    vm.native_object_call_method(ctx_id, "pushOrigin", &[
-                        BxValue::new_number(0.0),
-                        BxValue::new_number(child_y_offset),
-                    ])?;
+                    vm.native_object_call_method(
+                        ctx_id,
+                        "pushOrigin",
+                        &[
+                            BxValue::new_number(0.0),
+                            BxValue::new_number(child_y_offset),
+                        ],
+                    )?;
                 }
 
-                let _ = vm.native_object_call_method(child_obj_id, "__render", &[ctx, BxValue::new_ptr(child_area_id)]);
+                let _ = vm.native_object_call_method(
+                    child_obj_id,
+                    "__render",
+                    &[ctx, BxValue::new_ptr(child_area_id)],
+                );
 
                 if let Some(ctx_id) = ctx.as_gc_id() {
                     let _ = vm.native_object_call_method(ctx_id, "popOrigin", &[]);
                 }
             }
-            
+
             vm.pop_root();
         }
         Ok(())
@@ -578,41 +653,51 @@ impl HBoxWidget {
 
     #[allow(non_snake_case)]
     pub fn __render(&self, vm: &mut dyn BxVM, ctx: BxValue, area: BxValue) -> Result<(), String> {
-        if self.children.is_empty() { return Ok(()); }
-        
+        if self.children.is_empty() {
+            return Ok(());
+        }
+
         let area_id = area.as_gc_id().ok_or("Invalid area")?;
         let w = vm.struct_get(area_id, "w").as_number();
         let h = vm.struct_get(area_id, "h").as_number();
-        
+
         let child_w = w / self.children.len() as f64;
-        
+
         for (i, child) in self.children.iter().enumerate() {
             let child_x_offset = i as f64 * child_w;
-            
+
             let child_area_id = vm.struct_new();
             vm.struct_set(child_area_id, "x", BxValue::new_number(0.0));
             vm.struct_set(child_area_id, "y", BxValue::new_number(0.0));
             vm.struct_set(child_area_id, "w", BxValue::new_number(child_w));
             vm.struct_set(child_area_id, "h", BxValue::new_number(h));
-            
+
             // Root temporary area
             vm.push_root(BxValue::new_ptr(child_area_id));
 
             if let Some(child_obj_id) = child.as_gc_id() {
                 if let Some(ctx_id) = ctx.as_gc_id() {
-                    vm.native_object_call_method(ctx_id, "pushOrigin", &[
-                        BxValue::new_number(child_x_offset),
-                        BxValue::new_number(0.0),
-                    ])?;
+                    vm.native_object_call_method(
+                        ctx_id,
+                        "pushOrigin",
+                        &[
+                            BxValue::new_number(child_x_offset),
+                            BxValue::new_number(0.0),
+                        ],
+                    )?;
                 }
 
-                let _ = vm.native_object_call_method(child_obj_id, "__render", &[ctx, BxValue::new_ptr(child_area_id)]);
+                let _ = vm.native_object_call_method(
+                    child_obj_id,
+                    "__render",
+                    &[ctx, BxValue::new_ptr(child_area_id)],
+                );
 
                 if let Some(ctx_id) = ctx.as_gc_id() {
                     let _ = vm.native_object_call_method(ctx_id, "popOrigin", &[]);
                 }
             }
-            
+
             vm.pop_root();
         }
         Ok(())
@@ -662,14 +747,36 @@ pub enum WidgetKind {
 }
 
 impl WidgetKind {
-    pub fn render_in_area(&self, vm: &mut dyn BxVM, frame: &mut Frame, area: Rect, _widget_registry: &WidgetRegistry) {
+    pub fn render_in_area(
+        &self,
+        vm: &mut dyn BxVM,
+        frame: &mut Frame,
+        area: Rect,
+        _widget_registry: &WidgetRegistry,
+    ) {
         match self {
             WidgetKind::Text(text) => text.render_in_area(frame, area),
-            WidgetKind::List(list) => { let _ = self.render_with_context(vm, frame, area, list.z_index, |vm, ctx, a| list.__render(vm, ctx, a)); }
+            WidgetKind::List(list) => {
+                let _ = self.render_with_context(vm, frame, area, list.z_index, |vm, ctx, a| {
+                    list.__render(vm, ctx, a)
+                });
+            }
             WidgetKind::Table(table) => table.render_in_area(frame, area),
-            WidgetKind::Block(block) => { let _ = self.render_with_context(vm, frame, area, block.z_index, |vm, ctx, a| block.__render(vm, ctx, a)); }
-            WidgetKind::Input(input) => { let _ = self.render_with_context(vm, frame, area, input.z_index, |vm, ctx, a| input.__render(vm, ctx, a)); }
-            WidgetKind::ProgressBar(bar) => { let _ = self.render_with_context(vm, frame, area, bar.z_index, |vm, ctx, a| bar.__render(vm, ctx, a)); }
+            WidgetKind::Block(block) => {
+                let _ = self.render_with_context(vm, frame, area, block.z_index, |vm, ctx, a| {
+                    block.__render(vm, ctx, a)
+                });
+            }
+            WidgetKind::Input(input) => {
+                let _ = self.render_with_context(vm, frame, area, input.z_index, |vm, ctx, a| {
+                    input.__render(vm, ctx, a)
+                });
+            }
+            WidgetKind::ProgressBar(bar) => {
+                let _ = self.render_with_context(vm, frame, area, bar.z_index, |vm, ctx, a| {
+                    bar.__render(vm, ctx, a)
+                });
+            }
             WidgetKind::Button(button) => button.render_in_area(frame, area),
             WidgetKind::Custom(obj) => {
                 let _ = self.render_with_double_dispatch(vm, *obj, frame, area);
@@ -683,11 +790,16 @@ impl WidgetKind {
         }
     }
 
-    pub fn render_to_context(&self, vm: &mut dyn BxVM, ctx: BxValue, area: BxValue) -> Result<(), String> {
+    pub fn render_to_context(
+        &self,
+        vm: &mut dyn BxVM,
+        ctx: BxValue,
+        area: BxValue,
+    ) -> Result<(), String> {
         match self {
             WidgetKind::Text(text) => text.__render(vm, ctx, area),
             WidgetKind::List(list) => list.__render(vm, ctx, area),
-            WidgetKind::Table(_) => Ok(()), 
+            WidgetKind::Table(_) => Ok(()),
             WidgetKind::Block(block) => block.__render(vm, ctx, area),
             WidgetKind::Input(input) => input.__render(vm, ctx, area),
             WidgetKind::ProgressBar(bar) => bar.__render(vm, ctx, area),
@@ -719,42 +831,71 @@ impl WidgetKind {
         }
     }
 
-    fn render_with_context(&self, vm: &mut dyn BxVM, frame: &mut Frame, area: Rect, z_index: i32, f: impl FnOnce(&mut dyn BxVM, BxValue, BxValue) -> Result<(), String>) -> Result<(), String> {
+    fn render_with_context(
+        &self,
+        vm: &mut dyn BxVM,
+        frame: &mut Frame,
+        area: Rect,
+        z_index: i32,
+        f: impl FnOnce(&mut dyn BxVM, BxValue, BxValue) -> Result<(), String>,
+    ) -> Result<(), String> {
         use crate::rendering_context::RenderingContext;
         use std::rc::Rc;
         let mut ctx = RenderingContext::new();
         ctx.current_origin = (area.x, area.y);
         ctx.current_z_index = z_index;
-        
+
         let ctx_rc = Rc::new(RefCell::new(ctx));
         let ctx_obj_id = vm.native_object_new(ctx_rc.clone());
         let area_id = self.create_area_struct(vm, area);
-        
+
         // Root temporary context and area
         vm.push_root(BxValue::new_ptr(ctx_obj_id));
         vm.push_root(BxValue::new_ptr(area_id));
 
         let res = f(vm, BxValue::new_ptr(ctx_obj_id), BxValue::new_ptr(area_id));
-        
+
         if res.is_ok() {
             ctx_rc.borrow_mut().playback(frame);
         }
-        
+
         vm.pop_root(); // Pop area_id
         vm.pop_root(); // Pop ctx_obj_id
-        
+
         res
     }
 
-    fn render_vbox(&self, vm: &mut dyn BxVM, vbox: &VBoxWidget, frame: &mut Frame, area: Rect) -> Result<(), String> {
-        self.render_with_context(vm, frame, area, vbox.z_index, |vm, ctx, a| vbox.__render(vm, ctx, a))
+    fn render_vbox(
+        &self,
+        vm: &mut dyn BxVM,
+        vbox: &VBoxWidget,
+        frame: &mut Frame,
+        area: Rect,
+    ) -> Result<(), String> {
+        self.render_with_context(vm, frame, area, vbox.z_index, |vm, ctx, a| {
+            vbox.__render(vm, ctx, a)
+        })
     }
 
-    fn render_hbox(&self, vm: &mut dyn BxVM, hbox: &HBoxWidget, frame: &mut Frame, area: Rect) -> Result<(), String> {
-        self.render_with_context(vm, frame, area, hbox.z_index, |vm, ctx, a| hbox.__render(vm, ctx, a))
+    fn render_hbox(
+        &self,
+        vm: &mut dyn BxVM,
+        hbox: &HBoxWidget,
+        frame: &mut Frame,
+        area: Rect,
+    ) -> Result<(), String> {
+        self.render_with_context(vm, frame, area, hbox.z_index, |vm, ctx, a| {
+            hbox.__render(vm, ctx, a)
+        })
     }
 
-    fn render_with_double_dispatch(&self, vm: &mut dyn BxVM, obj: BxValue, frame: &mut Frame, area: Rect) -> Result<(), String> {
+    fn render_with_double_dispatch(
+        &self,
+        vm: &mut dyn BxVM,
+        obj: BxValue,
+        frame: &mut Frame,
+        area: Rect,
+    ) -> Result<(), String> {
         self.render_with_context(vm, frame, area, 0, |vm, ctx, a| {
             if let Some(obj_id) = obj.as_gc_id() {
                 vm.native_object_call_method(obj_id, "__render", &[ctx, a])?;
@@ -818,9 +959,9 @@ impl RenderInArea for TextWidget {
 
 impl RenderInArea for ButtonWidget {
     fn render_in_area(&self, frame: &mut Frame, area: Rect) {
-        use ratatui::widgets::{Paragraph, Widget, Block, Borders};
-        use ratatui::style::{Style, Modifier};
-        
+        use ratatui::style::{Modifier, Style};
+        use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+
         let block = Block::default().borders(Borders::ALL);
         let p = Paragraph::new(self.label.as_str())
             .block(block)
@@ -960,5 +1101,3 @@ impl WidgetRegistry {
         });
     }
 }
-
-

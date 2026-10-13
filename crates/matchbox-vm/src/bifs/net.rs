@@ -58,9 +58,9 @@ fn soap(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if let Some(client) = vm.soap_client_get(&url) {
         return Ok(client);
     }
-    let client = BxValue::new_ptr(vm.native_object_new(std::rc::Rc::new(
-        std::cell::RefCell::new(SoapClient),
-    )));
+    let client = BxValue::new_ptr(
+        vm.native_object_new(std::rc::Rc::new(std::cell::RefCell::new(SoapClient))),
+    );
     vm.soap_client_set(url, client);
     Ok(client)
 }

@@ -64,8 +64,14 @@ pub fn register_cache_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
     bifs.insert("cache".to_string(), cache as BxNativeFunction);
     bifs.insert("cacheFilter".to_string(), cache_filter as BxNativeFunction);
     bifs.insert("cacheNames".to_string(), cache_names as BxNativeFunction);
-    bifs.insert("cacheProviders".to_string(), cache_providers as BxNativeFunction);
-    bifs.insert("cacheService".to_string(), cache_service as BxNativeFunction);
+    bifs.insert(
+        "cacheProviders".to_string(),
+        cache_providers as BxNativeFunction,
+    );
+    bifs.insert(
+        "cacheService".to_string(),
+        cache_service as BxNativeFunction,
+    );
 }
 
 fn cache(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {

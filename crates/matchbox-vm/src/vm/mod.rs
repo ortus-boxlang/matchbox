@@ -1430,7 +1430,9 @@ impl BxVM for VM {
     fn future_wait(&mut self, future: BxValue) -> Result<BxValue, String> {
         let previous_fiber = self.current_fiber_idx;
         let result = match self.future_status(future) {
-            Some(FutureStatus::Completed) => Ok(self.future_value(future).unwrap_or(BxValue::new_null())),
+            Some(FutureStatus::Completed) => {
+                Ok(self.future_value(future).unwrap_or(BxValue::new_null()))
+            }
             Some(FutureStatus::Failed(error)) => Err(self.to_string(error)),
             Some(FutureStatus::Pending) => {
                 let fiber_idx = self
@@ -1523,7 +1525,9 @@ impl BxVM for VM {
     }
 
     fn datetime_timezone(&self, value: BxValue) -> Option<String> {
-        value.as_gc_id().and_then(|id| self.datetime_timezones.get(&id).cloned())
+        value
+            .as_gc_id()
+            .and_then(|id| self.datetime_timezones.get(&id).cloned())
     }
 
     fn string_new(&mut self, s: String) -> usize {
@@ -1750,7 +1754,8 @@ impl BxVM for VM {
 
 impl VM {
     fn struct_key_id(&mut self, id: usize, key: &str) -> u32 {
-        let case_sensitive = matches!(self.heap.get_opt(id), Some(GcObject::Struct(s)) if s.case_sensitive);
+        let case_sensitive =
+            matches!(self.heap.get_opt(id), Some(GcObject::Struct(s)) if s.case_sensitive);
         if case_sensitive {
             self.interner.intern_case_sensitive(key)
         } else {
@@ -1759,7 +1764,8 @@ impl VM {
     }
 
     fn struct_key_lookup_id(&self, id: usize, key: &str) -> Option<u32> {
-        let case_sensitive = matches!(self.heap.get_opt(id), Some(GcObject::Struct(s)) if s.case_sensitive);
+        let case_sensitive =
+            matches!(self.heap.get_opt(id), Some(GcObject::Struct(s)) if s.case_sensitive);
         if case_sensitive {
             self.interner.get_exact_id(key)
         } else {
@@ -2128,7 +2134,9 @@ impl VM {
                 (GcObject::Bytes(a), GcObject::Bytes(b)) => return a == b,
                 (GcObject::Array(a), GcObject::Array(b)) => {
                     return a.len() == b.len()
-                        && a.iter().zip(b).all(|(left, right)| self.is_equal(*left, *right));
+                        && a.iter()
+                            .zip(b)
+                            .all(|(left, right)| self.is_equal(*left, *right));
                 }
                 (GcObject::Struct(_), GcObject::Struct(_)) => {
                     let keys_a = self.struct_key_array(id_a);
@@ -2138,10 +2146,7 @@ impl VM {
                     }
                     return keys_a.iter().all(|key| {
                         self.struct_key_exists(id_b, key)
-                            && self.is_equal(
-                                self.struct_get(id_a, key),
-                                self.struct_get(id_b, key),
-                            )
+                            && self.is_equal(self.struct_get(id_a, key), self.struct_get(id_b, key))
                     });
                 }
                 _ => {}
@@ -2568,7 +2573,7 @@ impl VM {
         if let Some(id) = receiver.as_gc_id() {
             if self.struct_key_exists(id, "__xml_kind") {
                 return match name.as_str() {
-                     "xmlformat" => Some("xmlformat".to_string()),
+                    "xmlformat" => Some("xmlformat".to_string()),
                     "search" => Some("xmlsearch".to_string()),
                     "transform" => Some("xmltransform".to_string()),
                     "getnodetype" => Some("xmlgetnodetype".to_string()),
@@ -2607,32 +2612,32 @@ impl VM {
                     "findnocase" => Some("stringfindnocase".to_string()),
                     "endswith" => Some("stringendswith".to_string()),
                     "startswith" => Some("stringstartswith".to_string()),
-                     "val" => Some("val".to_string()),
-                     "urlencodedformat" => Some("urlencodedformat".to_string()),
-                     "xmlformat" => Some("xmlformat".to_string()),
-                      "todatetime" => Some("parsedatetime".to_string()),
-                      "dateformat" => Some("dateformat".to_string()),
-                      "datetimeformat" => Some("datetimeformat".to_string()),
-                      "timeformat" => Some("timeformat".to_string()),
-                     "tojson" => Some("serializejson".to_string()),
-                     "year" => Some("year".to_string()),
-                     "quarter" => Some("quarter".to_string()),
-                     "month" => Some("month".to_string()),
-                     "monthasstring" => Some("monthasstring".to_string()),
-                     "monthshortasstring" => Some("monthshortasstring".to_string()),
-                     "day" => Some("day".to_string()),
-                     "daysinmonth" => Some("daysinmonth".to_string()),
-                     "daysinyear" => Some("daysinyear".to_string()),
-                     "dayofweek" => Some("dayofweek".to_string()),
-                     "dayofweekasstring" => Some("dayofweekasstring".to_string()),
-                     "dayofweekshortasstring" => Some("dayofweekshortasstring".to_string()),
-                     "dayofyear" => Some("dayofyear".to_string()),
-                     "firstdayofmonth" => Some("firstdayofmonth".to_string()),
-                     "week" => Some("week".to_string()),
-                     "hour" => Some("hour".to_string()),
-                     "minute" => Some("minute".to_string()),
-                     "second" => Some("second".to_string()),
-                     "millisecond" => Some("millisecond".to_string()),
+                    "val" => Some("val".to_string()),
+                    "urlencodedformat" => Some("urlencodedformat".to_string()),
+                    "xmlformat" => Some("xmlformat".to_string()),
+                    "todatetime" => Some("parsedatetime".to_string()),
+                    "dateformat" => Some("dateformat".to_string()),
+                    "datetimeformat" => Some("datetimeformat".to_string()),
+                    "timeformat" => Some("timeformat".to_string()),
+                    "tojson" => Some("serializejson".to_string()),
+                    "year" => Some("year".to_string()),
+                    "quarter" => Some("quarter".to_string()),
+                    "month" => Some("month".to_string()),
+                    "monthasstring" => Some("monthasstring".to_string()),
+                    "monthshortasstring" => Some("monthshortasstring".to_string()),
+                    "day" => Some("day".to_string()),
+                    "daysinmonth" => Some("daysinmonth".to_string()),
+                    "daysinyear" => Some("daysinyear".to_string()),
+                    "dayofweek" => Some("dayofweek".to_string()),
+                    "dayofweekasstring" => Some("dayofweekasstring".to_string()),
+                    "dayofweekshortasstring" => Some("dayofweekshortasstring".to_string()),
+                    "dayofyear" => Some("dayofyear".to_string()),
+                    "firstdayofmonth" => Some("firstdayofmonth".to_string()),
+                    "week" => Some("week".to_string()),
+                    "hour" => Some("hour".to_string()),
+                    "minute" => Some("minute".to_string()),
+                    "second" => Some("second".to_string()),
+                    "millisecond" => Some("millisecond".to_string()),
                     "fromjson" => Some("deserializejson".to_string()),
                     "rematch" => Some("rematch".to_string()),
                     "rematchnocase" => Some("rematchnocase".to_string()),
@@ -2648,38 +2653,38 @@ impl VM {
                     "mid" => Some("mid".to_string()),
                     "reverse" => Some("reverse".to_string()),
                     "spanexcluding" => Some("spanexcluding".to_string()),
-                     "spanincluding" => Some("spanincluding".to_string()),
-                     "booleanformat" | "truefalseformat" => Some("booleanformat".to_string()),
-                     "isempty" => Some("isempty".to_string()),
+                    "spanincluding" => Some("spanincluding".to_string()),
+                    "booleanformat" | "truefalseformat" => Some("booleanformat".to_string()),
+                    "isempty" => Some("isempty".to_string()),
                     "replace" => Some("replace".to_string()),
-                     "listlen" => Some("listlen".to_string()),
-                     "listavg" => Some("listavg".to_string()),
-                     "listchangedelims" => Some("listchangedelims".to_string()),
-                     "listcompact" => Some("listcompact".to_string()),
-                     "listcontains" => Some("listcontains".to_string()),
-                     "listcontainsnocase" => Some("listcontainsnocase".to_string()),
-                     "listgetat" => Some("listgetat".to_string()),
+                    "listlen" => Some("listlen".to_string()),
+                    "listavg" => Some("listavg".to_string()),
+                    "listchangedelims" => Some("listchangedelims".to_string()),
+                    "listcompact" => Some("listcompact".to_string()),
+                    "listcontains" => Some("listcontains".to_string()),
+                    "listcontainsnocase" => Some("listcontainsnocase".to_string()),
+                    "listgetat" => Some("listgetat".to_string()),
                     "listappend" => Some("listappend".to_string()),
                     "listfirst" => Some("listfirst".to_string()),
                     "listlast" => Some("listlast".to_string()),
                     "listrest" => Some("listrest".to_string()),
                     "listdeleteat" => Some("listdeleteat".to_string()),
                     "listfind" => Some("listfind".to_string()),
-                     "listfindnocase" => Some("listfindnocase".to_string()),
-                     "listgettoken" | "gettoken" => Some("gettoken".to_string()),
-                     "listeach" => Some("listeach".to_string()),
-                     "listevery" => Some("listevery".to_string()),
-                     "listfilter" => Some("listfilter".to_string()),
-                     "listmap" => Some("listmap".to_string()),
-                     "listnone" => Some("listnone".to_string()),
-                     "listqualify" => Some("listqualify".to_string()),
-                     "listreduceright" => Some("listreduceright".to_string()),
-                     "listremoveduplicates" => Some("listremoveduplicates".to_string()),
-                     "listsome" => Some("listsome".to_string()),
-                     "listsort" => Some("listsort".to_string()),
-                     "listvaluecount" => Some("listvaluecount".to_string()),
-                      "listvaluecountnocase" => Some("listvaluecountnocase".to_string()),
-                     "listtoset" => Some("listtoset".to_string()),
+                    "listfindnocase" => Some("listfindnocase".to_string()),
+                    "listgettoken" | "gettoken" => Some("gettoken".to_string()),
+                    "listeach" => Some("listeach".to_string()),
+                    "listevery" => Some("listevery".to_string()),
+                    "listfilter" => Some("listfilter".to_string()),
+                    "listmap" => Some("listmap".to_string()),
+                    "listnone" => Some("listnone".to_string()),
+                    "listqualify" => Some("listqualify".to_string()),
+                    "listreduceright" => Some("listreduceright".to_string()),
+                    "listremoveduplicates" => Some("listremoveduplicates".to_string()),
+                    "listsome" => Some("listsome".to_string()),
+                    "listsort" => Some("listsort".to_string()),
+                    "listvaluecount" => Some("listvaluecount".to_string()),
+                    "listvaluecountnocase" => Some("listvaluecountnocase".to_string()),
+                    "listtoset" => Some("listtoset".to_string()),
                     "jsformat" | "jsstringformat" => Some("jsstringformat".to_string()),
                     "ljustify" => Some("ljustify".to_string()),
                     "rjustify" => Some("rjustify".to_string()),
@@ -2688,108 +2693,108 @@ impl VM {
                     "wrap" => Some("wrap".to_string()),
                     "bind" | "stringbind" => Some("stringbind".to_string()),
                     "charsetdecode" => Some("charsetdecode".to_string()),
-                     "sqlprettify" => Some("sqlprettify".to_string()),
-                     "each" => Some("stringeach".to_string()),
-                     "every" => Some("stringevery".to_string()),
-                     "filter" => Some("stringfilter".to_string()),
-                     "map" => Some("stringmap".to_string()),
-                     "reduce" => Some("stringreduce".to_string()),
-                     "reduceright" => Some("stringreduceright".to_string()),
-                     "some" => Some("stringsome".to_string()),
-                     "sort" => Some("stringsort".to_string()),
-                     _ => None,
-                 },
-                 GcObject::Array(_) => match name.as_str() {
-                     "len" | "length" | "count" | "size" => Some("len".to_string()),
-                     "append" => Some("arrayappendmember".to_string()),
-                     "add" => Some("arrayappend".to_string()),
-                     "xmlgetnodetype" | "getnodetype" => Some("xmlgetnodetype".to_string()),
-                     "avg" => Some("arrayavg".to_string()),
-                     "chunk" => Some("arraychunk".to_string()),
-                       "contains" => Some("arraycontains".to_string()),
-                       "has" => Some("boxsetcontains".to_string()),
-                       "remove" | "delete" => Some("boxsetremove".to_string()),
-                       "clear" => Some("boxsetclear".to_string()),
-                       "addall" => Some("boxsetaddall".to_string()),
-                       "removeall" => Some("boxsetremoveall".to_string()),
-                       "retainall" => Some("boxsetretainall".to_string()),
-                       "isempty" => Some("boxsetisempty".to_string()),
-                      "containsnocase" => Some("arraycontainsnocase".to_string()),
-                      "deletenocase" => Some("arraydeletenocase".to_string()),
-                     "deleteat" => Some("arraydeleteat".to_string()),
-                     "resize" => Some("arrayresize".to_string()),
-                     "swap" => Some("arrayswap".to_string()),
-                      "each" => Some("boxseteach".to_string()),
-                      "every" => Some("boxsetevery".to_string()),
-                      "map" => Some("boxsetmap".to_string()),
-                      "reduce" => Some("boxsetreduce".to_string()),
-                      "filter" => Some("boxsetfilter".to_string()),
-                      "find" => Some("boxsetfind".to_string()),
-                     "findall" => Some("arrayfindall".to_string()),
-                     "findallnocase" => Some("arrayfindallnocase".to_string()),
-                     "findfirst" => Some("arrayfindfirst".to_string()),
-                     "first" => Some("arrayfirst".to_string()),
-                     "flatmap" => Some("arrayflatmap".to_string()),
-                     "flatten" => Some("arrayflatten".to_string()),
-                     "getmetadata" => Some("arraygetmetadata".to_string()),
-                     "groupby" => Some("arraygroupby".to_string()),
-                     "indexexists" => Some("arrayindexexists".to_string()),
-                     "insertat" => Some("arrayinsertat".to_string()),
-                      "last" => Some("arraylast".to_string()),
-                     "max" => Some("arraymax".to_string()),
-                     "median" => Some("arraymedian".to_string()),
-                     "merge" => Some("arraymerge".to_string()),
-                     "min" => Some("arraymin".to_string()),
-                      "none" => Some("boxsetnone".to_string()),
-                     "pop" => Some("arraypop".to_string()),
-                     "prepend" => Some("arrayprepend".to_string()),
-                     "push" => Some("arraypush".to_string()),
-                     "range" => Some("arrayrange".to_string()),
-                     "reduceright" => Some("arrayreduceright".to_string()),
-                     "reject" => Some("arrayreject".to_string()),
-                     "reverse" => Some("arrayreverse".to_string()),
-                     "set" => Some("arrayset".to_string()),
-                     "shift" => Some("arrayshift".to_string()),
-                     "slice" => Some("arrayslice".to_string()),
-                      "some" => Some("boxsetsome".to_string()),
-                     "sort" => Some("arraysort".to_string()),
-                     "splice" => Some("arraysplice".to_string()),
-                      "sum" => Some("arraysum".to_string()),
-                      "intersection" => Some("boxsetintersection".to_string()),
-                      "difference" => Some("boxsetdifference".to_string()),
-                      "symmetricdifference" => Some("boxsetsymmetricdifference".to_string()),
-                      "union" => Some("boxsetunion".to_string()),
-                      "issubsetof" => Some("boxsetissubsetof".to_string()),
-                      "issupersetof" => Some("boxsetissupersetof".to_string()),
-                      "isdisjointfrom" => Some("boxsetisdisjointfrom".to_string()),
-                      "iscasesensitive" => Some("boxsetiscasesensitive".to_string()),
-                      "issynchronized" => Some("boxsetissynchronized".to_string()),
-                      "toarray" => Some("boxsettoarray".to_string()),
-                      "tolist" => Some("boxsettolist".to_string()),
-                     "tostruct" => Some("arraytostruct".to_string()),
-                     "transpose" => Some("arraytranspose".to_string()),
-                     "unique" => Some("arrayunique".to_string()),
-                     "unshift" => Some("arrayunshift".to_string()),
-                     "zip" => Some("arrayzip".to_string()),
-                     "tojson" => Some("serializejson".to_string()),
-                     "toset" => Some("toset".to_string()),
-                     "tomodifiable" => Some("tomodifiable".to_string()),
-                     "tounmodifiable" => Some("tounmodifiable".to_string()),
-                     "duplicate" => Some("duplicate".to_string()),
+                    "sqlprettify" => Some("sqlprettify".to_string()),
+                    "each" => Some("stringeach".to_string()),
+                    "every" => Some("stringevery".to_string()),
+                    "filter" => Some("stringfilter".to_string()),
+                    "map" => Some("stringmap".to_string()),
+                    "reduce" => Some("stringreduce".to_string()),
+                    "reduceright" => Some("stringreduceright".to_string()),
+                    "some" => Some("stringsome".to_string()),
+                    "sort" => Some("stringsort".to_string()),
+                    _ => None,
+                },
+                GcObject::Array(_) => match name.as_str() {
+                    "len" | "length" | "count" | "size" => Some("len".to_string()),
+                    "append" => Some("arrayappendmember".to_string()),
+                    "add" => Some("arrayappend".to_string()),
+                    "xmlgetnodetype" | "getnodetype" => Some("xmlgetnodetype".to_string()),
+                    "avg" => Some("arrayavg".to_string()),
+                    "chunk" => Some("arraychunk".to_string()),
+                    "contains" => Some("arraycontains".to_string()),
+                    "has" => Some("boxsetcontains".to_string()),
+                    "remove" | "delete" => Some("boxsetremove".to_string()),
+                    "clear" => Some("boxsetclear".to_string()),
+                    "addall" => Some("boxsetaddall".to_string()),
+                    "removeall" => Some("boxsetremoveall".to_string()),
+                    "retainall" => Some("boxsetretainall".to_string()),
+                    "isempty" => Some("boxsetisempty".to_string()),
+                    "containsnocase" => Some("arraycontainsnocase".to_string()),
+                    "deletenocase" => Some("arraydeletenocase".to_string()),
+                    "deleteat" => Some("arraydeleteat".to_string()),
+                    "resize" => Some("arrayresize".to_string()),
+                    "swap" => Some("arrayswap".to_string()),
+                    "each" => Some("boxseteach".to_string()),
+                    "every" => Some("boxsetevery".to_string()),
+                    "map" => Some("boxsetmap".to_string()),
+                    "reduce" => Some("boxsetreduce".to_string()),
+                    "filter" => Some("boxsetfilter".to_string()),
+                    "find" => Some("boxsetfind".to_string()),
+                    "findall" => Some("arrayfindall".to_string()),
+                    "findallnocase" => Some("arrayfindallnocase".to_string()),
+                    "findfirst" => Some("arrayfindfirst".to_string()),
+                    "first" => Some("arrayfirst".to_string()),
+                    "flatmap" => Some("arrayflatmap".to_string()),
+                    "flatten" => Some("arrayflatten".to_string()),
+                    "getmetadata" => Some("arraygetmetadata".to_string()),
+                    "groupby" => Some("arraygroupby".to_string()),
+                    "indexexists" => Some("arrayindexexists".to_string()),
+                    "insertat" => Some("arrayinsertat".to_string()),
+                    "last" => Some("arraylast".to_string()),
+                    "max" => Some("arraymax".to_string()),
+                    "median" => Some("arraymedian".to_string()),
+                    "merge" => Some("arraymerge".to_string()),
+                    "min" => Some("arraymin".to_string()),
+                    "none" => Some("boxsetnone".to_string()),
+                    "pop" => Some("arraypop".to_string()),
+                    "prepend" => Some("arrayprepend".to_string()),
+                    "push" => Some("arraypush".to_string()),
+                    "range" => Some("arrayrange".to_string()),
+                    "reduceright" => Some("arrayreduceright".to_string()),
+                    "reject" => Some("arrayreject".to_string()),
+                    "reverse" => Some("arrayreverse".to_string()),
+                    "set" => Some("arrayset".to_string()),
+                    "shift" => Some("arrayshift".to_string()),
+                    "slice" => Some("arrayslice".to_string()),
+                    "some" => Some("boxsetsome".to_string()),
+                    "sort" => Some("arraysort".to_string()),
+                    "splice" => Some("arraysplice".to_string()),
+                    "sum" => Some("arraysum".to_string()),
+                    "intersection" => Some("boxsetintersection".to_string()),
+                    "difference" => Some("boxsetdifference".to_string()),
+                    "symmetricdifference" => Some("boxsetsymmetricdifference".to_string()),
+                    "union" => Some("boxsetunion".to_string()),
+                    "issubsetof" => Some("boxsetissubsetof".to_string()),
+                    "issupersetof" => Some("boxsetissupersetof".to_string()),
+                    "isdisjointfrom" => Some("boxsetisdisjointfrom".to_string()),
+                    "iscasesensitive" => Some("boxsetiscasesensitive".to_string()),
+                    "issynchronized" => Some("boxsetissynchronized".to_string()),
+                    "toarray" => Some("boxsettoarray".to_string()),
+                    "tolist" => Some("boxsettolist".to_string()),
+                    "tostruct" => Some("arraytostruct".to_string()),
+                    "transpose" => Some("arraytranspose".to_string()),
+                    "unique" => Some("arrayunique".to_string()),
+                    "unshift" => Some("arrayunshift".to_string()),
+                    "zip" => Some("arrayzip".to_string()),
+                    "tojson" => Some("serializejson".to_string()),
+                    "toset" => Some("toset".to_string()),
+                    "tomodifiable" => Some("tomodifiable".to_string()),
+                    "tounmodifiable" => Some("tounmodifiable".to_string()),
+                    "duplicate" => Some("duplicate".to_string()),
                     _ => None,
                 },
                 GcObject::Struct(_) => match name.as_str() {
                     "len" | "count" => Some("len".to_string()),
-                     "tostring" => Some("tostring".to_string()),
+                    "tostring" => Some("tostring".to_string()),
                     "exists" | "keyexists" => Some("structkeyexists".to_string()),
-                     "find" => Some("structfind".to_string()),
-                     "append" => Some("structappend".to_string()),
-                     "isempty" => Some("structisempty".to_string()),
-                     "each" => Some("structeach".to_string()),
-                     "tojson" => Some("serializejson".to_string()),
-                     "tomodifiable" => Some("tomodifiable".to_string()),
-                     "tounmodifiable" => Some("tounmodifiable".to_string()),
-                     "duplicate" => Some("duplicate".to_string()),
+                    "find" => Some("structfind".to_string()),
+                    "append" => Some("structappend".to_string()),
+                    "isempty" => Some("structisempty".to_string()),
+                    "each" => Some("structeach".to_string()),
+                    "tojson" => Some("serializejson".to_string()),
+                    "tomodifiable" => Some("tomodifiable".to_string()),
+                    "tounmodifiable" => Some("tounmodifiable".to_string()),
+                    "duplicate" => Some("duplicate".to_string()),
                     "iscasesensitive" => Some("structiscasesensitive".to_string()),
                     "isordered" => Some("structisordered".to_string()),
                     "equals" => Some("structequals".to_string()),
@@ -2797,9 +2802,9 @@ impl VM {
                     "toquerystring" => Some("structtoquerystring".to_string()),
                     "tosorted" => Some("structtosorted".to_string()),
                     "keytranslate" => Some("structkeytranslate".to_string()),
-                     "findkey" => Some("structfindkey".to_string()),
-                     "keyset" => Some("structkeyset".to_string()),
-                     "valueset" => Some("structvalueset".to_string()),
+                    "findkey" => Some("structfindkey".to_string()),
+                    "keyset" => Some("structkeyset".to_string()),
+                    "valueset" => Some("structvalueset".to_string()),
                     _ => None,
                 },
                 GcObject::Future(_) => match name.as_str() {
@@ -2818,42 +2823,42 @@ impl VM {
                     "getasattempt" => Some("futuregetasattempt".to_string()),
                     _ => None,
                 },
-                 GcObject::DateTime(_) => match name.as_str() {
+                GcObject::DateTime(_) => match name.as_str() {
                     "len" => Some("len".to_string()),
                     "add" => Some("dateadd".to_string()),
                     "diff" => Some("datediff".to_string()),
-                     "format" => Some("datetimeformat".to_string()),
-                     "timeformat" => Some("timeformat".to_string()),
+                    "format" => Some("datetimeformat".to_string()),
+                    "timeformat" => Some("timeformat".to_string()),
                     "dateformat" => Some("dateformat".to_string()),
-                     "datetimeformat" => Some("datetimeformat".to_string()),
-                     "compare" => Some("datecompare".to_string()),
-                     "toodbcdatetime" => Some("createodbcdatetime".to_string()),
-                     "toodbcdate" => Some("createodbcdate".to_string()),
-                     "toodbctime" => Some("createodbctime".to_string()),
-                     "toepochmillis" => Some("toepochmillis".to_string()),
-                     "offset" => Some("offset".to_string()),
-                     "timezone" | "gettimezone" => Some("gettimezone".to_string()),
-                     "getnumericdate" => Some("getnumericdate".to_string()),
-                     "gettime" => Some("gettime".to_string()),
-                     "nanosecond" => Some("nanosecond".to_string()),
-                     "year" => Some("year".to_string()),
-                     "quarter" => Some("quarter".to_string()),
-                     "month" => Some("month".to_string()),
-                     "monthasstring" => Some("monthasstring".to_string()),
-                     "monthshortasstring" => Some("monthshortasstring".to_string()),
-                     "day" => Some("day".to_string()),
-                     "daysinmonth" => Some("daysinmonth".to_string()),
-                     "daysinyear" => Some("daysinyear".to_string()),
-                     "dayofweek" => Some("dayofweek".to_string()),
-                     "dayofweekasstring" => Some("dayofweekasstring".to_string()),
-                     "dayofweekshortasstring" => Some("dayofweekshortasstring".to_string()),
-                     "dayofyear" => Some("dayofyear".to_string()),
-                     "firstdayofmonth" => Some("firstdayofmonth".to_string()),
-                     "week" => Some("week".to_string()),
-                     "hour" => Some("hour".to_string()),
-                     "minute" => Some("minute".to_string()),
-                     "second" => Some("second".to_string()),
-                     "millisecond" => Some("millisecond".to_string()),
+                    "datetimeformat" => Some("datetimeformat".to_string()),
+                    "compare" => Some("datecompare".to_string()),
+                    "toodbcdatetime" => Some("createodbcdatetime".to_string()),
+                    "toodbcdate" => Some("createodbcdate".to_string()),
+                    "toodbctime" => Some("createodbctime".to_string()),
+                    "toepochmillis" => Some("toepochmillis".to_string()),
+                    "offset" => Some("offset".to_string()),
+                    "timezone" | "gettimezone" => Some("gettimezone".to_string()),
+                    "getnumericdate" => Some("getnumericdate".to_string()),
+                    "gettime" => Some("gettime".to_string()),
+                    "nanosecond" => Some("nanosecond".to_string()),
+                    "year" => Some("year".to_string()),
+                    "quarter" => Some("quarter".to_string()),
+                    "month" => Some("month".to_string()),
+                    "monthasstring" => Some("monthasstring".to_string()),
+                    "monthshortasstring" => Some("monthshortasstring".to_string()),
+                    "day" => Some("day".to_string()),
+                    "daysinmonth" => Some("daysinmonth".to_string()),
+                    "daysinyear" => Some("daysinyear".to_string()),
+                    "dayofweek" => Some("dayofweek".to_string()),
+                    "dayofweekasstring" => Some("dayofweekasstring".to_string()),
+                    "dayofweekshortasstring" => Some("dayofweekshortasstring".to_string()),
+                    "dayofyear" => Some("dayofyear".to_string()),
+                    "firstdayofmonth" => Some("firstdayofmonth".to_string()),
+                    "week" => Some("week".to_string()),
+                    "hour" => Some("hour".to_string()),
+                    "minute" => Some("minute".to_string()),
+                    "second" => Some("second".to_string()),
+                    "millisecond" => Some("millisecond".to_string()),
                     "duplicate" => Some("duplicate".to_string()),
                     _ => None,
                 },
@@ -4303,7 +4308,10 @@ impl VM {
                             left.zip(right).map(|(left, right)| {
                                 let mut values = left;
                                 for value in right {
-                                    if !values.iter().any(|existing| self.is_equal(*existing, value)) {
+                                    if !values
+                                        .iter()
+                                        .any(|existing| self.is_equal(*existing, value))
+                                    {
                                         values.push(value);
                                     }
                                 }
@@ -4343,7 +4351,9 @@ impl VM {
                             left.zip(right).map(|(left, right)| {
                                 left.into_iter()
                                     .filter(|value| {
-                                        !right.iter().any(|excluded| self.is_equal(*value, *excluded))
+                                        !right
+                                            .iter()
+                                            .any(|excluded| self.is_equal(*value, *excluded))
                                     })
                                     .collect::<Vec<_>>()
                             })
@@ -4372,9 +4382,7 @@ impl VM {
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     let result = self.numeric_value(a).unwrap_or(f64::NAN) as i32
                         - self.numeric_value(b).unwrap_or(f64::NAN) as i32;
-                    self.fibers[fiber_idx]
-                        .stack
-                        .push(BxValue::new_int(result));
+                    self.fibers[fiber_idx].stack.push(BxValue::new_int(result));
                 }
                 op::SUB_FLOAT => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
@@ -4408,7 +4416,9 @@ impl VM {
                     if let Some(values) = array_intersection {
                         let id = self.heap.alloc(GcObject::Array(values));
                         self.fibers[fiber_idx].stack.push(BxValue::new_ptr(id));
-                    } else if let (Some(na), Some(nb)) = (self.numeric_value(a), self.numeric_value(b)) {
+                    } else if let (Some(na), Some(nb)) =
+                        (self.numeric_value(a), self.numeric_value(b))
+                    {
                         self.fibers[fiber_idx]
                             .stack
                             .push(BxValue::new_number(na * nb));
@@ -4424,9 +4434,7 @@ impl VM {
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     let result = self.numeric_value(a).unwrap_or(f64::NAN) as i32
                         * self.numeric_value(b).unwrap_or(f64::NAN) as i32;
-                    self.fibers[fiber_idx]
-                        .stack
-                        .push(BxValue::new_int(result));
+                    self.fibers[fiber_idx].stack.push(BxValue::new_int(result));
                 }
                 op::MUL_FLOAT => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
@@ -4530,9 +4538,7 @@ impl VM {
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     if let (Some(na), Some(nb)) = (self.numeric_value(a), self.numeric_value(b)) {
                         let result = (na as i32) | (nb as i32);
-                        self.fibers[fiber_idx]
-                            .stack
-                            .push(BxValue::new_int(result));
+                        self.fibers[fiber_idx].stack.push(BxValue::new_int(result));
                     } else {
                         flush_ip!();
                         self.throw_error(
@@ -4548,9 +4554,7 @@ impl VM {
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     if let (Some(na), Some(nb)) = (self.numeric_value(a), self.numeric_value(b)) {
                         let result = (na as i32) & (nb as i32);
-                        self.fibers[fiber_idx]
-                            .stack
-                            .push(BxValue::new_int(result));
+                        self.fibers[fiber_idx].stack.push(BxValue::new_int(result));
                     } else {
                         flush_ip!();
                         self.throw_error(
@@ -4566,9 +4570,7 @@ impl VM {
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     if let (Some(na), Some(nb)) = (self.numeric_value(a), self.numeric_value(b)) {
                         let result = (na as i32) ^ (nb as i32);
-                        self.fibers[fiber_idx]
-                            .stack
-                            .push(BxValue::new_int(result));
+                        self.fibers[fiber_idx].stack.push(BxValue::new_int(result));
                     } else {
                         flush_ip!();
                         self.throw_error(
@@ -4583,9 +4585,7 @@ impl VM {
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     if let Some(na) = self.numeric_value(a) {
                         let result = !(na as i32);
-                        self.fibers[fiber_idx]
-                            .stack
-                            .push(BxValue::new_int(result));
+                        self.fibers[fiber_idx].stack.push(BxValue::new_int(result));
                     } else {
                         flush_ip!();
                         self.throw_error(fiber_idx, "Operand must be a number for bitwise NOT.")?;
@@ -4599,9 +4599,7 @@ impl VM {
                     if let (Some(na), Some(nb)) = (self.numeric_value(a), self.numeric_value(b)) {
                         let shift = (nb as i32 as u32) & 31;
                         let result = (na as i32 as u32).wrapping_shl(shift) as i32;
-                        self.fibers[fiber_idx]
-                            .stack
-                            .push(BxValue::new_int(result));
+                        self.fibers[fiber_idx].stack.push(BxValue::new_int(result));
                     } else {
                         flush_ip!();
                         self.throw_error(
@@ -4618,9 +4616,7 @@ impl VM {
                     if let (Some(na), Some(nb)) = (self.numeric_value(a), self.numeric_value(b)) {
                         let shift = (nb as i32 as u32) & 31;
                         let result = (na as i32) >> shift;
-                        self.fibers[fiber_idx]
-                            .stack
-                            .push(BxValue::new_int(result));
+                        self.fibers[fiber_idx].stack.push(BxValue::new_int(result));
                     } else {
                         flush_ip!();
                         self.throw_error(
@@ -4670,9 +4666,12 @@ impl VM {
                                     .copied()
                                     .collect::<Vec<_>>();
                                 values.extend(
-                                    right.iter().filter(|value| {
-                                        !left.iter().any(|other| self.is_equal(**value, *other))
-                                    }).copied(),
+                                    right
+                                        .iter()
+                                        .filter(|value| {
+                                            !left.iter().any(|other| self.is_equal(**value, *other))
+                                        })
+                                        .copied(),
                                 );
                                 values
                             })
@@ -4683,7 +4682,9 @@ impl VM {
                     if let Some(values) = array_symmetric_difference {
                         let id = self.heap.alloc(GcObject::Array(values));
                         self.fibers[fiber_idx].stack.push(BxValue::new_ptr(id));
-                    } else if let (Some(na), Some(nb)) = (self.numeric_value(a), self.numeric_value(b)) {
+                    } else if let (Some(na), Some(nb)) =
+                        (self.numeric_value(a), self.numeric_value(b))
+                    {
                         self.fibers[fiber_idx]
                             .stack
                             .push(BxValue::new_number(na.powf(nb)));
@@ -5158,9 +5159,13 @@ impl VM {
                         match self.heap.get(id) {
                             GcObject::Array(arr) => {
                                 if index_val.is_number() || index_val.is_int() {
-                                    if index_val.is_number() && index_val.as_number().fract() != 0.0 {
+                                    if index_val.is_number() && index_val.as_number().fract() != 0.0
+                                    {
                                         flush_ip!();
-                                        self.throw_error(fiber_idx, "Array index must be an integer")?;
+                                        self.throw_error(
+                                            fiber_idx,
+                                            "Array index must be an integer",
+                                        )?;
                                         frame_changed = true;
                                         continue 'quantum;
                                     }
@@ -5171,7 +5176,10 @@ impl VM {
                                     };
                                     if raw_index == 0 {
                                         flush_ip!();
-                                        self.throw_error(fiber_idx, "Array index must not be zero")?;
+                                        self.throw_error(
+                                            fiber_idx,
+                                            "Array index must not be zero",
+                                        )?;
                                         frame_changed = true;
                                         continue 'quantum;
                                     }
@@ -5185,7 +5193,10 @@ impl VM {
                                             self.fibers[fiber_idx].stack.push(BxValue::new_null());
                                         } else {
                                             flush_ip!();
-                                            self.throw_error(fiber_idx, "Array index out of bounds")?;
+                                            self.throw_error(
+                                                fiber_idx,
+                                                "Array index out of bounds",
+                                            )?;
                                             frame_changed = true;
                                             continue 'quantum;
                                         }
@@ -5446,7 +5457,8 @@ impl VM {
                                 }
 
                                 let key_name = self.interner.resolve(name_id).to_string();
-                                if let Some(idx) = self.struct_key_lookup_id(id, &key_name)
+                                if let Some(idx) = self
+                                    .struct_key_lookup_id(id, &key_name)
                                     .and_then(|key_id| self.shapes.get_index(shape_id, key_id))
                                 {
                                     {
@@ -5687,12 +5699,13 @@ impl VM {
                             }
                         }
 
-                        let struct_name_id = if matches!(self.heap.get_opt(id), Some(GcObject::Struct(_))) {
-                            let name = self.interner.resolve(name_id).to_string();
-                            Some(self.struct_key_id(id, &name))
-                        } else {
-                            None
-                        };
+                        let struct_name_id =
+                            if matches!(self.heap.get_opt(id), Some(GcObject::Struct(_))) {
+                                let name = self.interner.resolve(name_id).to_string();
+                                Some(self.struct_key_id(id, &name))
+                            } else {
+                                None
+                            };
 
                         match self.heap.get_mut(id) {
                             GcObject::Struct(s) => {
@@ -6311,49 +6324,37 @@ impl VM {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     let result = self.is_strict_equal(a, b);
-                    self.fibers[fiber_idx]
-                        .stack
-                        .push(BxValue::new_bool(result));
+                    self.fibers[fiber_idx].stack.push(BxValue::new_bool(result));
                 }
                 op::STRICT_NOT_EQUAL => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     let result = !self.is_strict_equal(a, b);
-                    self.fibers[fiber_idx]
-                        .stack
-                        .push(BxValue::new_bool(result));
+                    self.fibers[fiber_idx].stack.push(BxValue::new_bool(result));
                 }
                 op::LESS => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     let result = self.compare_values(a, b) == std::cmp::Ordering::Less;
-                    self.fibers[fiber_idx]
-                        .stack
-                        .push(BxValue::new_bool(result));
+                    self.fibers[fiber_idx].stack.push(BxValue::new_bool(result));
                 }
                 op::LESS_EQUAL => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     let result = self.compare_values(a, b) != std::cmp::Ordering::Greater;
-                    self.fibers[fiber_idx]
-                        .stack
-                        .push(BxValue::new_bool(result));
+                    self.fibers[fiber_idx].stack.push(BxValue::new_bool(result));
                 }
                 op::GREATER => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     let result = self.compare_values(a, b) == std::cmp::Ordering::Greater;
-                    self.fibers[fiber_idx]
-                        .stack
-                        .push(BxValue::new_bool(result));
+                    self.fibers[fiber_idx].stack.push(BxValue::new_bool(result));
                 }
                 op::GREATER_EQUAL => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
                     let result = self.compare_values(a, b) != std::cmp::Ordering::Less;
-                    self.fibers[fiber_idx]
-                        .stack
-                        .push(BxValue::new_bool(result));
+                    self.fibers[fiber_idx].stack.push(BxValue::new_bool(result));
                 }
                 op::NOT => {
                     let a = self.fibers[fiber_idx].stack.pop().unwrap();
@@ -7498,8 +7499,7 @@ impl VM {
 
     fn native_global_name(&self, value: BxValue) -> Option<String> {
         self.global_names.iter().find_map(|(name_id, idx)| {
-            (self.global_values[*idx] == value)
-                .then(|| self.interner.resolve(*name_id).to_string())
+            (self.global_values[*idx] == value).then(|| self.interner.resolve(*name_id).to_string())
         })
     }
 
@@ -7529,7 +7529,12 @@ impl VM {
                 "includeemptyfields",
                 "multicharacterdelimiter",
             ],
-            "listcompact" => vec!["list", "delimiters", "includeemptyfields", "multicharacterdelimiter"],
+            "listcompact" => vec![
+                "list",
+                "delimiters",
+                "includeemptyfields",
+                "multicharacterdelimiter",
+            ],
             "listeach" | "listevery" | "listmap" | "listnone" | "listsome" => vec![
                 "list",
                 "callback",
@@ -7568,7 +7573,12 @@ impl VM {
                 "includeemptyfields",
                 "multicharacterdelimiter",
             ],
-            "listlen" => vec!["list", "delimiter", "includeemptyfields", "multicharacterdelimiter"],
+            "listlen" => vec![
+                "list",
+                "delimiter",
+                "includeemptyfields",
+                "multicharacterdelimiter",
+            ],
             "listgetat" => vec![
                 "list",
                 "position",
@@ -7647,10 +7657,7 @@ impl VM {
                 final_args[index] = value;
             }
         }
-        while final_args
-            .last()
-            .is_some_and(BxValue::is_null)
-        {
+        while final_args.last().is_some_and(BxValue::is_null) {
             final_args.pop();
         }
         final_args
@@ -8025,7 +8032,8 @@ impl VM {
                             self.fibers[fiber_idx].stack.extend(final_args);
                             let sub_chunk = function.chunk.clone();
                             let constant_count = sub_chunk.constants().len();
-                            let stack_base = self.fibers[fiber_idx].stack.len() - function.arity as usize;
+                            let stack_base =
+                                self.fibers[fiber_idx].stack.len() - function.arity as usize;
                             self.fibers[fiber_idx].frames.push(CallFrame {
                                 function,
                                 chunk: Rc::new(RefCell::new(sub_chunk)),

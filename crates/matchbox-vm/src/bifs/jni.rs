@@ -1,7 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use jni::{
-    objects::{GlobalRef, JObject, JObjectArray, JValue},
     InitArgsBuilder, JNIEnv, JNIVersion, JavaVM,
+    objects::{GlobalRef, JObject, JObjectArray, JValue},
 };
 #[cfg(not(target_arch = "wasm32"))]
 use std::cell::RefCell;

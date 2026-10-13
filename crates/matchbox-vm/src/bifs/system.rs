@@ -52,9 +52,9 @@ pub fn box_ast(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
 }
 
 pub fn get_function_called_name(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
-    Ok(BxValue::new_ptr(vm.string_new(
-        vm.current_function_called_name(),
-    )))
+    Ok(BxValue::new_ptr(
+        vm.string_new(vm.current_function_called_name()),
+    ))
 }
 
 pub fn get_box_context(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
@@ -142,23 +142,28 @@ pub fn invoke(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     }
     let target = args[0];
     let method = vm.to_string(args[1]);
-    let function = if target.is_null() || (vm.is_string_value(target) && vm.to_string(target).is_empty()) {
-        vm.resolve_variable_path(&method)
-            .ok_or_else(|| format!("Function '{}' was not found", method))?
-    } else if let Some(id) = target.as_gc_id().filter(|_| vm.is_struct_value(target)) {
-        let function = vm.struct_get(id, &method);
-        if function.is_null() {
-            return Err(format!("Function '{}' was not found", method));
-        }
-        function
-    } else {
-        return Err("invoke() target must be a struct or empty string".to_string());
-    };
+    let function =
+        if target.is_null() || (vm.is_string_value(target) && vm.to_string(target).is_empty()) {
+            vm.resolve_variable_path(&method)
+                .ok_or_else(|| format!("Function '{}' was not found", method))?
+        } else if let Some(id) = target.as_gc_id().filter(|_| vm.is_struct_value(target)) {
+            let function = vm.struct_get(id, &method);
+            if function.is_null() {
+                return Err(format!("Function '{}' was not found", method));
+            }
+            function
+        } else {
+            return Err("invoke() target must be a struct or empty string".to_string());
+        };
 
     let call_args = args
         .get(2)
         .and_then(|value| value.as_gc_id().filter(|_| vm.is_array_value(*value)))
-        .map(|id| (0..vm.array_len(id)).map(|index| vm.array_get(id, index)).collect())
+        .map(|id| {
+            (0..vm.array_len(id))
+                .map(|index| vm.array_get(id, index))
+                .collect()
+        })
         .unwrap_or_default();
     let chunk = vm
         .current_chunk()

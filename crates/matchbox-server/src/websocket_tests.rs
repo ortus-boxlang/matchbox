@@ -1,13 +1,13 @@
 #[cfg(test)]
 mod tests {
+    use crate::RequestData;
     use crate::websocket::*;
     use matchbox_compiler::compiler::Compiler;
     use matchbox_compiler::parser;
+    use std::collections::HashMap;
     use std::sync::mpsc;
     use std::thread;
     use tokio::sync::mpsc::unbounded_channel;
-    use crate::RequestData;
-    use std::collections::HashMap;
 
     #[test]
     fn test_websocket_runtime_echo() {
@@ -34,31 +34,33 @@ mod tests {
         };
 
         let (cmd_tx, cmd_rx) = mpsc::channel();
-        
+
         let handle = thread::spawn(move || {
             websocket_runtime_main(chunk, config, cmd_rx, None).unwrap();
         });
 
         let (out_tx, mut out_rx) = unbounded_channel();
         let connection_id = "test-conn".to_string();
-        
+
         // Connect
-        cmd_tx.send(WebSocketRuntimeCommand::Connect {
-            connection_id: connection_id.clone(),
-            request: RequestData {
-                method: "GET".to_string(),
-                path: "/ws".to_string(),
-                matched_route: None,
-                route_params: HashMap::new(),
-                raw_query: None,
-                query: HashMap::new(),
-                cookies: HashMap::new(),
-                headers: HashMap::new(),
-                body: Vec::new(),
-                full_url: "http://localhost/ws".to_string(),
-            },
-            outbound: out_tx,
-        }).unwrap();
+        cmd_tx
+            .send(WebSocketRuntimeCommand::Connect {
+                connection_id: connection_id.clone(),
+                request: RequestData {
+                    method: "GET".to_string(),
+                    path: "/ws".to_string(),
+                    matched_route: None,
+                    route_params: HashMap::new(),
+                    raw_query: None,
+                    query: HashMap::new(),
+                    cookies: HashMap::new(),
+                    headers: HashMap::new(),
+                    body: Vec::new(),
+                    full_url: "http://localhost/ws".to_string(),
+                },
+                outbound: out_tx,
+            })
+            .unwrap();
 
         // Should get welcome
         let msg = out_rx.blocking_recv().unwrap();
@@ -69,10 +71,12 @@ mod tests {
         }
 
         // Send message
-        cmd_tx.send(WebSocketRuntimeCommand::Message {
-            connection_id: connection_id.clone(),
-            message: IncomingWebSocketMessage::Text("hello".to_string()),
-        }).unwrap();
+        cmd_tx
+            .send(WebSocketRuntimeCommand::Message {
+                connection_id: connection_id.clone(),
+                message: IncomingWebSocketMessage::Text("hello".to_string()),
+            })
+            .unwrap();
 
         // Should get echo
         let msg = out_rx.blocking_recv().unwrap();
@@ -116,7 +120,7 @@ mod tests {
 
         let (out1_tx, mut out1_rx) = unbounded_channel();
         let (out2_tx, mut out2_rx) = unbounded_channel();
-        
+
         let req = RequestData {
             method: "GET".to_string(),
             path: "/ws".to_string(),
@@ -130,23 +134,29 @@ mod tests {
             full_url: "http://localhost/ws".to_string(),
         };
 
-        cmd_tx.send(WebSocketRuntimeCommand::Connect {
-            connection_id: "conn1".to_string(),
-            request: req.clone(),
-            outbound: out1_tx,
-        }).unwrap();
+        cmd_tx
+            .send(WebSocketRuntimeCommand::Connect {
+                connection_id: "conn1".to_string(),
+                request: req.clone(),
+                outbound: out1_tx,
+            })
+            .unwrap();
 
-        cmd_tx.send(WebSocketRuntimeCommand::Connect {
-            connection_id: "conn2".to_string(),
-            request: req,
-            outbound: out2_tx,
-        }).unwrap();
+        cmd_tx
+            .send(WebSocketRuntimeCommand::Connect {
+                connection_id: "conn2".to_string(),
+                request: req,
+                outbound: out2_tx,
+            })
+            .unwrap();
 
         // Send message from conn1
-        cmd_tx.send(WebSocketRuntimeCommand::Message {
-            connection_id: "conn1".to_string(),
-            message: IncomingWebSocketMessage::Text("hi".to_string()),
-        }).unwrap();
+        cmd_tx
+            .send(WebSocketRuntimeCommand::Message {
+                connection_id: "conn1".to_string(),
+                message: IncomingWebSocketMessage::Text("hi".to_string()),
+            })
+            .unwrap();
 
         // Both should get it
         let msg1 = out1_rx.blocking_recv().unwrap();
@@ -162,11 +172,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_regular_server_websocket_routing() {
-        use axum::routing::get;
         use axum::Router;
+        use axum::routing::get;
+        use futures_util::SinkExt;
         use std::sync::Arc;
         use tokio_tungstenite::tungstenite::Message;
-        use futures_util::SinkExt;
 
         let (cmd_tx, _cmd_rx) = mpsc::channel();
         let runtime = Arc::new(WebSocketRuntimeHandle {
@@ -175,18 +185,21 @@ mod tests {
         });
 
         let mut router = Router::new();
-        router = router.route(&runtime.uri, get(websocket_handler).with_state(runtime.clone()));
+        router = router.route(
+            &runtime.uri,
+            get(websocket_handler).with_state(runtime.clone()),
+        );
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        
+
         let server_handle = tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
         });
 
         let url = format!("ws://{}/ws", addr);
         let conn = tokio_tungstenite::connect_async(&url).await;
-        
+
         if let Ok((mut stream, _)) = conn {
             let _ = stream.send(Message::Text("test".to_string())).await;
             let _ = stream.close(None).await;

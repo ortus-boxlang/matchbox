@@ -3,40 +3,12 @@ use anyhow::{Result, anyhow, bail};
 
 static STUBS: &[(&str, &[u8])] = &[
     (
-        "wasi",
-        include_bytes!("../stubs/runner_stub_wasip1.wasm"),
-    ),
-    (
-        "wasm32-wasip1",
-        include_bytes!("../stubs/runner_stub_wasip1.wasm"),
-    ),
-    (
-        "web",
-        include_bytes!("../stubs/runner_stub_wasm32-unknown-unknown.wasm"),
-    ),
-    (
-        "wasm32-unknown-unknown",
-        include_bytes!("../stubs/runner_stub_wasm32-unknown-unknown.wasm"),
-    ),
-    (
-        "xtensa-esp32-espidf",
-                include_bytes!("../stubs/runner_stub_esp32.elf"),
-    ),
-    (
-        "xtensa-esp32s3-espidf",
-                include_bytes!("../stubs/runner_stub_esp32s3.elf"),
-    ),
-    (
-        "riscv32imc-esp-espidf",
-                include_bytes!("../stubs/runner_stub_esp32c3.elf"),
-    ),
-    (
         "host",
-        include_bytes!("../stubs/runner_stub_x86_64-unknown-linux-gnu"),
+        include_bytes!("../stubs/runner_stub_aarch64-apple-darwin"),
     ),
     (
-        "x86_64-unknown-linux-gnu",
-        include_bytes!("../stubs/runner_stub_x86_64-unknown-linux-gnu"),
+        "aarch64-apple-darwin",
+        include_bytes!("../stubs/runner_stub_aarch64-apple-darwin"),
     ),
 ];
 

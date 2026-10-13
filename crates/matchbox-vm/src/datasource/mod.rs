@@ -156,7 +156,9 @@ impl BxNativeObject for BxQuery {
             }
             "getrowasstruct" => {
                 if args.is_empty() {
-                    return Err("getRowAsStruct() requires a row number argument (0-based)".to_string());
+                    return Err(
+                        "getRowAsStruct() requires a row number argument (0-based)".to_string()
+                    );
                 }
                 let row_idx = args[0].as_number() as usize;
                 if row_idx >= self.record_count {
@@ -324,7 +326,8 @@ impl BxNativeObject for BxQuery {
                     current_row: 0,
                 };
                 for col_data in &self.data {
-                    let sliced: Vec<SqlValue> = col_data[start_idx as usize..end_idx as usize].to_vec();
+                    let sliced: Vec<SqlValue> =
+                        col_data[start_idx as usize..end_idx as usize].to_vec();
                     new_query.data.push(sliced);
                 }
                 new_query.record_count = (end_idx - start_idx) as usize;
@@ -592,7 +595,11 @@ impl BxNativeObject for BxQuery {
                     } else {
                         sql_text(lhs).cmp(&sql_text(rhs))
                     };
-                    if descending { ordering.reverse() } else { ordering }
+                    if descending {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    }
                 });
                 for column in &mut self.data {
                     let old = column.clone();

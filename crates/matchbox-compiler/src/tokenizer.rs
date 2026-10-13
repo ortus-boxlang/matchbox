@@ -34,30 +34,119 @@ pub enum TokenKind {
     StringEnd,
 
     // Keywords
-    Import, Class, Interface, Property, Function, Return, Var, Required,
-    For, While, In, If, Else, Try, Catch, Finally, Continue, Break,
-    Switch, Case, Default, Throw, New, True, False, Null, As,
-    Public, Private, Remote, Package, Extends, Implements, Accessors,
-    Abstract, Final, Static, Do, Assert, Param, Rethrow, Include, Not,
+    Import,
+    Class,
+    Interface,
+    Property,
+    Function,
+    Return,
+    Var,
+    Required,
+    For,
+    While,
+    In,
+    If,
+    Else,
+    Try,
+    Catch,
+    Finally,
+    Continue,
+    Break,
+    Switch,
+    Case,
+    Default,
+    Throw,
+    New,
+    True,
+    False,
+    Null,
+    As,
+    Public,
+    Private,
+    Remote,
+    Package,
+    Extends,
+    Implements,
+    Accessors,
+    Abstract,
+    Final,
+    Static,
+    Do,
+    Assert,
+    Param,
+    Rethrow,
+    Include,
+    Not,
 
     // Punctuation
-    LeftBrace, RightBrace, LeftParen, RightParen, LeftBracket, RightBracket,
-    Comma, Dot, Semicolon, Colon, At,
+    LeftBrace,
+    RightBrace,
+    LeftParen,
+    RightParen,
+    LeftBracket,
+    RightBracket,
+    Comma,
+    Dot,
+    Semicolon,
+    Colon,
+    At,
 
     // Operators
-    Plus, Minus, Star, Slash, Percent, Caret, Equal, Less, Greater, Bang, Question, Ampersand,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Caret,
+    Equal,
+    Less,
+    Greater,
+    Bang,
+    Question,
+    Ampersand,
 
     // Multi-char operators
-    EqualEqual, EqualEqualEqual, BangEqual, BangEqualEqual, LessEqual, GreaterEqual, AmpAmp, PipePipe,
-    EqualGreater, MinusGreater, QuestionColon, QuestionDot, ColonColon,
-    PlusEqual, MinusEqual, StarEqual, SlashEqual, PercentEqual, AmpEqual, Backslash,
-    PlusPlus, MinusMinus, DotDot, DotDotDot, DotDotLess,
-    GreaterDotDot, GreaterDotDotLess,
+    EqualEqual,
+    EqualEqualEqual,
+    BangEqual,
+    BangEqualEqual,
+    LessEqual,
+    GreaterEqual,
+    AmpAmp,
+    PipePipe,
+    EqualGreater,
+    MinusGreater,
+    QuestionColon,
+    QuestionDot,
+    ColonColon,
+    PlusEqual,
+    MinusEqual,
+    StarEqual,
+    SlashEqual,
+    PercentEqual,
+    AmpEqual,
+    Backslash,
+    PlusPlus,
+    MinusMinus,
+    DotDot,
+    DotDotDot,
+    DotDotLess,
+    GreaterDotDot,
+    GreaterDotDotLess,
     // Bitwise operators
-    BitwiseOr, BitwiseAnd, BitwiseXor, BitwiseComplement,
-    BitwiseShiftLeft, BitwiseShiftRight, BitwiseUnsignedShiftRight,
+    BitwiseOr,
+    BitwiseAnd,
+    BitwiseXor,
+    BitwiseComplement,
+    BitwiseShiftLeft,
+    BitwiseShiftRight,
+    BitwiseUnsignedShiftRight,
     // Word operators
-    Xor, Eqv, InstanceOf, CastAs, Contains,
+    Xor,
+    Eqv,
+    InstanceOf,
+    CastAs,
+    Contains,
 
     // Interpolation markers
     InterpStart,
@@ -355,8 +444,15 @@ impl<'a> Lexer<'a> {
                             let start = self.pos;
                             let start_line = self.line;
                             let start_col = self.col;
-                            self.pos += 12; self.col += 12;
-                            self.push_token(TokenKind::ScriptEnd, start, self.pos, start_line, start_col);
+                            self.pos += 12;
+                            self.col += 12;
+                            self.push_token(
+                                TokenKind::ScriptEnd,
+                                start,
+                                self.pos,
+                                start_line,
+                                start_col,
+                            );
                             self.pop_mode(); // DefaultScript
                             self.pop_mode(); // TemplateScript
                             continue; // Back to template mode
@@ -364,7 +460,8 @@ impl<'a> Lexer<'a> {
                     }
                     // Check for ``` component island in script mode
                     if self.source[self.pos..].starts_with("```") {
-                        self.pos += 3; self.col += 3;
+                        self.pos += 3;
+                        self.col += 3;
                         self.push_mode(LexerMode::DefaultTemplate);
                         continue;
                     }
@@ -378,12 +475,20 @@ impl<'a> Lexer<'a> {
                         let start_col = self.col;
                         self.pos += 12;
                         self.col += 12;
-                        self.push_token(TokenKind::ScriptEnd, start, self.pos, start_line, start_col);
+                        self.push_token(
+                            TokenKind::ScriptEnd,
+                            start,
+                            self.pos,
+                            start_line,
+                            start_col,
+                        );
                         self.pop_mode(); // DefaultScript
                         self.pop_mode(); // TemplateScript
                         continue;
                     }
-                    if self.pos >= self.source.len() { break; }
+                    if self.pos >= self.source.len() {
+                        break;
+                    }
                     let ch = self.current_char();
                     if is_ident_start(ch) {
                         self.tokenize_ident_or_bitwise();
@@ -429,7 +534,13 @@ impl<'a> Lexer<'a> {
         }
 
         if self.pos > start {
-            self.push_token(TokenKind::ContentText, start, self.pos, start_line, start_col);
+            self.push_token(
+                TokenKind::ContentText,
+                start,
+                self.pos,
+                start_line,
+                start_col,
+            );
         }
 
         // Handle the special character if we stopped at one
@@ -438,7 +549,8 @@ impl<'a> Lexer<'a> {
             if ch == '`' {
                 // Check for closing ``` only when coming from a component island
                 if self.source[self.pos..].starts_with("```") {
-                    self.pos += 3; self.col += 3;
+                    self.pos += 3;
+                    self.col += 3;
                     self.pop_mode(); // DefaultTemplate
                     return;
                 }
@@ -452,49 +564,68 @@ impl<'a> Lexer<'a> {
                     let is_script = rest.starts_with("bx:script");
                     if is_script {
                         // <bx:script ...> — switch to script parsing mode
-                        self.push_token(TokenKind::ScriptStart, start, self.pos, self.line, self.col.saturating_sub(1));
+                        self.push_token(
+                            TokenKind::ScriptStart,
+                            start,
+                            self.pos,
+                            self.line,
+                            self.col.saturating_sub(1),
+                        );
                         self.push_mode(LexerMode::TemplateScript);
                         // Skip past opening > to find end of opening tag
                         while self.pos < self.source.len() && self.current_char() != '>' {
                             self.advance();
                         }
-                        if self.pos < self.source.len() { self.advance(); } // skip >
+                        if self.pos < self.source.len() {
+                            self.advance();
+                        } // skip >
                         // Switch to script mode for body content
                         self.push_mode(LexerMode::DefaultScript);
                         return; // The main loop will now parse in DefaultScript
                     } else {
                         // <bx:output ...> — parse component normally, push output mode
                         self.push_mode(LexerMode::TemplateOutput);
-                        self.pos += 3; self.col += 3; // skip bx:
+                        self.pos += 3;
+                        self.col += 3; // skip bx:
                         self.tokenize_component_name(start);
                         self.push_mode(LexerMode::TemplateOutput);
                         return;
                     }
                 } else if rest.starts_with("bx:") {
                     self.push_mode(LexerMode::TemplateComponentName);
-                    self.pos += 3; self.col += 3; // skip bx:
+                    self.pos += 3;
+                    self.col += 3; // skip bx:
                     self.tokenize_component_name(start);
                     return; // tokenize_component_name handles the rest
                 } else if rest.starts_with("/bx:") {
                     let is_output_close = rest.starts_with("/bx:output");
                     self.push_mode(LexerMode::TemplateEndComponent);
-                    self.pos += 4; self.col += 4; // skip /bx:
+                    self.pos += 4;
+                    self.col += 4; // skip /bx:
                     self.tokenize_component_name(start);
                     if is_output_close {
                         self.pop_mode();
                     }
                     return;
                 } else if rest.starts_with("!---") {
-                    self.pos += 4; self.col += 4;
+                    self.pos += 4;
+                    self.col += 4;
                     while self.pos < self.source.len() {
                         if self.source[self.pos..].starts_with("--->") {
-                            self.pos += 4; self.col += 4;
+                            self.pos += 4;
+                            self.col += 4;
                             break;
                         }
                         self.advance();
                     }
                 } else {
-                    self.push_token(TokenKind::Less, start, self.pos, self.line, self.col.saturating_sub(1));
+                    self.push_token(
+                        TokenKind::Less,
+                        start,
+                        self.pos,
+                        self.line,
+                        self.col.saturating_sub(1),
+                    );
                 }
             } else if ch == '#' {
                 self.advance();
@@ -502,12 +633,24 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     // Escaped hash — emit as ContentText with ##
                     let hash_start = self.pos - 2;
-                    self.push_token(TokenKind::ContentText, hash_start, self.pos, self.line, self.col.saturating_sub(2));
+                    self.push_token(
+                        TokenKind::ContentText,
+                        hash_start,
+                        self.pos,
+                        self.line,
+                        self.col.saturating_sub(2),
+                    );
                 } else if self.mode_stack_contains(LexerMode::TemplateOutput) {
                     // Expression interpolation in output mode: #expr#
                     // Parse the expression tokens inline
                     let interp_start = self.pos - 1;
-                    self.push_token(TokenKind::InterpStart, interp_start, self.pos, self.line, self.col.saturating_sub(1));
+                    self.push_token(
+                        TokenKind::InterpStart,
+                        interp_start,
+                        self.pos,
+                        self.line,
+                        self.col.saturating_sub(1),
+                    );
                     while self.pos < self.source.len() {
                         let c = self.current_char();
                         if c == '#' {
@@ -519,7 +662,13 @@ impl<'a> Lexer<'a> {
                                 self.advance();
                                 continue;
                             }
-                            self.push_token(TokenKind::InterpEnd, end_start, self.pos, end_line, end_col);
+                            self.push_token(
+                                TokenKind::InterpEnd,
+                                end_start,
+                                self.pos,
+                                end_line,
+                                end_col,
+                            );
                             break;
                         } else if is_ident_start(c) {
                             self.tokenize_ident_or_bitwise();
@@ -543,7 +692,13 @@ impl<'a> Lexer<'a> {
                     }
                 } else {
                     // Single # — emit as ContentText
-                    self.push_token(TokenKind::ContentText, self.pos - 1, self.pos, self.line, self.col.saturating_sub(1));
+                    self.push_token(
+                        TokenKind::ContentText,
+                        self.pos - 1,
+                        self.pos,
+                        self.line,
+                        self.col.saturating_sub(1),
+                    );
                 }
             }
         }
@@ -565,20 +720,44 @@ impl<'a> Lexer<'a> {
         Some(ch)
     }
 
-    fn push_token(&mut self, kind: TokenKind, start: usize, end: usize, start_line: u32, start_col: u32) {
+    fn push_token(
+        &mut self,
+        kind: TokenKind,
+        start: usize,
+        end: usize,
+        start_line: u32,
+        start_col: u32,
+    ) {
         self.tokens.push(SyntaxToken {
             kind,
-            span: Span { start, end, line: start_line, col: start_col },
+            span: Span {
+                start,
+                end,
+                line: start_line,
+                col: start_col,
+            },
         });
     }
 
-    fn push_trivia(&mut self, kind: TriviaKind, start: usize, end: usize, start_line: u32, start_col: u32) {
+    fn push_trivia(
+        &mut self,
+        kind: TriviaKind,
+        start: usize,
+        end: usize,
+        start_line: u32,
+        start_col: u32,
+    ) {
         if start == end {
             return;
         }
         self.trivia.push(Trivia {
             kind,
-            span: Span { start, end, line: start_line, col: start_col },
+            span: Span {
+                start,
+                end,
+                line: start_line,
+                col: start_col,
+            },
         });
     }
 
@@ -594,7 +773,13 @@ impl<'a> Lexer<'a> {
                 while self.pos < self.source.len() && self.current_char() != '\n' {
                     self.advance();
                 }
-                self.push_trivia(TriviaKind::LineComment, start, self.pos, start_line, start_col);
+                self.push_trivia(
+                    TriviaKind::LineComment,
+                    start,
+                    self.pos,
+                    start_line,
+                    start_col,
+                );
             } else if remaining.starts_with("/*") {
                 let start = self.pos;
                 let start_line = self.line;
@@ -609,7 +794,13 @@ impl<'a> Lexer<'a> {
                     }
                     self.advance();
                 }
-                self.push_trivia(TriviaKind::BlockComment, start, self.pos, start_line, start_col);
+                self.push_trivia(
+                    TriviaKind::BlockComment,
+                    start,
+                    self.pos,
+                    start_line,
+                    start_col,
+                );
             } else {
                 let start = self.pos;
                 let start_line = self.line;
@@ -622,7 +813,13 @@ impl<'a> Lexer<'a> {
                     self.advance();
                 }
                 if self.pos > start {
-                    self.push_trivia(TriviaKind::Whitespace, start, self.pos, start_line, start_col);
+                    self.push_trivia(
+                        TriviaKind::Whitespace,
+                        start,
+                        self.pos,
+                        start_line,
+                        start_col,
+                    );
                 } else {
                     break;
                 }
@@ -642,7 +839,13 @@ impl<'a> Lexer<'a> {
             }
             self.advance();
         }
-        self.push_token(TokenKind::ComponentName, name_start, self.pos, name_start_line, name_start_col);
+        self.push_token(
+            TokenKind::ComponentName,
+            name_start,
+            self.pos,
+            name_start_line,
+            name_start_col,
+        );
         self.push_mode(LexerMode::TemplateComponentMode);
         self.tokenize_component_rest();
         self.pop_mode(); // TemplateComponentMode
@@ -651,7 +854,9 @@ impl<'a> Lexer<'a> {
 
     fn tokenize_component_rest(&mut self) {
         loop {
-            if self.pos >= self.source.len() { break; }
+            if self.pos >= self.source.len() {
+                break;
+            }
             // Skip whitespace
             while self.pos < self.source.len() {
                 let ch = self.current_char();
@@ -661,18 +866,32 @@ impl<'a> Lexer<'a> {
                     break;
                 }
             }
-            if self.pos >= self.source.len() { break; }
+            if self.pos >= self.source.len() {
+                break;
+            }
             let ch = self.current_char();
             if ch == '>' {
                 self.advance();
-                self.push_token(TokenKind::ComponentClose, self.pos - 1, self.pos, self.line, self.col.saturating_sub(1));
+                self.push_token(
+                    TokenKind::ComponentClose,
+                    self.pos - 1,
+                    self.pos,
+                    self.line,
+                    self.col.saturating_sub(1),
+                );
                 break;
             }
             if ch == '/' {
                 self.advance();
                 if self.pos < self.source.len() && self.current_char() == '>' {
                     self.advance();
-                    self.push_token(TokenKind::ComponentSelfClose, self.pos - 2, self.pos, self.line, self.col.saturating_sub(2));
+                    self.push_token(
+                        TokenKind::ComponentSelfClose,
+                        self.pos - 2,
+                        self.pos,
+                        self.line,
+                        self.col.saturating_sub(2),
+                    );
                     break;
                 }
             }
@@ -688,7 +907,13 @@ impl<'a> Lexer<'a> {
                 self.advance();
             }
             if self.pos > attr_start {
-                self.push_token(TokenKind::Identifier, attr_start, self.pos, attr_start_line, attr_start_col);
+                self.push_token(
+                    TokenKind::Identifier,
+                    attr_start,
+                    self.pos,
+                    attr_start_line,
+                    attr_start_col,
+                );
             }
             // Handle = value
             if self.pos < self.source.len() && self.current_char() == '=' {
@@ -699,7 +924,11 @@ impl<'a> Lexer<'a> {
                 self.push_token(TokenKind::Equal, eq_start, self.pos, eq_line, eq_col);
                 while self.pos < self.source.len() {
                     let ch = self.current_char();
-                    if ch == ' ' || ch == '\t' { self.advance(); } else { break; }
+                    if ch == ' ' || ch == '\t' {
+                        self.advance();
+                    } else {
+                        break;
+                    }
                 }
                 if self.pos < self.source.len() {
                     let ch = self.current_char();
@@ -710,14 +939,18 @@ impl<'a> Lexer<'a> {
                         while self.pos < self.source.len() && self.current_char() != '#' {
                             self.advance();
                         }
-                        if self.pos < self.source.len() { self.advance(); }
+                        if self.pos < self.source.len() {
+                            self.advance();
+                        }
                     } else {
                         let val_start = self.pos;
                         let val_start_line = self.line;
                         let val_start_col = self.col;
                         while self.pos < self.source.len() {
                             let ch = self.current_char();
-                            if ch.is_ascii_whitespace() || ch == '>' || ch == '/' { break; }
+                            if ch.is_ascii_whitespace() || ch == '>' || ch == '/' {
+                                break;
+                            }
                             self.advance();
                         }
                         if self.pos > val_start {
@@ -751,18 +984,39 @@ impl<'a> Lexer<'a> {
         if lexeme == "b" && self.pos < self.source.len() {
             let rest = &self.source[self.pos..];
             if rest.starts_with(">>>") {
-                self.pos += 3; self.col += 3;
-                self.push_token(TokenKind::BitwiseUnsignedShiftRight, start, self.pos, start_line, start_col);
+                self.pos += 3;
+                self.col += 3;
+                self.push_token(
+                    TokenKind::BitwiseUnsignedShiftRight,
+                    start,
+                    self.pos,
+                    start_line,
+                    start_col,
+                );
                 return;
             }
             if rest.starts_with("<<") {
-                self.pos += 2; self.col += 2;
-                self.push_token(TokenKind::BitwiseShiftLeft, start, self.pos, start_line, start_col);
+                self.pos += 2;
+                self.col += 2;
+                self.push_token(
+                    TokenKind::BitwiseShiftLeft,
+                    start,
+                    self.pos,
+                    start_line,
+                    start_col,
+                );
                 return;
             }
             if rest.starts_with(">>") {
-                self.pos += 2; self.col += 2;
-                self.push_token(TokenKind::BitwiseShiftRight, start, self.pos, start_line, start_col);
+                self.pos += 2;
+                self.col += 2;
+                self.push_token(
+                    TokenKind::BitwiseShiftRight,
+                    start,
+                    self.pos,
+                    start_line,
+                    start_col,
+                );
                 return;
             }
             let ch = self.current_char();
@@ -895,7 +1149,9 @@ impl<'a> Lexer<'a> {
                         while self.pos < self.source.len() && self.current_char() != '"' {
                             self.advance();
                         }
-                        if self.pos < self.source.len() { self.advance(); }
+                        if self.pos < self.source.len() {
+                            self.advance();
+                        }
                         continue;
                     }
                     if c == '\'' {
@@ -903,7 +1159,9 @@ impl<'a> Lexer<'a> {
                         while self.pos < self.source.len() && self.current_char() != '\'' {
                             self.advance();
                         }
-                        if self.pos < self.source.len() { self.advance(); }
+                        if self.pos < self.source.len() {
+                            self.advance();
+                        }
                         continue;
                     }
                     if c == '#' {
@@ -913,7 +1171,9 @@ impl<'a> Lexer<'a> {
                             continue;
                         }
                         depth -= 1;
-                        if depth == 0 { break; }
+                        if depth == 0 {
+                            break;
+                        }
                         depth += 1;
                         continue;
                     }
@@ -950,7 +1210,6 @@ impl<'a> Lexer<'a> {
     }
 
     fn read_op_kind(&mut self, ch: char) -> TokenKind {
-
         let kind = match ch {
             '{' => TokenKind::LeftBrace,
             '}' => TokenKind::RightBrace,
@@ -1632,11 +1891,17 @@ mod tests {
 
     #[test]
     fn template_output_markers_and_script_markers() {
-        let tokens = tokenize_template("<bx:script>var name = 1;</bx:script><bx:output>Hello #name#! ##</bx:output>");
+        let tokens = tokenize_template(
+            "<bx:script>var name = 1;</bx:script><bx:output>Hello #name#! ##</bx:output>",
+        );
         assert!(tokens.iter().any(|t| t.kind == TokenKind::ScriptStart));
         assert!(tokens.iter().any(|t| t.kind == TokenKind::ScriptEnd));
         assert!(tokens.iter().any(|t| t.kind == TokenKind::InterpStart));
         assert!(tokens.iter().any(|t| t.kind == TokenKind::InterpEnd));
-        assert!(tokens.iter().any(|t| t.kind == TokenKind::ComponentName && t.lexeme == "output"));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| t.kind == TokenKind::ComponentName && t.lexeme == "output")
+        );
     }
 }

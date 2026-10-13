@@ -15,7 +15,13 @@ fn set_metadata() -> &'static Mutex<HashMap<usize, SetMetadata>> {
 }
 
 fn register_set_metadata(id: usize, case_sensitive: bool, synchronized: bool) {
-    set_metadata().lock().unwrap().insert(id, SetMetadata { case_sensitive, synchronized });
+    set_metadata().lock().unwrap().insert(
+        id,
+        SetMetadata {
+            case_sensitive,
+            synchronized,
+        },
+    );
 }
 
 fn get_set_metadata(id: usize) -> SetMetadata {
@@ -24,7 +30,10 @@ fn get_set_metadata(id: usize) -> SetMetadata {
         .unwrap()
         .get(&id)
         .copied()
-        .unwrap_or(SetMetadata { case_sensitive: false, synchronized: true })
+        .unwrap_or(SetMetadata {
+            case_sensitive: false,
+            synchronized: true,
+        })
 }
 
 pub fn register_set_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
@@ -33,45 +42,120 @@ pub fn register_set_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
     bifs.insert("listtoset".to_string(), list_to_set as BxNativeFunction);
     bifs.insert("objecttoset".to_string(), object_to_set as BxNativeFunction);
     bifs.insert("toset".to_string(), to_set as BxNativeFunction);
-    bifs.insert("structkeyset".to_string(), struct_key_set as BxNativeFunction);
-    bifs.insert("structvalueset".to_string(), struct_value_set as BxNativeFunction);
+    bifs.insert(
+        "structkeyset".to_string(),
+        struct_key_set as BxNativeFunction,
+    );
+    bifs.insert(
+        "structvalueset".to_string(),
+        struct_value_set as BxNativeFunction,
+    );
 
     bifs.insert("boxsetadd".to_string(), box_set_add as BxNativeFunction);
-    bifs.insert("boxsetaddall".to_string(), box_set_add_all as BxNativeFunction);
+    bifs.insert(
+        "boxsetaddall".to_string(),
+        box_set_add_all as BxNativeFunction,
+    );
     bifs.insert("boxsetclear".to_string(), box_set_clear as BxNativeFunction);
-    bifs.insert("boxsetremove".to_string(), box_set_remove as BxNativeFunction);
-    bifs.insert("boxsetremoveall".to_string(), box_set_remove_all as BxNativeFunction);
-    bifs.insert("boxsetretainall".to_string(), box_set_retain_all as BxNativeFunction);
+    bifs.insert(
+        "boxsetremove".to_string(),
+        box_set_remove as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetremoveall".to_string(),
+        box_set_remove_all as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetretainall".to_string(),
+        box_set_retain_all as BxNativeFunction,
+    );
 
-    bifs.insert("boxsetcontains".to_string(), box_set_contains as BxNativeFunction);
-    bifs.insert("boxsetiscasesensitive".to_string(), box_set_is_case_sensitive as BxNativeFunction);
-    bifs.insert("boxsetissynchronized".to_string(), box_set_is_synchronized as BxNativeFunction);
-    bifs.insert("boxsetcontainsall".to_string(), box_set_contains_all as BxNativeFunction);
-    bifs.insert("arraycontains".to_string(), array_contains as BxNativeFunction);
-    bifs.insert("arraycontainsnocase".to_string(), array_contains_nocase as BxNativeFunction);
-    bifs.insert("boxsetisempty".to_string(), box_set_is_empty as BxNativeFunction);
-    bifs.insert("boxsetequals".to_string(), box_set_equals as BxNativeFunction);
-    bifs.insert("boxsetissubsetof".to_string(), box_set_is_subset_of as BxNativeFunction);
-    bifs.insert("boxsetissupersetof".to_string(), box_set_is_superset_of as BxNativeFunction);
-    bifs.insert("boxsetisdisjointfrom".to_string(), box_set_is_disjoint_from as BxNativeFunction);
+    bifs.insert(
+        "boxsetcontains".to_string(),
+        box_set_contains as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetiscasesensitive".to_string(),
+        box_set_is_case_sensitive as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetissynchronized".to_string(),
+        box_set_is_synchronized as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetcontainsall".to_string(),
+        box_set_contains_all as BxNativeFunction,
+    );
+    bifs.insert(
+        "arraycontains".to_string(),
+        array_contains as BxNativeFunction,
+    );
+    bifs.insert(
+        "arraycontainsnocase".to_string(),
+        array_contains_nocase as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetisempty".to_string(),
+        box_set_is_empty as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetequals".to_string(),
+        box_set_equals as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetissubsetof".to_string(),
+        box_set_is_subset_of as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetissupersetof".to_string(),
+        box_set_is_superset_of as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetisdisjointfrom".to_string(),
+        box_set_is_disjoint_from as BxNativeFunction,
+    );
     bifs.insert("boxsetfind".to_string(), box_set_find as BxNativeFunction);
 
     bifs.insert("boxsetunion".to_string(), box_set_union as BxNativeFunction);
-    bifs.insert("boxsetintersection".to_string(), box_set_intersection as BxNativeFunction);
-    bifs.insert("boxsetdifference".to_string(), box_set_difference as BxNativeFunction);
-    bifs.insert("boxsetsymmetricdifference".to_string(), box_set_symmetric_difference as BxNativeFunction);
+    bifs.insert(
+        "boxsetintersection".to_string(),
+        box_set_intersection as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetdifference".to_string(),
+        box_set_difference as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetsymmetricdifference".to_string(),
+        box_set_symmetric_difference as BxNativeFunction,
+    );
 
     bifs.insert("boxseteach".to_string(), box_set_each as BxNativeFunction);
     bifs.insert("boxsetevery".to_string(), box_set_every as BxNativeFunction);
     bifs.insert("boxsetsome".to_string(), box_set_some as BxNativeFunction);
     bifs.insert("boxsetnone".to_string(), box_set_none as BxNativeFunction);
-    bifs.insert("boxsetfilter".to_string(), box_set_filter as BxNativeFunction);
+    bifs.insert(
+        "boxsetfilter".to_string(),
+        box_set_filter as BxNativeFunction,
+    );
     bifs.insert("boxsetmap".to_string(), box_set_map as BxNativeFunction);
-    bifs.insert("boxsetreject".to_string(), box_set_reject as BxNativeFunction);
-    bifs.insert("boxsetreduce".to_string(), box_set_reduce as BxNativeFunction);
+    bifs.insert(
+        "boxsetreject".to_string(),
+        box_set_reject as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsetreduce".to_string(),
+        box_set_reduce as BxNativeFunction,
+    );
 
-    bifs.insert("boxsettoarray".to_string(), box_set_to_array as BxNativeFunction);
-    bifs.insert("boxsettolist".to_string(), box_set_to_list as BxNativeFunction);
+    bifs.insert(
+        "boxsettoarray".to_string(),
+        box_set_to_array as BxNativeFunction,
+    );
+    bifs.insert(
+        "boxsettolist".to_string(),
+        box_set_to_list as BxNativeFunction,
+    );
 }
 
 fn values_equal(vm: &dyn BxVM, a: BxValue, b: BxValue) -> bool {
@@ -89,7 +173,8 @@ fn set_contains(vm: &dyn BxVM, set_id: usize, value: BxValue) -> bool {
         if if case_sensitive {
             values_equal(vm, elem, value)
         } else {
-            vm.to_string(elem).eq_ignore_ascii_case(&vm.to_string(value))
+            vm.to_string(elem)
+                .eq_ignore_ascii_case(&vm.to_string(value))
         } {
             return true;
         }
@@ -101,7 +186,8 @@ fn set_values_match(vm: &dyn BxVM, set_id: usize, left: BxValue, right: BxValue)
     if get_set_metadata(set_id).case_sensitive {
         values_equal(vm, left, right)
     } else {
-        vm.to_string(left).eq_ignore_ascii_case(&vm.to_string(right))
+        vm.to_string(left)
+            .eq_ignore_ascii_case(&vm.to_string(right))
     }
 }
 
@@ -119,9 +205,13 @@ fn array_contains_nocase(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue,
     }
     let array_id = get_set_id(args, 0, "arrayContainsNoCase")?;
     let value = vm.to_string(args[1]).to_ascii_lowercase();
-    Ok(BxValue::new_bool((0..vm.array_len(array_id)).any(|index| {
-        vm.to_string(vm.array_get(array_id, index)).to_ascii_lowercase() == value
-    })))
+    Ok(BxValue::new_bool((0..vm.array_len(array_id)).any(
+        |index| {
+            vm.to_string(vm.array_get(array_id, index))
+                .to_ascii_lowercase()
+                == value
+        },
+    )))
 }
 
 fn set_add_unique(vm: &mut dyn BxVM, set_id: usize, value: BxValue) {
@@ -141,15 +231,18 @@ fn set_new(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     let case_sensitive = args.get(2).map(|value| value.as_bool()).unwrap_or(false);
     let synchronized = args.get(3).map(|value| value.as_bool()).unwrap_or(true);
     register_set_metadata(id, case_sensitive, synchronized);
-    let values = args.get(1).and_then(|value| value.as_gc_id()).map(|values_id| {
-        if let Some(values) = vm.range_values(values_id) {
-            values
-        } else {
-            (0..vm.array_len(values_id))
-                .map(|index| vm.array_get(values_id, index))
-                .collect()
-        }
-    });
+    let values = args
+        .get(1)
+        .and_then(|value| value.as_gc_id())
+        .map(|values_id| {
+            if let Some(values) = vm.range_values(values_id) {
+                values
+            } else {
+                (0..vm.array_len(values_id))
+                    .map(|index| vm.array_get(values_id, index))
+                    .collect()
+            }
+        });
     if let Some(values) = values {
         for value in values {
             let already_present = (0..vm.array_len(id)).any(|existing_index| {
@@ -157,7 +250,8 @@ fn set_new(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
                 if case_sensitive {
                     values_equal(vm, existing, value)
                 } else {
-                    vm.to_string(existing).eq_ignore_ascii_case(&vm.to_string(value))
+                    vm.to_string(existing)
+                        .eq_ignore_ascii_case(&vm.to_string(value))
                 }
             });
             if !already_present {
@@ -169,10 +263,14 @@ fn set_new(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
         .first()
         .is_some_and(|value| vm.to_string(*value).eq_ignore_ascii_case("sorted"))
     {
-        let mut values = (0..vm.array_len(id)).map(|index| vm.array_get(id, index)).collect::<Vec<_>>();
+        let mut values = (0..vm.array_len(id))
+            .map(|index| vm.array_get(id, index))
+            .collect::<Vec<_>>();
         values.sort_by(|left, right| {
             if left.is_number() && right.is_number() {
-                left.as_number().partial_cmp(&right.as_number()).unwrap_or(std::cmp::Ordering::Equal)
+                left.as_number()
+                    .partial_cmp(&right.as_number())
+                    .unwrap_or(std::cmp::Ordering::Equal)
             } else {
                 vm.to_string(*left).cmp(&vm.to_string(*right))
             }
@@ -199,7 +297,10 @@ fn list_to_set(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
         return Err("listToSet() expects 1 argument".to_string());
     }
     let list = vm.to_string(args[0]);
-    let delimiter = args.get(1).map(|value| vm.to_string(*value)).unwrap_or_else(|| ",".to_string());
+    let delimiter = args
+        .get(1)
+        .map(|value| vm.to_string(*value))
+        .unwrap_or_else(|| ",".to_string());
     let values_id = vm.array_new();
     for value in list.split(delimiter.as_str()) {
         let value = BxValue::new_ptr(vm.string_new(value.to_string()));
@@ -209,8 +310,14 @@ fn list_to_set(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
         .get(2)
         .copied()
         .unwrap_or_else(|| BxValue::new_ptr(vm.string_new("default".to_string())));
-    let case_sensitive = args.get(3).copied().unwrap_or_else(|| BxValue::new_bool(false));
-    set_new(vm, &[type_value, BxValue::new_ptr(values_id), case_sensitive])
+    let case_sensitive = args
+        .get(3)
+        .copied()
+        .unwrap_or_else(|| BxValue::new_bool(false));
+    set_new(
+        vm,
+        &[type_value, BxValue::new_ptr(values_id), case_sensitive],
+    )
 }
 
 fn object_to_set(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -485,7 +592,8 @@ fn box_set_find(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
     for i in 0..len {
         let elem = vm.array_get(set_id, i);
         let matches = if args[1].as_gc_id().is_some() && chunk.is_some() {
-            vm.call_function_by_value(&args[1], vec![elem], chunk.clone().unwrap())?.as_bool()
+            vm.call_function_by_value(&args[1], vec![elem], chunk.clone().unwrap())?
+                .as_bool()
         } else {
             set_values_match(vm, set_id, elem, args[1])
         };

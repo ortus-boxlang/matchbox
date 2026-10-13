@@ -1,8 +1,8 @@
 use matchbox_compiler::{compiler::Compiler, parser};
 use matchbox_vm::types::{BxNativeFunction, BxVM, BxValue, NativeFutureValue};
 use matchbox_vm::vm::VM;
-use std::fs;
 use std::collections::HashMap;
+use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -17,7 +17,11 @@ fn test_bxm_transpilation() {
 
     // Verify template parser handles basic BXM
     let result = matchbox_compiler::parser::parse_bxm(bxm_source, None);
-    assert!(result.is_ok(), "Template parser should handle basic BXM: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Template parser should handle basic BXM: {:?}",
+        result.err()
+    );
 }
 
 fn compile_source(path: &str, source: &str) -> matchbox_vm::vm::chunk::Chunk {
@@ -65,7 +69,10 @@ fn test_include_executes_nested_relative_files() {
     .unwrap();
 
     let mut bifs = HashMap::new();
-    bifs.insert("include".to_string(), matchbox::include_bif as BxNativeFunction);
+    bifs.insert(
+        "include".to_string(),
+        matchbox::include_bif as BxNativeFunction,
+    );
     let mut vm = VM::new_with_bifs(bifs, HashMap::new());
     vm.output_buffer = Some(String::new());
 
@@ -892,7 +899,11 @@ fn test_nested_bxm_interpolation() {
     // Verify template parser handles interpolation without error
     let bxm_source = r#"<bx:output>#1 + 1# is #2# and ## is literal</bx:output>"#;
     let result = parser::parse_bxm(bxm_source, Some("test"));
-    assert!(result.is_ok(), "Template parser should handle interpolation BXM: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Template parser should handle interpolation BXM: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -913,7 +924,10 @@ fn test_bxm_script_island_and_output_semantics() {
 
     vm.interpret(chunk).unwrap();
 
-    assert_eq!(vm.output_buffer.unwrap(), "\n        \n        Hello World! # World\n    ");
+    assert_eq!(
+        vm.output_buffer.unwrap(),
+        "\n        \n        Hello World! # World\n    "
+    );
 }
 
 #[test]
@@ -1290,16 +1304,18 @@ fn test_js_import_constructor_inside_class_native() {
 
 #[test]
 fn test_cross_file_js_import_propagation() {
+    use std::env;
     use std::fs;
     use std::path::Path;
-    use std::env;
-    
+
     let tmp_dir = Path::new("/tmp/cross_file_test_dir");
     fs::remove_dir_all(tmp_dir).ok();
     fs::create_dir_all(tmp_dir).ok();
     fs::create_dir_all(tmp_dir.join("modules/tspl/models")).ok();
 
-    fs::write(tmp_dir.join("modules/tspl/models/Writer.bx"), r#"
+    fs::write(
+        tmp_dir.join("modules/tspl/models/Writer.bx"),
+        r#"
 import js:TextEncoder;
 class Writer {
     function init() {
@@ -1307,9 +1323,13 @@ class Writer {
         return this;
     }
 }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
-    fs::write(tmp_dir.join("test.bxs"), r#"
+    fs::write(
+        tmp_dir.join("test.bxs"),
+        r#"
 class MockTextEncoder {
     this.encoding = "utf-8";
 }
@@ -1317,7 +1337,9 @@ js = { TextEncoder: MockTextEncoder };
 import modules.tspl.models.Writer;
 writer = new Writer();
 writeOutput("PASS");
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let orig_dir = env::current_dir().unwrap();
     env::set_current_dir(tmp_dir).unwrap();

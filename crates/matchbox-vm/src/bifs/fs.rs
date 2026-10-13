@@ -15,8 +15,8 @@ use uuid::Uuid;
 
 #[cfg(all(feature = "bif-io", not(target_arch = "wasm32")))]
 use crate::datasource::{
-    traits::{QueryColumn, QueryColumnType, QueryResult, SqlValue},
     BxQuery,
+    traits::{QueryColumn, QueryColumnType, QueryResult, SqlValue},
 };
 #[cfg(feature = "bif-io")]
 use std::{cell::RefCell, rc::Rc};
@@ -240,7 +240,9 @@ pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
 
 #[cfg(feature = "bif-io")]
 fn file_name(path: &Path) -> &str {
-    path.file_name().and_then(|name| name.to_str()).unwrap_or_default()
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
 }
 
 #[cfg(feature = "bif-io")]
@@ -353,7 +355,10 @@ fn directory_entries_to_query(entries: &[PathBuf]) -> QueryResult {
         .iter()
         .map(|path| {
             let metadata = path.metadata().ok();
-            let size = metadata.as_ref().map(|metadata| metadata.len()).unwrap_or(0);
+            let size = metadata
+                .as_ref()
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
             let modified = metadata
                 .as_ref()
                 .and_then(|metadata| metadata.modified().ok())
@@ -1290,7 +1295,10 @@ mod tests {
 
     #[test]
     fn preserves_either_supported_separator() {
-        assert_eq!(with_trailing_separator("C:\\Temp\\".to_string()), "C:\\Temp\\");
+        assert_eq!(
+            with_trailing_separator("C:\\Temp\\".to_string()),
+            "C:\\Temp\\"
+        );
         assert_eq!(with_trailing_separator("C:/Temp/".to_string()), "C:/Temp/");
     }
 

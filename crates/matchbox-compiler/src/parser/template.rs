@@ -45,7 +45,9 @@ impl<'a> TemplateParser<'a> {
     }
 
     fn peek_lexeme(&self) -> Option<&str> {
-        self.tokens.get(self.pos).map(|t| &self.source[t.span.start..t.span.end])
+        self.tokens
+            .get(self.pos)
+            .map(|t| &self.source[t.span.start..t.span.end])
     }
 
     /// Line number of the token under the cursor, falling back to the last
@@ -126,7 +128,10 @@ impl<'a> TemplateParser<'a> {
                     )])),
                     line,
                 );
-                Ok(Some(Statement::new(StatementKind::BufferOutput(expr), line)))
+                Ok(Some(Statement::new(
+                    StatementKind::BufferOutput(expr),
+                    line,
+                )))
             }
             Some(TokenKind::ComponentClose)
             | Some(TokenKind::ComponentSelfClose)
@@ -178,7 +183,10 @@ impl<'a> TemplateParser<'a> {
         self.skip_to_close();
         let expr = self.parse_output_expression()?;
         self.skip_closing("output");
-        Ok(Some(Statement::new(StatementKind::BufferOutput(expr), line)))
+        Ok(Some(Statement::new(
+            StatementKind::BufferOutput(expr),
+            line,
+        )))
     }
 
     fn parse_output_expression(&mut self) -> Result<Expression> {
@@ -192,7 +200,9 @@ impl<'a> TemplateParser<'a> {
                     break;
                 }
                 Some(TokenKind::ContentText) => {
-                    text.push_str(&decode_template_text(&self.advance_lexeme().unwrap_or_default()));
+                    text.push_str(&decode_template_text(
+                        &self.advance_lexeme().unwrap_or_default(),
+                    ));
                 }
                 Some(TokenKind::InterpStart) => {
                     self.pos += 1;
@@ -254,9 +264,7 @@ impl<'a> TemplateParser<'a> {
                     None
                 }
             })
-            .unwrap_or_else(|| {
-                Expression::new(ExpressionKind::Literal(Literal::Null), line)
-            });
+            .unwrap_or_else(|| Expression::new(ExpressionKind::Literal(Literal::Null), line));
 
         Ok(expr)
     }
@@ -296,20 +304,34 @@ impl<'a> TemplateParser<'a> {
                     self.pos += 1;
                     break;
                 }
-                Some(TokenKind::Identifier) | Some(TokenKind::Number)
-                | Some(TokenKind::String) | Some(TokenKind::Equal)
-                | Some(TokenKind::Plus) | Some(TokenKind::Minus) | Some(TokenKind::Star)
-                | Some(TokenKind::Slash) | Some(TokenKind::Dot) | Some(TokenKind::Ampersand)
-                | Some(TokenKind::Less) | Some(TokenKind::Greater)
-                | Some(TokenKind::LeftParen) | Some(TokenKind::RightParen) => {
+                Some(TokenKind::Identifier)
+                | Some(TokenKind::Number)
+                | Some(TokenKind::String)
+                | Some(TokenKind::Equal)
+                | Some(TokenKind::Plus)
+                | Some(TokenKind::Minus)
+                | Some(TokenKind::Star)
+                | Some(TokenKind::Slash)
+                | Some(TokenKind::Dot)
+                | Some(TokenKind::Ampersand)
+                | Some(TokenKind::Less)
+                | Some(TokenKind::Greater)
+                | Some(TokenKind::LeftParen)
+                | Some(TokenKind::RightParen) => {
                     let lex = self.advance_lexeme().unwrap_or_default();
-                    if !expr_text.is_empty() { expr_text.push(' '); }
+                    if !expr_text.is_empty() {
+                        expr_text.push(' ');
+                    }
                     expr_text.push_str(&lex);
                 }
-                _ => { self.pos += 1; }
+                _ => {
+                    self.pos += 1;
+                }
             }
         }
-        if expr_text.trim().is_empty() { return Ok(None); }
+        if expr_text.trim().is_empty() {
+            return Ok(None);
+        }
         if let Ok(stmts) = crate::parser::parse(&expr_text, None) {
             if let Some(first) = stmts.into_iter().next() {
                 return Ok(Some(first));
@@ -324,22 +346,44 @@ impl<'a> TemplateParser<'a> {
         let mut cond_text = String::new();
         loop {
             match self.peek_kind() {
-                Some(TokenKind::ComponentClose) => { self.pos += 1; break; }
-                Some(TokenKind::ComponentSelfClose) => { self.pos += 1; return Ok(None); }
-                Some(TokenKind::Identifier) | Some(TokenKind::Number) | Some(TokenKind::String)
-                | Some(TokenKind::Equal) | Some(TokenKind::Plus) | Some(TokenKind::Minus)
-                | Some(TokenKind::Star) | Some(TokenKind::Slash) | Some(TokenKind::Dot)
-                | Some(TokenKind::Less) | Some(TokenKind::Greater) | Some(TokenKind::Ampersand)
-                | Some(TokenKind::EqualEqual) | Some(TokenKind::BangEqual)
-                | Some(TokenKind::LessEqual) | Some(TokenKind::GreaterEqual)
-                | Some(TokenKind::AmpAmp) | Some(TokenKind::PipePipe)
-                | Some(TokenKind::LeftParen) | Some(TokenKind::RightParen)
+                Some(TokenKind::ComponentClose) => {
+                    self.pos += 1;
+                    break;
+                }
+                Some(TokenKind::ComponentSelfClose) => {
+                    self.pos += 1;
+                    return Ok(None);
+                }
+                Some(TokenKind::Identifier)
+                | Some(TokenKind::Number)
+                | Some(TokenKind::String)
+                | Some(TokenKind::Equal)
+                | Some(TokenKind::Plus)
+                | Some(TokenKind::Minus)
+                | Some(TokenKind::Star)
+                | Some(TokenKind::Slash)
+                | Some(TokenKind::Dot)
+                | Some(TokenKind::Less)
+                | Some(TokenKind::Greater)
+                | Some(TokenKind::Ampersand)
+                | Some(TokenKind::EqualEqual)
+                | Some(TokenKind::BangEqual)
+                | Some(TokenKind::LessEqual)
+                | Some(TokenKind::GreaterEqual)
+                | Some(TokenKind::AmpAmp)
+                | Some(TokenKind::PipePipe)
+                | Some(TokenKind::LeftParen)
+                | Some(TokenKind::RightParen)
                 | Some(TokenKind::Bang) => {
                     let lex = self.advance_lexeme().unwrap_or_default();
-                    if !cond_text.is_empty() { cond_text.push(' '); }
+                    if !cond_text.is_empty() {
+                        cond_text.push(' ');
+                    }
                     cond_text.push_str(&lex);
                 }
-                _ => { self.pos += 1; }
+                _ => {
+                    self.pos += 1;
+                }
             }
         }
 
@@ -347,10 +391,18 @@ impl<'a> TemplateParser<'a> {
         let condition = if !cond_text.trim().is_empty() {
             if let Ok(stmts) = crate::parser::parse(&cond_text, None) {
                 stmts.into_iter().next().and_then(|s| {
-                    if let StatementKind::Expression(expr) = s.kind { Some(expr) } else { None }
+                    if let StatementKind::Expression(expr) = s.kind {
+                        Some(expr)
+                    } else {
+                        None
+                    }
                 })
-            } else { None }
-        } else { None };
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // Parse body until </bx:if>, <bx:elseif>, or <bx:else>
         let then_branch = self.parse_template_body(&["elseif", "else", "if"])?;
@@ -380,12 +432,16 @@ impl<'a> TemplateParser<'a> {
             }
         }
 
-        let condition = condition.unwrap_or_else(|| Expression::new(
-            ExpressionKind::Literal(Literal::Boolean(true)), line,
-        ));
+        let condition = condition.unwrap_or_else(|| {
+            Expression::new(ExpressionKind::Literal(Literal::Boolean(true)), line)
+        });
 
         Ok(Some(Statement::new(
-            StatementKind::If { condition, then_branch, else_branch },
+            StatementKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            },
             line,
         )))
     }
@@ -405,7 +461,9 @@ impl<'a> TemplateParser<'a> {
                 self.skip_body("unknown");
                 continue;
             }
-            if self.peek_kind().is_none() { break; }
+            if self.peek_kind().is_none() {
+                break;
+            }
             if let Some(stmt) = self.parse_template_statement()? {
                 stmts.push(stmt);
             }
@@ -422,10 +480,13 @@ impl<'a> TemplateParser<'a> {
         // Skip closing </bx:loop>
         self.skip_closing("loop");
         // For now, just wrap in a stub
-        Ok(Some(Statement::new(StatementKind::WhileLoop {
-            condition: Expression::new(ExpressionKind::Literal(Literal::Boolean(true)), line),
-            body,
-        }, line)))
+        Ok(Some(Statement::new(
+            StatementKind::WhileLoop {
+                condition: Expression::new(ExpressionKind::Literal(Literal::Boolean(true)), line),
+                body,
+            },
+            line,
+        )))
     }
 
     fn parse_return_tag(&mut self) -> Result<Option<Statement>> {
@@ -433,10 +494,13 @@ impl<'a> TemplateParser<'a> {
         loop {
             match self.peek_kind() {
                 Some(TokenKind::ComponentClose) | Some(TokenKind::ComponentSelfClose) => {
-                    self.pos += 1; break;
+                    self.pos += 1;
+                    break;
                 }
                 _ => {
-                    if !expr_text.is_empty() { expr_text.push(' '); }
+                    if !expr_text.is_empty() {
+                        expr_text.push(' ');
+                    }
                     expr_text.push_str(&self.advance_lexeme().unwrap_or_default());
                 }
             }
@@ -444,16 +508,32 @@ impl<'a> TemplateParser<'a> {
         let expr = if expr_text.trim().is_empty() {
             None
         } else if let Ok(stmts) = crate::parser::parse(&expr_text, None) {
-            stmts.into_iter().next().and_then(|s| if let StatementKind::Expression(e) = s.kind { Some(e) } else { None })
-        } else { None };
-        Ok(Some(Statement::new(StatementKind::Return(expr), self.peek_line())))
+            stmts.into_iter().next().and_then(|s| {
+                if let StatementKind::Expression(e) = s.kind {
+                    Some(e)
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+        Ok(Some(Statement::new(
+            StatementKind::Return(expr),
+            self.peek_line(),
+        )))
     }
 
     fn parse_break_continue(&mut self, is_break: bool) -> Result<Option<Statement>> {
         let line = self.peek_line();
         self.skip_to_close();
         Ok(Some(Statement::new(
-            if is_break { StatementKind::Break } else { StatementKind::Continue }, line,
+            if is_break {
+                StatementKind::Break
+            } else {
+                StatementKind::Continue
+            },
+            line,
         )))
     }
 
@@ -471,7 +551,10 @@ impl<'a> TemplateParser<'a> {
                     self.pos += 1;
                     self.skip_to_close();
                     let body = self.parse_template_body(&["catch", "finally", "try"])?;
-                    catches.push(CatchBlock { exception_var: "e".to_string(), body });
+                    catches.push(CatchBlock {
+                        exception_var: "e".to_string(),
+                        body,
+                    });
                     continue;
                 }
                 if name == "finally" {
@@ -484,7 +567,14 @@ impl<'a> TemplateParser<'a> {
             break;
         }
         self.skip_closing("try");
-        Ok(Some(Statement::new(StatementKind::TryCatch { try_branch, catches, finally_branch }, line)))
+        Ok(Some(Statement::new(
+            StatementKind::TryCatch {
+                try_branch,
+                catches,
+                finally_branch,
+            },
+            line,
+        )))
     }
 
     fn parse_switch_tag(&mut self) -> Result<Option<Statement>> {
@@ -502,9 +592,14 @@ impl<'a> TemplateParser<'a> {
                     let mut val_text = String::new();
                     loop {
                         match self.peek_kind() {
-                            Some(TokenKind::ComponentClose) => { self.pos += 1; break; }
+                            Some(TokenKind::ComponentClose) => {
+                                self.pos += 1;
+                                break;
+                            }
                             _ => {
-                                if !val_text.is_empty() { val_text.push(' '); }
+                                if !val_text.is_empty() {
+                                    val_text.push(' ');
+                                }
                                 val_text.push_str(&self.advance_lexeme().unwrap_or_default());
                             }
                         }
@@ -529,10 +624,14 @@ impl<'a> TemplateParser<'a> {
             break;
         }
         self.skip_closing("switch");
-        Ok(Some(Statement::new(StatementKind::Switch {
-            value: Expression::new(ExpressionKind::Literal(Literal::Null), line),
-            cases, default_case,
-        }, line)))
+        Ok(Some(Statement::new(
+            StatementKind::Switch {
+                value: Expression::new(ExpressionKind::Literal(Literal::Null), line),
+                cases,
+                default_case,
+            },
+            line,
+        )))
     }
 
     fn parse_include_tag(&mut self) -> Result<Option<Statement>> {
@@ -540,15 +639,23 @@ impl<'a> TemplateParser<'a> {
         self.skip_to_close();
         Ok(Some(Statement::new(
             StatementKind::Include(Expression::new(
-                ExpressionKind::Literal(Literal::String(vec![StringPart::Text(String::new())])), line,
-            )), line,
+                ExpressionKind::Literal(Literal::String(vec![StringPart::Text(String::new())])),
+                line,
+            )),
+            line,
         )))
     }
 
     fn parse_import_tag(&mut self) -> Result<Option<Statement>> {
         let line = self.peek_line();
         self.skip_to_close();
-        Ok(Some(Statement::new(StatementKind::Import { path: String::new(), alias: None }, line)))
+        Ok(Some(Statement::new(
+            StatementKind::Import {
+                path: String::new(),
+                alias: None,
+            },
+            line,
+        )))
     }
 
     fn parse_throw_tag(&mut self) -> Result<Option<Statement>> {
@@ -568,14 +675,17 @@ impl<'a> TemplateParser<'a> {
         self.skip_to_close();
         let body = self.parse_template_body(&["function"])?;
         self.skip_closing("function");
-        Ok(Some(Statement::new(StatementKind::FunctionDecl {
-            name: String::new(),
-            attributes: vec![],
-            modifiers: FunctionModifiers::default(),
-            return_type: None,
-            params: vec![],
-            body: FunctionBody::Block(body),
-        }, line)))
+        Ok(Some(Statement::new(
+            StatementKind::FunctionDecl {
+                name: String::new(),
+                attributes: vec![],
+                modifiers: FunctionModifiers::default(),
+                return_type: None,
+                params: vec![],
+                body: FunctionBody::Block(body),
+            },
+            line,
+        )))
     }
 
     fn collect_text_until(&mut self, end_kind: TokenKind) -> String {
@@ -600,9 +710,7 @@ impl<'a> TemplateParser<'a> {
     }
 
     fn skip_closing(&mut self, name: &str) {
-        if self.peek_kind() == Some(TokenKind::ComponentName)
-            && self.peek_lexeme() == Some(name)
-        {
+        if self.peek_kind() == Some(TokenKind::ComponentName) && self.peek_lexeme() == Some(name) {
             self.pos += 1;
             self.skip_to_close();
         }
@@ -614,7 +722,9 @@ impl<'a> TemplateParser<'a> {
                     self.pos += 1;
                     return;
                 }
-                _ => { self.pos += 1; }
+                _ => {
+                    self.pos += 1;
+                }
             }
         }
     }
@@ -662,7 +772,11 @@ mod tests {
 
     #[test]
     fn parse_if_elseif_else() {
-        let ast = parse_template("<bx:if x GT 10>big<bx:elseif x GT 5>med<bx:else>small</bx:if>", None).unwrap();
+        let ast = parse_template(
+            "<bx:if x GT 10>big<bx:elseif x GT 5>med<bx:else>small</bx:if>",
+            None,
+        )
+        .unwrap();
         assert_eq!(ast.len(), 1);
     }
 }

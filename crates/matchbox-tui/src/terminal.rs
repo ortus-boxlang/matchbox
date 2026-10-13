@@ -3,14 +3,16 @@ use std::io;
 
 use crossterm::event::DisableMouseCapture as DisableMouseCaptureEvent;
 use crossterm::event::EnableMouseCapture as EnableMouseCaptureEvent;
-use crossterm::event::{self, Event as CrossTermEvent, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{
+    self, Event as CrossTermEvent, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
-use matchbox_vm::types::{BxVM, BxValue, Tracer, BxNativeObject};
 use matchbox_vm::bx_methods;
+use matchbox_vm::types::{BxNativeObject, BxVM, BxValue, Tracer};
 
 use crate::widget::{WidgetKind, WidgetRegistry};
 
@@ -107,7 +109,9 @@ impl TUI {
     }
 
     pub fn bx_poll_event(&self, vm: &mut dyn BxVM, timeout: f64) -> Result<BxValue, String> {
-        if event::poll(std::time::Duration::from_millis(timeout as u64)).map_err(|e| e.to_string())? {
+        if event::poll(std::time::Duration::from_millis(timeout as u64))
+            .map_err(|e| e.to_string())?
+        {
             match event::read().map_err(|e| e.to_string())? {
                 CrossTermEvent::Key(key) => {
                     let s = vm.struct_new();
@@ -127,12 +131,12 @@ impl TUI {
                         let y = mouse.row as f64;
                         vm.struct_set(s, "x", BxValue::new_number(x));
                         vm.struct_set(s, "y", BxValue::new_number(y));
-                        
+
                         // Hit test
                         if let Some(widget_id) = self.hit_test(mouse.column, mouse.row) {
                             vm.struct_set(s, "widgetId", BxValue::new_number(widget_id as f64));
                         }
-                        
+
                         Ok(BxValue::new_ptr(s))
                     } else {
                         Ok(BxValue::new_null())
@@ -187,7 +191,13 @@ impl BxNativeObject for TUI {
 
     fn set_property(&mut self, _name: &str, _value: BxValue) {}
 
-    fn call_method(&mut self, vm: &mut dyn BxVM, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String> {
+    fn call_method(
+        &mut self,
+        vm: &mut dyn BxVM,
+        id: usize,
+        name: &str,
+        args: &[BxValue],
+    ) -> Result<BxValue, String> {
         self.dispatch_method(vm, id, name, args)
     }
 
@@ -258,15 +268,15 @@ impl TUI {
                 for (widget_id, x, y, width, height, _) in &widgets_to_render {
                     let rx = *x;
                     let ry = *y;
-                    
+
                     // Clip to terminal bounds to prevent panic in ratatui buffer
                     if rx >= term_area.width || ry >= term_area.height {
                         continue;
                     }
-                    
+
                     let rw = (*width).min(term_area.width.saturating_sub(rx));
                     let rh = (*height).min(term_area.height.saturating_sub(ry));
-                    
+
                     if rw > 0 && rh > 0 {
                         let area = ratatui::layout::Rect::new(rx, ry, rw, rh);
                         if let Some(widget) = WidgetRegistry::get(*widget_id) {
@@ -277,7 +287,7 @@ impl TUI {
             })
             .map_err(|e| e.to_string());
         vm.resume_gc();
-        
+
         res?;
         Ok(())
     }
@@ -304,12 +314,22 @@ impl TUI {
 
         let widget_id = WidgetRegistry::insert(WidgetKind::Text(widget));
         let width = text.len() as u16;
-        self.frame_widgets.push((widget_id, x, y, width.max(1), 1, 0));
+        self.frame_widgets
+            .push((widget_id, x, y, width.max(1), 1, 0));
         Ok(())
     }
 
-    pub fn render_widget(&mut self, widget_id: usize, x: u16, y: u16, width: u16, height: u16, z_index: i32) {
-        self.frame_widgets.push((widget_id, x, y, width, height, z_index));
+    pub fn render_widget(
+        &mut self,
+        widget_id: usize,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+        z_index: i32,
+    ) {
+        self.frame_widgets
+            .push((widget_id, x, y, width, height, z_index));
     }
 
     pub fn hit_test(&self, x: u16, y: u16) -> Option<usize> {

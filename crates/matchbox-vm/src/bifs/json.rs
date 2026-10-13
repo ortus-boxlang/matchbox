@@ -11,7 +11,10 @@ pub fn json_deserialize(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     let json_val: JsonValue =
         serde_json::from_str(&json_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
-    if args.get(1).is_some_and(|value| value.is_bool() && !value.as_bool()) {
+    if args
+        .get(1)
+        .is_some_and(|value| value.is_bool() && !value.as_bool())
+    {
         if let Some(query) = json_to_query(vm, &json_val) {
             return Ok(query);
         }
@@ -49,14 +52,7 @@ pub(crate) fn query_to_json(vm: &dyn BxVM, value: BxValue, format: &str) -> Opti
     let rows = query
         .rows
         .iter()
-        .map(|row| {
-            JsonValue::Array(
-                row.iter()
-                    .cloned()
-                    .map(sql_to_json)
-                    .collect::<Vec<_>>(),
-            )
-        })
+        .map(|row| JsonValue::Array(row.iter().cloned().map(sql_to_json).collect::<Vec<_>>()))
         .collect::<Vec<_>>();
 
     match format {
@@ -66,7 +62,12 @@ pub(crate) fn query_to_json(vm: &dyn BxVM, value: BxValue, format: &str) -> Opti
                 let values = query
                     .rows
                     .iter()
-                    .map(|row| row.get(column_index).cloned().map(sql_to_json).unwrap_or(JsonValue::Null))
+                    .map(|row| {
+                        row.get(column_index)
+                            .cloned()
+                            .map(sql_to_json)
+                            .unwrap_or(JsonValue::Null)
+                    })
                     .collect();
                 data.insert(column.name.clone(), JsonValue::Array(values));
             }
@@ -89,7 +90,10 @@ pub(crate) fn query_to_json(vm: &dyn BxVM, value: BxValue, format: &str) -> Opti
                     for (index, column) in query.columns.iter().enumerate() {
                         object.insert(
                             column.name.clone(),
-                            row.get(index).cloned().map(sql_to_json).unwrap_or(JsonValue::Null),
+                            row.get(index)
+                                .cloned()
+                                .map(sql_to_json)
+                                .unwrap_or(JsonValue::Null),
                         );
                     }
                     JsonValue::Object(object)
@@ -109,7 +113,10 @@ pub(crate) fn query_to_json(vm: &dyn BxVM, value: BxValue, format: &str) -> Opti
 
 #[cfg(not(target_arch = "wasm32"))]
 fn json_to_query(vm: &mut dyn BxVM, value: &JsonValue) -> Option<BxValue> {
-    use crate::datasource::{BxQuery, traits::{QueryColumn, QueryColumnType, QueryResult}};
+    use crate::datasource::{
+        BxQuery,
+        traits::{QueryColumn, QueryColumnType, QueryResult},
+    };
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -195,7 +202,9 @@ fn sql_to_json(value: crate::datasource::traits::SqlValue) -> JsonValue {
             .map(JsonValue::Number)
             .unwrap_or(JsonValue::Null),
         SqlValue::Text(value) => JsonValue::String(value),
-        SqlValue::Bytes(value) => JsonValue::Array(value.into_iter().map(JsonValue::from).collect()),
+        SqlValue::Bytes(value) => {
+            JsonValue::Array(value.into_iter().map(JsonValue::from).collect())
+        }
     }
 }
 
@@ -204,7 +213,9 @@ pub fn is_json(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
         return Err("isJSON() expects 1 argument".to_string());
     }
     let json_str = normalize_json_input(vm.to_string(args[0]));
-    Ok(BxValue::new_bool(serde_json::from_str::<JsonValue>(&json_str).is_ok()))
+    Ok(BxValue::new_bool(
+        serde_json::from_str::<JsonValue>(&json_str).is_ok(),
+    ))
 }
 
 pub fn load_properties(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {

@@ -237,12 +237,14 @@ fn http_existing_calls_and_response_shapes_work_with_request_controls() {
         .iter()
         .find(|request| request.starts_with("POST "))
         .unwrap();
-    assert!(post
-        .to_ascii_lowercase()
-        .contains("authorization: bearer loopback-test-secret"));
-    assert!(post
-        .to_ascii_lowercase()
-        .contains("content-type: application/json"));
+    assert!(
+        post.to_ascii_lowercase()
+            .contains("authorization: bearer loopback-test-secret")
+    );
+    assert!(
+        post.to_ascii_lowercase()
+            .contains("content-type: application/json")
+    );
     assert!(post.ends_with(r#"{"model":"test"}"#));
 }
 
@@ -383,14 +385,18 @@ fn http_no_proxy_bypasses_environment_proxies_per_request() {
     ));
     let direct_requests = direct.join().unwrap();
     assert_eq!(direct_requests.len(), 1);
-    assert!(direct_requests[0]
-        .to_ascii_lowercase()
-        .contains("authorization: bearer loopback-test-secret"));
+    assert!(
+        direct_requests[0]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer loopback-test-secret")
+    );
     let proxy_requests = proxy.join().unwrap();
     assert_eq!(proxy_requests.len(), 2);
-    assert!(proxy_requests
-        .iter()
-        .all(|request| !request.contains("loopback-test-secret")));
+    assert!(
+        proxy_requests
+            .iter()
+            .all(|request| !request.contains("loopback-test-secret"))
+    );
 }
 
 #[test]
@@ -493,4 +499,79 @@ fn http_redirect_can_be_disabled() {
         1,
         "redirect target must not be requested"
     );
+}
+
+// Verifies the `headers` struct on http() results: lowercase names, array values,
+// repeated Set-Cookie preserved in order, non-UTF-8 bytes replaced, error responses,
+// redirects on/off, and file downloads. Uses only a local loopback server.
+#[test]
+fn http_results_expose_response_headers() {
+    let directory = tempfile::tempdir().unwrap();
+    let download = directory.path().join("download.bin");
+    let (address, server) = serve(
+        TcpListener::bind("127.0.0.1:0").unwrap(),
+        6,
+        |request, socket| {
+            // Raw bytes so the server can send a non-UTF-8 header value (\xE9).
+            let response: &[u8] = if request.starts_with("GET /headers ") {
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: first=1; Path=/\r\nSet-Cookie: second=2\r\nX-Raw: caf\xE9\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+            } else if request.starts_with("GET /missing ") {
+                // Error status that still carries a header.
+                b"HTTP/1.1 404 Not Found\r\nX-Error: missing\r\nContent-Length: 7\r\nConnection: close\r\n\r\nmissing"
+            } else if request.starts_with("GET /redirect ") {
+                // X-Hop differs between the redirect and its target, which shows whose headers we got.
+                b"HTTP/1.1 302 Found\r\nLocation: /final\r\nX-Hop: first\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            } else if request.starts_with("GET /final ") {
+                b"HTTP/1.1 200 OK\r\nX-Hop: final\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfinal"
+            } else {
+                // Binary download body, used to confirm the file bytes are written unchanged.
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\x00\xFF\x01\x02"
+            };
+            socket.write_all(response).unwrap();
+        },
+    );
+    assert_success(run(
+        &format!(
+            r#"
+        // Single-value, repeated, and non-UTF-8 headers on a text response.
+        result = jsonDeserialize(http({{ url: "http://{address}/headers" }}).get());
+        headers = result.headers;
+        if (result.status != 200 || result.body != "ok") throw "text response fields changed";
+        if (len(headers["content-type"]) != 1 || headers["content-type"][1] != "text/plain")
+            throw "single-value header must be a one-element array";
+        cookies = headers["set-cookie"];
+        if (len(cookies) != 2 || cookies[1] != "first=1; Path=/" || cookies[2] != "second=2")
+            throw "repeated Set-Cookie values must be preserved in order";
+        if (headers["x-raw"][1] != "caf" & chr(65533)) throw "non-UTF-8 header bytes must be replaced";
+
+        // HTTP error responses still include headers.
+        result = jsonDeserialize(http({{ url: "http://{address}/missing" }}).get());
+        if (result.status != 404 || result.headers["x-error"][1] != "missing")
+            throw "error responses must include headers";
+
+        // Redirects followed by default: only the final response's headers are exposed.
+        result = jsonDeserialize(http({{ url: "http://{address}/redirect" }}).get());
+        if (result.status != 200 || len(result.headers["x-hop"]) != 1 || result.headers["x-hop"][1] != "final"
+            || structKeyExists(result.headers, "location"))
+            throw "followed redirects must expose the final response headers";
+
+        // Redirects disabled: the original 3xx response's headers, including location.
+        result = jsonDeserialize(http({{ url: "http://{address}/redirect", redirect: false }}).get());
+        if (result.status != 302 || result.headers["location"][1] != "/final" || result.headers["x-hop"][1] != "first")
+            throw "disabled redirects must expose the original response headers";
+
+        // File downloads also include headers.
+        result = jsonDeserialize(http({{ url: "http://{address}/download", path: {download} }}).get());
+        if (result.status != 200 || result.file_path != {download}
+            || result.headers["content-type"][1] != "application/octet-stream")
+            throw "downloads must include headers";
+    "#,
+            download = serde_json::to_string(&download).unwrap()
+        ),
+        &[],
+    ));
+    // Capturing headers must not change the downloaded bytes.
+    assert_eq!(std::fs::read(download).unwrap(), [0x00, 0xFF, 0x01, 0x02]);
+    // 6 requests: headers, missing, redirect + final, redirect (not followed), download.
+    assert_eq!(server.join().unwrap().len(), 6);
 }

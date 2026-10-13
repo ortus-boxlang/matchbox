@@ -1820,6 +1820,11 @@ fn register_datasources_from_config(project_dir: &Path) -> Result<()> {
                         })?;
                 matchbox_vm::datasource::registry::register(&name, Arc::new(driver));
             }
+            "sqlite" => {
+                let driver = matchbox_vm::datasource::drivers::sqlite::SqliteDriver::new(&config)
+                    .map_err(|e| anyhow::anyhow!("Failed to create datasource '{}': {}", name, e))?;
+                matchbox_vm::datasource::registry::register(&name, Arc::new(driver));
+            }
             other => {
                 eprintln!(
                     "Warning: datasource '{}' has unknown driver '{}', skipping.",
@@ -1841,7 +1846,6 @@ fn run_chunk_with_args(
     modules: &[modules::ModuleInfo],
     args: Vec<String>,
 ) -> Result<()> {
-
     let mut external_bifs = HashMap::new();
     #[allow(unused_mut)]
     let mut native_classes = HashMap::new();
@@ -3340,6 +3344,42 @@ fn watch_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sqlite_datasource_toml_registration_accepts_minimal_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("app.db");
+        let manifest = format!(
+            "[datasources.db]\ndriver = \"sqlite\"\ndatabase = \"{}\"\n",
+            db_path.display()
+        );
+        std::fs::write(tmp.path().join("matchbox.toml"), manifest).unwrap();
+
+        let configs = modules::read_datasource_configs(tmp.path()).unwrap();
+        let entry = configs.get("db").unwrap();
+        assert_eq!(entry.driver, "sqlite");
+        assert_eq!(entry.host, "localhost");
+        assert_eq!(entry.username, "");
+        assert_eq!(entry.password, "");
+
+        let config = matchbox_vm::datasource::traits::DatasourceConfig {
+            driver: entry.driver.clone(),
+            host: entry.host.clone(),
+            port: entry.port,
+            database: entry.database.clone(),
+            username: entry.username.clone(),
+            password: entry.password.clone(),
+            max_connections: entry.max_connections,
+        };
+        let driver = matchbox_vm::datasource::drivers::sqlite::SqliteDriver::new(&config).unwrap();
+        matchbox_vm::datasource::registry::register("db", std::sync::Arc::new(driver));
+
+        let result = matchbox_vm::datasource::registry::get("db").unwrap()
+            .execute("SELECT 1 AS val", &[])
+            .unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], matchbox_vm::datasource::traits::SqlValue::Int(1));
+    }
 
     #[test]
     fn esp32_validator_allows_route_and_middleware_registration() {

@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -213,7 +213,11 @@ pub fn route_from_app_file(app_root: &Path, source_path: &Path) -> Result<Embedd
             continue;
         }
 
-        let is_last = component == relative.file_name().and_then(|x| x.to_str()).unwrap_or_default();
+        let is_last = component
+            == relative
+                .file_name()
+                .and_then(|x| x.to_str())
+                .unwrap_or_default();
         if is_last {
             let stem = Path::new(component)
                 .file_stem()
@@ -299,7 +303,10 @@ fn route_segment_from_file_name(segment: &str) -> Result<String> {
         return Ok(String::new());
     }
 
-    if let Some(name) = segment.strip_prefix('[').and_then(|value| value.strip_suffix(']')) {
+    if let Some(name) = segment
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    {
         if name.is_empty() {
             bail!("Empty route placeholder is not allowed");
         }
@@ -414,7 +421,8 @@ mod tests {
         query.insert("id".to_string(), "query-value".to_string());
         query.insert("page".to_string(), "1".to_string());
 
-        let request = EmbeddedRequest::with_route_and_query("GET", "/printer/printer-2", route_params, query);
+        let request =
+            EmbeddedRequest::with_route_and_query("GET", "/printer/printer-2", route_params, query);
         assert_eq!(request.url.get("id"), Some(&"printer-2".to_string()));
         assert_eq!(request.url.get("page"), Some(&"1".to_string()));
     }

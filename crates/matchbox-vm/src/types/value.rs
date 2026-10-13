@@ -7,25 +7,25 @@ impl Value {
     // ------------------------------------------------------------------------
     // Constants & Masks
     // ------------------------------------------------------------------------
-    
+
     // We use the negative Quiet NaN space for our tagged values.
     // Sign bit: 1, Exponent: all 1s, QNaN bit: 1.
     // This provides a base of 0xFFF8_0000_0000_0000 for our tags.
     const TAGGED_BASE: u64 = 0xFFF0000000000000;
     const TAG_SHIFT: u64 = 48;
     const PAYLOAD_MASK: u64 = 0x0000FFFFFFFFFFFF;
-    
+
     // Type Tags (Bits 48-51)
     // To ensure they fall within the QNaN space, tags start at 0x8 (setting bit 51 to 1).
-    const TAG_INT: u64  = 0x8;
+    const TAG_INT: u64 = 0x8;
     const TAG_BOOL: u64 = 0x9;
     const TAG_NULL: u64 = 0xA;
-    const TAG_PTR: u64  = 0xB;
+    const TAG_PTR: u64 = 0xB;
 
     // ------------------------------------------------------------------------
     // Internal Helper
     // ------------------------------------------------------------------------
-    
+
     #[inline(always)]
     fn tag(tag: u64, payload: u64) -> u64 {
         Self::TAGGED_BASE | (tag << Self::TAG_SHIFT) | payload
@@ -64,18 +64,18 @@ impl Value {
 
     #[inline]
     pub fn new_ptr(p: *mut c_void) -> Self {
-        // Bridge through usize to ensure we can cast between pointer and u64 
+        // Bridge through usize to ensure we can cast between pointer and u64
         // across both 32-bit (wasm32) and 64-bit (x86_64/aarch64) architectures.
         let ptr_val = p as usize as u64;
-        
+
         // Critical: On AArch64, the top 16 bits may contain Pointer Authentication Codes (PAC).
         // By masking them off, we strip the hardware signature. We add a debug_assert
         // to catch environments where pointers exceed the 48-bit address space.
         debug_assert!(
-            ptr_val <= Self::PAYLOAD_MASK, 
+            ptr_val <= Self::PAYLOAD_MASK,
             "Pointer exceeds 48-bit payload space (Possible PAC signature detected)"
         );
-        
+
         Self(Self::tag(Self::TAG_PTR, ptr_val & Self::PAYLOAD_MASK))
     }
 
@@ -146,7 +146,7 @@ impl Value {
     pub fn as_ptr(&self) -> Option<*mut c_void> {
         if self.is_ptr() {
             // Bridge through usize for safe cross-platform pointer reconstruction.
-            // On AArch64, if we were stripped of PAC bits, this returns a "raw" 
+            // On AArch64, if we were stripped of PAC bits, this returns a "raw"
             // address which may fail dereference if the OS enforces PAC.
             Some((self.0 & Self::PAYLOAD_MASK) as usize as *mut c_void)
         } else {
@@ -213,7 +213,7 @@ mod tests {
 
         let v2 = Value::new_int(i32::MAX);
         assert_eq!(v2.as_int(), Some(i32::MAX));
-        
+
         let v3 = Value::new_int(i32::MIN);
         assert_eq!(v3.as_int(), Some(i32::MIN));
     }
@@ -250,13 +250,13 @@ mod tests {
         let negative_nan_bits: u64 = 0xFFF8000000000001;
         let nan_float = f64::from_bits(negative_nan_bits);
         let v = Value::new_float(nan_float);
-        
+
         // It should still be a float (but cleanly normalized)
         assert!(v.is_float());
         assert!(v.as_float().unwrap().is_nan());
         assert_eq!(v.0, 0x7FF8000000000000);
     }
-    
+
     #[test]
     fn test_infinity() {
         let pos_inf = Value::new_float(f64::INFINITY);
@@ -267,7 +267,7 @@ mod tests {
         assert!(neg_inf.is_float());
         assert_eq!(neg_inf.as_float(), Some(f64::NEG_INFINITY));
     }
-    
+
     #[test]
     fn test_partial_eq() {
         assert_eq!(Value::new_int(42), Value::new_int(42));

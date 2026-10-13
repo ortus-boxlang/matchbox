@@ -167,10 +167,7 @@ fn main() {
                     if fs::copy(&src_path, &dest_path).is_ok() {
                         success = true;
                         use_stub = true;
-                        println!(
-                            "Runner stub built and copied to {}",
-                            dest_path.display()
-                        );
+                        println!("Runner stub built and copied to {}", dest_path.display());
                     } else {
                         println!(
                             "cargo:warning=Failed to copy stub from {} to {}",
@@ -311,7 +308,10 @@ fn main() {
 
         if needs_rebuild && (is_empty || rebuild_embedded_stubs) {
             if !has_esp_toolchain {
-                println!("ESP32 toolchain not installed; skipping stub for {}", target);
+                println!(
+                    "ESP32 toolchain not installed; skipping stub for {}",
+                    target
+                );
                 continue;
             }
             println!(

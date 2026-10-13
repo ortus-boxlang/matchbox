@@ -1,5 +1,5 @@
-use matchbox_server::{run_server, Args};
 use clap::Parser;
+use matchbox_server::{Args, run_server};
 
 #[tokio::main]
 async fn main() {

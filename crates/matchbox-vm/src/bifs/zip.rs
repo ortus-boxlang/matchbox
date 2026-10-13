@@ -5,9 +5,9 @@ use std::fs;
 #[cfg(feature = "bif-zip")]
 use std::io::Read;
 #[cfg(feature = "bif-zip")]
-use std::path::Path;
-#[cfg(feature = "bif-zip")]
 use std::io::Write;
+#[cfg(feature = "bif-zip")]
+use std::path::Path;
 
 #[cfg(feature = "bif-zip")]
 pub fn zip_extract(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -88,14 +88,8 @@ pub fn zip_compress(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Stri
         .unwrap_or_default();
     let source_str = vm.to_string(args[1]);
     let dest_str = vm.to_string(args[2]);
-    let include_base_folder = args
-        .get(3)
-        .map(|value| value.as_bool())
-        .unwrap_or(true);
-    let overwrite = args
-        .get(4)
-        .map(|value| value.as_bool())
-        .unwrap_or(false);
+    let include_base_folder = args.get(3).map(|value| value.as_bool()).unwrap_or(true);
+    let overwrite = args.get(4).map(|value| value.as_bool()).unwrap_or(false);
 
     let source_path = Path::new(&source_str);
     if !source_path.exists() {
@@ -115,8 +109,8 @@ pub fn zip_compress(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Stri
 
     if !is_zip_format(&format) {
         if is_raw_bzip_format(&format) {
-            let data = fs::read(source_path)
-                .map_err(|e| format!("Failed to read source file: {}", e))?;
+            let data =
+                fs::read(source_path).map_err(|e| format!("Failed to read source file: {}", e))?;
             let compressed = compress_bzip_bytes(data)?;
             fs::write(dest_path, compressed)
                 .map_err(|e| format!("Failed to create archive: {}", e))?;
@@ -124,29 +118,32 @@ pub fn zip_compress(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Stri
         }
         let bytes = build_tar_bytes(source_path, include_base_folder)?;
         let compressed = compress_tar_bytes(bytes, &format)?;
-        fs::write(dest_path, compressed)
-            .map_err(|e| format!("Failed to create archive: {}", e))?;
+        fs::write(dest_path, compressed).map_err(|e| format!("Failed to create archive: {}", e))?;
         return Ok(BxValue::new_ptr(vm.string_new(dest_str)));
     }
 
-    let file = fs::File::create(&dest_path)
-        .map_err(|e| format!("Failed to create zip file: {}", e))?;
+    let file =
+        fs::File::create(&dest_path).map_err(|e| format!("Failed to create zip file: {}", e))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
     if source_path.is_file() {
-        let name = source_path.file_name()
+        let name = source_path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "file".to_string());
         zip.start_file(name, options)
             .map_err(|e| format!("Failed to start file in zip: {}", e))?;
-        let data = fs::read(source_path)
-            .map_err(|e| format!("Failed to read source file: {}", e))?;
+        let data =
+            fs::read(source_path).map_err(|e| format!("Failed to read source file: {}", e))?;
         zip.write_all(&data)
             .map_err(|e| format!("Failed to write to zip: {}", e))?;
     } else if source_path.is_dir() {
-        for entry in walkdir::WalkDir::new(source_path).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(source_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let path = entry.path();
             if path.is_file() {
                 let base = if include_base_folder {
@@ -154,20 +151,21 @@ pub fn zip_compress(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Stri
                 } else {
                     source_path
                 };
-                let rel = path.strip_prefix(base)
+                let rel = path
+                    .strip_prefix(base)
                     .map_err(|e| format!("Path error: {}", e))?;
                 let name = rel.to_string_lossy().to_string();
                 zip.start_file(name, options)
                     .map_err(|e| format!("Failed to start file in zip: {}", e))?;
-                let data = fs::read(path)
-                    .map_err(|e| format!("Failed to read file: {}", e))?;
+                let data = fs::read(path).map_err(|e| format!("Failed to read file: {}", e))?;
                 zip.write_all(&data)
                     .map_err(|e| format!("Failed to write to zip: {}", e))?;
             }
         }
     }
 
-    zip.finish().map_err(|e| format!("Failed to finalize zip: {}", e))?;
+    zip.finish()
+        .map_err(|e| format!("Failed to finalize zip: {}", e))?;
     Ok(BxValue::new_ptr(vm.string_new(dest_str)))
 }
 
@@ -219,7 +217,10 @@ fn build_tar_bytes(source: &Path, include_base_folder: bool) -> Result<Vec<u8>, 
                 .append_dir_all(name, source)
                 .map_err(|e| format!("Failed to add archive directory: {}", e))?;
         } else {
-            for entry in walkdir::WalkDir::new(source).into_iter().filter_map(|e| e.ok()) {
+            for entry in walkdir::WalkDir::new(source)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
                 let path = entry.path();
                 if path == source {
                     continue;
@@ -324,8 +325,7 @@ fn extract_tar_like(source: &str, destination: &str, format: &str) -> Result<(),
         }
         other => return Err(format!("Unsupported archive format: {}", other)),
     }
-    fs::create_dir_all(destination)
-        .map_err(|e| format!("Failed to create destination: {}", e))?;
+    fs::create_dir_all(destination).map_err(|e| format!("Failed to create destination: {}", e))?;
     tar::Archive::new(tar_bytes.as_slice())
         .unpack(destination)
         .map_err(|e| format!("Failed to extract archive: {}", e))
@@ -342,12 +342,10 @@ pub fn zip_is_zip_file(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, S
         return Ok(BxValue::new_bool(false));
     }
     match fs::File::open(path) {
-        Ok(file) => {
-            match zip::ZipArchive::new(file) {
-                Ok(_) => Ok(BxValue::new_bool(true)),
-                Err(_) => Ok(BxValue::new_bool(false)),
-            }
-        }
+        Ok(file) => match zip::ZipArchive::new(file) {
+            Ok(_) => Ok(BxValue::new_bool(true)),
+            Err(_) => Ok(BxValue::new_bool(false)),
+        },
         Err(_) => Ok(BxValue::new_bool(false)),
     }
 }

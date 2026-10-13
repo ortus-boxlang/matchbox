@@ -58,7 +58,9 @@ pub struct DatasourceEntry {
     #[serde(default = "default_ds_port")]
     pub port: u16,
     pub database: String,
+    #[serde(default)]
     pub username: String,
+    #[serde(default)]
     pub password: String,
     #[serde(rename = "maxConnections", default = "default_max_connections")]
     pub max_connections: u32,

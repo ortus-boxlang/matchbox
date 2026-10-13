@@ -4,14 +4,14 @@ pub mod value;
 #[cfg(test)]
 mod macros_test;
 
-use std::fmt;
-use std::collections::HashMap;
-use std::rc::Rc;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::sync::mpsc::Sender;
+use std::collections::HashMap;
+use std::fmt;
+use std::rc::Rc;
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use std::sync::atomic::{AtomicU64, Ordering};
-use serde::{Serialize, Deserialize};
+use std::sync::mpsc::Sender;
 
 use self::box_string::BoxString;
 
@@ -26,13 +26,14 @@ impl BxValue {
     pub const TAG_SHIFT: u64 = 48;
     pub const PAYLOAD_MASK: u64 = 0x0000FFFFFFFFFFFF;
 
-    pub const TAG_INT: u64  = 0x8;
+    pub const TAG_INT: u64 = 0x8;
     pub const TAG_BOOL: u64 = 0x9;
     pub const TAG_NULL: u64 = 0xA;
-    pub const TAG_PTR: u64  = 0xB;
+    pub const TAG_PTR: u64 = 0xB;
 
     #[inline(always)]
-    fn tag(tag: u64, payload: u64) -> u64 {        Self::TAGGED_BASE | (tag << Self::TAG_SHIFT) | payload
+    fn tag(tag: u64, payload: u64) -> u64 {
+        Self::TAGGED_BASE | (tag << Self::TAG_SHIFT) | payload
     }
 
     // ------------------------------------------------------------------------
@@ -77,17 +78,36 @@ impl BxValue {
     // ------------------------------------------------------------------------
     // Predicates
     // ------------------------------------------------------------------------
-    #[inline] pub fn is_float(&self) -> bool { self.0 < 0xFFF8000000000000 }
-    #[inline] pub fn is_number(&self) -> bool { self.is_float() || self.is_int() }
-    #[inline] pub fn is_int(&self) -> bool { (self.0 & !Self::PAYLOAD_MASK) == Self::tag(Self::TAG_INT, 0) }
-    #[inline] pub fn is_bool(&self) -> bool { (self.0 & !Self::PAYLOAD_MASK) == Self::tag(Self::TAG_BOOL, 0) }
-    #[inline] pub fn is_null(&self) -> bool { (self.0 & !Self::PAYLOAD_MASK) == Self::tag(Self::TAG_NULL, 0) }
-    #[inline] pub fn is_ptr(&self) -> bool { (self.0 & !Self::PAYLOAD_MASK) == Self::tag(Self::TAG_PTR, 0) }
+    #[inline]
+    pub fn is_float(&self) -> bool {
+        self.0 < 0xFFF8000000000000
+    }
+    #[inline]
+    pub fn is_number(&self) -> bool {
+        self.is_float() || self.is_int()
+    }
+    #[inline]
+    pub fn is_int(&self) -> bool {
+        (self.0 & !Self::PAYLOAD_MASK) == Self::tag(Self::TAG_INT, 0)
+    }
+    #[inline]
+    pub fn is_bool(&self) -> bool {
+        (self.0 & !Self::PAYLOAD_MASK) == Self::tag(Self::TAG_BOOL, 0)
+    }
+    #[inline]
+    pub fn is_null(&self) -> bool {
+        (self.0 & !Self::PAYLOAD_MASK) == Self::tag(Self::TAG_NULL, 0)
+    }
+    #[inline]
+    pub fn is_ptr(&self) -> bool {
+        (self.0 & !Self::PAYLOAD_MASK) == Self::tag(Self::TAG_PTR, 0)
+    }
 
     // ------------------------------------------------------------------------
     // Extractors
     // ------------------------------------------------------------------------
-    #[inline] pub fn as_number(&self) -> f64 { 
+    #[inline]
+    pub fn as_number(&self) -> f64 {
         if self.is_float() {
             f64::from_bits(self.0)
         } else if self.is_int() {
@@ -96,9 +116,16 @@ impl BxValue {
             f64::NAN
         }
     }
-    #[inline] pub fn as_int(&self) -> i32 { self.0 as i32 }
-    #[inline] pub fn as_bool(&self) -> bool { (self.0 & Self::PAYLOAD_MASK) != 0 }
-    #[inline] pub fn as_gc_id(&self) -> Option<usize> {
+    #[inline]
+    pub fn as_int(&self) -> i32 {
+        self.0 as i32
+    }
+    #[inline]
+    pub fn as_bool(&self) -> bool {
+        (self.0 & Self::PAYLOAD_MASK) != 0
+    }
+    #[inline]
+    pub fn as_gc_id(&self) -> Option<usize> {
         if self.is_ptr() {
             Some((self.0 & Self::PAYLOAD_MASK) as usize)
         } else {
@@ -118,9 +145,26 @@ pub trait BxVM {
         String::new()
     }
     fn interpret_chunk(&mut self, chunk: crate::vm::chunk::Chunk) -> Result<BxValue, String>;
-    fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue;
-    fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String>;
-    fn call_function_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String>;
+    fn spawn(
+        &mut self,
+        func: Rc<BxCompiledFunction>,
+        args: Vec<BxValue>,
+        priority: u8,
+        chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
+    ) -> BxValue;
+    fn spawn_by_value(
+        &mut self,
+        func: &BxValue,
+        args: Vec<BxValue>,
+        priority: u8,
+        chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
+    ) -> Result<BxValue, String>;
+    fn call_function_by_value(
+        &mut self,
+        func: &BxValue,
+        args: Vec<BxValue>,
+        chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
+    ) -> Result<BxValue, String>;
     fn call_method_by_value(
         &mut self,
         receiver: BxValue,
@@ -203,12 +247,25 @@ pub trait BxVM {
         false
     }
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize;
-    fn native_object_call_method(&mut self, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
-    fn construct_native_class(&mut self, class_name: &str, args: &[BxValue]) -> Result<BxValue, String>;
+    fn native_object_call_method(
+        &mut self,
+        id: usize,
+        name: &str,
+        args: &[BxValue],
+    ) -> Result<BxValue, String>;
+    fn construct_native_class(
+        &mut self,
+        class_name: &str,
+        args: &[BxValue],
+    ) -> Result<BxValue, String>;
     fn instance_class_name(&self, receiver: BxValue) -> Result<String, String>;
     fn instance_variables_json(&self, receiver: BxValue) -> Result<serde_json::Value, String>;
     fn datetime_new(&mut self, dt: chrono::DateTime<chrono::Utc>) -> usize;
-    fn datetime_new_with_timezone(&mut self, dt: chrono::DateTime<chrono::Utc>, _timezone: &str) -> usize {
+    fn datetime_new_with_timezone(
+        &mut self,
+        dt: chrono::DateTime<chrono::Utc>,
+        _timezone: &str,
+    ) -> usize {
         self.datetime_new(dt)
     }
     fn datetime_timezone(&self, _value: BxValue) -> Option<String> {
@@ -228,13 +285,24 @@ pub trait BxVM {
     #[cfg(not(target_arch = "wasm32"))]
     fn resolve_query_source_path(&self, path: &[String]) -> Option<BxValue>;
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_object_query_result(&self, id: usize) -> Option<crate::datasource::traits::QueryResult>;
+    fn native_object_query_result(
+        &self,
+        id: usize,
+    ) -> Option<crate::datasource::traits::QueryResult>;
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_object_query_columns(&self, id: usize) -> Option<Vec<crate::datasource::traits::QueryColumn>>;
+    fn native_object_query_columns(
+        &self,
+        id: usize,
+    ) -> Option<Vec<crate::datasource::traits::QueryColumn>>;
     #[cfg(not(target_arch = "wasm32"))]
     fn native_object_query_row_count(&self, id: usize) -> Option<usize>;
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_object_query_cell(&self, id: usize, row_idx: usize, col_idx: usize) -> Option<crate::datasource::traits::SqlValue>;
+    fn native_object_query_cell(
+        &self,
+        id: usize,
+        row_idx: usize,
+        col_idx: usize,
+    ) -> Option<crate::datasource::traits::SqlValue>;
     fn resolve_variable_path(&self, _path: &str) -> Option<BxValue> {
         None
     }
@@ -373,7 +441,13 @@ pub(crate) fn take_wasm_future_thunk(id: u64) -> Option<WasmFutureThunk> {
 pub trait BxNativeObject: fmt::Debug {
     fn get_property(&self, name: &str) -> BxValue;
     fn set_property(&mut self, name: &str, value: BxValue);
-    fn call_method(&mut self, vm: &mut dyn BxVM, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
+    fn call_method(
+        &mut self,
+        vm: &mut dyn BxVM,
+        id: usize,
+        name: &str,
+        args: &[BxValue],
+    ) -> Result<BxValue, String>;
     #[cfg(not(target_arch = "wasm32"))]
     fn query_result(&self) -> Option<crate::datasource::traits::QueryResult> {
         None
@@ -387,9 +461,18 @@ pub trait BxNativeObject: fmt::Debug {
         self.query_result().map(|result| result.rows.len())
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn query_cell(&self, row_idx: usize, col_idx: usize) -> Option<crate::datasource::traits::SqlValue> {
-        self.query_result()
-            .and_then(|result| result.rows.get(row_idx).and_then(|row| row.get(col_idx)).cloned())
+    fn query_cell(
+        &self,
+        row_idx: usize,
+        col_idx: usize,
+    ) -> Option<crate::datasource::traits::SqlValue> {
+        self.query_result().and_then(|result| {
+            result
+                .rows
+                .get(row_idx)
+                .and_then(|row| row.get(col_idx))
+                .cloned()
+        })
     }
     fn trace(&self, _tracer: &mut dyn Tracer) {}
 }
@@ -400,7 +483,7 @@ pub trait Tracer {
 
 impl PartialEq for dyn BxNativeObject {
     fn eq(&self, _other: &Self) -> bool {
-        false 
+        false
     }
 }
 
@@ -467,8 +550,8 @@ pub struct ClassModifiers {
 pub struct BxCompiledFunction {
     pub name: String,
     pub kind: FunctionKind,
-    pub arity: u32,     // Total parameters
-    pub min_arity: u32, // Required parameters
+    pub arity: u32,          // Total parameters
+    pub min_arity: u32,      // Required parameters
     pub params: Vec<String>, // Parameter names
     pub modifiers: FunctionModifiers,
     /// Captured `this` for closures created inside class contexts.
@@ -580,7 +663,7 @@ pub struct BxInstance {
     pub class: Rc<RefCell<BxClass>>,
     pub shape_id: u32,
     pub properties: Vec<BxValue>,
-    pub variables: Rc<RefCell<HashMap<String, BxValue>>>, 
+    pub variables: Rc<RefCell<HashMap<String, BxValue>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

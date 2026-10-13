@@ -6,7 +6,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1996,11 +1996,7 @@ try {
 </html>
 "#;
 
-    run_browser_page(
-        "browser_bundle_js_import_simple_access",
-        source,
-        html,
-    );
+    run_browser_page("browser_bundle_js_import_simple_access", source, html);
 }
 
 #[test]
@@ -2169,11 +2165,7 @@ try {
 </html>
 "#;
 
-    run_browser_page(
-        "browser_bundle_js_array_indexing",
-        source,
-        html,
-    );
+    run_browser_page("browser_bundle_js_array_indexing", source, html);
 }
 
 #[test]

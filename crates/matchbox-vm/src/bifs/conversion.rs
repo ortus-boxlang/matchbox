@@ -77,7 +77,10 @@ pub fn parse_number(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Stri
         .as_deref()
         .filter(|value| ["bin", "oct", "dec", "hex"].contains(value))
         .map(str::to_string)
-        .or_else(|| args.get(2).map(|value| vm.to_string(*value).to_ascii_lowercase()));
+        .or_else(|| {
+            args.get(2)
+                .map(|value| vm.to_string(*value).to_ascii_lowercase())
+        });
 
     if let Some(radix) = radix_str {
         let radix_num = match radix.as_str() {
@@ -98,9 +101,8 @@ pub fn parse_number(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Stri
         return Ok(BxValue::new_number(n as f64));
     }
 
-    let localized = second_lower
-        .as_deref()
-        .is_some_and(|locale| locale.starts_with("de_")
+    let localized = second_lower.as_deref().is_some_and(|locale| {
+        locale.starts_with("de_")
             || locale.starts_with("fr_")
             || locale.starts_with("it_")
             || locale.starts_with("es_")
@@ -112,7 +114,8 @@ pub fn parse_number(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Stri
             || locale.starts_with("ru_")
             || locale.starts_with("pl_")
             || locale.starts_with("cs_")
-            || locale.starts_with("hu_"));
+            || locale.starts_with("hu_")
+    });
     let normalized = if localized {
         num_str.replace('.', "").replace(',', ".")
     } else {
