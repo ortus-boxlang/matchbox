@@ -379,10 +379,7 @@ pub fn generate_get_module_settings_bxs(modules: &[ModuleInfo]) -> String {
                 let safe = m.name.replace('-', "_");
                 let helper = format!("getModuleSettings_{safe}");
                 bxs.push_str(&format!("function {}() {{\n", helper));
-                bxs.push_str("    s = {}\n");
-                for (k, v) in map {
-                    bxs.push_str(&format!("    s.{} = {}\n", k, json_value_to_bxs(v)));
-                }
+                bxs.push_str(&format!("    s = {}\n", json_value_to_bxs(&m.settings)));
                 bxs.push_str("    return s\n");
                 bxs.push_str("}\n");
                 helpers.push((m.name.clone(), helper));
@@ -400,7 +397,12 @@ pub fn generate_get_module_settings_bxs(modules: &[ModuleInfo]) -> String {
     bxs.push_str("function getModuleSettings(mn) {\n");
     let mut expr = String::from("getModuleSettings_default()");
     for (mod_name, helper) in helpers.iter().rev() {
-        expr = format!("(mn == \"{}\") ? {}() : {}", mod_name, helper, expr);
+        expr = format!(
+            "(mn == {}) ? {}() : {}",
+            bx_string_literal(mod_name),
+            helper,
+            expr
+        );
     }
     bxs.push_str(&format!("    result = {}\n", expr));
     bxs.push_str("    return result\n");
@@ -408,14 +410,42 @@ pub fn generate_get_module_settings_bxs(modules: &[ModuleInfo]) -> String {
     bxs
 }
 
+/// Render a JSON value as a BoxLang expression that rebuilds it, recursing into
+/// arrays and structs.
 fn json_value_to_bxs(v: &serde_json::Value) -> String {
     match v {
-        serde_json::Value::String(s) => {
-            format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-        }
+        serde_json::Value::String(s) => bx_string_literal(s),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Null => "null".to_string(),
-        _ => "{}".to_string(), // nested objects/arrays: simplified placeholder
+        serde_json::Value::Array(items) => {
+            let parts: Vec<String> = items.iter().map(json_value_to_bxs).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        serde_json::Value::Object(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{}: {}", bx_string_literal(k), json_value_to_bxs(v)))
+                .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+    }
+}
+
+/// Render text as a BoxLang string expression that evaluates to exactly `s`.
+///
+/// BoxLang strings keep backslashes and newlines literally and escape `"` by
+/// doubling it. `#` starts interpolation, so it is emitted as `chr(35)` outside
+/// the quotes rather than as `##`, which the MatchBox tokenizer does not yet
+/// collapse correctly.
+fn bx_string_literal(s: &str) -> String {
+    let parts: Vec<String> = s
+        .split('#')
+        .map(|part| format!("\"{}\"", part.replace('"', "\"\"")))
+        .collect();
+    if parts.len() == 1 {
+        parts.into_iter().next().unwrap()
+    } else {
+        format!("({})", parts.join(" & chr(35) & "))
     }
 }

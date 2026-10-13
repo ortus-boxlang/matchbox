@@ -22,23 +22,50 @@ my-utils/
 Every module must have a `ModuleConfig.bx`. Matchbox executes this in an isolated VM at compile-time to collect metadata and settings.
 
 ```boxlang
-// ModuleConfig.bx
-class {
+// ModuleConfig.bx — the class must be named ModuleConfig
+class ModuleConfig {
     // Runs when the module is first discovered
     function onLoad() {
         println("Loading MyUtils module...");
     }
 
-    // Must return a struct of settings. 
+    // Must return a struct of settings.
     // These are accessible via getModuleSettings("my-utils")
     function configure() {
         return {
             "version": "1.0.0",
-            "enabled": true
+            "enabled": true,
+            "database": {
+                "host": "localhost",
+                "port": 5432
+            },
+            "tags": [ "fast", "small" ],
+            "servers": [
+                { "name": "primary", "weight": 10 },
+                { "name": "backup", "weight": 1 }
+            ]
         };
     }
 }
 ```
+
+Settings can be nested to any depth: structs, arrays, arrays of structs, empty
+collections, and `null` all come back with the same shape and types. Keys may
+contain spaces or hyphens; read those with bracket notation.
+
+```boxlang
+// main.bxs — run with: matchbox --module ./my-utils main.bxs
+settings = getModuleSettings("my-utils")
+
+println(settings.version)                  // 1.0.0
+println(settings.database.host)            // localhost
+println(settings.database.port + 1)        // 5433
+println(arrayLen(settings.tags))           // 2
+println(settings.servers[2].name)          // backup
+```
+
+Settings are captured when the program is compiled, so a compiled `.bxb` file
+carries them with it and does not need the module directory at runtime.
 
 ## 3. Rust Implementation (`matchbox/`)
 
