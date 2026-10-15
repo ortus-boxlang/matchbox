@@ -1,84 +1,11 @@
 //! Module components use ordinary, GC-traced instances and registration records.
-use super::{VM, gc::GcObject};
+use super::{VM, gc::GcObject, component_runtime::default_body_result};
 use crate::{
     bundle::Component,
-    types::{BxNativeObject, BxVM, BxValue, NativeCallback, Tracer},
+    types::{BxVM, BxValue, NativeCallback},
 };
 use anyhow::{Context, Result, bail};
-use std::{cell::RefCell, rc::Rc};
-
-#[derive(Debug)]
-struct BodyResult {
-    kind: u8,
-    value: BxValue,
-}
-impl BxNativeObject for BodyResult {
-    fn trace(&self, tracer: &mut dyn Tracer) {
-        tracer.mark(&self.value);
-    }
-    fn native_data(&self, kind: &str) -> Option<*mut std::ffi::c_void> {
-        (kind == "matchbox.component.body_result")
-            .then_some(self as *const Self as *mut std::ffi::c_void)
-    }
-    fn get_property(&self, name: &str) -> BxValue {
-        match name.to_ascii_lowercase().as_str() {
-            "resulttype" => BxValue::new_number(self.kind as f64),
-            "returnvalue" => self.value,
-            _ => BxValue::new_null(),
-        }
-    }
-    fn set_property(&mut self, _name: &str, _value: BxValue) {}
-    fn call_method(
-        &mut self,
-        _vm: &mut dyn BxVM,
-        _id: usize,
-        name: &str,
-        args: &[BxValue],
-    ) -> Result<BxValue, String> {
-        let name = name.to_ascii_lowercase();
-        if !args.is_empty()
-            && !(matches!(name.as_str(), "isbreak" | "iscontinue") && args.len() == 1)
-        {
-            return Err("Invalid component body result arguments".into());
-        }
-        match name.as_str() {
-            "isearlyexit" => Ok(BxValue::new_bool(self.kind != 0)),
-            "isreturn" => Ok(BxValue::new_bool(self.kind == 1)),
-            "isbreak" => Ok(BxValue::new_bool(self.kind == 2)),
-            "iscontinue" => Ok(BxValue::new_bool(self.kind == 3)),
-            "returnvalue" => Ok(self.value),
-            "label" => Ok(BxValue::new_null()),
-            "resulttype" => Ok(BxValue::new_number(self.kind as f64)),
-            _ => Err(format!("Unsupported component body result method: {name}")),
-        }
-    }
-}
-fn default_body_result(vm: &mut dyn BxVM) -> BxValue {
-    BxValue::new_ptr(vm.native_object_new(Rc::new(RefCell::new(BodyResult {
-        kind: 0,
-        value: BxValue::new_null(),
-    }))))
-}
-
-pub(crate) fn body_result(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.len() != 2 || !(args[0].is_number() || args[0].is_int()) {
-        return Err("Body result requires a result type and value".into());
-    }
-    let kind = args[0].as_number();
-    if !kind.is_finite()
-        || kind.fract() != 0.0
-        || !(0.0..=3.0).contains(&kind)
-        || (kind != 1.0 && !args[1].is_null())
-    {
-        return Err("Invalid component body result".into());
-    }
-    Ok(BxValue::new_ptr(vm.native_object_new(Rc::new(
-        RefCell::new(BodyResult {
-            kind: kind as u8,
-            value: args[1],
-        }),
-    ))))
-}
+use std::rc::Rc;
 
 const COMPONENTS: &str = "__mb_components";
 const COMPONENT_STACK: &str = "__mb_component_stack";

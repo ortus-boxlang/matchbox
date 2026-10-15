@@ -1,4 +1,5 @@
 mod app_server;
+mod web_context;
 pub mod webroot_core;
 mod websocket;
 #[cfg(test)]
@@ -6,10 +7,11 @@ mod websocket_tests;
 
 use axum::{
     Router,
-    extract::{Form, Path as AxumPath, Query, State},
-    http::{HeaderMap, Method, StatusCode, header},
+    body::{Body, to_bytes},
+    extract::{ConnectInfo, State},
+    http::{HeaderMap, Method, Request, StatusCode, header},
     response::IntoResponse,
-    routing::get,
+    routing::{any, get},
 };
 use clap::Parser as ClapParser;
 use matchbox_compiler::{compiler::Compiler, parser};
@@ -23,8 +25,8 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use tokio::fs;
 use webroot_core::{
-    EmbeddedAssetPackage, EmbeddedAssetStore, FileSystemAssetStore, WebrootConfig, WebrootEngine,
-    WebrootRequest, WebrootResponse,
+    EmbeddedAssetPackage, EmbeddedAssetStore, FileSystemAssetStore, WebrootConfig, WebrootContext,
+    WebrootEngine, WebrootRequest, WebrootResponse,
 };
 use websocket::{WebSocketRuntimeHandle, websocket_handler, websocket_runtime_main};
 
@@ -52,7 +54,9 @@ pub fn request_data_from_parts(
     let mut header_map = HashMap::new();
     for (name, value) in headers.iter() {
         if let Ok(value) = value.to_str() {
-            header_map.insert(name.as_str().to_lowercase(), value.to_string());
+            header_map
+                .entry(name.as_str().to_lowercase())
+                .or_insert_with(|| value.to_string());
         }
     }
     let cookie_map = header_map
@@ -360,6 +364,7 @@ fn is_boxlang_source_path(path: &Path) -> bool {
 }
 
 struct AppState {
+    port: u16,
     engine: WebrootEngine<FileSystemAssetStore>,
     websocket: Option<Arc<WebSocketRuntimeHandle>>,
 }
@@ -468,7 +473,12 @@ pub async fn run_server(args: Args) {
         None
     };
 
+    let listener = tokio::net::TcpListener::bind((args.host.as_str(), args.port))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
     let state = Arc::new(AppState {
+        port: addr.port(),
         engine: WebrootEngine::new(
             FileSystemAssetStore::new(webroot.clone()),
             WebrootConfig {
@@ -480,8 +490,8 @@ pub async fn run_server(args: Args) {
     });
 
     let mut router = Router::new()
-        .route("/", get(handler).post(handler))
-        .route("/*path", get(handler).post(handler));
+        .route("/", any(handler))
+        .route("/*path", any(handler));
 
     if let Some(runtime) = &state.websocket {
         router = router.route(
@@ -492,7 +502,6 @@ pub async fn run_server(args: Args) {
 
     let app = router.with_state(state.clone());
 
-    let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse().unwrap();
     println!("MatchBox Server listening on http://{}", addr);
     println!("Web root: {}", webroot.display());
     println!(
@@ -504,54 +513,88 @@ pub async fn run_server(args: Args) {
         }
     );
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 async fn handler(
     State(state): State<Arc<AppState>>,
-    method: Method,
-    path: Option<AxumPath<String>>,
-    Query(params): Query<HashMap<String, String>>,
-    headers: HeaderMap,
-    form_data: Option<Form<HashMap<String, String>>>,
-) -> impl IntoResponse {
-    let path_str = path.map(|AxumPath(p)| p).unwrap_or_default();
-    let path = if path_str.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}", path_str)
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request<Body>,
+) -> axum::response::Response {
+    let (parts, body) = request.into_parts();
+    let path = match percent_encoding::percent_decode_str(parts.uri.path()).decode_utf8() {
+        Ok(path) => path.into_owned(),
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
-    let mut header_map = HashMap::new();
-    for (name, value) in headers.iter() {
-        if let Ok(value) = value.to_str() {
-            header_map.insert(name.as_str().to_lowercase(), value.to_string());
-        }
-    }
-
-    let form = form_data.map(|Form(data)| data).unwrap_or_default();
-    match state.engine.handle(WebrootRequest {
-        method: method.to_string(),
+    let body = match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        to_bytes(body, 25 * 1024 * 1024),
+    )
+    .await
+    {
+        Ok(Ok(body)) => body.to_vec(),
+        Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        Err(_) => return StatusCode::REQUEST_TIMEOUT.into_response(),
+    };
+    let context = WebrootContext {
+        uri: parts.uri.path().into(),
+        query_string: parts.uri.query().unwrap_or_default().into(),
+        protocol: format!("{:?}", parts.version),
+        remote_addr: peer.ip().to_string(),
+        remote_port: peer.port(),
+        server_port: state.port,
+        ..Default::default()
+    };
+    let request = WebrootRequest {
+        method: parts.method.to_string(),
         path,
-        query: params,
-        form,
-        headers: header_map,
-        body: Vec::new(),
-    }) {
-        Ok(response) => webroot_response_to_axum(response),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", err)).into_response(),
+        query: url::form_urlencoded::parse(context.query_string.as_bytes())
+            .into_owned()
+            .collect(),
+        form: HashMap::new(),
+        headers: parts
+            .headers
+            .keys()
+            .filter_map(|k| {
+                parts
+                    .headers
+                    .get(k)?
+                    .to_str()
+                    .ok()
+                    .map(|v| (k.as_str().into(), v.into()))
+            })
+            .collect(),
+        body,
+    };
+    match tokio::task::spawn_blocking(move || state.engine.handle_with_context(request, context))
+        .await
+    {
+        Ok(Ok(response)) => webroot_response_to_axum(response),
+        error => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error: {error:?}"),
+        )
+            .into_response(),
     }
 }
 
 fn webroot_response_to_axum(response: WebrootResponse) -> axum::response::Response {
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    let mut axum_response = (status, response.body).into_response();
+    let mut axum_response = axum::response::Response::builder()
+        .status(status)
+        .body(Body::from(response.body))
+        .unwrap();
     for (name, value) in response.headers {
         if let (Ok(name), Ok(value)) = (
             header::HeaderName::from_bytes(name.as_bytes()),
             header::HeaderValue::from_str(&value),
         ) {
-            axum_response.headers_mut().insert(name, value);
+            axum_response.headers_mut().append(name, value);
         }
     }
     axum_response
@@ -563,6 +606,7 @@ mod tests {
 
     fn setup_test_state(webroot: PathBuf) -> Arc<AppState> {
         Arc::new(AppState {
+            port: 8080,
             engine: WebrootEngine::new(
                 FileSystemAssetStore::new(webroot),
                 WebrootConfig::default(),
@@ -578,11 +622,11 @@ mod tests {
 
         let res = handler(
             State(state),
-            Method::GET,
-            Some(AxumPath("non-existent.txt".to_string())),
-            Query(HashMap::new()),
-            HeaderMap::new(),
-            None,
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Request::builder()
+                .uri("/non-existent.txt")
+                .body(Body::empty())
+                .unwrap(),
         )
         .await
         .into_response();
@@ -602,11 +646,8 @@ mod tests {
 
         let res = handler(
             State(state),
-            Method::GET,
-            None, // root path
-            Query(HashMap::new()),
-            HeaderMap::new(),
-            None,
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Request::builder().uri("/").body(Body::empty()).unwrap(),
         )
         .await
         .into_response();
@@ -625,11 +666,8 @@ mod tests {
 
         let res = handler(
             State(state),
-            Method::GET,
-            Some(AxumPath(".env".to_string())),
-            Query(HashMap::new()),
-            HeaderMap::new(),
-            None,
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Request::builder().uri("/.env").body(Body::empty()).unwrap(),
         )
         .await
         .into_response();
@@ -652,11 +690,11 @@ mod tests {
 
         let res = handler(
             State(state),
-            Method::GET,
-            Some(AxumPath("../outside.txt".to_string())),
-            Query(HashMap::new()),
-            HeaderMap::new(),
-            None,
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Request::builder()
+                .uri("/../outside.txt")
+                .body(Body::empty())
+                .unwrap(),
         )
         .await
         .into_response();
@@ -672,6 +710,7 @@ mod tests {
         std::fs::write(webroot.join("index.bxm"), "<h1>Index</h1>").unwrap();
 
         let state = Arc::new(AppState {
+            port: 8080,
             engine: WebrootEngine::new(
                 FileSystemAssetStore::new(webroot),
                 WebrootConfig {
@@ -684,11 +723,11 @@ mod tests {
 
         let res = handler(
             State(state),
-            Method::GET,
-            Some(AxumPath("non-existent".to_string())),
-            Query(HashMap::new()),
-            HeaderMap::new(),
-            None,
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Request::builder()
+                .uri("/non-existent")
+                .body(Body::empty())
+                .unwrap(),
         )
         .await
         .into_response();

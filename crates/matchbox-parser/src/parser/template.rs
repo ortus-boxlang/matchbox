@@ -193,6 +193,15 @@ impl<'a> TemplateParser<'a> {
             Some(TokenKind::ComponentSelfClose) => { self.pos += 1; None }
             Some(TokenKind::ComponentClose) => {
                 self.pos += 1;
+                let lower = name.to_ascii_lowercase();
+                let has_closing = lower == "content" && self.tokens[self.pos..].iter().any(|token| {
+                    token.kind == TokenKind::ComponentName
+                        && self.source[token.span.start..token.span.end].eq_ignore_ascii_case(name)
+                        && self.source[..token.span.start].rsplit_once('<').is_some_and(|(_, prefix)| prefix.starts_with('/'))
+                });
+                if lower == "header" || (lower == "content" && !has_closing) {
+                    return Ok(Some(component_statement(name, attributes, None, line)?));
+                }
                 let body = self.parse_template_body(&[name])?;
                 if self.peek_kind() != Some(TokenKind::ComponentName) || !self.is_closing_tag() { anyhow::bail!("Missing closing component tag: {name}"); }
                 self.skip_closing(name);

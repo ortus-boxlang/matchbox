@@ -11,6 +11,7 @@ mod events;
 mod interceptors;
 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
 pub(crate) mod components;
+mod component_runtime;
 #[cfg(feature = "jit")]
 pub mod jit;
 pub mod opcode;

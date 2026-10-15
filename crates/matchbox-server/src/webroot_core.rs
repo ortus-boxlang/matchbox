@@ -1,3 +1,4 @@
+use super::web_context::install_web_context;
 use anyhow::{Context, Result, bail};
 use matchbox_compiler::{compiler::Compiler, parser};
 use matchbox_vm::types::{BxVM, BxValue};
@@ -6,6 +7,7 @@ use matchbox_vm::vm::chunk::Chunk;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -33,10 +35,39 @@ pub struct WebrootRequest {
     pub body: Vec<u8>,
 }
 
+/// Transport metadata supplied by an HTTP host, separate from the resolved asset path.
+#[derive(Clone, Debug)]
+pub struct WebrootContext {
+    pub uri: String,
+    pub script_name: String,
+    pub query_string: String,
+    pub protocol: String,
+    pub scheme: String,
+    pub remote_addr: String,
+    pub remote_port: u16,
+    pub server_port: u16,
+}
+
+impl Default for WebrootContext {
+    fn default() -> Self {
+        Self {
+            uri: String::new(),
+            script_name: String::new(),
+            query_string: String::new(),
+            protocol: "HTTP/1.1".into(),
+            scheme: "http".into(),
+            remote_addr: String::new(),
+            remote_port: 0,
+            server_port: 8080,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebrootResponse {
     pub status: u16,
-    pub headers: HashMap<String, String>,
+    /// Repeated fields (including Set-Cookie) remain separate and ordered.
+    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -218,8 +249,17 @@ impl<S: AssetStore> WebrootEngine<S> {
     }
 
     pub fn handle(&self, request: WebrootRequest) -> Result<WebrootResponse> {
+        self.handle_with_context(request, WebrootContext::default())
+    }
+
+    pub fn handle_with_context(
+        &self,
+        request: WebrootRequest,
+        context: WebrootContext,
+    ) -> Result<WebrootResponse> {
+        let request = Rc::new(request);
         let method = request.method.to_ascii_uppercase();
-        if !matches!(method.as_str(), "GET" | "HEAD" | "POST") {
+        if matches!(method.as_str(), "TRACE" | "TRACK") {
             return Ok(text_response(405, "Method Not Allowed"));
         }
 
@@ -255,15 +295,17 @@ impl<S: AssetStore> WebrootEngine<S> {
 
         let mut response = if is_template_path(&asset_path) {
             let source = String::from_utf8(bytes)?;
-            self.render_template(&asset_path, &source, &request)?
+            self.render_template(&asset_path, &source, &request, &context)?
         } else {
-            let mut headers = HashMap::new();
-            headers.insert(
+            if !matches!(method.as_str(), "GET" | "HEAD" | "POST") {
+                return Ok(text_response(405, "Method Not Allowed"));
+            }
+            let headers = vec![(
                 "content-type".to_string(),
                 mime_guess::from_path(&asset_path)
                     .first_or_octet_stream()
                     .to_string(),
-            );
+            )];
             WebrootResponse {
                 status: 200,
                 headers,
@@ -271,7 +313,21 @@ impl<S: AssetStore> WebrootEngine<S> {
             }
         };
 
-        if method == "HEAD" {
+        if !response
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        {
+            response
+                .headers
+                .push(("content-length".into(), response.body.len().to_string()));
+        }
+        if response.status == 204 {
+            response
+                .headers
+                .retain(|(name, _)| !name.eq_ignore_ascii_case("content-length"));
+        }
+        if method == "HEAD" || response.status == 204 || response.status == 304 {
             response.body.clear();
         }
         Ok(response)
@@ -297,7 +353,8 @@ impl<S: AssetStore> WebrootEngine<S> {
         &self,
         asset_path: &str,
         source: &str,
-        request: &WebrootRequest,
+        request: &Rc<WebrootRequest>,
+        context: &WebrootContext,
     ) -> Result<WebrootResponse> {
         let chunk = if let Some(chunk) = self.store.compiled_template(asset_path)? {
             chunk
@@ -305,7 +362,8 @@ impl<S: AssetStore> WebrootEngine<S> {
             compile_template(asset_path, source)?
         };
         let mut vm = VM::new();
-        vm.output_buffer = Some(String::new());
+        vm.begin_output_capture();
+        let response = install_web_context(&mut vm, request.clone(), context)?;
         let mut cookies = request
             .headers
             .get("cookie")
@@ -329,22 +387,18 @@ impl<S: AssetStore> WebrootEngine<S> {
             .cloned()
             .unwrap_or_default();
         let session_scope_id = insert_scope(&mut vm, "session", &session_snapshot);
-        let cgi = cgi_scope_from_request(request, asset_path);
+        let cgi = cgi_scope_from_request(request, asset_path, context);
         insert_scope(&mut vm, "cgi", &cgi);
         vm.interpret(chunk)?;
         self.persist_session(&mut vm, &session_id, session_scope_id);
 
-        let mut headers = HashMap::new();
-        headers.insert("content-type".to_string(), "text/html".to_string());
-        headers.insert(
+        let mut response = response.borrow_mut();
+        response.headers.push((
             "set-cookie".to_string(),
             format!("MBX_SESSION_ID={}; Path=/; HttpOnly", session_id),
-        );
-        Ok(WebrootResponse {
-            status: 200,
-            headers,
-            body: vm.output_buffer.unwrap_or_default().into_bytes(),
-        })
+        ));
+        response.body = vm.end_output_capture().unwrap_or_default().into_bytes();
+        Ok(response.clone())
     }
 
     fn persist_session(&self, vm: &mut VM, session_id: &str, scope_id: usize) {
@@ -418,21 +472,61 @@ fn compile_template(asset_path: &str, source: &str) -> Result<Chunk> {
     compiler.compile(&ast, source)
 }
 
-fn cgi_scope_from_request(request: &WebrootRequest, asset_path: &str) -> HashMap<String, String> {
+fn cgi_scope_from_request(
+    request: &WebrootRequest,
+    asset_path: &str,
+    context: &WebrootContext,
+) -> HashMap<String, String> {
     let host = request
         .headers
         .get("host")
         .cloned()
         .unwrap_or_else(|| "localhost:8080".to_string());
-    let (server_name, server_port) = split_host_port(&host);
-
-    HashMap::from([
+    let authority = host.parse::<http::uri::Authority>().ok();
+    let server_name = authority
+        .as_ref()
+        .map(|a| a.host().trim_matches(['[', ']']).to_string())
+        .unwrap_or_else(|| host.clone());
+    let server_port = authority
+        .as_ref()
+        .and_then(|a| a.port_u16())
+        .unwrap_or(context.server_port)
+        .to_string();
+    let uri = if context.uri.is_empty() {
+        &request.path
+    } else {
+        &context.uri
+    };
+    let script_name = if context.script_name.is_empty() {
+        format!("/{asset_path}")
+    } else {
+        context.script_name.clone()
+    };
+    let mut cgi = HashMap::from([
         (
             "request_method".to_string(),
             request.method.to_ascii_uppercase(),
         ),
-        ("script_name".to_string(), format!("/{}", asset_path)),
-        ("path_info".to_string(), request.path.clone()),
+        ("script_name".to_string(), script_name),
+        ("path_info".to_string(), String::new()),
+        ("query_string".to_string(), context.query_string.clone()),
+        (
+            "request_url".to_string(),
+            format!("{}://{}{}", context.scheme, host, uri),
+        ),
+        ("server_protocol".to_string(), context.protocol.clone()),
+        ("remote_addr".to_string(), context.remote_addr.clone()),
+        ("remote_host".to_string(), context.remote_addr.clone()),
+        ("remote_port".to_string(), context.remote_port.to_string()),
+        (
+            "https".to_string(),
+            if context.scheme == "https" {
+                "on"
+            } else {
+                "off"
+            }
+            .into(),
+        ),
         ("server_name".to_string(), server_name),
         ("server_port".to_string(), server_port),
         ("http_host".to_string(), host),
@@ -445,17 +539,14 @@ fn cgi_scope_from_request(request: &WebrootRequest, asset_path: &str) -> HashMap
                 .unwrap_or_default(),
         ),
         ("content_length".to_string(), request.body.len().to_string()),
-    ])
-}
-
-fn split_host_port(host: &str) -> (String, String) {
-    if let Some((name, port)) = host.rsplit_once(':') {
-        if !name.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) {
-            return (name.to_string(), port.to_string());
-        }
+    ]);
+    for (name, value) in &request.headers {
+        cgi.insert(
+            format!("http_{}", name.to_ascii_lowercase().replace('-', "_")),
+            value.clone(),
+        );
     }
-
-    (host.to_string(), "8080".to_string())
+    cgi
 }
 
 fn normalize_request_path(path: &str) -> Result<String> {
@@ -529,7 +620,11 @@ fn is_template_path(path: &str) -> bool {
 fn text_response(status: u16, body: &str) -> WebrootResponse {
     WebrootResponse {
         status,
-        headers: HashMap::new(),
+        headers: if status == 405 {
+            vec![("allow".into(), "GET, HEAD, POST".into())]
+        } else {
+            Vec::new()
+        },
         body: body.as_bytes().to_vec(),
     }
 }
@@ -559,7 +654,11 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(
-            response.headers.get("content-type").map(String::as_str),
+            response
+                .headers
+                .iter()
+                .find(|(name, _)| name == "content-type")
+                .map(|(_, value)| value.as_str()),
             Some("text/css")
         );
         assert_eq!(response.body, b"body { color: red; }");
@@ -586,7 +685,11 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(
-            response.headers.get("content-type").map(String::as_str),
+            response
+                .headers
+                .iter()
+                .find(|(name, _)| name == "content-type")
+                .map(|(_, value)| value.as_str()),
             Some("text/html")
         );
         assert_eq!(String::from_utf8(response.body).unwrap(), "<h1>Index</h1>");
@@ -745,7 +848,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_methods_return_405() {
+    fn trace_method_returns_405() {
         let temp = tempfile::tempdir().unwrap();
         let webroot = temp.path().canonicalize().unwrap();
         std::fs::write(webroot.join("index.bxm"), "<h1>Index</h1>").unwrap();
@@ -754,7 +857,7 @@ mod tests {
             WebrootEngine::new(FileSystemAssetStore::new(webroot), WebrootConfig::default());
         let response = engine
             .handle(WebrootRequest {
-                method: "PUT".to_string(),
+                method: "TRACE".to_string(),
                 path: "/".to_string(),
                 query: Default::default(),
                 form: Default::default(),
@@ -791,7 +894,11 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(
-            response.headers.get("content-type").map(String::as_str),
+            response
+                .headers
+                .iter()
+                .find(|(name, _)| name == "content-type")
+                .map(|(_, value)| value.as_str()),
             Some("text/css")
         );
         assert!(response.body.is_empty());
@@ -952,7 +1059,9 @@ mod tests {
             .unwrap();
         let session_cookie = first
             .headers
-            .get("set-cookie")
+            .iter()
+            .find(|(name, _)| name == "set-cookie")
+            .map(|(_, value)| value)
             .unwrap()
             .split(';')
             .next()
