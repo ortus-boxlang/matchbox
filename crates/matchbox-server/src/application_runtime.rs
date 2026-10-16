@@ -39,6 +39,7 @@ struct Worker {
     sender: Option<std::sync::mpsc::SyncSender<RenderMessage>>,
     thread: Option<std::thread::JoinHandle<()>>,
     module_paths: Vec<std::path::PathBuf>,
+    module_mappings: Vec<matchbox_vm::bundle::ModuleMapping>,
 }
 #[cfg(not(target_family = "wasm"))]
 impl Drop for Worker {
@@ -105,6 +106,17 @@ impl WebrootRuntime {
             .map(|worker| worker.module_paths.clone())
             .unwrap_or_default())
     }
+    pub fn module_mappings(&self) -> Result<Vec<matchbox_vm::bundle::ModuleMapping>> {
+        let worker = self
+            .inner
+            .worker
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Web runtime lock poisoned"))?;
+        Ok(worker
+            .as_ref()
+            .map(|worker| worker.module_mappings.clone())
+            .unwrap_or_default())
+    }
     fn sender(
         &self,
         bootstrap: Option<ModuleBootstrap>,
@@ -129,7 +141,7 @@ impl WebrootRuntime {
                                     options.home.as_deref(),
                                     options.config.as_deref(),
                                 ),
-                                None => Ok(Vec::new()),
+                                None => Ok((Vec::new(), Vec::new())),
                             },
                         ))
                         .map_err(|_| "Module startup panicked".to_string())
@@ -169,11 +181,12 @@ impl WebrootRuntime {
                 .context("Web runtime stopped during module startup")
                 .and_then(|result| result.map_err(anyhow::Error::msg));
             match paths {
-                Ok(module_paths) => {
+                Ok((module_paths, module_mappings)) => {
                     *worker = Some(Worker {
                         sender: Some(sender),
                         thread: Some(thread),
                         module_paths,
+                        module_mappings,
                     })
                 }
                 Err(error) => {

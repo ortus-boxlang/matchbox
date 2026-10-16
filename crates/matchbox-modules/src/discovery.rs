@@ -10,6 +10,8 @@ pub struct ModuleInfo {
     /// The module name (e.g. `"bx-strings"`). Becomes the `bxModules.{name}` namespace.
     pub name: String,
     pub dependencies: Vec<String>,
+    pub parent_module: Option<String>,
+    pub nested_modules: Vec<String>,
     /// Absolute physical path to the module root directory.
     pub path: PathBuf,
     /// Contents of each `bifs/*.bxs` (or `.bx`) file in this module, injected as extra
@@ -283,12 +285,30 @@ pub fn discover_module_installations(
         }
     }
     // Validate and resolve each entry.
-    let mut modules = Vec::new();
-    for (mut name, path) in entries {
+    let mut modules: Vec<ModuleInfo> = Vec::new();
+    let mut pending: std::collections::VecDeque<_> = entries
+        .into_iter()
+        .map(|(name, path)| {
+            (
+                name,
+                path,
+                None::<String>,
+                Vec::<PathBuf>::new(),
+                serde_json::json!({}),
+            )
+        })
+        .collect();
+    while let Some((mut name, path, parent_module, mut ancestors, parent_overrides)) =
+        pending.pop_front()
+    {
         let path = path.canonicalize().with_context(|| {
             format!("Module '{}': path does not exist: {}", name, path.display())
         })?;
 
+        if ancestors.contains(&path) {
+            bail!("Circular nested module path: {}", path.display());
+        }
+        ancestors.push(path.clone());
         if !private_paths.contains(&path) {
             private_paths.push(path.clone());
         }
@@ -310,13 +330,45 @@ pub fn discover_module_installations(
         if let Some(declared) = package["boxlang"]["moduleName"].as_str() {
             name = declared.to_owned();
         }
-        if config["modules"][&name]["enabled"] == false {
+        if parent_module.is_some()
+            && modules
+                .iter()
+                .any(|module| module.name.eq_ignore_ascii_case(&name))
+        {
+            continue;
+        }
+        let mut overrides = parent_overrides
+            .as_object()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(&name))
+            })
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let mut global = config["modules"][&name].clone();
+        if let Some(entries) = global.as_object_mut() {
+            entries.retain(|_, value| !value.is_null());
+        }
+        merge_configuration(&mut overrides, &global);
+        if overrides["enabled"] == false {
             continue;
         }
         let source = std::fs::read_to_string(&descriptor)?;
         let metadata = descriptor_metadata(&source)?;
-        if !metadata.enabled {
+        if !overrides["enabled"].as_bool().unwrap_or(metadata.enabled) {
             continue;
+        }
+        let mut children = Vec::new();
+        scan_module_directory(&path.join("modules"), &mut children, &mut private_paths)?;
+        for (child, child_path) in children {
+            pending.push_back((
+                child,
+                child_path,
+                Some(name.clone()),
+                ancestors.clone(),
+                metadata.modules.clone(),
+            ));
         }
         // Collect bifs/*.bxs sources (sorted for determinism).
         let bifs_dir = path.join("bifs");
@@ -364,7 +416,7 @@ pub fn discover_module_installations(
             .is_some_and(|a| !a.is_empty());
         let has_native = !has_artifacts && path.join("matchbox").join("Cargo.toml").exists();
 
-        let settings = config["modules"][&name]["settings"]
+        let settings = overrides["settings"]
             .as_object()
             .map(|m| serde_json::Value::Object(m.clone()))
             .unwrap_or_else(|| serde_json::json!({}));
@@ -372,6 +424,8 @@ pub fn discover_module_installations(
         modules.push(ModuleInfo {
             name,
             dependencies: metadata.dependencies,
+            parent_module,
+            nested_modules: Vec::new(),
             path,
             bif_sources,
             bif_classes,
@@ -380,6 +434,13 @@ pub fn discover_module_installations(
         });
     }
 
+    for index in 0..modules.len() {
+        modules[index].nested_modules = modules
+            .iter()
+            .filter(|child| child.parent_module.as_deref() == Some(modules[index].name.as_str()))
+            .map(|child| child.name.clone())
+            .collect();
+    }
     Ok(DiscoveredModules {
         modules: order_modules(modules)?,
         private_paths,
@@ -458,6 +519,71 @@ pub fn read_datasource_configs(project_dir: &Path) -> Result<HashMap<String, Dat
 struct DescriptorMetadata {
     enabled: bool,
     dependencies: Vec<String>,
+    modules: serde_json::Value,
+}
+fn merge_configuration(target: &mut serde_json::Value, source: &serde_json::Value) {
+    if let Some(source) = source.as_object() {
+        if !target.is_object() {
+            *target = serde_json::json!({});
+        }
+        let target = target.as_object_mut().unwrap();
+        for (key, value) in source {
+            if value.is_object() {
+                merge_configuration(
+                    target
+                        .entry(key.clone())
+                        .or_insert_with(|| serde_json::json!({})),
+                    value,
+                );
+            } else {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+fn literal_configuration(
+    expression: &matchbox_compiler::ast::Expression,
+    key: bool,
+) -> Result<serde_json::Value> {
+    use matchbox_compiler::ast::*;
+    Ok(match &expression.kind {
+        ExpressionKind::Identifier(name) if key => serde_json::Value::String(name.to_lowercase()),
+        ExpressionKind::Literal(Literal::String(parts)) => serde_json::Value::String(
+            parts
+                .iter()
+                .map(|part| match part {
+                    StringPart::Text(text) => Ok(text.as_str()),
+                    _ => bail!("Nested module overrides must be literals"),
+                })
+                .collect::<Result<String>>()?,
+        ),
+        ExpressionKind::Literal(Literal::Boolean(value)) => serde_json::Value::Bool(*value),
+        ExpressionKind::Literal(Literal::Number(value)) => serde_json::json!(value),
+        ExpressionKind::Literal(Literal::Null) => serde_json::Value::Null,
+        ExpressionKind::Literal(Literal::Array(items)) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|item| literal_configuration(item, false))
+                .collect::<Result<_>>()?,
+        ),
+        ExpressionKind::Literal(Literal::Struct(items)) => serde_json::Value::Object(
+            items
+                .iter()
+                .map(|(key, value)| {
+                    Ok((
+                        literal_configuration(key, true)?
+                            .as_str()
+                            .context("Nested override keys must be strings")?
+                            .to_lowercase(),
+                        literal_configuration(value, false)?,
+                    ))
+                })
+                .collect::<Result<_>>()?,
+        ),
+        _ => bail!(
+            "Nested module overrides must be literals; dynamic descriptor configuration is unsupported"
+        ),
+    })
 }
 fn descriptor_metadata(source: &str) -> Result<DescriptorMetadata> {
     use matchbox_compiler::ast::*;
@@ -485,6 +611,7 @@ fn descriptor_metadata(source: &str) -> Result<DescriptorMetadata> {
     let mut result = DescriptorMetadata {
         enabled: true,
         dependencies: vec![],
+        modules: serde_json::json!({}),
     };
     for statement in matchbox_compiler::parser::parse(source, Some("ModuleConfig.bx"))? {
         let StatementKind::ClassDecl { members, .. } = statement.kind else {
@@ -515,6 +642,32 @@ fn descriptor_metadata(source: &str) -> Result<DescriptorMetadata> {
                         bail!("Module enabled metadata must be a boolean literal");
                     };
                     result.enabled = enabled;
+                }
+                "modules" => {
+                    result.modules = literal_configuration(&value, false)?;
+                    let entries = result
+                        .modules
+                        .as_object()
+                        .context("Nested module overrides must be a struct")?;
+                    for (name, entry) in entries {
+                        let entry = entry.as_object().with_context(|| {
+                            format!("Nested module {name} overrides must be a struct")
+                        })?;
+                        if entry
+                            .keys()
+                            .any(|key| !matches!(key.as_str(), "enabled" | "settings"))
+                            || entry
+                                .get("enabled")
+                                .is_some_and(|value| !value.is_boolean())
+                            || entry
+                                .get("settings")
+                                .is_some_and(|value| !value.is_object())
+                        {
+                            bail!(
+                                "Nested module {name} supports only boolean enabled and struct settings"
+                            );
+                        }
+                    }
                 }
                 "dependencies" => {
                     let ExpressionKind::Literal(Literal::Array(values)) = value.kind else {
@@ -555,7 +708,11 @@ fn order_modules(modules: Vec<ModuleInfo>) -> Result<Vec<ModuleInfo>> {
             );
         }
         states[index] = 1;
-        for dependency in &modules[index].dependencies {
+        for dependency in modules[index]
+            .nested_modules
+            .iter()
+            .chain(&modules[index].dependencies)
+        {
             let next = *names.get(&dependency.to_lowercase()).with_context(|| {
                 format!(
                     "Module {} requires missing module {dependency}",

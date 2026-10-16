@@ -16,7 +16,7 @@ use std::{
 };
 
 pub const TARGET: &str = env!("MATCHBOX_TARGET");
-pub const MAGIC: &[u8; 8] = b"MBMODS\0\x0A";
+pub const MAGIC: &[u8; 8] = b"MBMODS\0\x0B";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SharedLibrary {
@@ -244,6 +244,8 @@ pub struct Module {
     pub name: String,
     pub path: String,
     pub dependencies: Vec<String>,
+    pub parent_module: Option<String>,
+    pub nested_modules: Vec<String>,
     pub instance: String,
     pub descriptor: Chunk,
     pub bifs: Chunk,
@@ -294,16 +296,51 @@ impl Application {
 }
 
 struct ModuleActivation {
+    name: String,
+    parent: Option<String>,
     instance: Rc<crate::vm::gc::RootedValue>,
     record: Rc<crate::vm::gc::RootedValue>,
     targets: Vec<Rc<crate::vm::gc::RootedValue>>,
 }
 /// VM/thread-owned module lifetime. Hosts must unload before destroying the owning VM.
 /// Registrations/native libraries remain VM/process-owned; this is not hot reload.
-pub struct LoadedModules { records: Vec<ModuleActivation> }
+pub struct LoadedModules {
+    records: Vec<ModuleActivation>,
+}
+#[derive(Clone, Debug)]
+pub struct ModuleMapping {
+    pub module: String,
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub external: bool,
+}
 impl LoadedModules {
+    /// Resolved descriptor mappings, copied out without exposing VM heap values to HTTP threads.
+    pub fn mappings(&self, vm: &VM) -> Result<Vec<ModuleMapping>> {
+        let mut mappings = Vec::new();
+        for activation in &self.records {
+            let record = vm
+                .heap
+                .read_retained_value(&activation.record)
+                .map_err(anyhow::Error::msg)?;
+            for field in ["mapping", "publicMapping"] {
+                let value = crate::module_services::record_field(vm, record, field)
+                    .as_gc_id()
+                    .context("Module mapping missing")?;
+                mappings.push(ModuleMapping {
+                    module: activation.name.clone(),
+                    name: vm.to_string(vm.struct_get(value, "name")),
+                    path: vm.to_string(vm.struct_get(value, "path")).into(),
+                    external: vm.struct_get(value, "external").as_bool(),
+                });
+            }
+        }
+        Ok(mappings)
+    }
     pub fn load(vm: &mut VM, mut modules: Vec<Module>, cache: &Path) -> Result<Self> {
-        let mut loaded = Self { records: Vec::new() };
+        let mut loaded = Self {
+            records: Vec::new(),
+        };
         let result = (|| -> Result<()> {
             let services = crate::module_services::Services::new(vm);
             let settings_id = vm.struct_new();
@@ -328,7 +365,30 @@ impl LoadedModules {
                 },
             )
             .map_err(anyhow::Error::msg)?;
-            for module in &mut modules {
+            fn construct(
+                index: usize,
+                modules: &mut [Module],
+                vm: &mut VM,
+                cache: &Path,
+                ready: &mut [u8],
+                prepared: &mut [Option<ModuleActivation>],
+                services: &crate::module_services::Services,
+            ) -> Result<()> {
+                if ready[index] == 2 {
+                    return Ok(());
+                }
+                if ready[index] == 1 {
+                    bail!("Circular nested module parent");
+                }
+                ready[index] = 1;
+                if let Some(parent) = modules[index].parent_module.clone() {
+                    let parent = modules
+                        .iter()
+                        .position(|module| module.name.eq_ignore_ascii_case(&parent))
+                        .context("Nested module parent missing")?;
+                    construct(parent, modules, vm, cache, ready, prepared, services)?;
+                }
+                let module = &mut modules[index];
                 if let Some(artifact) = &module.artifact {
                     let path = artifact.extract(cache)?;
                     unsafe { crate::plugins::load(vm, &path) }
@@ -341,9 +401,10 @@ impl LoadedModules {
                 }
                 module.descriptor.reconstruct_functions();
                 vm.interpret(module.descriptor.clone())?;
+                // Parent constructors/classes exist before children, but configuration/activation remains child-first.
                 let instance = vm
                     .get_global(&module.instance)
-                    .context("Module descriptor did not create an instance")?;
+                    .context("Module instance missing")?;
                 let defaults = vm
                     .instance_variable(instance, "settings")
                     .unwrap_or_else(|| BxValue::new_ptr(vm.struct_new()));
@@ -357,13 +418,43 @@ impl LoadedModules {
                 let record = crate::module_services::record(vm, module, instance, defaults)?;
                 services.register(vm, &module.name, record);
                 services.inject(vm, instance, record, false)?;
-                // Include partially initialized descriptors in reverse-order error cleanup.
-                loaded.records.push(ModuleActivation {
+                prepared[index] = Some(ModuleActivation {
+                    name: module.name.clone(),
+                    parent: module.parent_module.clone(),
                     instance: vm.heap.retain_value(instance).map_err(anyhow::Error::msg)?,
                     record: vm.heap.retain_value(record).map_err(anyhow::Error::msg)?,
                     targets: Vec::new(),
                 });
                 crate::module_services::register_classes(vm, module, record)?;
+                ready[index] = 2;
+                Ok(())
+            }
+            let mut ready = vec![0; modules.len()];
+            let mut prepared: Vec<_> = (0..modules.len()).map(|_| None).collect();
+            for index in 0..modules.len() {
+                construct(
+                    index,
+                    &mut modules,
+                    vm,
+                    cache,
+                    &mut ready,
+                    &mut prepared,
+                    &services,
+                )?;
+                let module = &mut modules[index];
+                let activation = prepared[index]
+                    .take()
+                    .context("Module descriptor did not create an instance")?;
+                let instance = vm
+                    .heap
+                    .read_retained_value(&activation.instance)
+                    .map_err(anyhow::Error::msg)?;
+                let record = vm
+                    .heap
+                    .read_retained_value(&activation.record)
+                    .map_err(anyhow::Error::msg)?;
+                // Include partially configured descriptors in error cleanup, in configuration order.
+                loaded.records.push(activation);
                 if vm.instance_has_method(instance, "configure") {
                     vm.call_method_value(instance, "configure", vec![])?;
                 }
@@ -378,16 +469,24 @@ impl LoadedModules {
                     merge_settings(vm, id, overrides);
                 }
                 for name in ["customInterceptionPoints", "interceptors"] {
-                    let value = vm.instance_variable(instance, name).unwrap_or_else(|| BxValue::new_ptr(vm.array_new()));
-                    if !vm.value_matches_type_name(value, "array") { bail!("Module {} {name} must be an array", module.name); }
+                    let value = vm
+                        .instance_variable(instance, name)
+                        .unwrap_or_else(|| BxValue::new_ptr(vm.array_new()));
+                    if !vm.value_matches_type_name(value, "array") {
+                        bail!("Module {} {name} must be an array", module.name);
+                    }
                     crate::module_services::set_record(vm, record, name, value)?;
                     if name == "customInterceptionPoints" {
                         let id = value.as_gc_id().unwrap();
-                        let points = (0..vm.array_len(id)).map(|index| vm.to_string(vm.array_get(id, index))).collect();
+                        let points = (0..vm.array_len(id))
+                            .map(|index| vm.to_string(vm.array_get(id, index)))
+                            .collect();
                         vm.append_interception_points(points);
                     }
                 }
-                let providers = vm.instance_variable(instance, "classProviders").unwrap_or_else(|| BxValue::new_ptr(vm.array_new()));
+                let providers = vm
+                    .instance_variable(instance, "classProviders")
+                    .unwrap_or_else(|| BxValue::new_ptr(vm.array_new()));
                 vm.register_class_providers(record, providers)?;
                 crate::module_services::set_record(vm, record, "classProviders", providers)?;
                 vm.struct_set(settings_id, &module.name, settings);
@@ -412,18 +511,35 @@ impl LoadedModules {
                 for component in &module.components {
                     let target = vm.construct_global_class(&component.class, vec![])?;
                     let _root = vm.heap.retain_value(target).map_err(anyhow::Error::msg)?;
-                    if vm.instance_has_method(target, "init") { vm.call_method_value(target, "init", vec![])?; }
+                    if vm.instance_has_method(target, "init") {
+                        vm.call_method_value(target, "init", vec![])?;
+                    }
                     services.inject(vm, target, record, true)?;
                     // ponytail: linear class lookup per component; index globals if catalogs become large.
-                    let class = module.classes.iter().find(|class| class.global == component.class).context("Module component class missing")?;
-                    let invocation = vm.to_string(crate::module_services::record_field(vm, record, "invocationPath"));
-                    let name = Path::new(&class.path).with_extension("").to_string_lossy().replace(['/', '\\'], ".");
+                    let class = module
+                        .classes
+                        .iter()
+                        .find(|class| class.global == component.class)
+                        .context("Module component class missing")?;
+                    let invocation = vm.to_string(crate::module_services::record_field(
+                        vm,
+                        record,
+                        "invocationPath",
+                    ));
+                    let name = Path::new(&class.path)
+                        .with_extension("")
+                        .to_string_lossy()
+                        .replace(['/', '\\'], ".");
                     let mut registration = component.clone();
                     registration.class = format!("{invocation}.{name}");
                     crate::vm::components::inject_helpers(vm, target, &registration.class)?;
                     vm.register_component(target, &registration)?;
                 }
-                let components: Vec<_> = module.components.iter().flat_map(|component| &component.aliases).collect();
+                let components: Vec<_> = module
+                    .components
+                    .iter()
+                    .flat_map(|component| &component.aliases)
+                    .collect();
                 let components = vm.json_to_bx(serde_json::json!(components));
                 crate::module_services::set_record(vm, record, "components", components)?;
                 let aliases: Vec<_> = module
@@ -440,28 +556,68 @@ impl LoadedModules {
                 crate::module_services::set_record(vm, record, "memberMethods", members)?;
             }
             for activation in &mut loaded.records {
-                let instance = vm.heap.read_retained_value(&activation.instance).map_err(anyhow::Error::msg)?;
-                let record = vm.heap.read_retained_value(&activation.record).map_err(anyhow::Error::msg)?;
+                let instance = vm
+                    .heap
+                    .read_retained_value(&activation.instance)
+                    .map_err(anyhow::Error::msg)?;
+                let record = vm
+                    .heap
+                    .read_retained_value(&activation.record)
+                    .map_err(anyhow::Error::msg)?;
                 let targets = &mut activation.targets;
                 announce_module_event(vm, "preModuleLoad", record)?;
-                vm.register_interceptor(instance).map_err(anyhow::Error::msg)?;
-                let entries = vm.instance_variable(instance, "interceptors").unwrap_or_else(|| BxValue::new_ptr(vm.array_new())).as_gc_id().unwrap();
+                vm.register_interceptor(instance)
+                    .map_err(anyhow::Error::msg)?;
+                let entries = vm
+                    .instance_variable(instance, "interceptors")
+                    .unwrap_or_else(|| BxValue::new_ptr(vm.array_new()))
+                    .as_gc_id()
+                    .unwrap();
                 for index in 0..vm.array_len(entries) {
                     let entry = vm.array_get(entries, index);
-                    if !vm.is_struct_value(entry) { bail!("Interceptor record must be a struct"); }
+                    if !vm.is_struct_value(entry) {
+                        bail!("Interceptor record must be a struct");
+                    }
                     let entry = entry.as_gc_id().unwrap();
-                    if !vm.struct_key_exists(entry, "class") { bail!("Interceptor record is missing the [class] key which is mandatory"); }
+                    if !vm.struct_key_exists(entry, "class") {
+                        bail!("Interceptor record is missing the [class] key which is mandatory");
+                    }
                     let class_name = vm.to_string(vm.struct_get(entry, "class"));
-                    let invocation = vm.to_string(crate::module_services::record_field(vm, record, "invocationPath"));
-                    let class_name = if class_name.starts_with(&format!("{invocation}.")) { class_name } else { format!("{invocation}.{class_name}") };
-                    let properties = if vm.struct_key_exists(entry, "properties") { vm.struct_get(entry, "properties") } else {
-                        let value = BxValue::new_ptr(vm.struct_new()); vm.struct_set(entry, "properties", value); value
+                    let invocation = vm.to_string(crate::module_services::record_field(
+                        vm,
+                        record,
+                        "invocationPath",
+                    ));
+                    let class_name = if class_name.starts_with(&format!("{invocation}.")) {
+                        class_name
+                    } else {
+                        format!("{invocation}.{class_name}")
                     };
-                    let name = if vm.struct_key_exists(entry, "name") { vm.to_string(vm.struct_get(entry, "name")) } else {
-                        let name = format!("{class_name}@{}", vm.to_string(crate::module_services::record_field(vm, record, "name")));
-                        let value = BxValue::new_ptr(vm.string_new(name.clone())); vm.struct_set(entry, "name", value); name
+                    let properties = if vm.struct_key_exists(entry, "properties") {
+                        vm.struct_get(entry, "properties")
+                    } else {
+                        let value = BxValue::new_ptr(vm.struct_new());
+                        vm.struct_set(entry, "properties", value);
+                        value
                     };
-                    let target = crate::module_services::new_interceptor(vm, &class_name, properties, &name, Some(record))?;
+                    let name = if vm.struct_key_exists(entry, "name") {
+                        vm.to_string(vm.struct_get(entry, "name"))
+                    } else {
+                        let name = format!(
+                            "{class_name}@{}",
+                            vm.to_string(crate::module_services::record_field(vm, record, "name"))
+                        );
+                        let value = BxValue::new_ptr(vm.string_new(name.clone()));
+                        vm.struct_set(entry, "name", value);
+                        name
+                    };
+                    let target = crate::module_services::new_interceptor(
+                        vm,
+                        &class_name,
+                        properties,
+                        &name,
+                        Some(record),
+                    )?;
                     targets.push(vm.heap.retain_value(target).map_err(anyhow::Error::msg)?);
                     vm.struct_set(entry, "interceptor", target);
                 }
@@ -488,9 +644,44 @@ impl LoadedModules {
     /// Reverse dependency-order cleanup continues after hook errors.
     pub fn unload(self, vm: &mut VM) -> Result<()> {
         let mut shutdown_error = None;
-        for activation in self.records.into_iter().rev() {
-            let instance = vm.heap.read_retained_value(&activation.instance).map_err(anyhow::Error::msg)?;
-            let record = vm.heap.read_retained_value(&activation.record).map_err(anyhow::Error::msg)?;
+        // Children must unload before their parent, while ordinary dependencies still unload last.
+        fn visit(
+            index: usize,
+            records: &[ModuleActivation],
+            seen: &mut [bool],
+            order: &mut Vec<usize>,
+        ) {
+            if seen[index] {
+                return;
+            }
+            seen[index] = true;
+            for child in (0..records.len()).rev() {
+                if records[child]
+                    .parent
+                    .as_ref()
+                    .is_some_and(|parent| parent.eq_ignore_ascii_case(&records[index].name))
+                {
+                    visit(child, records, seen, order);
+                }
+            }
+            order.push(index);
+        }
+        let mut order = Vec::new();
+        let mut seen = vec![false; self.records.len()];
+        for index in (0..self.records.len()).rev() {
+            visit(index, &self.records, &mut seen, &mut order);
+        }
+        let mut records: Vec<_> = self.records.into_iter().map(Some).collect();
+        for index in order {
+            let activation = records[index].take().unwrap();
+            let instance = vm
+                .heap
+                .read_retained_value(&activation.instance)
+                .map_err(anyhow::Error::msg)?;
+            let record = vm
+                .heap
+                .read_retained_value(&activation.record)
+                .map_err(anyhow::Error::msg)?;
             let targets = activation.targets;
             if let Err(error) = announce_module_event(vm, "preModuleUnload", record) {
                 shutdown_error.get_or_insert(error);
@@ -505,7 +696,11 @@ impl LoadedModules {
                 shutdown_error.get_or_insert(anyhow::Error::msg(error));
             }
             for target in targets {
-                if let Err(error) = vm.heap.read_retained_value(&target).and_then(|target| vm.unregister_interceptor(target)) {
+                if let Err(error) = vm
+                    .heap
+                    .read_retained_value(&target)
+                    .and_then(|target| vm.unregister_interceptor(target))
+                {
                     shutdown_error.get_or_insert(anyhow::Error::msg(error));
                 }
             }
@@ -521,13 +716,20 @@ impl LoadedModules {
                 shutdown_error.get_or_insert(error);
             }
         }
-        match shutdown_error { Some(error) => Err(error), None => Ok(()) }
+        match shutdown_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
 fn announce_module_event(vm: &mut VM, name: &str, record: BxValue) -> Result<()> {
     let module_name = crate::module_services::record_field(vm, record, "name");
-    vm.announce_event(name, &[("moduleName", module_name), ("moduleRecord", record)]).map_err(anyhow::Error::msg)
+    vm.announce_event(
+        name,
+        &[("moduleName", module_name), ("moduleRecord", record)],
+    )
+    .map_err(anyhow::Error::msg)
 }
 
 fn merge_settings(vm: &mut VM, id: usize, overrides: &serde_json::Map<String, serde_json::Value>) {

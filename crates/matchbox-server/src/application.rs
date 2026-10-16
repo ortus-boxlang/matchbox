@@ -56,7 +56,7 @@ impl ApplicationRuntime {
         project: &Path,
         home: Option<&Path>,
         config: Option<&Path>,
-    ) -> Result<Vec<PathBuf>> {
+    ) -> Result<(Vec<PathBuf>, Vec<matchbox_vm::bundle::ModuleMapping>)> {
         let discovered =
             matchbox_modules::discovery::discover_module_installations(project, &[], home, config)?;
         let modules = matchbox_modules::programs::prepare_installed(
@@ -71,7 +71,8 @@ impl ApplicationRuntime {
         )?);
         // Validate idle startup using the same boundary that will guard actual requests.
         self.vm.with_isolated_globals(|_| Ok(()))?;
-        Ok(discovered.private_paths)
+        let mappings = self.modules.as_ref().unwrap().mappings(&self.vm)?;
+        Ok((discovered.private_paths, mappings))
     }
     pub(crate) fn render(&mut self, job: RenderJob) -> Result<RenderOutput> {
         self.expire();

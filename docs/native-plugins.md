@@ -72,8 +72,18 @@ and clear inline caches without serializing them.
 The HTTP startup path is offline: artifact URLs and source-only Rust packages fail.
 Install native bytes in the package first; publisher trust and target/hash/ABI/cache
 checks still apply. Runtime configuration supports module enabled/settings and
-modulesDirectory. Module assets/public mappings, nested discovery and hot reload
-remain outside this slice. discover_module_installations reports all installation
+modulesDirectory. Nested packages under each module's modules/ directory are
+discovered recursively; disabled ancestors suppress their subtree. Parent descriptor
+constructors/class mappings are prepared before children; child configuration and
+activation precede the parent, and children unload before their parent. Literal
+this.modules per-child enabled/settings overrides are supported; global configuration
+wins. Dynamic overrides remain explicitly unsupported, as do dynamic enabled/dependency
+metadata. Top-level selections precede duplicate nested identities. Cyclic physical
+paths fail instead of recursively walking symlinks forever. Hot reload remains unsupported.
+LoadedModules::mappings and WebrootRuntime::module_mappings export resolved plain-data
+mapping snapshots for HTTP hosts; only external mappings may be published. The native
+frontend serves public mappings as confined mounts with its existing source/config
+protection; ordinary aliases to package paths remain private. discover_module_installations reports all installation
 roots and physical package paths (including disabled/shadowed packages) from the
 same configuration snapshot; HTTP hosts must keep these paths private, including
 through aliases. The existing discover_modules APIs use the same selection logic
@@ -91,7 +101,7 @@ Package `.bx`/`.bxs` class declarations are embedded under private identities, t
 
 Module-root `build/`, `dist/`, and `target/` directories are authoring outputs, not class sources: their contents are neither parsed nor embedded. This lets development checkouts retain generated packages and malformed test fixtures without loading them as module classes. These names remain valid below source directories such as `models/build/`. Non-BIF `.bxs` scripts are conservatively screened for class declarations using the lexer; comments, string contents, member names and struct keys do not turn them into class sources. Candidate class scripts still undergo normal syntax validation; surrounding script statements remain unexecuted.
 
-This is BoxLang package-class resolution, distinct from the class-provider boundary below. Arbitrary runtime mappings, source/template loading, and complete BoxLang static scopes remain separate work.
+This is BoxLang package-class resolution, distinct from the class-provider boundary below. Public HTTP mapped mounts can serve native templates/static assets. Arbitrary application/runtime source mappings and complete BoxLang static scopes remain separate work.
 
 ### Module-owned Java class providers
 
@@ -169,7 +179,7 @@ Milestone 1 covers synchronous packaged modules, not an exhaustive JVM runtime A
 
 Three compatibility transfer tests formerly passed only because reflection/reload returned placeholders. They are now explicitly ignored with unsupported-feature reasons; the missing-custom-tag fixture now verifies the canonical JVM error instead of accepting null. These exclusions are not compatibility successes. Unrelated general-language BIFs and complete framework compatibility are not certified by this module audit.
 
-Direct execution, source-free `.bxb` and standalone execution, retained roots/contexts and repeated GC, nested callbacks, no-JNI execution, and the unchanged image-provider contract are the exit gates. Plugin ABI-1 remains unchanged; envelope v10 requires rebuilding older development applications.
+Direct execution, source-free `.bxb` and standalone execution, retained roots/contexts and repeated GC, nested callbacks, no-JNI execution, and the unchanged image-provider contract are the exit gates. Plugin ABI-1 remains unchanged; envelope v11 requires rebuilding older development applications.
 
 ## Native SDK / ABI
 
@@ -225,7 +235,7 @@ matchbox --target native app.bxs --module /path/to/package --output app
 
 Native libraries are extracted into a private content-addressed cache by target/library-group hash. Each file is published atomically across concurrent launches; every selected cached file is verified before loading. Tampered entries fail rather than being silently trusted. Set `MATCHBOX_NATIVE_CACHE` to choose the directory. Otherwise use the platform's user cache directory (or a process-specific temporary directory when no home/cache directory is available).
 
-Source-based Native Fusion remains available with `--target native`. A source-only Rust module cannot be executed directly by the CLI; publish a prebuilt artifact or use Native Fusion. Native module envelopes currently target desktop execution, not ESP32 or WebAssembly. The module envelope format is version 10; rebuild application bundles made with the earlier development format. This does not change the native plugin ABI or require rebuilding plugin libraries.
+Source-based Native Fusion remains available with `--target native`. A source-only Rust module cannot be executed directly by the CLI; publish a prebuilt artifact or use Native Fusion. Native module envelopes currently target desktop execution, not ESP32 or WebAssembly. The module envelope format is version 11; rebuild application bundles made with the earlier development format. This does not change the native plugin ABI or require rebuilding plugin libraries.
 
 ## Checks
 

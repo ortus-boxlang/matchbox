@@ -164,6 +164,8 @@ fn prepare_modules(modules: &[ModuleInfo], target: &str, allow_remote: bool) -> 
                 name: module.name.clone(),
                 path: module.path.to_string_lossy().into_owned(),
                 dependencies: module.dependencies.clone(),
+                parent_module: module.parent_module.clone(),
+                nested_modules: module.nested_modules.clone(),
                 instance,
                 descriptor,
                 bifs,
@@ -183,7 +185,7 @@ fn class_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {
             let path = entry.path();
             // BIFs are compiled separately; module-root build outputs are not source packages.
             let excluded_root = directory == root
-                && matches!(entry.file_name().to_str(), Some("bifs" | "build" | "dist" | "target"));
+                && matches!(entry.file_name().to_str(), Some("bifs" | "build" | "dist" | "target" | "modules"));
             if excluded_root || entry.file_name() == ".git" { continue; }
             let kind = entry.file_type()?;
             if kind.is_dir() { visit(root, &path, files)?; }

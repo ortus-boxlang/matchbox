@@ -71,8 +71,17 @@ enable JNI; the root CLI's explicitly selected JNI feature remains unchanged.
 Modules can supply bounded Java facades, not arbitrary JVM classes/JAR support.
 
 Hosts must protect `module_paths()` (including aliases) from direct HTTP serving.
-Module public mappings/assets, nested module discovery and hot reload are not wired
-here. Module BIFs/classes and component bodies execute with process privileges.
+Nested modules under package modules/ directories are discovered recursively.
+Records expose parentModule/nestedModules. Parent constructors/classes precede
+children; children configure/activate/unload before parents. Literal this.modules
+child overrides merge before global settings; disabled parents suppress descendants.
+Dynamic metadata/child overrides and hot reload remain unsupported.
+module_mappings() exports resolved mapping snapshots without VM values crossing
+threads. HTTP hosts may publish external mappings as confined mounts; all other
+package paths stay private. The native frontend supports default public/ and custom
+publicMapping roots, templates, static streaming/ranges and public CGI prefixes.
+Mapped mounts retain existing mount-scoped descriptor lookup; arbitrary application
+source/include mappings remain separate work. Module code has process privileges.
 
 ## Application.bx lifecycle
 
@@ -148,8 +157,8 @@ Unknown web component names still delegate to the existing component dispatcher.
 
 ## Scope and checks
 
-This is **not** full MiniServer runtime parity. Module public/source mappings,
-nested discovery, Application.bxm, full application configuration/output modifiers,
+This is **not** full MiniServer runtime parity. Arbitrary source/include mappings,
+Application.bxm, full application configuration/output modifiers,
 external session-cache providers and SocketBox remain
 follow-up work. Native HTTP hosts can call multipart::parse after enforcing their
 body limit: repeated fields/arrays and private temporary files populate form.

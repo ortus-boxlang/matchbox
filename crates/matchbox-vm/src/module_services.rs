@@ -84,6 +84,7 @@ pub(crate) fn record(
         "invocationPath": format!("bxModules.{name}"),
         "mapping": mapping, "publicMapping": public_mapping,
         "dependencies": module.dependencies, "enabled": true, "activated": false,
+        "parentModule":module.parent_module,"nestedModules":module.nested_modules,
         "bifs": [], "memberMethods": []
     });
     let mut fields = HashMap::new();
@@ -462,6 +463,7 @@ mod tests {
         let mut vm = VM::new();
         let services = Services::new(&mut vm);
         let module = Module {
+            parent_module:None,nested_modules:vec![],
             name: "gc-test".into(),
             path: "/module".into(),
             dependencies: vec![],

@@ -522,6 +522,7 @@ pub async fn run_server(args: Args) {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .tcp_nodelay(true)
     .await
     .unwrap();
 }

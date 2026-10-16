@@ -982,7 +982,7 @@ pub async fn run_script_server(script_path: &Path) -> anyhow::Result<()> {
     println!("MatchBox App Server listening on http://{}", addr);
     println!("App script: {}", state.compiled.path.display());
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router).await?;
+    axum::serve(listener, router).tcp_nodelay(true).await?;
     Ok(())
 }
 
