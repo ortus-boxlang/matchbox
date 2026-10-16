@@ -219,6 +219,7 @@ pub trait BxVM {
     }
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize;
     fn native_object_data(&self, _value: BxValue, _kind: &str) -> Option<*mut std::ffi::c_void> { None }
+    fn raise_abort(&mut self, _kind: &str, _cause: Option<String>) -> String { "Abort control flow is unsupported by this host".into() }
     fn register_callback(&mut self, _name: &str, _callback: NativeCallback) -> Result<(), String> {
         Err("Native callbacks are not supported by this host".into())
     }
@@ -421,6 +422,8 @@ pub(crate) fn take_wasm_future_thunk(id: u64) -> Option<WasmFutureThunk> {
 }
 
 pub trait BxNativeObject: fmt::Debug {
+    /// Internal language unwind payload; unlike ordinary exceptions it bypasses catch clauses.
+    fn abort_signal(&self) -> Option<crate::vm::AbortSignal> { None }
     /// Internal VM class-reference adapter; not part of the plugin C ABI.
     fn class_reference_target(&self) -> Option<BxValue> { None }
     fn class_reference_instance(&self) -> Option<BxValue> { None }

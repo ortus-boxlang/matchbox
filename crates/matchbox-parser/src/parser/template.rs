@@ -199,7 +199,7 @@ impl<'a> TemplateParser<'a> {
                         && self.source[token.span.start..token.span.end].eq_ignore_ascii_case(name)
                         && self.source[..token.span.start].rsplit_once('<').is_some_and(|(_, prefix)| prefix.starts_with('/'))
                 });
-                if lower == "header" || (lower == "content" && !has_closing) {
+                if matches!(lower.as_str(), "header" | "abort" | "location") || (lower == "content" && !has_closing) {
                     return Ok(Some(component_statement(name, attributes, None, line)?));
                 }
                 let body = self.parse_template_body(&[name])?;

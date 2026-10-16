@@ -5,7 +5,11 @@ use matchbox_vm::{
     types::{BxNativeObject, BxVM, BxValue, NativeCallback},
     vm::VM,
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 type ResponseState = Rc<RefCell<WebrootResponse>>;
 
@@ -14,6 +18,8 @@ struct ActiveWebContext {
     request: Rc<WebrootRequest>,
     response: ResponseState,
     protocol: String,
+    file_root: PathBuf,
+    content_type_set: Rc<Cell<bool>>,
 }
 impl BxNativeObject for ActiveWebContext {
     fn native_data(&self, kind: &str) -> Option<*mut std::ffi::c_void> {
@@ -51,6 +57,7 @@ pub(crate) fn install_web_context(
     vm: &mut VM,
     request: Rc<WebrootRequest>,
     context: &WebrootContext,
+    file_root: String,
 ) -> anyhow::Result<ResponseState> {
     vm.register_component_runtime()?;
     let response = Rc::new(RefCell::new(WebrootResponse {
@@ -62,6 +69,8 @@ pub(crate) fn install_web_context(
         request,
         response: response.clone(),
         protocol: context.protocol.clone(),
+        file_root: file_root.into(),
+        content_type_set: Rc::new(Cell::new(false)),
     })));
     vm.insert_global("__mb_web_context".into(), BxValue::new_ptr(value));
     vm.register_callback(
@@ -69,7 +78,8 @@ pub(crate) fn install_web_context(
         NativeCallback {
             parameters: vec!["name".into(), "attributes".into(), "body".into()],
             callback: Rc::new(|vm, args| {
-                let state = active_context(vm)?.response;
+                let context = active_context(vm)?;
+                let state = &context.response;
                 if args.len() != 3 || !vm.is_struct_value(args[1]) {
                     return Err("Component requires a name, attribute struct and body".into());
                 }
@@ -110,25 +120,118 @@ pub(crate) fn install_web_context(
                                 vm.to_string(value)
                             };
                             append_header(&mut state.borrow_mut(), &name, &value)?;
+                            if name.eq_ignore_ascii_case("content-type") {
+                                context.content_type_set.set(true);
+                            }
                         }
                     }
+                    "abort" => {
+                        validate_attributes(vm, attributes, &["type", "showerror"])?;
+                        if !body.is_null() {
+                            return Err("abort does not allow a body".into());
+                        }
+                        let kind = vm.struct_get(attributes, "type");
+                        let kind = if kind.is_null() {
+                            "request".into()
+                        } else {
+                            vm.to_string(kind).to_ascii_lowercase()
+                        };
+                        if !matches!(kind.as_str(), "request" | "page") {
+                            return Err("abort type must be request or page".into());
+                        }
+                        let cause = vm.struct_get(attributes, "showError");
+                        let cause = (!cause.is_null())
+                            .then(|| vm.to_string(cause))
+                            .filter(|value| !value.is_empty());
+                        return Err(vm.raise_abort(&kind, cause));
+                    }
+                    "location" => {
+                        validate_attributes(vm, attributes, &["url", "addtoken", "statuscode"])?;
+                        if !body.is_null() {
+                            return Err("location does not allow a body".into());
+                        }
+                        let url = vm.struct_get(attributes, "url");
+                        let token = vm.struct_get(attributes, "addToken");
+                        let code = vm.struct_get(attributes, "statusCode");
+                        return redirect(vm, url, token, code);
+                    }
                     "content" => {
-                        validate_attributes(vm, attributes, &["type", "reset"])?;
+                        validate_attributes(
+                            vm,
+                            attributes,
+                            &["type", "reset", "variable", "file", "deletefile"],
+                        )?;
                         let content_type = vm.struct_get(attributes, "type");
                         if !content_type.is_null() {
                             let content_type = vm.to_string(content_type);
                             if content_type.trim().is_empty() {
                                 return Err("content type must not be empty".into());
                             }
-                            let mut response = state.borrow_mut();
-                            append_header(&mut response, "content-type", &content_type)?;
-                            // Validate before replacing, so a caught error leaves headers intact.
-                            let last = response.headers.pop().unwrap();
-                            response.headers.retain(|(name, _)| name != "content-type");
-                            response.headers.push(last);
+                            replace_header(&mut state.borrow_mut(), "content-type", &content_type)?;
+                            context.content_type_set.set(true);
                         }
                         let reset = vm.struct_get(attributes, "reset");
-                        if boolean(vm, reset, true)? {
+                        let reset = boolean(vm, reset, true)?;
+                        let delete = vm.struct_get(attributes, "deleteFile");
+                        let delete = boolean(vm, delete, false)?;
+                        let file = vm.struct_get(attributes, "file");
+                        let variable = vm.struct_get(attributes, "variable");
+                        let assigned = state
+                            .borrow()
+                            .headers
+                            .iter()
+                            .rev()
+                            .find(|(name, _)| name == "content-type")
+                            .map(|(_, value)| value.clone());
+                        let default_type = !context.content_type_set.get()
+                            || assigned.as_deref() == Some("text/html; charset=UTF-8");
+                        if !file.is_null() {
+                            let file = vm.to_string(file);
+                            if file.trim().is_empty() {
+                                return Err("content file must not be empty".into());
+                            }
+                            let file = response_file(vm, &context.file_root, &file)?;
+                            let bytes = std::fs::read(&file)
+                                .map_err(|error| format!("Reading response file: {error}"))?;
+                            if default_type {
+                                let mime = mime_guess::from_path(&file)
+                                    .first_or_octet_stream()
+                                    .to_string();
+                                replace_header(&mut state.borrow_mut(), "content-type", &mime)?;
+                            }
+                            // Read/validate successfully before honoring destructive cleanup.
+                            if delete {
+                                std::fs::remove_file(&file)
+                                    .map_err(|error| format!("Deleting response file: {error}"))?;
+                            }
+                            vm.end_output_capture();
+                            vm.begin_output_capture();
+                            state.borrow_mut().body.extend(bytes);
+                            return Err(vm.raise_abort("request", None));
+                        }
+                        if !variable.is_null() {
+                            let binary = vm.is_bytes(variable);
+                            let bytes = if binary {
+                                vm.to_bytes(variable)?
+                            } else {
+                                let string = vm.cast_value_to_type(variable, "string")?;
+                                vm.to_string(string).into_bytes()
+                            };
+                            if binary && default_type {
+                                replace_header(
+                                    &mut state.borrow_mut(),
+                                    "content-type",
+                                    "application/octet-stream",
+                                )?;
+                            }
+                            if reset {
+                                vm.end_output_capture();
+                                vm.begin_output_capture();
+                            }
+                            state.borrow_mut().body.extend(bytes);
+                            return Err(vm.raise_abort("request", None));
+                        }
+                        if reset {
                             vm.end_output_capture();
                             vm.begin_output_capture();
                         }
@@ -154,6 +257,24 @@ pub(crate) fn install_web_context(
                     &callback,
                     vec![BxValue::new_number(0.0), BxValue::new_null()],
                     chunk,
+                )
+            }),
+        },
+    )
+    .map_err(anyhow::Error::msg)?;
+    vm.register_callback(
+        "location",
+        NativeCallback {
+            parameters: vec!["url".into(), "addToken".into(), "statusCode".into()],
+            callback: Rc::new(|vm, args| {
+                if args.is_empty() || args.len() > 3 {
+                    return Err("location requires URL and optional addToken/statusCode".into());
+                }
+                redirect(
+                    vm,
+                    args[0],
+                    args.get(1).copied().unwrap_or(BxValue::new_null()),
+                    args.get(2).copied().unwrap_or(BxValue::new_null()),
                 )
             }),
         },
@@ -223,6 +344,68 @@ pub(crate) fn install_web_context(
     )
     .map_err(anyhow::Error::msg)?;
     Ok(response)
+}
+
+fn replace_header(response: &mut WebrootResponse, name: &str, value: &str) -> Result<(), String> {
+    append_header(response, name, value)?;
+    let last = response.headers.pop().unwrap();
+    response.headers.retain(|(key, _)| key != name);
+    response.headers.push(last);
+    Ok(())
+}
+fn redirect(
+    vm: &mut dyn BxVM,
+    url: BxValue,
+    token: BxValue,
+    code: BxValue,
+) -> Result<BxValue, String> {
+    if url.is_null() {
+        return Err("location requires URL".into());
+    }
+    let url = vm.to_string(url);
+    if url.trim().is_empty() {
+        return Err("location URL must not be empty".into());
+    }
+    boolean(vm, token, false)?; // MiniServer currently accepts but does not apply addToken.
+    let code = if code.is_null() {
+        302
+    } else {
+        vm.to_string(code)
+            .parse::<u16>()
+            .map_err(|_| "Invalid redirect statusCode")?
+    };
+    if !(301..=399).contains(&code) {
+        return Err("Redirect statusCode must be between 301 and 399".into());
+    }
+    let context = active_context(vm)?;
+    replace_header(&mut context.response.borrow_mut(), "location", &url)?;
+    context.response.borrow_mut().status = code;
+    Err(vm.raise_abort("request", None))
+}
+fn response_file(vm: &dyn BxVM, root: &Path, file: &str) -> Result<PathBuf, String> {
+    if !root.is_absolute() {
+        return Err("File content requires a filesystem-backed mount".into());
+    }
+    let normalized = file.replace('\\', "/");
+    let file = normalized.as_str();
+    let path = Path::new(file);
+    if path.is_absolute() && path.exists() {
+        return Ok(path.to_path_buf());
+    }
+    if file.starts_with('/') {
+        return Ok(root.join(file.trim_start_matches('/')));
+    }
+    let current = vm
+        .current_chunk()
+        .ok_or("Response file context unavailable")?
+        .borrow()
+        .filename
+        .clone();
+    Ok(Path::new(&current)
+        .parent()
+        .filter(|path| path.is_absolute())
+        .unwrap_or(root)
+        .join(file))
 }
 
 fn boolean(vm: &mut dyn BxVM, value: BxValue, default: bool) -> Result<bool, String> {

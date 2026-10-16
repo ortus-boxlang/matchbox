@@ -13,6 +13,8 @@ mod interceptors;
 pub(crate) mod components;
 mod component_runtime;
 mod request_scope;
+mod abort;
+pub use abort::AbortSignal;
 #[cfg(feature = "jit")]
 pub mod jit;
 pub mod opcode;
@@ -1515,6 +1517,7 @@ impl BxVM for VM {
         names
     }
 
+    fn raise_abort(&mut self, kind: &str, cause: Option<String>) -> String { VM::raise_abort(self, kind, cause) }
     fn register_callback(&mut self, name: &str, callback: crate::types::NativeCallback) -> Result<(), String> {
         let id = self.heap.alloc(GcObject::NativeCallback(callback));
         self.register_global_bif(name.to_string(), BxValue::new_ptr(id));
@@ -3185,6 +3188,11 @@ impl VM {
         let previous = self.current_fiber_idx;
         let result = self.interpret_chunk_shared_current_task(Chunk::default(), Rc::new(RefCell::new(chunk)), receiver);
         self.current_fiber_idx = previous;
+        // Page aborts stop this template, not its including caller or request hooks.
+        if result.as_ref().err().and_then(|error| error.downcast_ref::<AbortSignal>()).is_some_and(|signal| signal.kind == "page") {
+            self.native_callback_exception = None;
+            return Ok(BxValue::new_null());
+        }
         result
     }
 
@@ -7377,6 +7385,7 @@ impl VM {
 
         let val = if preserve && self.is_exception_object(val) { val } else { self.normalize_thrown_value(val, &stack_trace) };
         let _root = self.heap.retain_value(val).map_err(anyhow::Error::msg)?;
+        let abort = self.abort_signal(val);
 
         while !self.fibers[fiber_idx].frames.is_empty() {
             let frame_idx = self.fibers[fiber_idx].frames.len() - 1;
@@ -7386,7 +7395,7 @@ impl VM {
                 .copied();
 
             if let Some(handler) = handler {
-                if handler.catch_enabled {
+                if handler.catch_enabled && abort.is_none() {
                     let catch_ip = handler.catch_ip.unwrap();
                     let frame = &mut self.fibers[fiber_idx].frames[frame_idx];
                     frame.handlers.last_mut().unwrap().catch_enabled = false;
@@ -7421,10 +7430,11 @@ impl VM {
             }
         }
         let val_str = self.exception_summary(val);
-        let message = format!("VM Runtime Error: {}{}\n\nStack trace:\n{}", val_str, source_context, stack_trace);
+        let message = abort.as_ref().map(ToString::to_string).unwrap_or_else(|| format!("VM Runtime Error: {}{}\n\nStack trace:\n{}", val_str, source_context, stack_trace));
         if self.native_exception_depth > 0 {
             self.native_callback_exception = Some((message.clone(), _root));
         }
+        if let Some(abort) = abort { return Err(abort.into()); }
         bail!(message);
     }
 

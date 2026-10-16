@@ -14,8 +14,17 @@ Templates can use:
   preserved, including separate Set-Cookie fields. Names/values are validated;
   framing/connection headers are host-controlled and rejected.
 - `bx:content`: type and reset (default true), with an optional component body.
-  Reset clears the current output buffer; reset=false preserves it. File and
-  variable attributes are not implemented and fail explicitly.
+  Reset clears the current output buffer; reset=false preserves it. `variable`
+  accepts binary bytes or string-castable values; `file` reads a native file,
+  infers its MIME type when unset, ignores prior output and optionally deletes
+  it after a successful read. Both terminate the request and invoke onAbort.
+- `location(URL[, addToken, statusCode=302])` and `bx:location`: validated Location
+  header, status 301–399, then request abort. addToken is accepted but unused,
+  matching current MiniServer.
+- `abort;`, `bx:abort`, and `bx:abort type="page"`: request abort bypasses catch
+  clauses, runs finally blocks, skips request-end and invokes onAbort. Page abort
+  ends only the current template/include; showError on a request abort invokes
+  onAbort followed by onError with a Custom exception.
 
 Native template routes accept methods such as PUT, PATCH, DELETE and OPTIONS;
 static resources retain GET/HEAD/POST handling. TRACE/TRACK are rejected. HEAD
@@ -41,6 +50,8 @@ Implemented hooks:
 - `onError(error, event)` with native message/type/detail fields and an empty event.
 - `onMissingTemplate(target)` for the primary template; true handles it, false
   returns 404 without calling request-end.
+- `onAbort(target)` for request aborts, redirects and file/variable content.
+  Aborts in onError are ignored; a constructor abort has no listener hooks yet.
 - `onApplicationEnd(applicationScope)` at expiry or orderly runtime disposal.
 
 `this.name` and `this.applicationTimeout` are applied. Timeout defaults to zero
@@ -95,11 +106,26 @@ Unknown web component names still delegate to the existing component dispatcher.
 ## Scope and checks
 
 This is **not** full MiniServer runtime parity. Module discovery, Application.bxm,
-full application configuration/output modifiers, abort hooks, session lifecycle,
-redirects/aborts, file/variable content, cookie-scope writes, multipart and
+full application configuration/output modifiers, session lifecycle,
+cookie-scope writes, multipart and
 SocketBox remain follow-up work. Dynamic include failures do not yet carry the
 full JVM missing-include exception taxonomy. Descriptor lookup stops at each
 mount, without falling back from an alias to the primary webroot's descriptor.
+
+Responses remain buffered, not streamed. Binary content with reset=false is
+emitted before the retained text buffer (matching current MiniServer). Native
+file paths are relative to the current source, mount-relative for /paths, or
+existing absolute filesystem paths. Custom application/alias mappings are not
+applied. Files require a filesystem-backed mount; embedded/WASI asset files are
+not supported by this operation. File reads are fully buffered; deleteFile runs
+after a successful read but before network delivery, not after client receipt.
+Trusted templates can deliberately serve files outside the public root, just as
+with fileRead(); never pass unvalidated user paths. Read/delete errors propagate.
+
+Native finally blocks always run on abort. MiniServer 1.16's ASM backend skips
+finally when the same try also has catches; its Java backend runs finally. We
+preserve cleanup rather than reproducing that ASM defect. Abort types other than
+request/page fail explicitly; exit-tag/template/loop are not implemented.
 
 Application.bx defaults to sessions disabled. `sessionManagement=true` fails
 explicitly until application-isolated sessions exist; it must not silently use
@@ -120,5 +146,7 @@ cargo check -p matchbox_wasi_http_runner --target wasm32-wasip2
 
 `tests/webroot_http.rs` and `tests/webroot_application.rs` exercise the
 compiler/VM/runtime, live state, lifecycle, cleanup, alias sharing and concurrency.
+`tests/webroot_response.rs` covers typed abort unwinding, page includes, binary/
+file responses, deletion validation, constructor redirects and hook ordering.
 `tests/http_transport.rs` launches the actual HTTP executable and sends requests
 on a TCP socket, including HTTP/1.0 and repeated response headers.

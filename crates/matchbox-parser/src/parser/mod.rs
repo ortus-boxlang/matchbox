@@ -417,7 +417,10 @@ impl<'a> Parser<'a> {
     fn parse_statement_inner(&mut self) -> Result<Statement> {
         let line = self.peek_line();
 
-        if self.peek_lexeme().is_some_and(|name| name.eq_ignore_ascii_case("bx")) && self.kind(1) == Some(TokenKind::Colon) {
+        let bare_abort = self.peek_lexeme().is_some_and(|name| name.eq_ignore_ascii_case("abort"))
+            && (self.kind(1) == Some(TokenKind::Semicolon)
+                || self.tokens.get(self.pos + 1).is_some_and(|token| { let name = &self.source[token.span.start..token.span.end]; name.eq_ignore_ascii_case("type") || name.eq_ignore_ascii_case("showerror") }));
+        if bare_abort || (self.peek_lexeme().is_some_and(|name| name.eq_ignore_ascii_case("bx")) && self.kind(1) == Some(TokenKind::Colon)) {
             return self.parse_component_statement(line);
         }
         match self.peek_kind() {
@@ -557,8 +560,11 @@ impl<'a> Parser<'a> {
     // ---- Statement parsers ----
 
     fn parse_component_statement(&mut self, line: u32) -> Result<Statement> {
-        self.pos += 2; // bx:
         let name = self.expect_get(TokenKind::Identifier)?;
+        let name = if name.eq_ignore_ascii_case("bx") {
+            self.expect(TokenKind::Colon)?;
+            self.expect_get(TokenKind::Identifier)?
+        } else { name };
         let mut attributes = Vec::new();
         while self.peek_is(TokenKind::Identifier) {
             let key = self.advance_lexeme().unwrap();

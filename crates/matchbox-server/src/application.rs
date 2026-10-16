@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail, ensure};
 use matchbox_compiler::{ast::StatementKind, compiler::Compiler, parser};
 use matchbox_vm::{
     types::{BxVM, BxValue, NativeCallback},
-    vm::{VM, chunk::Chunk, gc::RootedValue},
+    vm::{AbortSignal, VM, chunk::Chunk, gc::RootedValue},
 };
 use std::{
     cell::Cell,
@@ -109,7 +109,12 @@ fn render(
 ) -> Result<RenderOutput> {
     vm.begin_output_capture();
     let request = Rc::new(job.request);
-    let response = install_web_context(vm, request.clone(), &job.context)?;
+    let response = install_web_context(
+        vm,
+        request.clone(),
+        &job.context,
+        job.store.source_path("")?,
+    )?;
     insert_scope(vm, "url", &request.query);
     insert_scope(vm, "form", &form_scope_from_request(&request));
     let mut cookies = request
@@ -185,7 +190,25 @@ fn render(
         ensure!(classes.len() == 1, "Application.bx must define one class");
         let chunk = Compiler::new(&filename).compile(&ast, source)?;
         vm.interpret_chunk_borrowed_current_task(&chunk)?;
-        let listener = vm.construct_global_class(&classes[0], vec![])?;
+        let listener = match vm.construct_global_class(&classes[0], vec![]) {
+            Ok(listener) => listener,
+            Err(error) => {
+                if let Some(abort) = error.downcast_ref::<AbortSignal>() {
+                    if let Some(cause) = &abort.cause {
+                        bail!("{cause}");
+                    }
+                    let mut response = response.borrow_mut();
+                    response
+                        .body
+                        .extend(vm.end_output_capture().unwrap_or_default().into_bytes());
+                    return Ok(RenderOutput {
+                        response: response.clone(),
+                        session: None,
+                    });
+                }
+                return Err(error);
+            }
+        };
         vm.insert_global("__mb_web_listener".into(), listener);
         Some(listener)
     } else {
@@ -323,14 +346,42 @@ fn render(
             }
             hook(vm, listener, "onRequestEnd", vec![target])?;
         } else if let Some(chunk) = load_template(job.store.as_ref(), &job.asset_path, false)? {
-            vm.interpret_chunk_borrowed_current_task(&chunk)?;
+            vm.interpret_chunk_with_receiver(&chunk, None)?;
         } else {
             response.borrow_mut().status = 404;
             vm.write_output("Not Found");
         }
         Ok(())
     })();
-    if let Err(error) = execution {
+    let mut error = execution.err();
+    let mut error_type = "BoxLangRuntimeException";
+    if let Some(abort) = error
+        .as_ref()
+        .and_then(|error| error.downcast_ref::<AbortSignal>())
+        .cloned()
+    {
+        error = None;
+        if let Some(listener) = listener {
+            let target = BxValue::new_ptr(vm.string_new(public_path.clone()));
+            if let Err(failure) = hook(vm, listener, "onAbort", vec![target]) {
+                error = match failure.downcast_ref::<AbortSignal>() {
+                    Some(signal) => {
+                        error_type = "Custom";
+                        signal
+                            .cause
+                            .as_ref()
+                            .map(|cause| anyhow::anyhow!("{cause}"))
+                    }
+                    None => Some(failure),
+                };
+            }
+        }
+        if let Some(cause) = abort.cause {
+            error_type = "Custom";
+            error = Some(anyhow::anyhow!("{cause}"));
+        }
+    }
+    if let Some(error) = error {
         if let Some(listener) =
             listener.filter(|listener| vm.instance_has_method(*listener, "onError"))
         {
@@ -339,17 +390,20 @@ fn render(
                 "__mb_web_error",
                 &HashMap::from([
                     ("message".into(), error.to_string()),
-                    ("type".into(), "BoxLangRuntimeException".into()),
+                    ("type".into(), error_type.into()),
                     ("detail".into(), String::new()),
                 ]),
             );
             let event = BxValue::new_ptr(vm.string_new(String::new()));
-            hook(
+            if let Err(error) = hook(
                 vm,
                 listener,
                 "onError",
                 vec![BxValue::new_ptr(error_scope), event],
-            )?;
+            ) && error.downcast_ref::<AbortSignal>().is_none()
+            {
+                return Err(error);
+            }
         } else {
             return Err(error);
         }
@@ -366,7 +420,9 @@ fn render(
         session
     });
     let mut response = response.borrow_mut();
-    response.body = vm.end_output_capture().unwrap_or_default().into_bytes();
+    response
+        .body
+        .extend(vm.end_output_capture().unwrap_or_default().into_bytes());
     Ok(RenderOutput {
         response: response.clone(),
         session,
