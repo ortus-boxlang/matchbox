@@ -12,6 +12,7 @@ mod interceptors;
 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
 pub(crate) mod components;
 mod component_runtime;
+mod request_scope;
 #[cfg(feature = "jit")]
 pub mod jit;
 pub mod opcode;
@@ -294,6 +295,10 @@ struct VariablesScopeProxy {
 }
 
 impl BxNativeObject for VariablesScopeProxy {
+    fn native_data(&self, kind: &str) -> Option<*mut std::ffi::c_void> {
+        (kind == "matchbox.variables_scope").then_some(self as *const Self as *mut std::ffi::c_void)
+    }
+
     fn get_property(&self, name: &str) -> BxValue {
         self.variables
             .borrow()
@@ -611,6 +616,10 @@ impl BxVM for VM {
                     .then(|| self.interner.resolve(*name_id).to_string())
             })
             .unwrap_or(function_name)
+    }
+
+    fn interpret_chunk_with_receiver(&mut self, chunk: Chunk, receiver: Option<BxValue>) -> Result<BxValue, String> {
+        VM::interpret_chunk_with_receiver(self, &chunk, receiver).map_err(|error| error.to_string())
     }
 
     fn interpret_chunk(&mut self, chunk: Chunk) -> Result<BxValue, String> {
@@ -1876,6 +1885,9 @@ impl VM {
                 } else if let GcObject::Instance(inst) = self.heap.get(id) {
                     found = inst.variables.borrow().get(name).copied();
                 }
+            }
+            if found.is_none() && self.instance_has_method(receiver, name) {
+                found = self.method_reference(receiver, name).ok();
             }
         }
         if found.is_none() && !lambda && name == "variables" {
@@ -3163,7 +3175,17 @@ impl VM {
         route_chunk.ensure_caches();
         let chunk_rc = Rc::new(RefCell::new(route_chunk));
         let chunk_for_func = Chunk::default();
-        self.interpret_chunk_shared_current_task(chunk_for_func, chunk_rc)
+        self.interpret_chunk_shared_current_task(chunk_for_func, chunk_rc, None)
+    }
+
+    pub fn interpret_chunk_with_receiver(&mut self, chunk: &Chunk, receiver: Option<BxValue>) -> Result<BxValue> {
+        if let Some(receiver) = receiver { self.instance_class_name(receiver)?; }
+        let mut chunk = chunk.clone_without_runtime_caches();
+        chunk.ensure_caches();
+        let previous = self.current_fiber_idx;
+        let result = self.interpret_chunk_shared_current_task(Chunk::default(), Rc::new(RefCell::new(chunk)), receiver);
+        self.current_fiber_idx = previous;
+        result
     }
 
     fn interpret_chunk_shared(
@@ -3230,6 +3252,7 @@ impl VM {
         &mut self,
         chunk_for_func: Chunk,
         chunk_rc: Rc<RefCell<Chunk>>,
+        receiver: Option<BxValue>,
     ) -> Result<BxValue> {
         let function = Rc::new(BxCompiledFunction {
             bif: None,
@@ -3282,6 +3305,7 @@ impl VM {
 
         self.fibers.push(fiber);
         let fiber_idx = self.fibers.len() - 1;
+        self.fibers[fiber_idx].frames.last_mut().unwrap().receiver = receiver;
         let result = self.run_fiber_to_completion(fiber_idx);
         self.current_fiber_idx = None;
         result
@@ -6080,6 +6104,23 @@ impl VM {
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
 
                     if let Some(id) = base_val.as_gc_id() {
+                        if let GcObject::NativeObject(object) = self.heap.get(id) {
+                            let object = object.clone();
+                            if object.borrow().native_data("matchbox.variables_scope").is_some() {
+                                let name = self.interner.resolve(name_id).to_string();
+                                let old = object.borrow().get_property(&name);
+                                if old.is_number() {
+                                    let new = BxValue::new_number(old.as_number() + 1.0);
+                                    object.borrow_mut().set_property(&name, new);
+                                    self.fibers[fiber_idx].stack.push(new);
+                                } else {
+                                    flush_ip!();
+                                    self.throw_error(fiber_idx, "Increment operand must be a number")?;
+                                    frame_changed = true;
+                                }
+                                continue 'quantum;
+                            }
+                        }
                         match self.heap.get_mut(id) {
                             GcObject::Struct(s) => {
                                 let shape_id = s.shape_id;

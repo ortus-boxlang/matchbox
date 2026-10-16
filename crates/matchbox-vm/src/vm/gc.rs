@@ -261,6 +261,25 @@ impl Heap {
         self.next_gc_threshold
     }
 
+    pub(crate) fn clear_global_caches(&self) {
+        for object in self.objects.iter().flatten() {
+            match object {
+                GcObject::CompiledFunction(function) => function.chunk.runtime.clear_global_caches(),
+                GcObject::Class(class) => {
+                    let class = class.borrow();
+                    class.constructor.chunk.runtime.clear_global_caches();
+                    for (_, method) in &class.methods { method.chunk.runtime.clear_global_caches(); }
+                }
+                GcObject::Interface(interface) => {
+                    for (_, method) in &interface.borrow().methods {
+                        if let Some(method) = method { method.chunk.runtime.clear_global_caches(); }
+                    }
+                }
+                _ => ()
+            }
+        }
+    }
+
     pub fn collect(&mut self, roots: &[BxValue]) {
         self.retained_values.retain(|root| root.strong_count() > 0);
         self.alloc_count = 0;

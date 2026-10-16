@@ -1,4 +1,5 @@
-use super::web_context::install_web_context;
+use super::application_runtime::RenderJob;
+pub use super::application_runtime::WebrootRuntime;
 use anyhow::{Context, Result, bail};
 use matchbox_compiler::{compiler::Compiler, parser};
 use matchbox_vm::types::{BxVM, BxValue};
@@ -7,7 +8,7 @@ use matchbox_vm::vm::chunk::Chunk;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -78,6 +79,10 @@ pub trait AssetStore {
     fn compiled_template(&self, _relative_path: &str) -> Result<Option<Chunk>> {
         Ok(None)
     }
+
+    fn source_path(&self, relative_path: &str) -> Result<String> {
+        Ok(relative_path.to_string())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,6 +116,13 @@ impl FileSystemAssetStore {
 }
 
 impl AssetStore for FileSystemAssetStore {
+    fn source_path(&self, relative_path: &str) -> Result<String> {
+        Ok(self
+            .full_path(relative_path)?
+            .to_string_lossy()
+            .into_owned())
+    }
+
     fn metadata(&self, relative_path: &str) -> Result<Option<AssetMetadata>> {
         let full = self.full_path(relative_path)?;
         match std::fs::metadata(full) {
@@ -234,17 +246,25 @@ impl AssetStore for EmbeddedAssetStore {
 }
 
 pub struct WebrootEngine<S> {
-    store: S,
+    store: Arc<S>,
     config: WebrootConfig,
     sessions: Mutex<HashMap<String, HashMap<String, String>>>,
+    runtime: WebrootRuntime,
+    scope_id: String,
 }
 
-impl<S: AssetStore> WebrootEngine<S> {
+impl<S: AssetStore + Send + Sync + 'static> WebrootEngine<S> {
     pub fn new(store: S, config: WebrootConfig) -> Self {
+        Self::with_runtime(store, config, WebrootRuntime::default())
+    }
+
+    pub fn with_runtime(store: S, config: WebrootConfig, runtime: WebrootRuntime) -> Self {
         Self {
-            store,
+            store: Arc::new(store),
             config,
+            runtime,
             sessions: Mutex::new(HashMap::new()),
+            scope_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -257,7 +277,6 @@ impl<S: AssetStore> WebrootEngine<S> {
         request: WebrootRequest,
         context: WebrootContext,
     ) -> Result<WebrootResponse> {
-        let request = Rc::new(request);
         let method = request.method.to_ascii_uppercase();
         if matches!(method.as_str(), "TRACE" | "TRACK") {
             return Ok(text_response(405, "Method Not Allowed"));
@@ -286,17 +305,25 @@ impl<S: AssetStore> WebrootEngine<S> {
             .map(|metadata| metadata.is_dir)
             .unwrap_or(false)
         {
-            asset_path = first_existing_index(&self.store, &asset_path)?.unwrap_or(asset_path);
+            asset_path =
+                first_existing_index(self.store.as_ref(), &asset_path)?.unwrap_or(asset_path);
         }
 
-        let Some(bytes) = self.read_or_rewrite(&mut asset_path)? else {
-            return Ok(text_response(404, "Not Found"));
-        };
-
+        let extension = Path::new(&asset_path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if matches!(extension.as_str(), "bx" | "cfm" | "cfc" | "cfs" | "cfml") {
+            return Ok(text_response(501, "Unsupported executable source type"));
+        }
+        let bytes = self.read_or_rewrite(&mut asset_path)?;
         let mut response = if is_template_path(&asset_path) {
-            let source = String::from_utf8(bytes)?;
-            self.render_template(&asset_path, &source, &request, &context)?
+            self.render_template(&asset_path, request, context)?
         } else {
+            let Some(bytes) = bytes else {
+                return Ok(text_response(404, "Not Found"));
+            };
             if !matches!(method.as_str(), "GET" | "HEAD" | "POST") {
                 return Ok(text_response(405, "Method Not Allowed"));
             }
@@ -340,10 +367,8 @@ impl<S: AssetStore> WebrootEngine<S> {
 
         if self.config.rewrites {
             let rewrite_path = normalize_request_path(&self.config.rewrite_file_name)?;
-            if let Some(bytes) = self.store.read(&rewrite_path)? {
-                *asset_path = rewrite_path;
-                return Ok(Some(bytes));
-            }
+            *asset_path = rewrite_path;
+            return self.store.read(asset_path);
         }
 
         Ok(None)
@@ -352,19 +377,10 @@ impl<S: AssetStore> WebrootEngine<S> {
     fn render_template(
         &self,
         asset_path: &str,
-        source: &str,
-        request: &Rc<WebrootRequest>,
-        context: &WebrootContext,
+        request: WebrootRequest,
+        context: WebrootContext,
     ) -> Result<WebrootResponse> {
-        let chunk = if let Some(chunk) = self.store.compiled_template(asset_path)? {
-            chunk
-        } else {
-            compile_template(asset_path, source)?
-        };
-        let mut vm = VM::new();
-        vm.begin_output_capture();
-        let response = install_web_context(&mut vm, request.clone(), context)?;
-        let mut cookies = request
+        let cookies = request
             .headers
             .get("cookie")
             .map(|raw| parse_cookie_header(raw))
@@ -373,58 +389,40 @@ impl<S: AssetStore> WebrootEngine<S> {
             .get("MBX_SESSION_ID")
             .cloned()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        cookies.insert("MBX_SESSION_ID".to_string(), session_id.clone());
-
-        let form = form_scope_from_request(request);
-        insert_scope(&mut vm, "url", &request.query);
-        insert_scope(&mut vm, "form", &form);
-        insert_scope(&mut vm, "cookie", &cookies);
-        let session_snapshot = self
+        let session = self
             .sessions
             .lock()
             .unwrap()
             .get(&session_id)
             .cloned()
             .unwrap_or_default();
-        let session_scope_id = insert_scope(&mut vm, "session", &session_snapshot);
-        let cgi = cgi_scope_from_request(request, asset_path, context);
-        insert_scope(&mut vm, "cgi", &cgi);
-        vm.interpret(chunk)?;
-        self.persist_session(&mut vm, &session_id, session_scope_id);
-
-        let mut response = response.borrow_mut();
-        response.headers.push((
-            "set-cookie".to_string(),
-            format!("MBX_SESSION_ID={}; Path=/; HttpOnly", session_id),
-        ));
-        response.body = vm.end_output_capture().unwrap_or_default().into_bytes();
-        Ok(response.clone())
-    }
-
-    fn persist_session(&self, vm: &mut VM, session_id: &str, scope_id: usize) {
-        let mut data = HashMap::new();
-        for key in vm.struct_key_array(scope_id) {
-            let value = vm.struct_get(scope_id, &key);
-            data.insert(key, vm.to_string(value));
+        let result = self.runtime.render(RenderJob {
+            store: self.store.clone(),
+            asset_path: asset_path.into(),
+            scope_id: self.scope_id.clone(),
+            request,
+            context,
+            session_id: session_id.clone(),
+            session,
+        })?;
+        if let Some(session) = result.session {
+            self.sessions.lock().unwrap().insert(session_id, session);
         }
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string(), data);
+        Ok(result.response)
     }
 }
 
-fn insert_scope(vm: &mut VM, name: &str, values: &HashMap<String, String>) -> usize {
+pub(crate) fn insert_scope(vm: &mut VM, name: &str, values: &HashMap<String, String>) -> usize {
     let scope_id = vm.struct_new();
+    vm.insert_global(name.to_string(), BxValue::new_ptr(scope_id));
     for (key, value) in values {
         let value_id = vm.string_new(value.clone());
         vm.struct_set(scope_id, key, BxValue::new_ptr(value_id));
     }
-    vm.insert_global(name.to_string(), BxValue::new_ptr(scope_id));
     scope_id
 }
 
-fn parse_cookie_header(raw: &str) -> HashMap<String, String> {
+pub(crate) fn parse_cookie_header(raw: &str) -> HashMap<String, String> {
     let mut cookies = HashMap::new();
     for part in raw.split(';') {
         let mut kv = part.splitn(2, '=');
@@ -435,7 +433,7 @@ fn parse_cookie_header(raw: &str) -> HashMap<String, String> {
     cookies
 }
 
-fn form_scope_from_request(request: &WebrootRequest) -> HashMap<String, String> {
+pub(crate) fn form_scope_from_request(request: &WebrootRequest) -> HashMap<String, String> {
     if !request.form.is_empty() {
         return request.form.clone();
     }
@@ -462,7 +460,7 @@ fn form_scope_from_request(request: &WebrootRequest) -> HashMap<String, String> 
     HashMap::new()
 }
 
-fn compile_template(asset_path: &str, source: &str) -> Result<Chunk> {
+pub(crate) fn compile_template(asset_path: &str, source: &str) -> Result<Chunk> {
     let ast = if asset_path.ends_with(".bxm") {
         parser::parse_bxm(source, Some(asset_path))?
     } else {
@@ -472,7 +470,7 @@ fn compile_template(asset_path: &str, source: &str) -> Result<Chunk> {
     compiler.compile(&ast, source)
 }
 
-fn cgi_scope_from_request(
+pub(crate) fn cgi_scope_from_request(
     request: &WebrootRequest,
     asset_path: &str,
     context: &WebrootContext,
@@ -617,7 +615,7 @@ fn is_template_path(path: &str) -> bool {
     path.ends_with(".bxm") || path.ends_with(".bxs")
 }
 
-fn text_response(status: u16, body: &str) -> WebrootResponse {
+pub(crate) fn text_response(status: u16, body: &str) -> WebrootResponse {
     WebrootResponse {
         status,
         headers: if status == 405 {

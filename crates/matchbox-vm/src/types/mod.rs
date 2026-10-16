@@ -120,6 +120,10 @@ pub trait BxVM {
         String::new()
     }
     fn interpret_chunk(&mut self, chunk: crate::vm::chunk::Chunk) -> Result<BxValue, String>;
+    fn interpret_chunk_with_receiver(&mut self, chunk: crate::vm::chunk::Chunk, receiver: Option<BxValue>) -> Result<BxValue, String> {
+        if receiver.is_some() { return Err("Class-context templates are unavailable in this host".into()); }
+        self.interpret_chunk(chunk)
+    }
     fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue;
     fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String>;
     fn call_function_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String>;

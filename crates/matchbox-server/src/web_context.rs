@@ -2,12 +2,50 @@
 use crate::webroot_core::{WebrootContext, WebrootRequest, WebrootResponse};
 use http::header::{HeaderName, HeaderValue};
 use matchbox_vm::{
-    types::{BxVM, BxValue, NativeCallback},
+    types::{BxNativeObject, BxVM, BxValue, NativeCallback},
     vm::VM,
 };
 use std::{cell::RefCell, rc::Rc};
 
 type ResponseState = Rc<RefCell<WebrootResponse>>;
+
+#[derive(Clone, Debug)]
+struct ActiveWebContext {
+    request: Rc<WebrootRequest>,
+    response: ResponseState,
+    protocol: String,
+}
+impl BxNativeObject for ActiveWebContext {
+    fn native_data(&self, kind: &str) -> Option<*mut std::ffi::c_void> {
+        (kind == "matchbox.web_context.v1").then_some(self as *const Self as *mut std::ffi::c_void)
+    }
+    fn external_allocation_bytes(&self) -> usize {
+        self.request.body.capacity()
+    }
+    fn get_property(&self, _name: &str) -> BxValue {
+        BxValue::new_null()
+    }
+    fn set_property(&mut self, _name: &str, _value: BxValue) {}
+    fn call_method(
+        &mut self,
+        _vm: &mut dyn BxVM,
+        _id: usize,
+        _name: &str,
+        _args: &[BxValue],
+    ) -> Result<BxValue, String> {
+        Err("Web context is opaque".into())
+    }
+}
+fn active_context(vm: &dyn BxVM) -> Result<ActiveWebContext, String> {
+    let value = vm
+        .get_global_value("__mb_web_context")
+        .ok_or("Web operation requires an active request")?;
+    let pointer = vm
+        .native_object_data(value, "matchbox.web_context.v1")
+        .ok_or("Invalid web request context")?;
+    // The private brand identifies this VM-owned object; clone before any VM allocation or callback.
+    Ok(unsafe { (&*(pointer as *const ActiveWebContext)).clone() })
+}
 
 pub(crate) fn install_web_context(
     vm: &mut VM,
@@ -20,12 +58,18 @@ pub(crate) fn install_web_context(
         headers: vec![("content-type".into(), "text/html".into())],
         body: Vec::new(),
     }));
-    let state = response.clone();
+    let value = vm.native_object_new(Rc::new(RefCell::new(ActiveWebContext {
+        request,
+        response: response.clone(),
+        protocol: context.protocol.clone(),
+    })));
+    vm.insert_global("__mb_web_context".into(), BxValue::new_ptr(value));
     vm.register_callback(
         "__mb_component",
         NativeCallback {
             parameters: vec!["name".into(), "attributes".into(), "body".into()],
-            callback: Rc::new(move |vm, args| {
+            callback: Rc::new(|vm, args| {
+                let state = active_context(vm)?.response;
                 if args.len() != 3 || !vm.is_struct_value(args[1]) {
                     return Err("Component requires a name, attribute struct and body".into());
                 }
@@ -115,12 +159,14 @@ pub(crate) fn install_web_context(
         },
     )
     .map_err(anyhow::Error::msg)?;
-    let protocol = context.protocol.clone();
     vm.register_callback(
         "getHTTPRequestData",
         NativeCallback {
             parameters: vec!["includeBody".into()],
-            callback: Rc::new(move |vm, args| {
+            callback: Rc::new(|vm, args| {
+                let context = active_context(vm)?;
+                let request = &context.request;
+                let protocol = &context.protocol;
                 if args.len() > 1 {
                     return Err("getHTTPRequestData accepts only includeBody".into());
                 }

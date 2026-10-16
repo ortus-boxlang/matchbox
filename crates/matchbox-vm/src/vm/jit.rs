@@ -301,6 +301,8 @@ impl super::VM {
         ["int", "isStruct", "structKeyExists"].iter().all(|name| {
             let (kind, _, expected) = intrinsic(name).unwrap();
             if mask & kind == 0 { return true; }
+            // Method binding allocates; deopt before the readonly intrinsic guard.
+            if self.fibers[fiber].frames.last().unwrap().receiver.is_some_and(|receiver| self.instance_has_method(receiver, name)) { return false; }
             let Some(value) = self.private_value(fiber, name) else { return false; };
             let Some(id) = value.as_gc_id() else { return false; };
             matches!(self.heap.get_opt(id), Some(super::gc::GcObject::NativeFunction(function)) if std::ptr::fn_addr_eq(*function, expected))

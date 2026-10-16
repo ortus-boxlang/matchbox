@@ -95,6 +95,12 @@ impl Compiler {
         }
     }
 
+    /// Compile a web template included in an Application class's variables context.
+    pub fn compile_class_template(&mut self, ast: &[Statement], source: &str) -> Result<Chunk> {
+        self.is_class = true;
+        self.compile(ast, source)
+    }
+
     pub fn compile(&mut self, ast: &[Statement], source: &str) -> Result<Chunk> {
         self.chunk.source = source.to_string();
         let len = ast.len();
