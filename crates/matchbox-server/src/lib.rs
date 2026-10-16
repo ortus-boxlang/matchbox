@@ -8,6 +8,8 @@ mod sessions;
 pub mod multipart;
 #[cfg(not(target_family = "wasm"))]
 mod uploads;
+#[cfg(not(target_family = "wasm"))]
+pub mod static_files;
 pub mod webroot_core;
 mod websocket;
 #[cfg(test)]

@@ -159,7 +159,14 @@ proxies that overwrite X-Forwarded-*; it never infers trust from header presence
 full JVM missing-include exception taxonomy. Descriptor lookup stops at each
 mount, without falling back from an alias to the primary webroot's descriptor.
 
-Responses remain buffered, not streamed. Binary content with reset=false is
+Native hosts can use `static_files::static_file_response()` after authorizing a
+filesystem path. It streams with 64 KiB read chunks, Last-Modified/date preconditions,
+single byte ranges, If-Range and HEAD lengths. POST retains MiniServer's static
+behavior. ETags and multipart ranges are not provided. The native frontend uses
+this helper after its existing path/source/config checks, including aliases and
+static welcome files. This is not a path-confinement API.
+
+Template/content responses remain buffered. Binary content with reset=false is
 emitted before the retained text buffer (matching current MiniServer). Native
 file paths are relative to the current source, mount-relative for /paths, or
 existing absolute filesystem paths. Custom application/alias mappings are not

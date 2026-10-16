@@ -1865,6 +1865,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "http",
+ "httpdate",
  "matchbox-modules",
  "matchbox_compiler",
  "matchbox_vm",
