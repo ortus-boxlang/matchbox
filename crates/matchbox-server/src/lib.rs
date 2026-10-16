@@ -6,6 +6,8 @@ mod cookies;
 mod sessions;
 #[cfg(not(target_family = "wasm"))]
 pub mod multipart;
+#[cfg(not(target_family = "wasm"))]
+mod uploads;
 pub mod webroot_core;
 mod websocket;
 #[cfg(test)]

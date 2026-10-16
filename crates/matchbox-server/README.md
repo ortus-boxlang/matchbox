@@ -142,12 +142,19 @@ Unknown web component names still delegate to the existing component dispatcher.
 
 This is **not** full MiniServer runtime parity. Module public/source mappings,
 nested discovery, Application.bxm, full application configuration/output modifiers,
-external session-cache providers, FileUpload/FileUploadAll and SocketBox remain
+external session-cache providers and SocketBox remain
 follow-up work. Native HTTP hosts can call multipart::parse after enforcing their
 body limit: repeated fields/arrays and private temporary files populate form.
 Files are removed at request completion, not deferred until VM garbage collection.
 Multipart parsing is native-only and accepts UTF-8 text, at most 1000 parts and
-RFC-length boundaries. apply_proxy_headers is an explicit opt-in for hosts behind
+RFC-length boundaries. FileUpload/FileUploadAll support field selection, metadata,
+extension/MIME filters, strict handling and error/skip/overwrite/makeunique conflicts.
+Original filenames must be portable basenames. Destination writes are staged and
+committed atomically; errors never truncate an existing file. Unknown MIME uses
+application/octet-stream. attributes/mode are explicitly unsupported. Relative
+non-dot destinations resolve under the OS temp directory; dot-relative paths use
+the current source. Full runtime security configuration remains pending; listener
+allowedFileOperationExtensions/disallowedFileOperationExtensions are respected. apply_proxy_headers is an explicit opt-in for hosts behind
 proxies that overwrite X-Forwarded-*; it never infers trust from header presence. Dynamic include failures do not yet carry the
 full JVM missing-include exception taxonomy. Descriptor lookup stops at each
 mount, without falling back from an alias to the primary webroot's descriptor.

@@ -61,6 +61,34 @@ pub(crate) fn install_web_context(
     file_root: String,
 ) -> anyhow::Result<ResponseState> {
     vm.register_component_runtime()?;
+    #[cfg(not(target_family = "wasm"))]
+    for (name, all) in [("FileUpload", false), ("FileUploadAll", true)] {
+        vm.register_callback(
+            name,
+            NativeCallback {
+                parameters: [
+                    "destination",
+                    "fileField",
+                    "accept",
+                    "nameConflict",
+                    "strict",
+                    "allowedExtensions",
+                    "blockedExtensions",
+                    "attributes",
+                    "mode",
+                    "mimeType",
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+                callback: Rc::new(move |vm, args| {
+                    let context = active_context(vm)?;
+                    crate::uploads::call(vm, &context.request, &context.file_root, args, all)
+                }),
+            },
+        )
+        .map_err(anyhow::Error::msg)?;
+    }
     let response = Rc::new(RefCell::new(WebrootResponse {
         status: 200,
         headers: vec![("content-type".into(), "text/html".into())],
@@ -419,7 +447,7 @@ fn redirect(
     context.response.borrow_mut().status = code;
     Err(vm.raise_abort("request", None))
 }
-fn response_file(vm: &dyn BxVM, root: &Path, file: &str) -> Result<PathBuf, String> {
+pub(crate) fn response_file(vm: &dyn BxVM, root: &Path, file: &str) -> Result<PathBuf, String> {
     if !root.is_absolute() {
         return Err("File content requires a filesystem-backed mount".into());
     }

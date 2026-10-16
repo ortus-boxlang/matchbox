@@ -295,6 +295,17 @@ fn render_request(
             }
         };
         vm.insert_global("__mb_web_listener".into(), listener);
+        for (property, global) in [
+            ("allowedFileOperationExtensions", "__mb_upload_allowed"),
+            ("disallowedFileOperationExtensions", "__mb_upload_blocked"),
+        ] {
+            if let Some(value) = vm
+                .instance_property(listener, property)
+                .filter(|value| !value.is_null())
+            {
+                vm.insert_global(global.into(), value);
+            }
+        }
         Some(listener)
     } else {
         None
