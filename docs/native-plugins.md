@@ -49,7 +49,12 @@ This uses the ordinary process loader namespace, not JVM-style sibling isolation
 
 ## Runtime startup
 
-Modules are discovered in project-local `boxlang_modules/` and in `BOXLANG_HOME/modules/` when that environment variable is set; project packages and explicit selections take precedence for the same directory name. Arbitrary locations can be selected with `--module` or explicit manifest paths. Discovery reads metadata and compiles descriptors without executing lifecycle hooks. Module names honor `boxlang.moduleName`. Descriptor mappings are resolved at execution; dependency arrays and enabled discovery metadata currently require literals. Dependencies initialize first; missing dependencies and cycles fail. Disabled modules are omitted. Application overrides come from `boxlang.json` → `modules.<name>.settings`.
+Modules are discovered in project-local `boxlang_modules/` and in `BOXLANG_HOME/modules/` when that environment variable is set; project packages and explicit selections take precedence for the same directory name. Arbitrary packages can be selected with `--module` or explicit manifest paths.
+`modulesDirectory` in the project runtime configuration adds directories to scan:
+relative paths resolve against the startup project/CWD, and earlier entries win.
+Project/explicit selections and default home packages precede these additional
+folders. Missing/blank/non-directory entries are ignored; the native loader
+requires an array of strings and rejects invalid types. Discovery reads metadata and compiles descriptors without executing lifecycle hooks. Module names honor `boxlang.moduleName`. Descriptor mappings are resolved at execution; dependency arrays and enabled discovery metadata currently require literals. Dependencies initialize first; missing dependencies and cycles fail. Disabled modules are omitted. Application overrides come from `boxlang.json` → `modules.<name>.settings`.
 
 At execution, load native providers, instantiate descriptors, call `configure()`, read the descriptor's **variables-scope `settings`**, deep-merge application settings, and register BoxLang class BIFs using their `invoke()` method. After initialization, call `onLoad()` in dependency order. Call `onUnload()` in reverse order at normal shutdown, including application errors. This does not provide cleanup after process abort/crash.
 
@@ -66,9 +71,13 @@ and clear inline caches without serializing them.
 
 The HTTP startup path is offline: artifact URLs and source-only Rust packages fail.
 Install native bytes in the package first; publisher trust and target/hash/ABI/cache
-checks still apply. Runtime configuration is limited to module enabled/settings
-keys. Module assets/public mappings, nested discovery and hot reload remain outside
-this slice; hosts must protect reported module paths from direct HTTP access.
+checks still apply. Runtime configuration supports module enabled/settings and
+modulesDirectory. Module assets/public mappings, nested discovery and hot reload
+remain outside this slice. discover_module_installations reports all installation
+roots and physical package paths (including disabled/shadowed packages) from the
+same configuration snapshot; HTTP hosts must keep these paths private, including
+through aliases. The existing discover_modules APIs use the same selection logic
+without requiring hosts to maintain a second directory scanner.
 The standalone server crate does not select JNI; the root CLI still controls its
 own optional JNI feature.
 

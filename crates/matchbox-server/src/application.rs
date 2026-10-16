@@ -57,22 +57,12 @@ impl ApplicationRuntime {
         home: Option<&Path>,
         config: Option<&Path>,
     ) -> Result<Vec<PathBuf>> {
-        let sources =
-            matchbox_modules::discovery::discover_modules_with_config(project, &[], home, config)?;
-        let mut paths: Vec<_> = sources.iter().map(|module| module.path.clone()).collect();
-        for directory in [
-            Some(project.join("boxlang_modules")),
-            home.map(|home| home.join("modules")),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if directory.is_dir() {
-                paths.push(directory.canonicalize()?);
-            }
-        }
-        let modules =
-            matchbox_modules::programs::prepare_installed(&sources, matchbox_vm::bundle::TARGET)?;
+        let discovered =
+            matchbox_modules::discovery::discover_module_installations(project, &[], home, config)?;
+        let modules = matchbox_modules::programs::prepare_installed(
+            &discovered.modules,
+            matchbox_vm::bundle::TARGET,
+        )?;
         // Install even an empty registry so module inventory/settings APIs remain real, not missing BIFs.
         self.modules = Some(matchbox_vm::bundle::LoadedModules::load(
             &mut self.vm,
@@ -81,7 +71,7 @@ impl ApplicationRuntime {
         )?);
         // Validate idle startup using the same boundary that will guard actual requests.
         self.vm.with_isolated_globals(|_| Ok(()))?;
-        Ok(paths)
+        Ok(discovered.private_paths)
     }
     pub(crate) fn render(&mut self, job: RenderJob) -> Result<RenderOutput> {
         self.expire();

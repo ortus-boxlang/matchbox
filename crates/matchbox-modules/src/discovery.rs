@@ -109,13 +109,29 @@ pub fn discover_modules_with_home(
     discover_modules_with_config(project_dir, extra_module_paths, home, None)
 }
 
-/// An explicit runtime configuration supports module settings/enabled flags only.
+/// Modules and all discovered installation/package paths that HTTP hosts must keep private.
+pub struct DiscoveredModules {
+    pub modules: Vec<ModuleInfo>,
+    pub private_paths: Vec<PathBuf>,
+}
+
 pub fn discover_modules_with_config(
     project_dir: &Path,
     extra_module_paths: &[PathBuf],
     home: Option<&Path>,
     config_path: Option<&Path>,
 ) -> Result<Vec<ModuleInfo>> {
+    Ok(discover_module_installations(project_dir, extra_module_paths, home, config_path)?.modules)
+}
+
+/// Resolve configuration once so package selection and HTTP privacy use the same snapshot.
+pub fn discover_module_installations(
+    project_dir: &Path,
+    extra_module_paths: &[PathBuf],
+    home: Option<&Path>,
+    config_path: Option<&Path>,
+) -> Result<DiscoveredModules> {
+    let mut private_paths = Vec::new();
     // Collect (name, raw_path) pairs.  Later entries for the same name replace earlier ones.
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
 
@@ -173,25 +189,11 @@ pub fn discover_modules_with_config(
     }
 
     // 3. Scan the project installation directory for packages not explicitly configured.
-    let dir_path = project_dir.join("boxlang_modules");
-    if dir_path.is_dir() {
-        let mut paths = std::fs::read_dir(dir_path)?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<std::io::Result<Vec<_>>>()?;
-        paths.sort();
-        for path in paths {
-            if path.is_dir() && path.join("ModuleConfig.bx").is_file() {
-                let name = path
-                    .file_name()
-                    .context("Module directory has no name")?
-                    .to_string_lossy()
-                    .into_owned();
-                if !entries.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) {
-                    entries.push((name, path));
-                }
-            }
-        }
-    }
+    scan_module_directory(
+        &project_dir.join("boxlang_modules"),
+        &mut entries,
+        &mut private_paths,
+    )?;
 
     // 4. --module CLI overrides: derive name from the directory name, replace manifest entry
     //    with the same name so CLI always wins.
@@ -212,47 +214,72 @@ pub fn discover_modules_with_config(
 
     // The runtime home is lower priority than project packages and explicit selections.
     if let Some(home) = home {
-        let directory = home.join("modules");
-        if directory.is_dir() {
-            let mut paths = std::fs::read_dir(directory)?
-                .map(|entry| entry.map(|entry| entry.path()))
-                .collect::<std::io::Result<Vec<_>>>()?;
-            paths.sort();
-            for path in paths {
-                if !path.is_dir() || !path.join("ModuleConfig.bx").is_file() {
-                    continue;
-                }
-                let name = path
-                    .file_name()
-                    .context("Module directory has no name")?
-                    .to_string_lossy()
-                    .into_owned();
-                if !entries
-                    .iter()
-                    .any(|(local, _)| local.eq_ignore_ascii_case(&name))
-                {
-                    entries.push((name, path));
-                }
-            }
-        }
+        scan_module_directory(&home.join("modules"), &mut entries, &mut private_paths)?;
     }
 
-    let file = config_path.map(Path::to_path_buf).unwrap_or_else(|| project_dir.join("boxlang.json"));
+    let file = config_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| project_dir.join("boxlang.json"));
     let config: serde_json::Value = if config_path.is_some() || file.exists() {
         serde_json::from_str(&std::fs::read_to_string(&file)?)
             .with_context(|| format!("Invalid {}", file.display()))?
-    } else { serde_json::json!({}) };
-    if config_path.is_some() && !config.as_object().is_some_and(|object| object.keys().all(|key| key == "modules")) {
-        bail!("Native runtime configuration currently supports only modules enabled/settings; other runtime configuration remains unsupported");
+    } else {
+        serde_json::json!({})
+    };
+    if config_path.is_some()
+        && !config.as_object().is_some_and(|object| {
+            object
+                .keys()
+                .all(|key| matches!(key.as_str(), "modules" | "modulesDirectory"))
+        })
+    {
+        bail!(
+            "Native runtime configuration currently supports only modules enabled/settings and modulesDirectory; other runtime configuration remains unsupported"
+        );
+    }
+
+    if let Some(directories) = config.get("modulesDirectory") {
+        for directory in directories
+            .as_array()
+            .context("modulesDirectory must be an array of strings")?
+        {
+            let directory = directory
+                .as_str()
+                .context("modulesDirectory entries must be strings")?;
+            if directory.trim().is_empty() {
+                continue;
+            }
+            let directory = project_dir.join(directory);
+            scan_module_directory(&directory, &mut entries, &mut private_paths)?;
+        }
     }
 
     if let Some(entries) = config.get("modules") {
-        let entries = entries.as_object().context("modules configuration must be an object")?;
+        let entries = entries
+            .as_object()
+            .context("modules configuration must be an object")?;
         for (name, entry) in entries {
-            let entry = entry.as_object().with_context(|| format!("Module {name} configuration must be an object"))?;
-            if entry.keys().any(|key| !matches!(key.as_str(), "enabled" | "settings")) { bail!("Module {name} supports only enabled/settings configuration"); }
-            if let Some(enabled) = entry.get("enabled") && !enabled.is_null() && !enabled.is_boolean() { bail!("Module {name} enabled must be boolean"); }
-            if let Some(settings) = entry.get("settings") && !settings.is_null() && !settings.is_object() { bail!("Module {name} settings must be an object"); }
+            let entry = entry
+                .as_object()
+                .with_context(|| format!("Module {name} configuration must be an object"))?;
+            if entry
+                .keys()
+                .any(|key| !matches!(key.as_str(), "enabled" | "settings"))
+            {
+                bail!("Module {name} supports only enabled/settings configuration");
+            }
+            if let Some(enabled) = entry.get("enabled")
+                && !enabled.is_null()
+                && !enabled.is_boolean()
+            {
+                bail!("Module {name} enabled must be boolean");
+            }
+            if let Some(settings) = entry.get("settings")
+                && !settings.is_null()
+                && !settings.is_object()
+            {
+                bail!("Module {name} settings must be an object");
+            }
         }
     }
     // Validate and resolve each entry.
@@ -262,6 +289,9 @@ pub fn discover_modules_with_config(
             format!("Module '{}': path does not exist: {}", name, path.display())
         })?;
 
+        if !private_paths.contains(&path) {
+            private_paths.push(path.clone());
+        }
         let descriptor = path.join("ModuleConfig.bx");
         if !descriptor.exists() {
             bail!(
@@ -280,7 +310,9 @@ pub fn discover_modules_with_config(
         if let Some(declared) = package["boxlang"]["moduleName"].as_str() {
             name = declared.to_owned();
         }
-        if config["modules"][&name]["enabled"] == false { continue; }
+        if config["modules"][&name]["enabled"] == false {
+            continue;
+        }
         let source = std::fs::read_to_string(&descriptor)?;
         let metadata = descriptor_metadata(&source)?;
         if !metadata.enabled {
@@ -348,7 +380,61 @@ pub fn discover_modules_with_config(
         });
     }
 
-    order_modules(modules)
+    Ok(DiscoveredModules {
+        modules: order_modules(modules)?,
+        private_paths,
+    })
+}
+
+fn scan_module_directory(
+    directory: &Path,
+    entries: &mut Vec<(String, PathBuf)>,
+    private_paths: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let metadata = match std::fs::metadata(directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Reading module directory {}", directory.display()));
+        }
+    };
+    if !metadata.is_dir() {
+        eprintln!(
+            "Warning: module directory {} is not a directory; ignoring",
+            directory.display()
+        );
+        return Ok(());
+    }
+    let canonical = directory.canonicalize()?;
+    if !private_paths.contains(&canonical) {
+        private_paths.push(canonical);
+    }
+    let mut paths = std::fs::read_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.sort();
+    for path in paths {
+        if !path.is_dir() || !path.join("ModuleConfig.bx").is_file() {
+            continue;
+        }
+        let canonical = path.canonicalize()?;
+        if !private_paths.contains(&canonical) {
+            private_paths.push(canonical);
+        }
+        let name = path
+            .file_name()
+            .context("Module directory has no name")?
+            .to_string_lossy()
+            .into_owned();
+        if !entries
+            .iter()
+            .any(|(selected, _)| selected.eq_ignore_ascii_case(&name))
+        {
+            entries.push((name, path));
+        }
+    }
+    Ok(())
 }
 
 /// Read `[datasources.<name>]` sections from `matchbox.toml` in `project_dir`.

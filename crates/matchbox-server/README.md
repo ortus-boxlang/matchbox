@@ -44,10 +44,18 @@ so embedded hosts/tests do not silently scan the host filesystem.
 boxlang_modules, box.json local dependencies, matchbox.toml selections and home
 modules use the existing name/dependency/enable/settings rules. Project selections
 win over same-directory-name home packages. Configuration defaults to project
-boxlang.json; an explicit configuration accepts only modules enabled/settings.
+boxlang.json; an explicit configuration accepts modules enabled/settings and
+modulesDirectory (an array of directory strings). Additional directories resolve
+against the startup project/CWD, not the configuration file's parent. Project and
+explicit selections win, followed by home packages, then additional directories in
+listed order; blank/missing/non-directory paths are ignored. Invalid types fail
+before listening, rather than being coerced/ignored as on the JVM.
 The MiniServer-compatible frontend wires configPath/BOXLANG_CONFIG/.boxlang.json
-and serverHome precedence. Other runtime configuration and modulesDirectory remain
-unsupported; home config/boxlang.json is not applied and emits a warning.
+and serverHome precedence. Other runtime configuration remains unsupported;
+home config/boxlang.json is not applied and emits a warning. Discovery reports
+all installation roots and physical package paths for HTTP privacy, including
+disabled/shadowed packages and symlink targets. Use dedicated installation folders;
+these paths remain private even through aliases.
 
 The VM's `LoadedModules` separates initialization from reverse-order unload;
 `Application::run()` uses that same lifetime API. Descriptors configure once,
