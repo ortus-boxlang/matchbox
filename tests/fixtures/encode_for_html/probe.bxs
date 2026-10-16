@@ -1,0 +1,51 @@
+// Probe for encodeForHTML / htmlEditFormat. Run with the JVM: boxlang probe.bxs
+function probe( label, fn ) {
+    try {
+        var r = fn();
+        return label & ( isNull( r ) ? " => NULL" : " => [" & r & "]" );
+    } catch ( any e ) {
+        return label & " => ERROR type=" & e.type & " msg=" & e.message;
+    }
+}
+
+NL = char( 10 );
+cases = [
+    "<b>bold</b>",
+    "Tom & Jerry",
+    'He said "hi"',
+    "it's",
+    "café ñ ü ©",
+    "€ ™ — “quoted” α β ≤ →",
+    "日本語 😀",
+    "",
+    "&amp; &lt;b&gt; &##39;",
+    "%3Cscript%3E",
+    "<script>alert('x')</script>",
+    "line1" & char( 10 ) & "line2" & char( 9 ) & "tab"
+];
+
+out = "";
+for ( c in cases ) {
+    out &= "IN   [" & c & "]" & NL;
+    out &= probe( "false", () => encodeForHTML( c ) ) & NL;
+    out &= probe( "true ", () => encodeForHTML( c, true ) ) & NL;
+}
+out &= probe( "alias htmlEditFormat", () => htmlEditFormat( "<a>" ) ) & NL;
+out &= probe( "UPPER CASE", () => ENCODEFORHTML( "<a>" ) ) & NL;
+out &= probe( "Mixed Case alias", () => HtmlEditFormat( "<a>" ) ) & NL;
+out &= probe( "named args", () => encodeForHTML( string = "<a>", canonicalize = true ) ) & NL;
+out &= probe( "number", () => encodeForHTML( 123.5 ) ) & NL;
+out &= probe( "boolean", () => encodeForHTML( true ) ) & NL;
+out &= probe( "null", () => encodeForHTML( null ) ) & NL;
+out &= probe( "null + canon", () => encodeForHTML( null, true ) ) & NL;
+out &= probe( "no args", () => encodeForHTML() ) & NL;
+out &= probe( "struct", () => encodeForHTML( {} ) ) & NL;
+out &= probe( "array", () => encodeForHTML( [] ) ) & NL;
+out &= probe( "canon=banana", () => encodeForHTML( "<x>", "banana" ) ) & NL;
+out &= probe( "canon=yes", () => encodeForHTML( "<x>", "yes" ) ) & NL;
+out &= probe( "canon=1", () => encodeForHTML( "<x>", 1 ) ) & NL;
+out &= probe( "3 args", () => encodeForHTML( "<x>", false, "extra" ) ) & NL;
+out &= probe( "member call", () => "<a>".encodeForHTML() ) & NL;
+
+fileWrite( expandPath( "./expected-jvm.txt" ), out, "utf-8" );
+println( out );

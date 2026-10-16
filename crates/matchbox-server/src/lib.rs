@@ -697,6 +697,52 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn test_encode_for_html_renders_markup_as_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().to_path_buf().canonicalize().unwrap();
+        std::fs::write(
+            webroot.join("index.bxm"),
+            r#"<bx:script>payload = "<script>alert('xss')</script> & <b>bold</b>";</bx:script>
+<bx:output><p>#encodeForHTML( payload )#</p><p>#htmlEditFormat( payload )#</p></bx:output>"#,
+        )
+        .unwrap();
+
+        let state = setup_test_state(webroot);
+
+        let res = handler(
+            State(state),
+            Method::GET,
+            None,
+            Query(HashMap::new()),
+            HeaderMap::new(),
+            None,
+        )
+        .await
+        .into_response();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        let encoded = "&lt;script&gt;alert('xss')&lt;/script&gt; &amp; &lt;b&gt;bold&lt;/b&gt;";
+        assert_eq!(
+            body.matches(encoded).count(),
+            2,
+            "both names should encode: {body}"
+        );
+        assert!(
+            !body.contains("<script>"),
+            "raw markup leaked into the page: {body}"
+        );
+        assert!(
+            !body.contains("<b>bold"),
+            "raw markup leaked into the page: {body}"
+        );
+    }
+
     #[test]
     fn test_prepare_wasi_http_webroot_warns_and_ignores_websocket_config() {
         let temp = tempfile::tempdir().unwrap();

@@ -215,6 +215,7 @@ script_test!(vm_cache_bifs, "vm_cache_bifs.bxs");
 script_test!(vm_qoq_query_execute, "vm_qoq_query_execute.bxs");
 #[cfg(feature = "qoq")]
 script_test!(vm_qoq_join, "vm_qoq_join.bxs");
+script_test!(vm_encode_for_html, "vm_encode_for_html.bxs");
 
 #[test]
 #[cfg(feature = "bif-tui")]

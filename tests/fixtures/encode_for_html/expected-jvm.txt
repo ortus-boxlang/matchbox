@@ -1,0 +1,68 @@
+Recorded: 2026-10-01
+Ortus BoxLang™ v1.17.6+65
+BoxLang™ ID: ca9fc3f07748ab0a0483614e4e5b353d
+Codename: Jericho
+Built On: 2026-09-25 22:36:09
+Copyright Ortus Solutions, Corp™
+https://boxlang.io
+java version "24.0.2" 2025-07-15
+Java(TM) SE Runtime Environment (build 24.0.2+12-54)
+Java HotSpot(TM) 64-Bit Server VM (build 24.0.2+12-54, mixed mode, sharing)
+Note: probe.bxs uses char() instead of chr() — chr() is not available in .bxs files.
+----
+
+IN   [<b>bold</b>]
+false => [&lt;b&gt;bold&lt;/b&gt;]
+true  => [&lt;b&gt;bold&lt;/b&gt;]
+IN   [Tom & Jerry]
+false => [Tom &amp; Jerry]
+true  => [Tom &amp; Jerry]
+IN   [He said "hi"]
+false => [He said &quot;hi&quot;]
+true  => [He said &quot;hi&quot;]
+IN   [it's]
+false => [it's]
+true  => [it's]
+IN   [café ñ ü ©]
+false => [caf&eacute; &ntilde; &uuml; &copy;]
+true  => [caf&eacute; &ntilde; &uuml; &copy;]
+IN   [€ ™ — “quoted” α β ≤ →]
+false => [&euro; &trade; &mdash; &ldquo;quoted&rdquo; &alpha; &beta; &le; &rarr;]
+true  => [&euro; &trade; &mdash; &ldquo;quoted&rdquo; &alpha; &beta; &le; &rarr;]
+IN   [日本語 😀]
+false => [日本語 😀]
+true  => [日本語 😀]
+IN   []
+false => []
+true  => []
+IN   [&amp; &lt;b&gt; &#39;]
+false => [&amp;amp; &amp;lt;b&amp;gt; &amp;#39;]
+true  => [&amp;amp; &amp;lt;b&amp;gt; &amp;#39;]
+IN   [%3Cscript%3E]
+false => [%3Cscript%3E]
+true  => [%3Cscript%3E]
+IN   [<script>alert('x')</script>]
+false => [&lt;script&gt;alert('x')&lt;/script&gt;]
+true  => [&lt;script&gt;alert('x')&lt;/script&gt;]
+IN   [line1
+line2	tab]
+false => [line1
+line2	tab]
+true  => [line1
+line2	tab]
+alias htmlEditFormat => [&lt;a&gt;]
+UPPER CASE => [&lt;a&gt;]
+Mixed Case alias => [&lt;a&gt;]
+named args => [&lt;a&gt;]
+number => [123.5]
+boolean => [true]
+null => NULL
+null + canon => NULL
+no args => ERROR type=Application msg=Required argument [string] is missing for function [encodeForHTML]
+struct => ERROR type=Application msg=In function [encodeForHTML], argument [string] with a type of [Struct] does not match the declared type of [string]
+array => ERROR type=Application msg=In function [encodeForHTML], argument [string] with a type of [Array] does not match the declared type of [string]
+canon=banana => ERROR type=Application msg=In function [encodeForHTML], argument [canonicalize] with a type of [String] does not match the declared type of [boolean]
+canon=yes => [&lt;x&gt;]
+canon=1 => [&lt;x&gt;]
+3 args => [&lt;x&gt;]
+member call => ERROR type=Application msg=Error getting method [encodeForHTML] for class [java.lang.String]

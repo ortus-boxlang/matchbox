@@ -159,6 +159,8 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
         "urlencodedformat".to_string(),
         system::url_encoded_format as BxNativeFunction,
     );
+    bifs.insert("encodeforhtml".to_string(), system::encode_for_html as BxNativeFunction);
+    bifs.insert("htmleditformat".to_string(), system::encode_for_html as BxNativeFunction);
     bifs.insert(
         "getfilefrompath".to_string(),
         system::get_file_from_path as BxNativeFunction,
