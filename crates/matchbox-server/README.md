@@ -31,6 +31,41 @@ static resources retain GET/HEAD/POST handling. TRACE/TRACK are rejected. HEAD
 retains the representation's Content-Length without sending a body; 204 and
 304 responses do not send body bytes.
 
+## Installed native modules
+
+Native hosts can eagerly create `WebrootRuntime::from_project(project, home, config)`
+before binding their HTTP listener. Defaults are CWD project discovery and explicit
+BOXLANG_HOME or ~/.boxlang module lookup; hosts can supply home/config paths without
+changing environment. No directories or JVM installation are created. Plain
+`WebrootRuntime::default()` / `WebrootEngine::new()` remain explicitly unconfigured,
+so embedded hosts/tests do not silently scan the host filesystem.
+
+`matchbox-modules` now owns discovery/preparation shared with the CLI. Project
+boxlang_modules, box.json local dependencies, matchbox.toml selections and home
+modules use the existing name/dependency/enable/settings rules. Project selections
+win over same-directory-name home packages. Configuration defaults to project
+boxlang.json; an explicit configuration accepts only modules enabled/settings.
+The MiniServer-compatible frontend wires configPath/BOXLANG_CONFIG/.boxlang.json
+and serverHome precedence. Other runtime configuration and modulesDirectory remain
+unsupported; home config/boxlang.json is not applied and emits a warning.
+
+The VM's `LoadedModules` separates initialization from reverse-order unload;
+`Application::run()` uses that same lifetime API. Descriptors configure once,
+settings deep-merge, providers/BIFs/members/classes/components/interceptors stay
+live across requests and GC. Modules load before Application.bx; application-end
+runs before module unload. Failed startup cleans partial records and preserves
+the original error. Background startup work is rejected before listener publication.
+
+Runtime artifacts must be local, matching-target prebuilt packages. Hash/ABI/path/
+cache checks remain unchanged; source-only Rust and remote artifact URLs fail
+instead of compiling/downloading at server startup. Server dependencies no longer
+enable JNI; the root CLI's explicitly selected JNI feature remains unchanged.
+Modules can supply bounded Java facades, not arbitrary JVM classes/JAR support.
+
+Hosts must protect `module_paths()` (including aliases) from direct HTTP serving.
+Module public mappings/assets, nested module discovery and hot reload are not wired
+here. Module BIFs/classes and component bodies execute with process privileges.
+
 ## Application.bx lifecycle
 
 The nearest `Application.bx` between the selected template's directory and its
@@ -105,8 +140,8 @@ Unknown web component names still delegate to the existing component dispatcher.
 
 ## Scope and checks
 
-This is **not** full MiniServer runtime parity. Module discovery, Application.bxm,
-full application configuration/output modifiers, session lifecycle,
+This is **not** full MiniServer runtime parity. Module public/source mappings,
+nested discovery, Application.bxm, full application configuration/output modifiers, session lifecycle,
 cookie-scope writes, multipart and
 SocketBox remain follow-up work. Dynamic include failures do not yet carry the
 full JVM missing-include exception taxonomy. Descriptor lookup stops at each
@@ -146,6 +181,9 @@ cargo check -p matchbox_wasi_http_runner --target wasm32-wasip2
 
 `tests/webroot_http.rs` and `tests/webroot_application.rs` exercise the
 compiler/VM/runtime, live state, lifecycle, cleanup, alias sharing and concurrency.
+`tests/webroot_modules.rs` covers persistent catalogs/classes/members/components,
+GC/source removal, native artifact Java facades, startup failure cleanup and offline
+rejection. The CLI's existing native-plugin regression suite exercises the same loader.
 `tests/webroot_response.rs` covers typed abort unwinding, page includes, binary/
 file responses, deletion validation, constructor redirects and hook ordering.
 `tests/http_transport.rs` launches the actual HTTP executable and sends requests

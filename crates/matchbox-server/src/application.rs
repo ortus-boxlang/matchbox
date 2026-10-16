@@ -37,17 +37,56 @@ struct ApplicationState {
 pub(crate) struct ApplicationRuntime {
     vm: VM,
     applications: HashMap<String, ApplicationState>,
+    #[cfg(not(target_family = "wasm"))]
+    modules: Option<matchbox_vm::bundle::LoadedModules>,
 }
 impl ApplicationRuntime {
     pub(crate) fn new() -> Self {
         Self {
             vm: VM::new(),
             applications: HashMap::new(),
+            #[cfg(not(target_family = "wasm"))]
+            modules: None,
         }
+    }
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn load_modules(
+        &mut self,
+        project: &Path,
+        home: Option<&Path>,
+        config: Option<&Path>,
+    ) -> Result<Vec<PathBuf>> {
+        let sources =
+            matchbox_modules::discovery::discover_modules_with_config(project, &[], home, config)?;
+        let mut paths: Vec<_> = sources.iter().map(|module| module.path.clone()).collect();
+        for directory in [
+            Some(project.join("boxlang_modules")),
+            home.map(|home| home.join("modules")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if directory.is_dir() {
+                paths.push(directory.canonicalize()?);
+            }
+        }
+        let modules =
+            matchbox_modules::programs::prepare_installed(&sources, matchbox_vm::bundle::TARGET)?;
+        // Install even an empty registry so module inventory/settings APIs remain real, not missing BIFs.
+        self.modules = Some(matchbox_vm::bundle::LoadedModules::load(
+            &mut self.vm,
+            modules,
+            &matchbox_vm::bundle::cache_root(),
+        )?);
+        // Validate idle startup using the same boundary that will guard actual requests.
+        self.vm.with_isolated_globals(|_| Ok(()))?;
+        Ok(paths)
     }
     pub(crate) fn render(&mut self, job: RenderJob) -> Result<RenderOutput> {
         self.expire();
-        let Self { vm, applications } = self;
+        let Self {
+            vm, applications, ..
+        } = self;
         vm.with_isolated_globals(|vm| render(vm, applications, job))
     }
     pub(crate) fn expire(&mut self) {
@@ -73,6 +112,12 @@ impl ApplicationRuntime {
     pub(crate) fn shutdown(&mut self) {
         for (_, app) in self.applications.drain() {
             end_application(&mut self.vm, app);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(modules) = self.modules.take()
+            && let Err(error) = modules.unload(&mut self.vm)
+        {
+            eprintln!("Module shutdown failed: {error}");
         }
     }
 }
@@ -165,9 +210,14 @@ fn render(
                 let path = include_path(store.as_ref(), &prefix, &current, &target)
                     .map_err(|error| error.to_string())?;
                 let receiver = vm.current_receiver();
-                let chunk = load_template(store.as_ref(), &path, receiver.is_some())
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("Missing template: {target}"))?;
+                let chunk = load_template(
+                    store.as_ref(),
+                    &path,
+                    receiver.is_some(),
+                    vm.has_global_function("getModuleInfo"),
+                )
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("Missing template: {target}"))?;
                 vm.interpret_chunk_with_receiver(chunk, receiver)
             }),
         },
@@ -188,7 +238,9 @@ fn render(
             })
             .collect();
         ensure!(classes.len() == 1, "Application.bx must define one class");
-        let chunk = Compiler::new(&filename).compile(&ast, source)?;
+        let mut compiler = Compiler::new(&filename);
+        compiler.runtime_module_classes = vm.has_global_function("getModuleInfo");
+        let chunk = compiler.compile(&ast, source)?;
         vm.interpret_chunk_borrowed_current_task(&chunk)?;
         let listener = match vm.construct_global_class(&classes[0], vec![]) {
             Ok(listener) => listener,
@@ -323,9 +375,12 @@ fn render(
             if proceed {
                 if vm.instance_has_method(listener, "onRequest") {
                     hook(vm, listener, "onRequest", vec![target])?;
-                } else if let Some(chunk) =
-                    load_template(job.store.as_ref(), &job.asset_path, true)?
-                {
+                } else if let Some(chunk) = load_template(
+                    job.store.as_ref(),
+                    &job.asset_path,
+                    true,
+                    vm.has_global_function("getModuleInfo"),
+                )? {
                     vm.interpret_chunk_with_receiver(&chunk, Some(listener))?;
                 } else {
                     let handled = hook(vm, listener, "onMissingTemplate", vec![target])?
@@ -345,7 +400,12 @@ fn render(
                 }
             }
             hook(vm, listener, "onRequestEnd", vec![target])?;
-        } else if let Some(chunk) = load_template(job.store.as_ref(), &job.asset_path, false)? {
+        } else if let Some(chunk) = load_template(
+            job.store.as_ref(),
+            &job.asset_path,
+            false,
+            vm.has_global_function("getModuleInfo"),
+        )? {
             vm.interpret_chunk_with_receiver(&chunk, None)?;
         } else {
             response.borrow_mut().status = 404;
@@ -458,7 +518,12 @@ fn find_application(store: &dyn AssetStore, asset: &str) -> Result<Option<(Strin
         }
     }
 }
-fn load_template(store: &dyn AssetStore, path: &str, class_context: bool) -> Result<Option<Chunk>> {
+fn load_template(
+    store: &dyn AssetStore,
+    path: &str,
+    class_context: bool,
+    module_classes: bool,
+) -> Result<Option<Chunk>> {
     if !class_context && let Some(chunk) = store.compiled_template(path)? {
         return Ok(Some(chunk));
     }
@@ -473,6 +538,7 @@ fn load_template(store: &dyn AssetStore, path: &str, class_context: bool) -> Res
         parser::parse(&source, Some(&filename))?
     };
     let mut compiler = Compiler::new(&filename);
+    compiler.runtime_module_classes = module_classes;
     Ok(Some(if class_context {
         compiler.compile_class_template(&ast, &source)?
     } else {

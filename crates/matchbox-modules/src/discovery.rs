@@ -96,6 +96,26 @@ pub fn discover_modules(
     project_dir: &Path,
     extra_module_paths: &[PathBuf],
 ) -> Result<Vec<ModuleInfo>> {
+    let home = std::env::var_os("BOXLANG_HOME").map(PathBuf::from);
+    discover_modules_with_home(project_dir, extra_module_paths, home.as_deref())
+}
+
+/// Explicit home selection avoids changing process-wide environment in embedded hosts.
+pub fn discover_modules_with_home(
+    project_dir: &Path,
+    extra_module_paths: &[PathBuf],
+    home: Option<&Path>,
+) -> Result<Vec<ModuleInfo>> {
+    discover_modules_with_config(project_dir, extra_module_paths, home, None)
+}
+
+/// An explicit runtime configuration supports module settings/enabled flags only.
+pub fn discover_modules_with_config(
+    project_dir: &Path,
+    extra_module_paths: &[PathBuf],
+    home: Option<&Path>,
+    config_path: Option<&Path>,
+) -> Result<Vec<ModuleInfo>> {
     // Collect (name, raw_path) pairs.  Later entries for the same name replace earlier ones.
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
 
@@ -191,8 +211,8 @@ pub fn discover_modules(
     }
 
     // The runtime home is lower priority than project packages and explicit selections.
-    if let Some(home) = std::env::var_os("BOXLANG_HOME") {
-        let directory = PathBuf::from(home).join("modules");
+    if let Some(home) = home {
+        let directory = home.join("modules");
         if directory.is_dir() {
             let mut paths = std::fs::read_dir(directory)?
                 .map(|entry| entry.map(|entry| entry.path()))
@@ -217,6 +237,24 @@ pub fn discover_modules(
         }
     }
 
+    let file = config_path.map(Path::to_path_buf).unwrap_or_else(|| project_dir.join("boxlang.json"));
+    let config: serde_json::Value = if config_path.is_some() || file.exists() {
+        serde_json::from_str(&std::fs::read_to_string(&file)?)
+            .with_context(|| format!("Invalid {}", file.display()))?
+    } else { serde_json::json!({}) };
+    if config_path.is_some() && !config.as_object().is_some_and(|object| object.keys().all(|key| key == "modules")) {
+        bail!("Native runtime configuration currently supports only modules enabled/settings; other runtime configuration remains unsupported");
+    }
+
+    if let Some(entries) = config.get("modules") {
+        let entries = entries.as_object().context("modules configuration must be an object")?;
+        for (name, entry) in entries {
+            let entry = entry.as_object().with_context(|| format!("Module {name} configuration must be an object"))?;
+            if entry.keys().any(|key| !matches!(key.as_str(), "enabled" | "settings")) { bail!("Module {name} supports only enabled/settings configuration"); }
+            if let Some(enabled) = entry.get("enabled") && !enabled.is_null() && !enabled.is_boolean() { bail!("Module {name} enabled must be boolean"); }
+            if let Some(settings) = entry.get("settings") && !settings.is_null() && !settings.is_object() { bail!("Module {name} settings must be an object"); }
+        }
+    }
     // Validate and resolve each entry.
     let mut modules = Vec::new();
     for (mut name, path) in entries {
@@ -242,6 +280,7 @@ pub fn discover_modules(
         if let Some(declared) = package["boxlang"]["moduleName"].as_str() {
             name = declared.to_owned();
         }
+        if config["modules"][&name]["enabled"] == false { continue; }
         let source = std::fs::read_to_string(&descriptor)?;
         let metadata = descriptor_metadata(&source)?;
         if !metadata.enabled {
@@ -293,15 +332,6 @@ pub fn discover_modules(
             .is_some_and(|a| !a.is_empty());
         let has_native = !has_artifacts && path.join("matchbox").join("Cargo.toml").exists();
 
-        let config_path = project_dir.join("boxlang.json");
-        let config: serde_json::Value = if config_path.exists() {
-            serde_json::from_str(&std::fs::read_to_string(config_path)?)?
-        } else {
-            serde_json::json!({})
-        };
-        if config["modules"][&name]["enabled"] == false {
-            continue;
-        }
         let settings = config["modules"][&name]["settings"]
             .as_object()
             .map(|m| serde_json::Value::Object(m.clone()))

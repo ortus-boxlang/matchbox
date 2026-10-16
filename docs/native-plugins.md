@@ -55,6 +55,23 @@ At execution, load native providers, instantiate descriptors, call `configure()`
 
 `configure()` populates `settings`; its return value is ignored. Old build-time lifecycle execution and baked settings are removed. Class BIFs honor `@BoxBIF` aliases and `@BoxMember` declarations (also supported as class-header attributes). A string alias replaces the filename name; an alias array includes the filename name. Members retain their callable independently of global aliases and bind the receiver to `objectArgument`, or the first declared argument by default, for positional and named calls. The currently supported member targets are the VM's core scalar, array, struct, date, class, and callable types; JVM-specific targets fail explicitly. Parameterless `invoke()` methods retain positional receivers and extras in `arguments` under numeric keys, as on the JVM. Named member calls require a declared first parameter or an explicit `objectArgument`, which need not be declared. Class BIFs retain undeclared positional/named values and expose `__functionName` / `__isMemberExecution`. Explicit `objectArgument` positional dispatch maps only declared parameters and drops surplus values, matching JVM member dispatch. Doc comments remain documentation, not BIF/member registration annotations, matching the JVM. Synchronous global interception supports descriptor/custom-point handlers, descriptor-declared interceptor classes, and explicitly registered class instances, shared mutable event data, Boolean-true short-circuiting, and reverse-order cleanup. Declared methods with an `@interceptionPoint` annotation discover their own point; annotation presence matters even when its value is false. Documentation tags and inherited-only methods are not discovered, matching JVM metadata registration. Module `.bx`/`.bxs` class declarations are embedded with the application, so declared interceptors do not require their source package at execution. Module components support template tags and `bx:name` script syntax. Native objects can declare member-to-BIF mappings. A module relying on unsupported JVM APIs must provide an alternative backend.
 
+### Native HTTP hosts
+
+Discovery/preparation lives in the shared `matchbox-modules` crate rather than
+private CLI files. `WebrootRuntime::from_project(project, home, config)` starts
+modules on its VM-owning thread before serving; application-end precedes module
+unload on orderly disposal. The module-aware web compiler defers packaged class
+references to the VM catalog. Request namespaces retain module objects/settings
+and clear inline caches without serializing them.
+
+The HTTP startup path is offline: artifact URLs and source-only Rust packages fail.
+Install native bytes in the package first; publisher trust and target/hash/ABI/cache
+checks still apply. Runtime configuration is limited to module enabled/settings
+keys. Module assets/public mappings, nested discovery and hot reload remain outside
+this slice; hosts must protect reported module paths from direct HTTP access.
+The standalone server crate does not select JNI; the root CLI still controls its
+own optional JNI feature.
+
 ### Descriptor mappings
 
 `this.mapping` is evaluated after descriptor construction and before `configure()`. A nonblank string creates `/bxModules/<value>/` and `bxModules.<value>`. A struct accepts `name` (blank/missing defaults to the module name), `usePrefix` (default true), `external` (default false), and `path` (relative to the package root, or absolute). Struct invocation paths remain `bxModules.<name>` even with `usePrefix:false`, matching the JVM. Mapping names have leading/trailing slashes; defaulted struct names are written back to the descriptor.

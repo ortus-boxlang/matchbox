@@ -21,18 +21,15 @@ pub(crate) struct RenderOutput {
     pub response: WebrootResponse,
     pub session: Option<HashMap<String, String>>,
 }
-
 #[derive(Clone, Default)]
 pub struct WebrootRuntime {
     inner: Arc<RuntimeInner>,
 }
-
 #[cfg(not(target_family = "wasm"))]
 type RenderMessage = (
     RenderJob,
     std::sync::mpsc::Sender<Result<RenderOutput, String>>,
 );
-
 #[cfg(not(target_family = "wasm"))]
 #[derive(Default)]
 struct RuntimeInner {
@@ -42,6 +39,7 @@ struct RuntimeInner {
 struct Worker {
     sender: Option<std::sync::mpsc::SyncSender<RenderMessage>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    module_paths: Vec<std::path::PathBuf>,
 }
 #[cfg(not(target_family = "wasm"))]
 impl Drop for Worker {
@@ -53,20 +51,103 @@ impl Drop for Worker {
     }
 }
 #[cfg(not(target_family = "wasm"))]
+struct ModuleBootstrap {
+    project: std::path::PathBuf,
+    home: Option<std::path::PathBuf>,
+    config: Option<std::path::PathBuf>,
+}
+#[cfg(not(target_family = "wasm"))]
 impl WebrootRuntime {
-    pub(crate) fn render(&self, job: RenderJob) -> Result<RenderOutput> {
-        let sender = {
-            let mut worker = self
-                .inner
-                .worker
-                .lock()
-                .map_err(|_| anyhow::anyhow!("Web runtime lock poisoned"))?;
-            if worker.is_none() {
-                let (sender, requests) = std::sync::mpsc::sync_channel::<RenderMessage>(32);
-                let thread = std::thread::Builder::new()
+    /// Eager, offline module startup before an HTTP listener is published. Compilation/VM values stay on the worker.
+    pub fn from_project(
+        project: std::path::PathBuf,
+        home: Option<std::path::PathBuf>,
+        config: Option<std::path::PathBuf>,
+    ) -> Result<Self> {
+        let home = home
+            .filter(|path| !path.as_os_str().is_empty())
+            .or_else(|| {
+                std::env::var_os("BOXLANG_HOME")
+                    .filter(|value| !value.is_empty())
+                    .map(Into::into)
+            })
+            .or_else(|| {
+                let user = if cfg!(windows) {
+                    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
+                } else {
+                    std::env::var_os("HOME")
+                };
+                user.map(|user| std::path::PathBuf::from(user).join(".boxlang"))
+            });
+        if let Some(home) = &home
+            && home.join("config/boxlang.json").exists()
+        {
+            eprintln!(
+                "Warning: serverHome selects installed modules only; its runtime configuration is not applied. Use project boxlang.json for module settings; full runtime configuration remains unsupported."
+            );
+        }
+        let runtime = Self::default();
+        runtime.sender(Some(ModuleBootstrap {
+            project,
+            home,
+            config,
+        }))?;
+        Ok(runtime)
+    }
+    /// Source-package and installation directories hosts must keep private, including through aliases.
+    pub fn module_paths(&self) -> Result<Vec<std::path::PathBuf>> {
+        let worker = self
+            .inner
+            .worker
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Web runtime lock poisoned"))?;
+        Ok(worker
+            .as_ref()
+            .map(|worker| worker.module_paths.clone())
+            .unwrap_or_default())
+    }
+    fn sender(
+        &self,
+        bootstrap: Option<ModuleBootstrap>,
+    ) -> Result<std::sync::mpsc::SyncSender<RenderMessage>> {
+        let mut worker = self
+            .inner
+            .worker
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Web runtime lock poisoned"))?;
+        if worker.is_none() {
+            let (sender, requests) = std::sync::mpsc::sync_channel::<RenderMessage>(32);
+            let (ready, initialized) = std::sync::mpsc::channel();
+            let thread =
+                std::thread::Builder::new()
                     .name("matchbox-web-application".into())
                     .spawn(move || {
                         let mut runtime = ApplicationRuntime::new();
+                        let startup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                            || match bootstrap {
+                                Some(options) => runtime.load_modules(
+                                    &options.project,
+                                    options.home.as_deref(),
+                                    options.config.as_deref(),
+                                ),
+                                None => Ok(Vec::new()),
+                            },
+                        ))
+                        .map_err(|_| "Module startup panicked".to_string())
+                        .and_then(|result| result.map_err(|error| error.to_string()));
+                        match startup {
+                            Ok(paths) => {
+                                if ready.send(Ok(paths)).is_err() {
+                                    runtime.shutdown();
+                                    return;
+                                }
+                            }
+                            Err(error) => {
+                                runtime.shutdown();
+                                let _ = ready.send(Err(error));
+                                return;
+                            }
+                        }
                         loop {
                             match requests.recv_timeout(std::time::Duration::from_secs(1)) {
                                 Ok((job, reply)) => {
@@ -84,13 +165,29 @@ impl WebrootRuntime {
                         runtime.shutdown();
                     })
                     .context("Starting application runtime")?;
-                *worker = Some(Worker {
-                    sender: Some(sender),
-                    thread: Some(thread),
-                });
+            let paths = initialized
+                .recv()
+                .context("Web runtime stopped during module startup")
+                .and_then(|result| result.map_err(anyhow::Error::msg));
+            match paths {
+                Ok(module_paths) => {
+                    *worker = Some(Worker {
+                        sender: Some(sender),
+                        thread: Some(thread),
+                        module_paths,
+                    })
+                }
+                Err(error) => {
+                    drop(sender);
+                    let _ = thread.join();
+                    return Err(error);
+                }
             }
-            worker.as_ref().unwrap().sender.as_ref().unwrap().clone()
-        };
+        }
+        Ok(worker.as_ref().unwrap().sender.as_ref().unwrap().clone())
+    }
+    pub(crate) fn render(&self, job: RenderJob) -> Result<RenderOutput> {
+        let sender = self.sender(None)?;
         let (reply, result) = std::sync::mpsc::channel();
         sender
             .send((job, reply))
@@ -101,7 +198,6 @@ impl WebrootRuntime {
             .map_err(anyhow::Error::msg)
     }
 }
-
 #[cfg(target_family = "wasm")]
 struct RuntimeInner {
     id: usize,

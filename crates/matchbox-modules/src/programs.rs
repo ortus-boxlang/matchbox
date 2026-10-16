@@ -1,5 +1,5 @@
 //! Compile module descriptors without executing them; resolve prebuilt native artifacts.
-use crate::modules::ModuleInfo;
+use crate::discovery::ModuleInfo;
 use anyhow::{Context, Result, bail};
 use matchbox_compiler::{ast::*, parser, tokenizer::{lex, TokenKind}};
 use matchbox_vm::{
@@ -40,6 +40,16 @@ struct LibraryLocation {
 }
 
 pub fn prepare(modules: &[ModuleInfo], target: &str) -> Result<Vec<Module>> {
+    prepare_modules(modules, target, true)
+}
+/// Installed runtime packages must contain their native bytes, never fetch them at startup.
+pub fn prepare_installed(modules: &[ModuleInfo], target: &str) -> Result<Vec<Module>> {
+    if modules.iter().any(|module| module.has_native) {
+        bail!("Source-only native modules cannot load at runtime; install a package with prebuilt artifacts");
+    }
+    prepare_modules(modules, target, false)
+}
+fn prepare_modules(modules: &[ModuleInfo], target: &str, allow_remote: bool) -> Result<Vec<Module>> {
     modules
         .iter()
         .enumerate()
@@ -149,7 +159,7 @@ pub fn prepare(modules: &[ModuleInfo], target: &str) -> Result<Vec<Module>> {
                     chunk: compile(&ast, &source, &file.to_string_lossy(), modules)?,
                 });
             }
-            let artifact = read_artifact(&module.path, target)?;
+            let artifact = read_artifact(&module.path, target, allow_remote)?;
             Ok(Module {
                 name: module.name.clone(),
                 path: module.path.to_string_lossy().into_owned(),
@@ -348,7 +358,7 @@ fn compile(
         &[],
     )
 }
-fn read_artifact(root: &Path, target: &str) -> Result<Option<Artifact>> {
+fn read_artifact(root: &Path, target: &str, allow_remote: bool) -> Result<Option<Artifact>> {
     let package = root.join("box.json");
     if !package.exists() {
         return Ok(None);
@@ -382,6 +392,7 @@ fn read_artifact(root: &Path, target: &str) -> Result<Option<Artifact>> {
         location.url.as_deref(),
         filename,
         &location.sha256,
+        allow_remote,
     )?;
     let libraries = location
         .libraries
@@ -393,6 +404,7 @@ fn read_artifact(root: &Path, target: &str) -> Result<Option<Artifact>> {
                 library.url.as_deref(),
                 library.filename.as_deref(),
                 &library.sha256,
+                allow_remote,
             )
         })
         .collect::<Result<_>>()?;
@@ -413,6 +425,7 @@ fn read_library(
     url: Option<&str>,
     filename: Option<&str>,
     sha256: &str,
+    allow_remote: bool,
 ) -> Result<SharedLibrary> {
     if sha256.len() != 64
         || !sha256
@@ -442,6 +455,7 @@ fn read_library(
             }
             (filename, fs::read(path)?)
         }
+        (None, Some(_)) if !allow_remote => bail!("Runtime module artifacts must be packaged locally; remote downloads are not allowed at server startup"),
         (None, Some(url)) => (
             filename
                 .context("Remote dependent libraries require a filename")?

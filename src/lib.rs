@@ -33,9 +33,9 @@ static FUSION_BUILD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 mod browser;
 mod embedded;
-mod modules;
+use matchbox_modules::discovery as modules;
 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
-mod module_programs;
+use matchbox_modules::programs as module_programs;
 mod stubs;
 
 use postcard;

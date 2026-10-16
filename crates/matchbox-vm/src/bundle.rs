@@ -282,8 +282,29 @@ impl Application {
     }
     /// Trusted native modules execute arbitrary machine code in the host process.
     pub fn run(mut self, vm: &mut VM, cache: &Path) -> Result<BxValue> {
-        let mut records = Vec::new();
-        let result = (|| {
+        let loaded = LoadedModules::load(vm, self.modules, cache)?;
+        self.chunk.reconstruct_functions();
+        let result = vm.interpret(self.chunk);
+        let shutdown = loaded.unload(vm);
+        match (result, shutdown) {
+            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+            (Ok(value), Ok(())) => Ok(value),
+        }
+    }
+}
+
+struct ModuleActivation {
+    instance: Rc<crate::vm::gc::RootedValue>,
+    record: Rc<crate::vm::gc::RootedValue>,
+    targets: Vec<Rc<crate::vm::gc::RootedValue>>,
+}
+/// VM/thread-owned module lifetime. Hosts must unload before destroying the owning VM.
+/// Registrations/native libraries remain VM/process-owned; this is not hot reload.
+pub struct LoadedModules { records: Vec<ModuleActivation> }
+impl LoadedModules {
+    pub fn load(vm: &mut VM, mut modules: Vec<Module>, cache: &Path) -> Result<Self> {
+        let mut loaded = Self { records: Vec::new() };
+        let result = (|| -> Result<()> {
             let services = crate::module_services::Services::new(vm);
             let settings_id = vm.struct_new();
             vm.insert_global(
@@ -307,7 +328,7 @@ impl Application {
                 },
             )
             .map_err(anyhow::Error::msg)?;
-            for module in &mut self.modules {
+            for module in &mut modules {
                 if let Some(artifact) = &module.artifact {
                     let path = artifact.extract(cache)?;
                     unsafe { crate::plugins::load(vm, &path) }
@@ -337,7 +358,11 @@ impl Application {
                 services.register(vm, &module.name, record);
                 services.inject(vm, instance, record, false)?;
                 // Include partially initialized descriptors in reverse-order error cleanup.
-                records.push((instance, record, Vec::new()));
+                loaded.records.push(ModuleActivation {
+                    instance: vm.heap.retain_value(instance).map_err(anyhow::Error::msg)?,
+                    record: vm.heap.retain_value(record).map_err(anyhow::Error::msg)?,
+                    targets: Vec::new(),
+                });
                 crate::module_services::register_classes(vm, module, record)?;
                 if vm.instance_has_method(instance, "configure") {
                     vm.call_method_value(instance, "configure", vec![])?;
@@ -414,8 +439,10 @@ impl Application {
                 let members = vm.json_to_bx(serde_json::json!(members));
                 crate::module_services::set_record(vm, record, "memberMethods", members)?;
             }
-            for (instance, record, targets) in &mut records {
-                let (instance, record) = (*instance, *record);
+            for activation in &mut loaded.records {
+                let instance = vm.heap.read_retained_value(&activation.instance).map_err(anyhow::Error::msg)?;
+                let record = vm.heap.read_retained_value(&activation.record).map_err(anyhow::Error::msg)?;
+                let targets = &mut activation.targets;
                 announce_module_event(vm, "preModuleLoad", record)?;
                 vm.register_interceptor(instance).map_err(anyhow::Error::msg)?;
                 let entries = vm.instance_variable(instance, "interceptors").unwrap_or_else(|| BxValue::new_ptr(vm.array_new())).as_gc_id().unwrap();
@@ -449,11 +476,22 @@ impl Application {
                 )?;
                 announce_module_event(vm, "postModuleLoad", record)?;
             }
-            self.chunk.reconstruct_functions();
-            vm.interpret(self.chunk)
+            Ok(())
         })();
+        if let Err(error) = result {
+            let _ = loaded.unload(vm);
+            return Err(error);
+        }
+        Ok(loaded)
+    }
+
+    /// Reverse dependency-order cleanup continues after hook errors.
+    pub fn unload(self, vm: &mut VM) -> Result<()> {
         let mut shutdown_error = None;
-        for (instance, record, targets) in records.into_iter().rev() {
+        for activation in self.records.into_iter().rev() {
+            let instance = vm.heap.read_retained_value(&activation.instance).map_err(anyhow::Error::msg)?;
+            let record = vm.heap.read_retained_value(&activation.record).map_err(anyhow::Error::msg)?;
+            let targets = activation.targets;
             if let Err(error) = announce_module_event(vm, "preModuleUnload", record) {
                 shutdown_error.get_or_insert(error);
             }
@@ -483,11 +521,7 @@ impl Application {
                 shutdown_error.get_or_insert(error);
             }
         }
-        match (result, shutdown_error) {
-            (Err(error), _) => Err(error),
-            (Ok(_), Some(error)) => Err(error),
-            (Ok(value), None) => Ok(value),
-        }
+        match shutdown_error { Some(error) => Err(error), None => Ok(()) }
     }
 }
 

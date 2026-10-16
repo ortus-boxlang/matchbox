@@ -28,7 +28,7 @@ At the original checkpoint above, descriptor-declared/annotated interceptors, mo
 
 Important files:
 
-- `src/modules.rs`, `src/module_programs.rs`: discovery and module compilation.
+- `crates/matchbox-modules/src/discovery.rs`, `crates/matchbox-modules/src/programs.rs`: discovery and module compilation.
 - `crates/matchbox-vm/src/bundle.rs`: embedded application preparation and lifecycle.
 - `crates/matchbox-vm/src/module_services.rs`: live records/services.
 - `crates/matchbox-vm/src/plugins.rs`: native plugin loading and dispatch.

@@ -1760,6 +1760,7 @@ dependencies = [
  "js-sys",
  "libc",
  "matchbox-embedded",
+ "matchbox-modules",
  "matchbox_compiler",
  "matchbox_lambda_runner",
  "matchbox_server",
@@ -1793,6 +1794,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "matchbox-modules"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "matchbox_compiler",
+ "matchbox_vm",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -1841,6 +1855,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "http",
+ "matchbox-modules",
  "matchbox_compiler",
  "matchbox_vm",
  "mime_guess",
