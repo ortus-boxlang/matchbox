@@ -141,9 +141,14 @@ Unknown web component names still delegate to the existing component dispatcher.
 ## Scope and checks
 
 This is **not** full MiniServer runtime parity. Module public/source mappings,
-nested discovery, Application.bxm, full application configuration/output modifiers, session lifecycle,
-cookie-scope writes, multipart and
-SocketBox remain follow-up work. Dynamic include failures do not yet carry the
+nested discovery, Application.bxm, full application configuration/output modifiers,
+external session-cache providers, FileUpload/FileUploadAll and SocketBox remain
+follow-up work. Native HTTP hosts can call multipart::parse after enforcing their
+body limit: repeated fields/arrays and private temporary files populate form.
+Files are removed at request completion, not deferred until VM garbage collection.
+Multipart parsing is native-only and accepts UTF-8 text, at most 1000 parts and
+RFC-length boundaries. apply_proxy_headers is an explicit opt-in for hosts behind
+proxies that overwrite X-Forwarded-*; it never infers trust from header presence. Dynamic include failures do not yet carry the
 full JVM missing-include exception taxonomy. Descriptor lookup stops at each
 mount, without falling back from an alias to the primary webroot's descriptor.
 
@@ -162,11 +167,14 @@ finally when the same try also has catches; its Java backend runs finally. We
 preserve cleanup rather than reproducing that ASM defect. Abort types other than
 request/page fail explicitly; exit-tag/template/loop are not implemented.
 
-Application.bx defaults to sessions disabled. `sessionManagement=true` fails
-explicitly until application-isolated sessions exist; it must not silently use
-the legacy session map. Sites without a descriptor retain the previous
-process-local string sessions, still without expiry/size bounds. Persistent VM
-symbol/shape tables also lack a bounded eviction policy. This is not recommended
+Sessions default off. `sessionManagement=true` enables live typed native/memory
+state with application isolation and sharing across same-name mounts. jsessionid,
+sessionCookie/setClientCookies, start/end/expiry, rotate/invalidate/startTime are
+supported. Session-end precedes application-end; failed starts retry and preserve
+the cookie on a redacted 500 response. JEE/external cache storage is rejected.
+The obsolete string/MBX_SESSION_ID path is removed. Cookies support validated
+scope assignments and bx:cookie, including repeated response fields. Persistent
+VM symbol/shape tables and session entry counts lack a bounded eviction policy. This is not recommended
 for internet-facing production traffic. CFML and `.bx` remote class execution
 are excluded from the native frontend's release requirements.
 

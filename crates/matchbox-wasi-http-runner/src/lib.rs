@@ -168,6 +168,7 @@ fn request_to_webroot_request(
             form: HashMap::new(),
             headers,
             body,
+            ..Default::default()
         },
         context,
     ))

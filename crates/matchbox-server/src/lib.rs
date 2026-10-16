@@ -4,6 +4,8 @@ mod application_runtime;
 mod web_context;
 mod cookies;
 mod sessions;
+#[cfg(not(target_family = "wasm"))]
+pub mod multipart;
 pub mod webroot_core;
 mod websocket;
 #[cfg(test)]
@@ -549,7 +551,7 @@ async fn handler(
         server_port: state.port,
         ..Default::default()
     };
-    let request = WebrootRequest {
+    let mut request = WebrootRequest {
         method: parts.method.to_string(),
         path,
         query: url::form_urlencoded::parse(context.query_string.as_bytes())
@@ -569,7 +571,9 @@ async fn handler(
             })
             .collect(),
         body,
+        ..Default::default()
     };
+    if multipart::parse(&mut request).await.is_err() {return StatusCode::BAD_REQUEST.into_response();}
     match tokio::task::spawn_blocking(move || state.engine.handle_with_context(request, context))
         .await
     {
@@ -761,6 +765,7 @@ mod tests {
             .handle(WebrootRequest {
                 method: "GET".to_string(),
                 path: "/missing".to_string(),
+                form_arrays: Default::default(), uploads: Default::default(),
                 query: Default::default(),
                 form: Default::default(),
                 headers: Default::default(),

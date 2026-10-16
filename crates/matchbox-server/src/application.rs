@@ -3,8 +3,8 @@ use crate::{
     application_runtime::{RenderJob, RenderOutput},
     web_context::install_web_context,
     webroot_core::{
-        AssetStore, cgi_scope_from_request, form_scope_from_request, insert_scope,
-        parse_cookie_header,
+        AssetStore, cgi_scope_from_request, form_scope_from_request, insert_parameter_scope,
+        insert_scope, parameter_values, parse_cookie_header,
     },
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -182,8 +182,13 @@ fn render_request(
         &job.context,
         job.store.source_path("")?,
     )?;
-    insert_scope(vm, "url", &request.query);
-    insert_scope(vm, "form", &form_scope_from_request(&request));
+    let query = if job.context.query_string.is_empty() {
+        (request.query.clone(), Default::default())
+    } else {
+        parameter_values(job.context.query_string.as_bytes(), true)
+    };
+    insert_parameter_scope(vm, "url", query);
+    insert_parameter_scope(vm, "form", form_scope_from_request(&request));
     let cookies = request
         .headers
         .get("cookie")
