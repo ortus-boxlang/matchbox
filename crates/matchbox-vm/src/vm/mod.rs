@@ -13,6 +13,7 @@ mod interceptors;
 pub(crate) mod components;
 mod component_runtime;
 mod request_scope;
+mod struct_scope;
 mod abort;
 pub use abort::AbortSignal;
 #[cfg(feature = "jit")]
@@ -521,6 +522,7 @@ pub struct VM {
     pub global_names: HashMap<u32, usize>,
     pub global_values: Vec<BxValue>,
     global_bifs: HashSet<String>,
+    struct_assignment_hooks: HashMap<usize, (Rc<gc::RootedValue>, crate::types::NativeCallback)>,
     pub script_variables: Rc<RefCell<HashMap<String, BxValue>>>,
     pub current_fiber_idx: Option<usize>,
     pub shapes: ShapeRegistry,
@@ -679,8 +681,10 @@ impl BxVM for VM {
         args: Vec<BxValue>,
         _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
     ) -> Result<BxValue, String> {
-        self.call_method_value(receiver, name, args)
-            .map_err(|e| e.to_string())
+        let previous=self.current_fiber_idx;
+        let result=self.native_exception_scope(|vm| vm.call_method_value(receiver,name,args).map_err(|error|error.to_string()));
+        self.current_fiber_idx=previous;
+        result
     }
 
     fn yield_fiber(&mut self) {
@@ -1282,6 +1286,8 @@ impl BxVM for VM {
         self.struct_set_and_key(id, key, val);
     }
 
+    fn struct_assign(&mut self, id: usize, key: &str, value: BxValue) -> Result<(), String> { self.assign_struct(id, key, value) }
+
     fn struct_get(&self, id: usize, key: &str) -> BxValue {
         let key_id = self.struct_key_lookup_id(id, key).unwrap_or(u32::MAX);
         if let GcObject::Struct(s) = self.heap.get(id) {
@@ -1517,6 +1523,7 @@ impl BxVM for VM {
         names
     }
 
+    fn is_native_abort(&self, message: &str) -> bool { VM::is_native_abort(self, message) }
     fn raise_abort(&mut self, kind: &str, cause: Option<String>) -> String { VM::raise_abort(self, kind, cause) }
     fn register_callback(&mut self, name: &str, callback: crate::types::NativeCallback) -> Result<(), String> {
         let id = self.heap.alloc(GcObject::NativeCallback(callback));
@@ -2427,6 +2434,7 @@ impl VM {
             global_names: HashMap::new(),
             global_values: Vec::new(),
             global_bifs: HashSet::new(),
+            struct_assignment_hooks: HashMap::new(),
             script_variables: Self::new_variables_scope(),
             current_fiber_idx: None,
             shapes: ShapeRegistry::new(),
@@ -5552,6 +5560,14 @@ impl VM {
 
                     if let Some(id) = base_val.as_gc_id() {
                         let index_string = self.to_string(index_val);
+                        if self.struct_assignment_hooks.contains_key(&id) {
+                            flush_ip!();
+                            match self.assign_struct(id, &index_string, val) {
+                                Ok(()) => self.fibers[fiber_idx].stack.push(val),
+                                Err(error) => self.throw_error(fiber_idx, &error)?,
+                            }
+                            frame_changed = true; continue 'quantum;
+                        }
                         let key_id = if !index_val.is_number() && !index_val.is_int() {
                             Some(self.struct_key_id(id, &index_string))
                         } else {
@@ -5971,6 +5987,15 @@ impl VM {
                             }
                         }
 
+                        if self.struct_assignment_hooks.contains_key(&id) {
+                            let name = self.read_string_constant(fiber_idx, idx as usize)?.to_string();
+                            flush_ip!();
+                            match self.assign_struct(id, &name, val) {
+                                Ok(()) => self.fibers[fiber_idx].stack.push(val),
+                                Err(error) => self.throw_error(fiber_idx, &error)?,
+                            }
+                            frame_changed = true; continue 'quantum;
+                        }
                         let struct_name_id = if matches!(self.heap.get_opt(id), Some(GcObject::Struct(_))) {
                             let mut name = self.read_string_constant(fiber_idx, idx as usize)?;
                             Some(self.struct_key_id(id, name.as_flat_str()))
@@ -6112,6 +6137,19 @@ impl VM {
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
 
                     if let Some(id) = base_val.as_gc_id() {
+                        if self.struct_assignment_hooks.contains_key(&id) {
+                            let name = self.read_string_constant(fiber_idx, idx as usize)?.to_string();
+                            let old = self.struct_get(id, &name);
+                            flush_ip!();
+                            match self.cast_value_to_type(old, "numeric").and_then(|old| {
+                                let value = BxValue::new_number(old.as_number() + 1.0);
+                                self.assign_struct(id, &name, value).map(|_| value)
+                            }) {
+                                Ok(value) => self.fibers[fiber_idx].stack.push(value),
+                                Err(error) => self.throw_error(fiber_idx, &error)?,
+                            }
+                            frame_changed = true; continue 'quantum;
+                        }
                         if let GcObject::NativeObject(object) = self.heap.get(id) {
                             let object = object.clone();
                             if object.borrow().native_data("matchbox.variables_scope").is_some() {

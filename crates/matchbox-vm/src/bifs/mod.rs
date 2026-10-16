@@ -3407,7 +3407,7 @@ fn struct_insert_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
         if vm.struct_key_exists(id, &key) && !overwrite {
             return Err(format!("Key '{}' already exists in struct", key));
         }
-        vm.struct_set(id, &key, args[2]);
+        vm.struct_assign(id, &key, args[2])?;
         Ok(args[0])
     } else {
         Err("structInsert() expects a struct as the first argument".to_string())
@@ -3420,7 +3420,7 @@ fn struct_update_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
     }
     if let Some(id) = args[0].as_gc_id() {
         let key = vm.to_string(args[1]);
-        vm.struct_set(id, &key, args[2]);
+        vm.struct_assign(id, &key, args[2])?;
         Ok(args[0])
     } else {
         Err("structUpdate() expects a struct as the first argument".to_string())

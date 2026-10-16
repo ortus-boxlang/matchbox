@@ -33,6 +33,21 @@ impl BxNativeObject for AbortSignal {
     }
 }
 impl VM {
+    pub fn is_native_abort(&self, message: &str) -> bool {
+        self.native_callback_exception
+            .as_ref()
+            .filter(|(original, _)| original == message)
+            .and_then(|(_, root)| self.heap.read_retained_value(root).ok())
+            .and_then(|value| self.abort_signal(value))
+            .is_some()
+    }
+    pub fn take_native_abort(&mut self, message: &str) -> Option<AbortSignal> {
+        if !self.is_native_abort(message) {
+            return None;
+        }
+        let (_, root) = self.native_callback_exception.take()?;
+        self.abort_signal(self.heap.read_retained_value(&root).ok()?)
+    }
     pub(super) fn abort_signal(&self, value: BxValue) -> Option<AbortSignal> {
         match self.heap.get_opt(value.as_gc_id()?)? {
             GcObject::NativeObject(object) => object.borrow().abort_signal(),

@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::sync::Mutex;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WebrootConfig {
@@ -39,6 +38,7 @@ pub struct WebrootRequest {
 /// Transport metadata supplied by an HTTP host, separate from the resolved asset path.
 #[derive(Clone, Debug)]
 pub struct WebrootContext {
+    pub debug: bool,
     pub uri: String,
     pub script_name: String,
     pub query_string: String,
@@ -52,6 +52,7 @@ pub struct WebrootContext {
 impl Default for WebrootContext {
     fn default() -> Self {
         Self {
+            debug: false,
             uri: String::new(),
             script_name: String::new(),
             query_string: String::new(),
@@ -248,7 +249,6 @@ impl AssetStore for EmbeddedAssetStore {
 pub struct WebrootEngine<S> {
     store: Arc<S>,
     config: WebrootConfig,
-    sessions: Mutex<HashMap<String, HashMap<String, String>>>,
     runtime: WebrootRuntime,
     scope_id: String,
 }
@@ -263,7 +263,6 @@ impl<S: AssetStore + Send + Sync + 'static> WebrootEngine<S> {
             store: Arc::new(store),
             config,
             runtime,
-            sessions: Mutex::new(HashMap::new()),
             scope_id: uuid::Uuid::new_v4().to_string(),
         }
     }
@@ -380,34 +379,13 @@ impl<S: AssetStore + Send + Sync + 'static> WebrootEngine<S> {
         request: WebrootRequest,
         context: WebrootContext,
     ) -> Result<WebrootResponse> {
-        let cookies = request
-            .headers
-            .get("cookie")
-            .map(|raw| parse_cookie_header(raw))
-            .unwrap_or_default();
-        let session_id = cookies
-            .get("MBX_SESSION_ID")
-            .cloned()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let session = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(&session_id)
-            .cloned()
-            .unwrap_or_default();
         let result = self.runtime.render(RenderJob {
             store: self.store.clone(),
             asset_path: asset_path.into(),
             scope_id: self.scope_id.clone(),
             request,
             context,
-            session_id: session_id.clone(),
-            session,
         })?;
-        if let Some(session) = result.session {
-            self.sessions.lock().unwrap().insert(session_id, session);
-        }
         Ok(result.response)
     }
 }
@@ -427,7 +405,11 @@ pub(crate) fn parse_cookie_header(raw: &str) -> HashMap<String, String> {
     for part in raw.split(';') {
         let mut kv = part.splitn(2, '=');
         if let (Some(key), Some(value)) = (kv.next(), kv.next()) {
-            cookies.insert(key.trim().to_string(), value.trim().to_string());
+            let value=value.trim();
+            let bytes=value.as_bytes();
+            let valid=bytes.iter().enumerate().all(|(index, byte)| *byte != b'%' || (bytes.get(index+1).is_some_and(u8::is_ascii_hexdigit) && bytes.get(index+2).is_some_and(u8::is_ascii_hexdigit)));
+            let value=if valid { percent_encoding::percent_decode_str(&value.replace('+'," ")).decode_utf8_lossy().into_owned() } else { value.to_owned() };
+            cookies.insert(key.trim().to_string(), value);
         }
     }
     cookies
@@ -1032,6 +1014,7 @@ mod tests {
     fn session_scope_persists_for_subsequent_request_with_session_cookie() {
         let temp = tempfile::tempdir().unwrap();
         let webroot = temp.path().canonicalize().unwrap();
+        std::fs::write(webroot.join("Application.bx"), "class {this.name='session-fixture';this.sessionManagement=true;}").unwrap();
         std::fs::write(
             webroot.join("set.bxm"),
             "<bx:set session.favorite = \"blue\"><bx:output>set</bx:output>",

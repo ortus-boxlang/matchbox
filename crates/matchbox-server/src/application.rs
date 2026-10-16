@@ -33,6 +33,7 @@ struct ApplicationState {
     listener: Option<Rc<RootedValue>>,
     touched: Instant,
     timeout: Option<Duration>,
+    sessions: crate::sessions::Store,
 }
 pub(crate) struct ApplicationRuntime {
     vm: VM,
@@ -90,6 +91,9 @@ impl ApplicationRuntime {
         vm.with_isolated_globals(|vm| render(vm, applications, job))
     }
     pub(crate) fn expire(&mut self) {
+        for app in self.applications.values() {
+            crate::sessions::expire(&mut self.vm, &app.scope, &app.sessions, false);
+        }
         let expired: Vec<_> = self
             .applications
             .iter()
@@ -122,6 +126,7 @@ impl ApplicationRuntime {
     }
 }
 fn end_application(vm: &mut VM, app: ApplicationState) {
+    crate::sessions::expire(vm, &app.scope, &app.sessions, true);
     let Some(listener) = app.listener else {
         return;
     };
@@ -152,6 +157,23 @@ fn render(
     applications: &mut HashMap<String, ApplicationState>,
     job: RenderJob,
 ) -> Result<RenderOutput> {
+    let debug = job.context.debug;
+    match render_request(vm, applications, job) {
+        Ok(output) => Ok(output),
+        Err(error) => {
+            eprintln!("Request failed: {error}");
+            match crate::web_context::error_response(vm, &error.to_string(), debug) {
+                Ok(response) => Ok(RenderOutput { response }),
+                Err(_) => Err(error),
+            }
+        }
+    }
+}
+fn render_request(
+    vm: &mut VM,
+    applications: &mut HashMap<String, ApplicationState>,
+    job: RenderJob,
+) -> Result<RenderOutput> {
     vm.begin_output_capture();
     let request = Rc::new(job.request);
     let response = install_web_context(
@@ -162,12 +184,13 @@ fn render(
     )?;
     insert_scope(vm, "url", &request.query);
     insert_scope(vm, "form", &form_scope_from_request(&request));
-    let mut cookies = request
+    let cookies = request
         .headers
         .get("cookie")
         .map(|value| parse_cookie_header(value))
         .unwrap_or_default();
-    insert_scope(vm, "cookie", &cookies);
+    let cookie_jar = crate::web_context::cookie_jar(vm).map_err(anyhow::Error::msg)?;
+    crate::cookies::install(vm, &cookies, cookie_jar.clone()).map_err(anyhow::Error::msg)?;
     insert_scope(
         vm,
         "cgi",
@@ -250,12 +273,17 @@ fn render(
                         bail!("{cause}");
                     }
                     let mut response = response.borrow_mut();
+                    response.headers.extend(
+                        cookie_jar
+                            .borrow()
+                            .headers()
+                            .map(|value| ("set-cookie".into(), value)),
+                    );
                     response
                         .body
                         .extend(vm.end_output_capture().unwrap_or_default().into_bytes());
                     return Ok(RenderOutput {
                         response: response.clone(),
-                        session: None,
                     });
                 }
                 return Err(error);
@@ -267,15 +295,6 @@ fn render(
         None
     };
     let (key, timeout) = if let Some(listener) = listener {
-        if let Some(setting) = vm.instance_property(listener, "sessionManagement") {
-            let enabled = vm
-                .cast_value_to_type(setting, "boolean")
-                .map_err(anyhow::Error::msg)?;
-            ensure!(
-                !enabled.as_bool(),
-                "Application sessionManagement=true requires the pending MiniServer session runtime; legacy unnamed sessions are not application-isolated"
-            );
-        }
         let name = vm
             .instance_property(listener, "name")
             .filter(|value| !value.is_null())
@@ -328,6 +347,7 @@ fn render(
                     .transpose()?,
                 touched: Instant::now(),
                 timeout,
+                sessions: Default::default(),
             },
         );
     }
@@ -339,19 +359,16 @@ fn render(
         vm.read_retained_value(&app.scope)
             .map_err(anyhow::Error::msg)?,
     );
-    let session = if listener.is_none() {
-        cookies.insert("MBX_SESSION_ID".into(), job.session_id.clone());
-        insert_scope(vm, "cookie", &cookies);
-        Some(insert_scope(vm, "session", &job.session))
-    } else {
-        None
-    };
-    let _session_root = session
-        .map(|id| {
-            vm.retain_value(BxValue::new_ptr(id))
-                .map_err(anyhow::Error::msg)
-        })
-        .transpose()?;
+    let session_settings = crate::sessions::Settings::from_listener(vm, listener)?;
+    let session_id = session_settings.id(&cookies);
+    if session_settings.enabled {
+        session_settings
+            .emit(&cookie_jar, &session_id)
+            .map_err(anyhow::Error::msg)?;
+    }
+    let session_store = app.sessions.clone();
+    let app_scope = app.scope.clone();
+    let end_listener = app.listener.clone();
     let execution = (|| -> Result<()> {
         if first
             && let Some(listener) = listener
@@ -361,6 +378,23 @@ fn render(
             return Err(error);
         }
         if let Some(listener) = listener {
+            if session_settings.enabled {
+                let name = vm
+                    .instance_property(listener, "name")
+                    .map(|value| vm.to_string(value))
+                    .unwrap_or_else(|| key.clone());
+                crate::sessions::attach(
+                    vm,
+                    session_store,
+                    app_scope,
+                    listener,
+                    end_listener.unwrap(),
+                    name,
+                    session_id,
+                    session_settings,
+                    cookie_jar.clone(),
+                )?;
+            }
             let target = BxValue::new_ptr(vm.string_new(public_path.clone()));
             vm.insert_global("__mb_web_target".into(), target);
             let start = hook(vm, listener, "onRequestStart", vec![target])?;
@@ -468,24 +502,18 @@ fn render(
             return Err(error);
         }
     }
-    let session = session.map(|id| {
-        let mut session = HashMap::new();
-        for key in vm.struct_key_array(id) {
-            session.insert(key.clone(), vm.to_string(vm.struct_get(id, &key)));
-        }
-        response.borrow_mut().headers.push((
-            "set-cookie".into(),
-            format!("MBX_SESSION_ID={}; Path=/; HttpOnly", job.session_id),
-        ));
-        session
-    });
     let mut response = response.borrow_mut();
+    response.headers.extend(
+        cookie_jar
+            .borrow()
+            .headers()
+            .map(|value| ("set-cookie".into(), value)),
+    );
     response
         .body
         .extend(vm.end_output_capture().unwrap_or_default().into_bytes());
     Ok(RenderOutput {
         response: response.clone(),
-        session,
     })
 }
 

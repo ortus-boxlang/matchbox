@@ -20,6 +20,7 @@ struct ActiveWebContext {
     protocol: String,
     file_root: PathBuf,
     content_type_set: Rc<Cell<bool>>,
+    cookies: Rc<RefCell<crate::cookies::CookieJar>>,
 }
 impl BxNativeObject for ActiveWebContext {
     fn native_data(&self, kind: &str) -> Option<*mut std::ffi::c_void> {
@@ -71,6 +72,7 @@ pub(crate) fn install_web_context(
         protocol: context.protocol.clone(),
         file_root: file_root.into(),
         content_type_set: Rc::new(Cell::new(false)),
+        cookies: Rc::new(RefCell::new(crate::cookies::CookieJar::default())),
     })));
     vm.insert_global("__mb_web_context".into(), BxValue::new_ptr(value));
     vm.register_callback(
@@ -87,6 +89,41 @@ pub(crate) fn install_web_context(
                 let attributes = args[1].as_gc_id().unwrap();
                 let body = args[2];
                 match name.as_str() {
+                    "cookie" => {
+                        validate_attributes(
+                            vm,
+                            attributes,
+                            &[
+                                "name",
+                                "value",
+                                "secure",
+                                "httponly",
+                                "expires",
+                                "samesite",
+                                "path",
+                                "domain",
+                                "encodevalue",
+                            ],
+                        )?;
+                        if !body.is_null() {
+                            return Err("cookie does not allow a body".into());
+                        }
+                        let name = vm.struct_get(attributes, "name");
+                        if name.is_null() {
+                            return Err("cookie requires name".into());
+                        }
+                        let name = vm.to_string(name);
+                        let cookie = crate::cookies::Cookie::from_value(vm, name.clone(), args[1])?;
+                        let value = BxValue::new_ptr(vm.string_new(cookie.value.clone()));
+                        context.cookies.borrow_mut().set(cookie)?;
+                        let scope = vm
+                            .get_global_value("cookie")
+                            .filter(|value| vm.is_struct_value(*value))
+                            .ok_or("Cookie scope unavailable")?
+                            .as_gc_id()
+                            .unwrap();
+                        vm.struct_set(scope, &name, value);
+                    }
                     "header" => {
                         if !body.is_null() {
                             return Err("header does not allow a body".into());
@@ -406,6 +443,34 @@ fn response_file(vm: &dyn BxVM, root: &Path, file: &str) -> Result<PathBuf, Stri
         .filter(|path| path.is_absolute())
         .unwrap_or(root)
         .join(file))
+}
+
+pub(crate) fn error_response(
+    vm: &mut VM,
+    error: &str,
+    debug: bool,
+) -> Result<WebrootResponse, String> {
+    let context = active_context(vm)?;
+    vm.end_output_capture();
+    let mut response = context.response.borrow_mut();
+    response.status = 500;
+    response.body = if debug {
+        format!("Request failed: {error}").into_bytes()
+    } else {
+        b"Internal Server Error".to_vec()
+    };
+    replace_header(&mut response, "content-type", "text/plain")?;
+    response.headers.extend(
+        context
+            .cookies
+            .borrow()
+            .headers()
+            .map(|value| ("set-cookie".into(), value)),
+    );
+    Ok(response.clone())
+}
+pub(crate) fn cookie_jar(vm: &dyn BxVM) -> Result<Rc<RefCell<crate::cookies::CookieJar>>, String> {
+    Ok(active_context(vm)?.cookies)
 }
 
 fn boolean(vm: &mut dyn BxVM, value: BxValue, default: bool) -> Result<bool, String> {

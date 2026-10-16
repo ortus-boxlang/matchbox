@@ -2,6 +2,8 @@ mod app_server;
 mod application;
 mod application_runtime;
 mod web_context;
+mod cookies;
+mod sessions;
 pub mod webroot_core;
 mod websocket;
 #[cfg(test)]
@@ -98,14 +100,9 @@ pub fn request_data_from_parts(
 
 pub fn parse_cookie_header(raw: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    for part in raw.split(';') {
-        let mut kv = part.splitn(2, '=');
-        if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
-            let key = k.trim().to_string();
-            let val = v.trim().to_string();
-            map.insert(key.clone(), val.clone());
-            map.insert(key.to_lowercase(), val);
-        }
+    for (key, value) in webroot_core::parse_cookie_header(raw) {
+        map.insert(key.clone(), value.clone());
+        map.insert(key.to_lowercase(), value);
     }
     map
 }

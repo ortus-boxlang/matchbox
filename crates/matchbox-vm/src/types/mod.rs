@@ -178,6 +178,7 @@ pub trait BxVM {
         self.struct_new()
     }
     fn struct_set(&mut self, id: usize, key: &str, val: BxValue);
+    fn struct_assign(&mut self, id: usize, key: &str, val: BxValue) -> Result<(), String> { self.struct_set(id, key, val); Ok(()) }
     fn struct_get(&self, id: usize, key: &str) -> BxValue;
     fn struct_delete(&mut self, id: usize, key: &str) -> bool;
     fn struct_key_exists(&self, id: usize, key: &str) -> bool;
@@ -219,6 +220,7 @@ pub trait BxVM {
     }
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize;
     fn native_object_data(&self, _value: BxValue, _kind: &str) -> Option<*mut std::ffi::c_void> { None }
+    fn is_native_abort(&self, _message: &str) -> bool { false }
     fn raise_abort(&mut self, _kind: &str, _cause: Option<String>) -> String { "Abort control flow is unsupported by this host".into() }
     fn register_callback(&mut self, _name: &str, _callback: NativeCallback) -> Result<(), String> {
         Err("Native callbacks are not supported by this host".into())

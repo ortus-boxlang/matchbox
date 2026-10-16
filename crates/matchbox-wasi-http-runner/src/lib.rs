@@ -8,6 +8,10 @@ use wasi::http::types::{
 
 #[path = "../../matchbox-server/src/web_context.rs"]
 mod web_context;
+#[path = "../../matchbox-server/src/cookies.rs"]
+mod cookies;
+#[path = "../../matchbox-server/src/sessions.rs"]
+mod sessions;
 #[path = "../../matchbox-server/src/application_runtime.rs"]
 mod application_runtime;
 #[path = "../../matchbox-server/src/application.rs"]

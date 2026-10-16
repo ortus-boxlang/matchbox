@@ -202,7 +202,9 @@ fn web_headers_reject_injection_invalid_status_and_transport_framing() {
                     path: "/".into(),
                     ..Default::default()
                 })
-                .is_err(),
+                .unwrap()
+                .status
+                == 500,
             "{source}"
         );
     }

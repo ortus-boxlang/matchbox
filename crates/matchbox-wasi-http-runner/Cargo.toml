@@ -9,6 +9,8 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = "1.0.102"
 http = "1"
+chrono = "0.4"
+percent-encoding = "2"
 bincode = "1.3.3"
 matchbox_compiler = { path = "../matchbox-compiler", features = ["bxm"] }
 matchbox_vm = { path = "../matchbox-vm" }

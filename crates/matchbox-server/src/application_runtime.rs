@@ -6,7 +6,9 @@ use crate::{
 #[cfg(not(target_family = "wasm"))]
 use anyhow::Context;
 use anyhow::Result;
-use std::{collections::HashMap, sync::Arc};
+#[cfg(target_family = "wasm")]
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub(crate) struct RenderJob {
     pub store: Arc<dyn AssetStore + Send + Sync>,
@@ -14,12 +16,9 @@ pub(crate) struct RenderJob {
     pub scope_id: String,
     pub request: WebrootRequest,
     pub context: WebrootContext,
-    pub session_id: String,
-    pub session: HashMap<String, String>,
 }
 pub(crate) struct RenderOutput {
     pub response: WebrootResponse,
-    pub session: Option<HashMap<String, String>>,
 }
 #[derive(Clone, Default)]
 pub struct WebrootRuntime {

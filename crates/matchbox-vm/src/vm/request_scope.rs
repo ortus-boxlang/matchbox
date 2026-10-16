@@ -17,6 +17,7 @@ impl VM {
         let names = self.global_names.clone();
         let values = self.global_values.clone();
         let bifs = self.global_bifs.clone();
+        let assignment_hooks = self.struct_assignment_hooks.clone();
         let variables = self.script_variables.clone();
         let retained = values
             .iter()
@@ -63,6 +64,7 @@ impl VM {
         self.global_names = names;
         self.global_values = values;
         self.global_bifs = bifs;
+        self.struct_assignment_hooks = assignment_hooks;
         self.script_variables = variables;
         self.output_buffer = output;
         self.output_capture_stack = captures;

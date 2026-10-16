@@ -1851,6 +1851,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "clap",
  "futures-util",
  "hmac",
@@ -1955,6 +1956,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "chrono",
  "http",
  "matchbox_compiler",
  "matchbox_vm",

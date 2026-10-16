@@ -178,13 +178,9 @@ fn recursive_dynamic_includes_fail_without_poisoning_the_next_request() {
         ("loop.bxs", "target='/loop.bxs'; include target;"),
         ("ok.bxs", "writeOutput('ok');"),
     ]);
-    assert!(
-        engine
-            .handle(request("/loop.bxs"))
-            .unwrap_err()
-            .to_string()
-            .contains("Maximum dynamic include depth")
-    );
+    let response = engine.handle(request("/loop.bxs")).unwrap();
+    assert_eq!(response.status, 500);
+    assert_eq!(response.body, b"Internal Server Error");
     assert_eq!(engine.handle(request("/ok.bxs")).unwrap().body, b"ok");
 }
 
