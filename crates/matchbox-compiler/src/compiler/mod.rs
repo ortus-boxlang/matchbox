@@ -1388,9 +1388,21 @@ impl Compiler {
                     stmt.line as u32,
                 );
 
-                self.add_local(item.clone());
-                if let Some(index_name) = index {
-                    self.add_local(index_name.clone());
+                // Script-level loop variables live in the `variables` scope (shared with closures,
+                // readable and writable by the body); the stack slot only carries the iteration value.
+                let script_scope = !self.is_function && !self.is_class;
+                if script_scope {
+                    self.add_local("$item".to_string());
+                    self.publish_script_loop_variable(item, stmt.line as u32);
+                    if let Some(index_name) = index {
+                        self.add_local("$index".to_string());
+                        self.publish_script_loop_variable(index_name, stmt.line as u32);
+                    }
+                } else {
+                    self.add_local(item.clone());
+                    if let Some(index_name) = index {
+                        self.add_local(index_name.clone());
+                    }
                 }
 
                 self.continue_patches.push(Vec::new());
@@ -2933,6 +2945,19 @@ impl Compiler {
                 Ok(())
             }
         }
+    }
+
+    /// Store the newest local (the iteration value) into the script `variables` scope.
+    fn publish_script_loop_variable(&mut self, name: &str, line: u32) {
+        if name.is_empty() {
+            return;
+        }
+        let slot = (self.locals.len() - 1) as u32;
+        let name_idx = self
+            .chunk
+            .add_constant(Constant::String(BoxString::new(name)));
+        self.chunk.emit1(op::GET_LOCAL, slot, line);
+        self.chunk.emit1(op::SET_GLOBAL_POP, name_idx as u32, line);
     }
 
     fn add_local(&mut self, name: String) {
