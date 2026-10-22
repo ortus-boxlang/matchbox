@@ -1,3 +1,4 @@
+
 #[cfg(feature = "bif-http")]
 use crate::types::{BxVM, BxValue, NativeFutureValue};
 
@@ -136,6 +137,9 @@ fn send_http(
         "POST" => client.post(url),
         "PUT" => client.put(url),
         "DELETE" => client.delete(url),
+        "PATCH" => client.patch(url),
+        "HEAD" => client.head(url),
+        "OPTIONS" => client.request(reqwest::Method::OPTIONS, url),
         _ => return Err(format!("Unsupported HTTP method: {method}")),
     };
     for (name, value) in headers {
@@ -237,30 +241,39 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
             let result = (|| {
                 let mut response = send_http(&url, &method, &headers, body, &options)?;
                 let status = response.status().as_u16();
-                // Capture headers before reading the body: copy_to()/text() consume the
-                // response. reqwest returns the final response when redirects are followed
-                // and the original 3xx when they are disabled, so these are the correct
-                // headers in both cases. Error statuses (4xx/5xx) also reach this point.
-                let response_headers = response_headers(response.headers());
-                if let Some(p) = path {
-                    let mut file =
-                        File::create(&p).map_err(|e| format!("Failed to create file: {e}"))?;
-                    response.copy_to(&mut file).map_err(request_error)?;
+                // HEAD requests return headers without a response body.
+                if method == "HEAD" {
+                    let response_headers = response_headers(response.headers());
                     Ok(serde_json::json!({
                         "status": status,
-                        // Downloads expose headers too (e.g. content-type of the saved file).
                         "headers": response_headers,
-                        "file_path": p
+                        "file_content": "",
+                        "body": ""
                     }))
                 } else {
-                    let text = response.text().map_err(request_error)?;
-                    Ok(serde_json::json!({
-                        "status": status,
-                        // Text responses expose the same headers struct as downloads.
-                        "headers": response_headers,
-                        "file_content": text,
-                        "body": text
-                    }))
+                    // Capture headers before consuming the response body.
+                    let response_headers = response_headers(response.headers());
+
+                    if let Some(p) = path {
+                        let mut file =
+                            File::create(&p).map_err(|e| format!("Failed to create file: {e}"))?;
+                        response.copy_to(&mut file).map_err(request_error)?;
+
+                        Ok(serde_json::json!({
+                            "status": status,
+                            "headers": response_headers,
+                            "file_path": p
+                        }))
+                    } else {
+                        let text = response.text().map_err(request_error)?;
+
+                        Ok(serde_json::json!({
+                            "status": status,
+                            "headers": response_headers,
+                            "file_content": text,
+                            "body": text
+                        }))
+                    }
                 }
             })();
             match result {

@@ -51,7 +51,7 @@ Pass a struct with these case-insensitive keys:
 | Option | Default | Behavior |
 | :--- | :--- | :--- |
 | `url` | Required | HTTP or HTTPS URL. |
-| `method` | `"GET"` | `GET`, `POST`, `PUT`, or `DELETE`; case-insensitive. |
+| `method` | `"GET"` | `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, or `OPTIONS`; case-insensitive. |
 | `headers` | None | Struct of header names and values. |
 | `body` | None | Request body as text. Serialize JSON explicitly when needed. |
 | `path` | None | Write the response body to this file instead of returning text. |
@@ -66,6 +66,25 @@ Both deadlines accept non-negative finite numbers, including fractional seconds.
 The total deadline is **not** an inactivity timeout: receiving another chunk does not restart it. If both deadlines are enabled, whichever expires first ends the request.
 
 `ipv4Only` controls this machine's connections. When using a proxy, the proxy chooses its own upstream route. Combine `ipv4Only: true` with `noProxy: true` when you need a direct IPv4 connection.
+
+## Make a HEAD Request
+
+```boxlang
+response = jsonDeserialize(http("https://example.com/", "HEAD").get());
+println(response.status);
+```
+Or use the request-struct form:
+
+```boxlang
+response = jsonDeserialize(http({
+    url: "http://example.com/",
+    method: "HEAD",
+    timeout: 10
+}).get());
+pintln(response.status);
+```
+
+`HEAD` returns empty `body` and `file_content` strings. 
 
 ## Probe a Private Service
 
