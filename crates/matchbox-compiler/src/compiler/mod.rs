@@ -3,7 +3,7 @@ use crate::ast::{
     ClassMember, Expression, ExpressionKind, FunctionBody,
     FunctionModifiers as AstFunctionModifiers, Literal, Statement, StatementKind, StringPart,
 };
-use crate::parser;
+use crate::cf::{SourceKind, parse_source};
 use anyhow::{Result, bail};
 use matchbox_vm::Chunk;
 use matchbox_vm::types::{
@@ -2933,11 +2933,11 @@ impl Compiler {
 
         let source = fs::read_to_string(&file_path)?;
         let source_path = file_path.to_string_lossy().to_string();
-        let ast = if file_path.extension().and_then(|s| s.to_str()) == Some("bxm") {
-            parser::parse_bxm(&source, Some(&source_path))?
-        } else {
-            parser::parse(&source, Some(&source_path))?
-        };
+        let ast = parse_source(
+            SourceKind::from_path(&file_path),
+            &source,
+            Some(&source_path),
+        )?;
 
         let prev_source_dir = self.source_dir.clone();
         let prev_filename = self.chunk.filename.clone();
@@ -3196,33 +3196,30 @@ impl Compiler {
         self.source_dependencies.store(true, Ordering::Relaxed);
         let base_path = Path::new(&dotted_path.replace('.', "/")).to_path_buf();
 
-        // Try .bxs first, then fall back to .bx for BoxLang compatibility.
-        let with_bxs = base_path.with_extension("bxs");
-        if with_bxs.exists() {
-            return Ok(with_bxs);
-        }
-        let with_bx = base_path.with_extension("bx");
-        if with_bx.exists() {
-            return Ok(with_bx);
+        // Try .bxs first, then .bx for BoxLang compatibility, then a CF component (.cfc).
+        const CLASS_EXTENSIONS: [&str; 3] = ["bxs", "bx", "cfc"];
+        for ext in CLASS_EXTENSIONS {
+            let candidate = base_path.with_extension(ext);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
         }
 
         // If the path is a simple name (single component) and source_dir is set,
         // try resolving relative to that directory (e.g. sibling interfaces).
         if base_path.components().count() == 1 {
             if let Some(ref dir) = self.source_dir {
-                let rel_bxs = dir.join(&base_path).with_extension("bxs");
-                if rel_bxs.exists() {
-                    return Ok(rel_bxs);
-                }
-                let rel_bx = dir.join(&base_path).with_extension("bx");
-                if rel_bx.exists() {
-                    return Ok(rel_bx);
+                for ext in CLASS_EXTENSIONS {
+                    let candidate = dir.join(&base_path).with_extension(ext);
+                    if candidate.exists() {
+                        return Ok(candidate);
+                    }
                 }
             }
         }
 
         bail!(
-            "Source file not found: {} (tried .bxs and .bx)",
+            "Source file not found: {} (tried .bxs, .bx and .cfc)",
             base_path.display()
         )
     }
@@ -3290,8 +3287,12 @@ impl Compiler {
         let file_path = self.resolve_source_file(class_path)?;
 
         let source = fs::read_to_string(&file_path)?;
-        let mut ast = crate::parser::parse(&source, file_path.to_str())
-            .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", class_path, e))?;
+        let mut ast = parse_source(
+            SourceKind::from_path(&file_path),
+            &source,
+            file_path.to_str(),
+        )
+        .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", class_path, e))?;
 
         let filename = file_path.to_str().unwrap_or(class_path);
         Self::infer_class_name_from_filename(&mut ast, filename);
@@ -3342,8 +3343,12 @@ impl Compiler {
         let file_path = self.resolve_source_file(iface_path)?;
 
         let source = fs::read_to_string(&file_path)?;
-        let ast = crate::parser::parse(&source, file_path.to_str())
-            .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", iface_path, e))?;
+        let ast = parse_source(
+            SourceKind::from_path(&file_path),
+            &source,
+            file_path.to_str(),
+        )
+        .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", iface_path, e))?;
 
         let filename = file_path.to_str().unwrap_or(iface_path);
         let mut sub_compiler = Compiler::with_chunk(Chunk::new(filename));

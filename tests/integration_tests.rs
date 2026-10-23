@@ -147,6 +147,13 @@ fn compiled_loop_metadata_keeps_member_ids_vm_local() {
     }
 }
 
+// CF parsing (issue #45): real CF files run end to end. These avoid the known
+// template-runtime bugs (loops, <cfif>/<cfswitch>/<cftry>/<cfinclude> in
+// templates); those constructs are covered by "same tree" parser tests.
+script_test!(cf_hello_template, "cf/hello.cfm");
+script_test!(cf_script_syntax, "cf/math.cfs");
+script_test!(cf_component_import, "cf/uses_greeter.cfs");
+
 #[test]
 fn vm_locals_survive_stack_reallocation() {
     let mut source = String::from("function probe() {\n");

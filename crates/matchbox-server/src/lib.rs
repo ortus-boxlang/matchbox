@@ -365,7 +365,13 @@ fn validate_wasi_http_sources(webroot: &Path, current: &Path) -> anyhow::Result<
 fn is_boxlang_source_path(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
-        Some("bx") | Some("bxm") | Some("bxs")
+        Some("bx")
+            | Some("bxm")
+            | Some("bxs")
+            | Some("cfm")
+            | Some("cfml")
+            | Some("cfc")
+            | Some("cfs")
     )
 }
 

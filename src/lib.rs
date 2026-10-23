@@ -1,3 +1,4 @@
+use matchbox_compiler::cf::{parse_source, SourceKind};
 use matchbox_compiler::{ast, compiler, parser};
 use matchbox_utility::enable_logging;
 use matchbox_vm::{Chunk, types, vm};
@@ -164,13 +165,8 @@ pub fn include_bif(
     let source = fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read include file {}: {}", file_path.display(), e))?;
     let source_path = file_path.to_str().unwrap_or("<include>");
-    let ast = if file_path.extension().and_then(|s| s.to_str()) == Some("bxm") {
-        parser::parse_bxm(&source, Some(source_path))
-            .map_err(|e| format!("Parse error in include {}: {}", file_path.display(), e))?
-    } else {
-        parser::parse(&source, Some(source_path))
-            .map_err(|e| format!("Parse error in include {}: {}", file_path.display(), e))?
-    };
+    let ast = parse_source(SourceKind::from_path(&file_path), &source, Some(source_path))
+        .map_err(|e| format!("Parse error in include {}: {}", file_path.display(), e))?;
 
     let mut compiler = compiler::Compiler::new(source_path);
     let chunk = compiler
@@ -1800,17 +1796,8 @@ fn process_file_with_args(
         run_chunk_with_args(chunk, &[], cli_args)?;
     } else {
         let source = fs::read_to_string(source_path)?;
-        let ext = source_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let ast = if ext == "bxm" {
-            parser::parse_bxm(&source, source_path.to_str())
-                .map_err(|e| anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e))?
-        } else {
-            parser::parse(&source, source_path.to_str())
-                .map_err(|e| anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e))?
-        };
+        let ast = parse_source(SourceKind::from_path(source_path), &source, source_path.to_str())
+            .map_err(|e| anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e))?;
         if orig_target == Some("esp32") {
             validate_esp32_target(&ast, esp32_web)?;
         }

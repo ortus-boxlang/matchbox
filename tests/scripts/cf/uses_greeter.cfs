@@ -1,0 +1,5 @@
+// Loads Greeter.cfc: the import resolver tries .cfc after .bxs and .bx.
+import tests.scripts.cf.Greeter;
+
+g = new Greeter("Sergio");
+assert g.greet() == "Hello, Sergio!" : "component loaded from a .cfc file";
