@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Webroot static assets now send a content-derived ETag and answer matching If-None-Match requests with 304 Not Modified.
+
 ## [0.12.0] - 2026-10-22
 
 ### Added

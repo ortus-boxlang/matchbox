@@ -903,4 +903,55 @@ mod tests {
         assert!(err.to_string().contains("WASI HTTP"));
         assert!(err.to_string().contains("index.bxs"));
     }
+
+    #[tokio::test]
+    async fn adapter_returns_304_with_etag_and_empty_body() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().to_path_buf().canonicalize().unwrap();
+        std::fs::write(webroot.join("app.js"), "console.log(1);").unwrap();
+        let state = setup_test_state(webroot);
+
+        // 1st request: 200 + ETag
+        let res = handler(
+            State(state.clone()),
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Request::builder()
+                .uri("/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .into_response();
+        assert_eq!(res.status(), StatusCode::OK);
+        let etag = res
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // 2nd request with If-None-Match (any casing; the adapter lowercases names)
+        let res = handler(
+            State(state.clone()),
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Request::builder()
+                .uri("/app.js")
+                .header("If-None-Match", etag.as_str())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .into_response();
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(res.headers().get("etag").unwrap().to_str().unwrap(), etag);
+        assert!(
+            res.headers().get("content-type").is_none(),
+            "304 must not claim a content type"
+        );
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.is_empty());
+    }
 }
