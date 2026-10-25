@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Routed host helpers**: `app.every()` schedules bounded, coalesced callbacks; strict `getHTTPContent(true,true)` preserves JSON key casing and rejects duplicate/trailing documents; `getHTTPHeaderCount()` exposes repeated fields; `web.secureEquals()` provides timing-safe token comparison.
+- **Native routed application lifetime**: Installed modules and HTTP/WebSocket state persist in one thread-owned runtime. `app.worker(script[, onComplete])` runs bounded, single-flight BoxLang jobs in a separate module-aware VM and publishes JSON results without blocking HTTP. Routed middleware authorizes WebSocket requests before upgrade; body, connection, frame and outbound queues are bounded.
 - **HTML Encoding**: Added `encodeForHTML()` and its `htmlEditFormat()` alias, matching BoxLang JVM output.
 - **SQLite Datasources**: Register SQLite databases programmatically or through minimal `matchbox.toml` datasource configuration.
 - **Inline CLI Execution**: Execute source with `--eval` or `-e`, including prelude functions and source-located diagnostics.
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `createDateTime` and `createDate` accept every argument as optional, like BoxLang (`createDateTime( 2024, 3, 5, 14, 7, 9 )` works, no arguments returns now).
 
 ### Fixed
+- Persistent routed/module callbacks load the standard library, class variables proxies retain their GC owner and mark writes dirty, synchronous worker callbacks honor sleep deadlines, and response header names are normalized before replacement. Native server VM threads use 8 MiB stacks for installed-module startup.
 - **WASM time traps**: The VM scheduler and `getTickCount()` now use `web_time` clocks; synchronous scheduler waits poll instead of calling unsupported `std::thread::sleep` in WASM builds.
 - `<bx:switch>` evaluates its `expression`, runs only the matching `<bx:case>` (no fall-through, `value` with `delimiters` matches any listed item) and `<bx:defaultcase>` only when nothing matches; text after the switch is kept (`#93`).
 - `super.method( args )` works in class methods: it calls the parent class implementation with `this` bound to the current instance, across any depth of inheritance and inside closures. Named arguments are not supported with `super`.

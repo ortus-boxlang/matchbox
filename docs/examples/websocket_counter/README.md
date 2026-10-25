@@ -24,7 +24,7 @@ listener.configure();
 app.enableWebSockets( "/ws", listener );
 ```
 
-MatchBox snapshots the listener instance state when you register it, then restores that state inside the websocket runtime. This keeps preconfigured listener objects usable instead of forcing a zero-argument constructor.
+The native routed server keeps the configured listener instance in the same thread-owned VM as its HTTP handlers. Shared structs and instances stay live across HTTP requests and WebSocket callbacks; they are not JSON snapshots. Application middleware runs before upgrade, so reject invalid authentication and Host/Origin there rather than waiting for `onConnect`. The separate webroot server's serialized listener configuration is a different hosting path.
 
 ### 2. Listener Lifecycle
 

@@ -311,6 +311,7 @@ pub(crate) fn resolve_js_property(target: &JsValue, name: &str) -> JsValue {
 #[derive(Debug)]
 struct VariablesScopeProxy {
     variables: Rc<RefCell<HashMap<String, BxValue>>>,
+    owner: Option<GcId>,
     /// Script-level `variables`: the VM globals are the real store (a bare `x` is `variables.x`).
     script: bool,
 }
@@ -346,6 +347,9 @@ impl BxNativeObject for VariablesScopeProxy {
     }
 
     fn trace(&self, tracer: &mut dyn Tracer) {
+        if let Some(owner) = self.owner {
+            tracer.mark(&BxValue::new_ptr(owner));
+        }
         for value in self.variables.borrow().values() {
             tracer.mark(value);
         }
@@ -1962,6 +1966,12 @@ impl VM {
             self.insert_global(name.to_lowercase(), value);
             return;
         }
+        let owner = object.borrow().native_data("matchbox.variables_scope")
+            .and_then(|pointer| unsafe { (*(pointer as *const VariablesScopeProxy)).owner });
+        if let Some(owner) = owner {
+            // The proxy mutates an Rc map; dirty its instance for the incremental collector.
+            let _ = self.heap.get_mut(owner);
+        }
         object.borrow_mut().set_property(name, value);
     }
 
@@ -1977,7 +1987,9 @@ impl VM {
             } else if let Some(id) = self.receiver_instance_gc_id(receiver) {
                 if name == "variables" {
                     if let GcObject::Instance(inst) = self.heap.get(id) {
-                        let proxy = VariablesScopeProxy { variables: Rc::clone(&inst.variables), script: false };
+                        let proxy = VariablesScopeProxy {
+                            variables: Rc::clone(&inst.variables), script: false, owner: Some(id),
+                        };
                         found = Some(BxValue::new_ptr(self.heap.alloc(
                             GcObject::NativeObject(Rc::new(RefCell::new(proxy))),
                         )));
@@ -1991,7 +2003,9 @@ impl VM {
             }
         }
         if found.is_none() && !lambda && name == "variables" {
-            let proxy = VariablesScopeProxy { variables: Rc::clone(&self.fibers[fiber].variables), script: true };
+            let proxy = VariablesScopeProxy {
+                variables: Rc::clone(&self.fibers[fiber].variables), script: true, owner: None,
+            };
             found = Some(BxValue::new_ptr(self.heap.alloc(
                 GcObject::NativeObject(Rc::new(RefCell::new(proxy))),
             )));
@@ -4242,6 +4256,10 @@ impl VM {
         fiber_idx: usize,
         timeslice_end: Option<Instant>,
     ) -> Result<Option<BxValue>> {
+        // Host-driven synchronous callbacks must honor sleep just like the main scheduler.
+        if let Some(until) = self.fibers[fiber_idx].wait_until.take() {
+            wait_until_instant(until);
+        }
         let future_id = self.fibers[fiber_idx].future_id;
         self.fibers[fiber_idx].running = true;
         let result = self.run_fiber_inner(fiber_idx, timeslice_end);
