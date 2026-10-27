@@ -163,7 +163,12 @@ Submissions during startup or shutdown are rejected. On orderly disposal, accept
 
 Application middleware runs **before** a WebSocket upgrade, using the original request headers. A middleware denial is returned as HTTP rather than accepting a socket and closing it later. Enforce authentication and Host/Origin there; `onConnect` is too late for handshake authorization. Connection admission is bounded to 16 per listener.
 
-Native routed request bodies are limited to 16 KiB, including streamed/chunked bodies. The runtime queue holds at most 32 messages; overloaded HTTP dispatch returns 503. WebSocket messages/frames are capped at 64 KiB, outbound queues at 16 messages, and blocked sends at ten seconds. Workers are limited to eight per application, with 64 KiB JSON input and 1 MiB JSON results. Worker failure/outcome records are memory-only and submissions are never retried by the host.
+Native routed request bodies default to 16 KiB, including streamed/chunked bodies.
+An application can explicitly select a bounded limit with
+`app.listen({ host: "127.0.0.1", port: 8090, maxRequestBodyBytes: 1048576 })`.
+`maxRequestBodyBytes` must be a numeric integer from 1 byte through 16 MiB; invalid
+values fail at startup. The limit is enforced while reading both buffered and
+streamed bodies, before application handlers run. The runtime queue holds at most 32 messages; overloaded HTTP dispatch returns 503. WebSocket messages/frames are capped at 64 KiB, outbound queues at 16 messages, and blocked sends at ten seconds. Workers are limited to eight per application, with 64 KiB JSON input and 1 MiB JSON results. Worker failure/outcome records are memory-only and submissions are never retried by the host.
 
 The routed host and its managed workers are native-server facilities, not a promise of WASI/ESP32 parity or complete JVM executor semantics. The separate webroot runtime has its own request/application lifecycle. Treat native modules as trusted operator-authority code, not a sandbox. This is not certification for internet-facing multi-tenant hosting.
 

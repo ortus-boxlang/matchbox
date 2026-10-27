@@ -43,6 +43,7 @@ mod workers {
 
 const SESSION_COOKIE_NAME: &str = "MBX_SESSION_ID";
 const MAX_REQUEST_BODY: usize = 16 * 1024;
+const MAX_CONFIGURED_REQUEST_BODY: usize = 16 * 1024 * 1024;
 const DEFAULT_WEBHOOK_REPLAY_TTL_SECONDS: i64 = 3600;
 
 #[derive(Clone)]
@@ -65,6 +66,7 @@ pub struct ScriptServerState {
 pub struct ListenConfig {
     pub host: String,
     pub port: u16,
+    pub max_request_body_bytes: usize,
 }
 
 impl Default for ListenConfig {
@@ -72,6 +74,7 @@ impl Default for ListenConfig {
         Self {
             host: "127.0.0.1".to_string(),
             port: 8080,
+            max_request_body_bytes: MAX_REQUEST_BODY,
         }
     }
 }
@@ -1430,7 +1433,8 @@ async fn script_handler(
     request: Request<Body>,
 ) -> impl IntoResponse {
     let (parts, body) = request.into_parts();
-    let body = match to_bytes(body, MAX_REQUEST_BODY).await {
+    let limit = state.compiled.runtime.as_ref().unwrap().listen.max_request_body_bytes;
+    let body = match to_bytes(body, limit).await {
         Ok(bytes) => bytes,
         Err(_) => {
             return (
@@ -1780,6 +1784,7 @@ fn parse_listen_config(vm: &dyn BxVM, args: &[BxValue]) -> Result<ListenConfig, 
         return Ok(ListenConfig {
             host: "127.0.0.1".to_string(),
             port: first.as_number() as u16,
+            ..ListenConfig::default()
         });
     }
     if vm.is_struct_value(first) {
@@ -1796,7 +1801,24 @@ fn parse_listen_config(vm: &dyn BxVM, args: &[BxValue]) -> Result<ListenConfig, 
         } else {
             8080
         };
-        return Ok(ListenConfig { host, port });
+        let max_request_body_bytes = if vm.struct_key_exists(id, "maxRequestBodyBytes") {
+            let value = vm.struct_get(id, "maxRequestBodyBytes");
+            if !(value.is_number() || value.is_int()) {
+                return Err("listen() maxRequestBodyBytes must be an integer".to_string());
+            }
+            let number = value.as_number();
+            if !number.is_finite()
+                || number.fract() != 0.0
+                || number < 1.0
+                || number > MAX_CONFIGURED_REQUEST_BODY as f64
+            {
+                return Err(format!("listen() maxRequestBodyBytes must be an integer between 1 and {}", MAX_CONFIGURED_REQUEST_BODY));
+            }
+            number as usize
+        } else {
+            MAX_REQUEST_BODY
+        };
+        return Ok(ListenConfig { host, port, max_request_body_bytes });
     }
     Err("listen() expects a port number or config struct".to_string())
 }
@@ -2664,6 +2686,28 @@ mod tests {
                 .await
                 .into_response();
             assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        }
+    }
+
+    #[tokio::test]
+    async fn routed_configurable_body_limit_is_validated_and_applies_to_streams() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("app.bxs");
+        for invalid in ["0", "-1", "1.5", "true", "\"1024\"", "16777217"] {
+            std::fs::write(&script, format!(r#"import boxlang.web; app = web.server(); app.listen({{maxRequestBodyBytes: {invalid}}});"#)).unwrap();
+            assert!(compile_script_app(&script).await.is_err(), "accepted {invalid}");
+        }
+        std::fs::write(&script, r#"import boxlang.web; app = web.server(); app.post("/", function(event,rc,prc) { event.renderText("ok"); }); app.listen({maxRequestBodyBytes: 32768});"#).unwrap();
+        let compiled = Arc::new(compile_script_app(&script).await.unwrap());
+        assert_eq!(load_listen_config(&compiled).unwrap().max_request_body_bytes, 32768);
+        for length in [32768, 32769] {
+            for body in [Body::from(vec![b'x'; length]), Body::from_stream(futures_util::stream::iter([
+                Ok::<_, std::io::Error>(vec![b'x'; length / 2]), Ok(vec![b'x'; length - length / 2]),
+            ]))] {
+                let incoming = Request::builder().method("POST").uri("/").body(body).unwrap();
+                let response = script_handler(State(app_state(compiled.clone())), incoming).await.into_response();
+                assert_eq!(response.status(), if length == 32768 { StatusCode::OK } else { StatusCode::PAYLOAD_TOO_LARGE });
+            }
         }
     }
 
