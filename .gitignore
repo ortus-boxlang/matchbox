@@ -26,3 +26,15 @@ docs/examples/boxlang_alpine_js/panic_debug.txt
 .codex
 panic_debug.txt
 reference/
+
+# Project-local Pi package installs (declarations live in .pi/settings.json).
+/.pi/npm/
+/.pi/git/
+
+# Autoresearch run state; keep reviewed campaign instructions/scripts versioned.
+/.auto/log.jsonl
+/.auto/ideas.md
+/.auto/artifacts/
+
+# Reproducible runtime benchmark reports are local artifacts, not fixtures.
+/benchmarks/runtime/results/

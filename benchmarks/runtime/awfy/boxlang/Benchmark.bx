@@ -1,0 +1,22 @@
+// BoxLang port of AWFY's SOM benchmark base, revision recorded in manifest.json.
+// Copyright (c) 2015-2016 Stefan Marr <git@stefan-marr.de>
+// SPDX-License-Identifier: MIT
+// Full notice: ../LICENSES/SOM-MIT.txt
+class {
+    function innerBenchmarkLoop(innerIterations) {
+        for (var i = 0; i < innerIterations; i = i + 1) {
+            if (!verifyResult(benchmark())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function benchmark() {
+        throw "subclass responsibility";
+    }
+
+    function verifyResult(result) {
+        throw "subclass responsibility";
+    }
+}

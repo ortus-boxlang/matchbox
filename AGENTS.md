@@ -17,6 +17,14 @@ cargo clippy                   # Lint
 cargo build --release --features "bif-http,bif-zip"  # Verify release build
 ```
 
+## Performance benchmarks
+
+For standalone runtime comparisons, load `.pi/skills/benchmark-run-suite/SKILL.md`. For adding or porting workloads, load `.pi/skills/benchmark-add-test/SKILL.md`. The durable cross-runtime suite lives in `benchmarks/runtime/` and does not require Pi. Running or adding a benchmark does not authorize implementation optimization or an autoresearch loop.
+
+## Autoresearch
+
+Before preparing or running automated experiments, load `.pi/skills/matchbox-autoresearch/SKILL.md` and follow its MatchBox-specific constraints alongside the upstream skills. Setup alone does not authorize starting a loop. See `.pi/README.md` for installation and operation.
+
 ## Project Structure
 
 - `crates/matchbox-vm/src/bifs/mod.rs` — Native Rust BIFs
