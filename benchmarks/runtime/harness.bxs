@@ -1,0 +1,36 @@
+// Shared workload protocol. The entry point supplies bench and benchmarkName.
+// Each invocation allocates fresh workload data and verifies the actual result.
+function runBatch(bench, iterations) {
+    var result = 0;
+    for (var iteration = 0; iteration < iterations; iteration = iteration + 1) {
+        result = bench.benchmark();
+        if (!bench.verifyResult(result)) {
+            throw "Benchmark verification failed";
+        }
+    }
+    return result;
+}
+
+// Named options avoid JVM-version differences in whether positionals include
+// the script path. Both engines accept --name=value after the entry point.
+benchmarkArgs = cliGetArgs().options;
+if (!structKeyExists(benchmarkArgs, "warmup") || !structKeyExists(benchmarkArgs, "iterations")) {
+    throw "Expected --warmup=count and --iterations=count";
+}
+warmup = val(benchmarkArgs.warmup);
+iterations = val(benchmarkArgs.iterations);
+if (warmup < 0 || iterations < 1) {
+    throw "Warmup must be nonnegative and iterations must be positive";
+}
+
+runBatch(bench, warmup);
+started = getTickCount();
+result = runBatch(bench, iterations);
+elapsed = getTickCount() - started;
+println("BENCHMARK_RESULT " & jsonSerialize({
+    "benchmark": benchmarkName,
+    "warmup": warmup,
+    "iterations": iterations,
+    "result": result,
+    "elapsed_ms": elapsed
+}));
