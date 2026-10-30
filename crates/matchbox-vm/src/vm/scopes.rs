@@ -85,9 +85,27 @@ mod slot_binding_tests {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum ScopeMode { Binding, Stack, Shared }
+pub(super) enum ScopeMode {
+    Binding,
+    Stack,
+    Shared,
+    // No slot bindings, parameters or implicit arguments. Invalidated before binding/exposure.
+    Unbound,
+}
 
 impl VM {
+    pub(super) fn prepare_unbound_frame(&mut self, fiber: usize) {
+        let frame = self.fibers[fiber].frames.last_mut().unwrap();
+        if frame.scope_mode == ScopeMode::Binding
+            && frame.function.params.is_empty()
+            && frame.function.arity == 0
+            && frame.function.kind != crate::types::FunctionKind::ComponentBody
+            && frame.local_names.iter().next().is_none()
+        {
+            frame.scope_mode = ScopeMode::Unbound;
+        }
+    }
+
     pub(super) fn enter_frame_scopes(&mut self, fiber: usize) {
         let frame = self.fibers[fiber].frames.last_mut().unwrap();
         if frame.scope_mode == ScopeMode::Binding
@@ -137,8 +155,12 @@ impl VM {
     }
 
     pub(super) fn bind_local(&mut self, fiber: usize, slot: usize, name: &str) {
-        let frame = self.fibers[fiber].frames.last().unwrap();
-        let value = self.fibers[fiber].stack[frame.stack_base + slot];
+        let frame = self.fibers[fiber].frames.last_mut().unwrap();
+        if frame.scope_mode == ScopeMode::Unbound {
+            frame.scope_mode = ScopeMode::Binding;
+        }
+        let base = frame.stack_base;
+        let value = self.fibers[fiber].stack[base + slot];
         let scope = self.local_scope(fiber).as_gc_id().unwrap();
         let key = self.struct_set_and_key(scope, name, value);
         let frame = self.fibers[fiber].frames.last_mut().unwrap();
@@ -212,6 +234,9 @@ impl VM {
     #[inline(always)]
     pub(super) fn local_value(&mut self, fiber: usize, slot: usize) -> BxValue {
         let frame = self.fibers[fiber].frames.last().unwrap();
+        if frame.scope_mode == ScopeMode::Unbound {
+            return self.fibers[fiber].stack[frame.stack_base + slot];
+        }
         if frame.scope_mode == ScopeMode::Stack && slot == frame.function.params.len() {
             // The compiler prologue stays dictionary-authoritative in Binding mode.
             // A body read of its implicit arguments slot is a real scope exposure.
@@ -243,6 +268,12 @@ impl VM {
 
     #[inline(always)]
     pub(super) fn set_local_value(&mut self, fiber: usize, slot: usize, value: BxValue) {
+        let frame = self.fibers[fiber].frames.last().unwrap();
+        if frame.scope_mode == ScopeMode::Unbound {
+            let base = frame.stack_base;
+            self.fibers[fiber].stack[base + slot] = value;
+            return;
+        }
         let binding = self.slot_binding(fiber, slot).or_else(|| {
             let name = self.fibers[fiber]
                 .frames
@@ -400,3 +431,6 @@ impl VM {
         scopes
     }
 }
+
+#[cfg(test)]
+mod unbound_tests;

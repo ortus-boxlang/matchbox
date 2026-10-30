@@ -4332,6 +4332,7 @@ impl VM {
             // In tight loops `frame_changed` stays false — this block never runs.
             if frame_changed {
                 frame_changed = false;
+                self.prepare_unbound_frame(fiber_idx);
                 ip = self.fibers[fiber_idx].frames.last().unwrap().ip;
                 stack_base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
                 if ip == 0 {
