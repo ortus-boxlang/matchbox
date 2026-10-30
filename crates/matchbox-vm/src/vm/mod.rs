@@ -4314,7 +4314,9 @@ impl VM {
         let mut jit_iter_active: Option<(usize, jit::ArrayIterJitFn)> = None;
 
         'quantum: loop {
-            self.drain_native_completions();
+            if !self.pending_native_futures.is_empty() || !self.native_completions.is_empty() {
+                self.drain_native_completions();
+            }
             if fiber_idx >= self.fibers.len() {
                 return Ok(None);
             }
