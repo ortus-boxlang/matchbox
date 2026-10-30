@@ -19,7 +19,7 @@ cargo build --release --features "bif-http,bif-zip"  # Verify release build
 
 ## Performance benchmarks
 
-For standalone runtime comparisons, load `.pi/skills/benchmark-run-suite/SKILL.md`. For adding or porting workloads, load `.pi/skills/benchmark-add-test/SKILL.md`. The durable cross-runtime suite lives in `benchmarks/runtime/` and does not require Pi. Running or adding a benchmark does not authorize implementation optimization or an autoresearch loop.
+For standalone runtime comparisons, load `.pi/skills/benchmark-run-suite/SKILL.md`. For adding or porting workloads, load `.pi/skills/benchmark-add-test/SKILL.md`. The durable cross-runtime suite lives in `benchmarks/runtime/` and does not require Pi. For executed machine-instruction counts of a script (whole-process or scoped after warmup), load `.pi/skills/measure-instructions/SKILL.md`; its standalone tool lives in `benchmarks/instructions/`. Running or adding a benchmark does not authorize implementation optimization or an autoresearch loop.
 
 ## Autoresearch
 

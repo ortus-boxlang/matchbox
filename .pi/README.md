@@ -38,12 +38,15 @@ autoresearch:
 | --- | --- |
 | `/benchmark-run-suite` | Run verified workloads on MatchBox, Node.js and JVM BoxLang; save raw samples and report timing boundaries |
 | `/benchmark-add-test` | Add a licensed, pinned upstream workload and faithful BoxLang port, verified on all three engines |
+| `/measure-instructions` | Count verified hardware instructions for a script, whole-process or scoped after warmup; supports Node `--jitless` |
 
 Append the benchmark name or a natural-language request, for example
 `/benchmark-run-suite sieve, all three runtimes, three samples` or
 `/benchmark-add-test Bounce from the pinned AWFY revision`.
-The skills are also available as `/skill:benchmark-run-suite` and
-`/skill:benchmark-add-test`; `.pi/prompts/` supplies the shorter command aliases.
+The skills are also available as `/skill:benchmark-run-suite`,
+`/skill:benchmark-add-test`, and `/skill:measure-instructions`; `.pi/prompts/`
+supplies the shorter command aliases. For instruction counts, see
+[the standalone counter guide](../benchmarks/instructions/README.md).
 
 See [the standalone suite guide](../benchmarks/runtime/README.md). The evaluator
 is ordinary Python/JavaScript/BoxLang and remains usable without Pi. Do not confuse
@@ -128,7 +131,7 @@ Do not create an empty session log as part of configuration.
 | `.auto/config.json` | Tracked bounded default; no machine-specific `workingDir` |
 | `.auto/prompt.md`, `measure.sh`, `checks.sh`, optional hooks | Review and commit when preparing a campaign |
 | `.auto/log.jsonl`, `ideas.md`, `artifacts/` | Ignored run state; archive before cleanup |
-| `benchmarks/runtime/results/` | Ignored standalone benchmark reports |
+| `benchmarks/runtime/results/`, `benchmarks/instructions/results/` | Ignored standalone measurement reports |
 
 The standalone runner saves timestamped raw reports in `benchmarks/runtime/results/`
 by default. Named pilot/campaign reports can also go in `.auto/artifacts/`.
