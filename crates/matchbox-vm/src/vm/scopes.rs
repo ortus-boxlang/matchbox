@@ -209,6 +209,7 @@ impl VM {
         index
     }
 
+    #[inline(always)]
     pub(super) fn local_value(&mut self, fiber: usize, slot: usize) -> BxValue {
         let frame = self.fibers[fiber].frames.last().unwrap();
         if frame.scope_mode == ScopeMode::Stack && slot == frame.function.params.len() {
@@ -240,6 +241,7 @@ impl VM {
         self.fibers[fiber].stack[frame.stack_base + slot]
     }
 
+    #[inline(always)]
     pub(super) fn set_local_value(&mut self, fiber: usize, slot: usize, value: BxValue) {
         let binding = self.slot_binding(fiber, slot).or_else(|| {
             let name = self.fibers[fiber]
