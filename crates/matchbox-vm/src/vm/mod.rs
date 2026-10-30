@@ -8580,19 +8580,22 @@ impl VM {
             match self.heap.get(id) {
                 GcObject::CompiledFunction(func) => {
                     let func = Rc::clone(func);
-                    let mut args = Vec::with_capacity(arg_count);
-                    for _ in 0..arg_count {
-                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
-                    }
-                    args.reverse();
-                    // Don't pop function yet, it's used as marker
-
-                    let final_args = self.function_arguments(args, names.as_deref(), &func);
-                    // Stack: ... [func] [arg1] [arg2] ...
-                    // Function is already at len() - 1 - arg_count.
-                    // We popped args, now we push final_args back.
-                    for arg in final_args {
-                        self.fibers[fiber_idx].stack.push(arg);
+                    if names.is_none()
+                        && func.bif.is_none()
+                        && func.arity as usize == func.params.len() + 1
+                    {
+                        self.stack_function_arguments(fiber_idx, func_index + 1, &func);
+                    } else {
+                        let mut args = Vec::with_capacity(arg_count);
+                        for _ in 0..arg_count {
+                            args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                        }
+                        args.reverse();
+                        // Keep the function as the stack marker while binding arguments.
+                        let final_args = self.function_arguments(args, names.as_deref(), &func);
+                        for arg in final_args {
+                            self.fibers[fiber_idx].stack.push(arg);
+                        }
                     }
 
                     let sub_chunk = func.chunk.execution_chunk();
