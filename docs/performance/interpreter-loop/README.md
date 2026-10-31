@@ -1,10 +1,25 @@
 # Interpreter loop investigation
 
-Status: **single Unbound-local candidate implemented, validated and committed as `ef95ce4`: 16.29% fewer retired instructions.** Exploratory refreshed loop timing: 142 → 121 ms. P1 and the pre-measurement compiled-path refinement agree with the instruction outcome; original reference executable remains unchanged.
+Historical merged result: **single Unbound-local candidate implemented, validated and committed as `ef95ce4`: 16.29% fewer retired instructions.** Exploratory refreshed loop timing: 142 → 121 ms. P1 and the pre-measurement compiled-path refinement agree with the instruction outcome; original reference executable remains unchanged.
 
 The user subsequently approved committing this investigation and merging the full tested stack into `develop`. This is repository finalization, not authorization for another improvement run. Large raw binaries/profiles remain in their existing ignored, hash-identified archives; the investigation reports and analysis scripts are versioned here.
 
 This is an architectural investigation, NOT another autoresearch campaign. The previous campaign is exhausted and remains frozen. No implementation changes, new measurements, build-profile changes, installs or diagnostic builds are authorized merely by these documents.
+
+## Current follow-up: measured B1 result
+
+A separately authorized 2026-10-30/31 follow-up refreshed both runtimes' instructions and separate loop timing, verified a current conditional native ledger, and compared two replacement designs. **One B1 candidate is implemented, contract-tested, statically native-verified and retained for review: 21.77% fewer scoped retired instructions, closing 25.31% of the fresh Node gap.** Separate unprofiled loop timing measured 122 → 85 ms median in three samples. The earlier Unbound result below remains historical evidence, not the current full cost ledger. B1 implementation/tests are committed as `57b6f18d0ad2ace67557cadccbb1b4daa5292219`. The user separately authorized committing the investigation documents and merging this validated stack into local `develop`. Repository finalization preserves the existing unpushed history and original measured binaries; it is not another optimization run or authorization to push.
+
+- [Current baseline, artifact identities and future-run rules](next-candidates/README.md)
+- [Active execution context: design/pricing D1](12-active-context-design.md)
+- [Local-plus-constant composition: design/pricing D1](13-expression-composition-design.md)
+- [Five-candidate handoff and selection gate, D1](14-design-selection.md)
+- [B1 pricing and pre-implementation prediction, B1-P1 v1](15-b1-pricing-prediction.md) — preserved original conditional engineering range
+- [B1 implementation/native validation and pre-outcome B1-P2 v1](16-b1-implementation-validation.md) — preserved pre-outcome mechanism/pricing record
+- [B1 performance result and P1/P2 reconciliation](17-b1-performance-result.md) — latest; measured 396,000,386-instruction reduction, one retained candidate
+- Deferred handoffs: [header-only fiber reuse](next-candidates/header-fiber-reuse.md), [promoted constants](next-candidates/promoted-constants.md), [global-cache ownership/access](next-candidates/global-cache.md)
+
+These scopes overlap and may subsume one another. Handoffs do not authorize implementation, renewed debugger/profiling budgets, measurements or an automatic sequence of experiments. Fresh/raw evidence remains in the identified dedicated worktree's ignored packets; documents alone do not transfer it.
 
 ## Read in order
 
@@ -32,7 +47,7 @@ Use no additional worktrees for read-only inspection. If diagnostic source chang
 
 ## Immediate next action
 
-Review the [retained result](11-unbound-local-result.md) and its source/tests. The three local-access sequences fall from 553 to a compiled-model 155 instructions; surrounding work grows by 44, giving a pre-measurement net prediction of 354/cycle. The measured million-batch reduction is 354,000,489 (16.29%). Exploratory timing is reported separately with baseline drift and raw samples. The one approved implementation/comparison is complete; broader context/operand changes are not automatically authorized. The original campaign and six-session debugger budget remain exhausted. No variant or profiling loop.
+Review the [latest retained B1 result](17-b1-performance-result.md) and its source/tests in the identified dedicated worktree. The one approved B1 implementation and 18-process comparison are complete. P1/P2 remain unchanged; the 32-instruction/cycle causal residual and 386-instruction whole-batch delta residual remain explicit. The separately approved commit/merge finalization does not authorize another candidate, measurement, optimization loop or push. Reprice overlapping deferred opportunities against B1 before future selection. The original campaign and six-session debugger budget remain exhausted.
 
 ## Completion criteria
 
