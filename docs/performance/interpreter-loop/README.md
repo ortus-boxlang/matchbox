@@ -6,7 +6,7 @@ The user subsequently approved committing this investigation and merging the ful
 
 This is an architectural investigation, NOT another autoresearch campaign. The previous campaign is exhausted and remains frozen. No implementation changes, new measurements, build-profile changes, installs or diagnostic builds are authorized merely by these documents.
 
-## Current follow-up: measured B1 result
+## Current follow-up: measured B1 and timed C3
 
 A separately authorized 2026-10-30/31 follow-up refreshed both runtimes' instructions and separate loop timing, verified a current conditional native ledger, and compared two replacement designs. **One B1 candidate is implemented, contract-tested, statically native-verified and retained for review: 21.77% fewer scoped retired instructions, closing 25.31% of the fresh Node gap.** Separate unprofiled loop timing measured 122 → 85 ms median in three samples. The earlier Unbound result below remains historical evidence, not the current full cost ledger. B1 implementation/tests are committed as `57b6f18d0ad2ace67557cadccbb1b4daa5292219`. The user separately authorized committing the investigation documents and merging this validated stack into local `develop`. Repository finalization preserves the existing unpushed history and original measured binaries; it is not another optimization run or authorization to push.
 
@@ -16,7 +16,10 @@ A separately authorized 2026-10-30/31 follow-up refreshed both runtimes' instruc
 - [Five-candidate handoff and selection gate, D1](14-design-selection.md)
 - [B1 pricing and pre-implementation prediction, B1-P1 v1](15-b1-pricing-prediction.md) — preserved original conditional engineering range
 - [B1 implementation/native validation and pre-outcome B1-P2 v1](16-b1-implementation-validation.md) — preserved pre-outcome mechanism/pricing record
-- [B1 performance result and P1/P2 reconciliation](17-b1-performance-result.md) — latest; measured 396,000,386-instruction reduction, one retained candidate
+- [B1 performance result and P1/P2 reconciliation](17-b1-performance-result.md) — latest measured instruction result; 396,000,386-instruction reduction, one retained candidate
+- [Post-B1 guarded composition pricing, C3-P1 v1](18-c3-composition-pricing.md) — preserved source-only conditional 218–297/cycle reduction after replacement/growth allowances
+- [C3 implementation/native validation and frozen pre-outcome P2](19-c3-implementation-validation.md) — 1012 test passes; static cycle 1423 → 1093, conditional 330/cycle reduction; preserved pre-outcome record
+- [C3 timing result and retention decision](20-c3-timing-result.md) — fresh B1 92 → C3 73 ms loop median, 20.65% less time; **C3 instruction outcomes still unmeasured**, real noneligible-site tax
 - Deferred handoffs: [header-only fiber reuse](next-candidates/header-fiber-reuse.md), [promoted constants](next-candidates/promoted-constants.md), [global-cache ownership/access](next-candidates/global-cache.md)
 
 These scopes overlap and may subsume one another. Handoffs do not authorize implementation, renewed debugger/profiling budgets, measurements or an automatic sequence of experiments. Fresh/raw evidence remains in the identified dedicated worktree's ignored packets; documents alone do not transfer it.
@@ -47,7 +50,9 @@ Use no additional worktrees for read-only inspection. If diagnostic source chang
 
 ## Immediate next action
 
-Review the [latest retained B1 result](17-b1-performance-result.md) and its source/tests in the identified dedicated worktree. The one approved B1 implementation and 18-process comparison are complete. P1/P2 remain unchanged; the 32-instruction/cycle causal residual and 386-instruction whole-batch delta residual remain explicit. The separately approved commit/merge finalization does not authorize another candidate, measurement, optimization loop or push. Reprice overlapping deferred opportunities against B1 before future selection. The original campaign and six-session debugger budget remain exhausted.
+Review the [C3 timing result and retention decision](20-c3-timing-result.md). The separately authorized nine-process timing phase measured 92 → 73 ms loop medians against fresh B1, with all checksums correct; C3's whole-process median was 77.72 ms. The user then approved committing C3 and merging into local `develop`, preserving prior unpushed history and artifacts. C3 implementation/tests are committed as `ecc9074`. This repository-finalization approval is not a new measurement/build/optimization scope or authorization to push.
+
+C3's static 1093-instruction ordinary cycle and 330/cycle reduction remain **conditional compiled predictions, not counter outcomes**. Its additional 45–65-instruction costs on several noneligible local-read paths and unknown broader workload impact remain explicit. B1's measured result and original P1/P2 remain unchanged; its 32-instruction/cycle causal residual and 386-instruction whole-batch delta residual are not resolved by C3 timings. Further affected-workload checks, instruction outcomes or implementation variants require a separate decision. The original campaign and six-session debugger budget remain exhausted.
 
 ## Completion criteria
 
