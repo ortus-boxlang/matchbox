@@ -34,10 +34,10 @@ impl Default for Esp32AppConfig {
     fn default() -> Self {
         Self {
             wifi_ssid: option_env!("MATCHBOX_ESP32_WIFI_SSID")
-                .unwrap_or("Pixel_174")
+                .unwrap_or("")
                 .to_string(),
             wifi_password: option_env!("MATCHBOX_ESP32_WIFI_PASSWORD")
-                .unwrap_or("myinternetpass")
+                .unwrap_or("")
                 .to_string(),
             wifi_hostname: option_env!("MATCHBOX_ESP32_WIFI_HOSTNAME")
                 .unwrap_or("matchbox-esp32")
@@ -495,14 +495,14 @@ fn populate_application_esp32(vm: &mut VM) {
     // Create strings separately to avoid mutable borrow conflicts
     let ssid_id = vm.string_new(
         option_env!("MATCHBOX_ESP32_WIFI_SSID")
-            .unwrap_or("Pixel_174")
+            .unwrap_or("")
             .to_string(),
     );
     vm.struct_set(wifi_id, "ssid", BxValue::new_ptr(ssid_id));
 
     let password_id = vm.string_new(
         option_env!("MATCHBOX_ESP32_WIFI_PASSWORD")
-            .unwrap_or("myinternetpass")
+            .unwrap_or("")
             .to_string(),
     );
     vm.struct_set(wifi_id, "password", BxValue::new_ptr(password_id));

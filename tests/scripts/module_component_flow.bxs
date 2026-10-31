@@ -1,0 +1,21 @@
+function probe(prefix) {
+    var state = {text:"kept"};
+    try {
+        bx:flowPass {
+            try { bx:flowPass { return {prefix:arguments.prefix, state:state}; } }
+            finally { state.innerFinally = true; }
+        }
+    } finally { state.outerFinally = true; }
+    throw "Non-local return was swallowed";
+}
+result = probe("scope");
+if (result.prefix != "scope" || result.state.text != "kept") { throw "Declaring arguments or return value lost"; }
+println("nested OK");
+function declarations() {
+    bx:flowPass { var later = 42; for (var index = 0; index < 3; index++) { if (index == 1) { continue; } if (index == 2) { break; } } }
+    return later;
+}
+if (declarations() != 42) { throw "Body declarations did not remain in declaring context"; }
+bx:flowPass { createdInBody = "visible"; }
+if (createdInBody != "visible") { throw "Root body assignments must use the declaring context"; }
+println("declarations OK");

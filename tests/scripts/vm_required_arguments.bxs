@@ -1,0 +1,28 @@
+// A declared `required` argument without a default must be passed (BoxLang: type Application).
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+function messageOf( fn ) {
+    try { fn(); } catch ( any e ) { return e.type & "|" & e.message; }
+    return "no error";
+}
+
+function f( required a ) { return a; }
+expect( messageOf( () => f() ), "Application|Required argument [a] is missing for function [f]", "missing positional" );
+expect( f( 1 ), 1, "passed" );
+expect( f( a=2 ), 2, "passed by name" );
+
+function g( required a, b = 2, required c ) { return a & b & c; }
+expect( messageOf( () => g( 1 ) ), "Application|Required argument [c] is missing for function [g]", "second required missing" );
+expect( g( 1, 2, 3 ), "123", "all passed" );
+expect( g( 1, c=3 ), "123", "default used" );
+
+function optional( a, b = 5 ) { return isNull( a ) ? b : a; }
+expect( optional(), 5, "optional arguments" );
+
+class K { function m( required x ) { return x; } }
+expect( messageOf( () => new K().m() ), "Application|Required argument [x] is missing for function [m]", "class method" );
+expect( new K().m( 4 ), 4, "class method passed" );
+
+h = function( required q ) { return q; };
+expect( find( "Required argument [q] is missing", messageOf( () => h() ) ) > 0, true, "function expression" );

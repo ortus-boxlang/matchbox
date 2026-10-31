@@ -202,8 +202,8 @@ When reporting a crash, include:
 
 1. Read the coredump (see workflow above)
 2. Power-cycle the device to clear the panic state
-3. Re-flash the app bytecode: `matchbox app.bxs --target esp32 --chip esp32s3 --flash`
-4. If the device does not boot after coredump, re-run full flash: `matchbox app.bxs --target esp32 --chip esp32s3 --full-flash`
+3. Re-flash the app bytecode: `matchbox --target esp32 --chip esp32s3 --flash app.bxs`
+4. If the device does not boot after coredump, re-run full flash: `matchbox --target esp32 --chip esp32s3 --full-flash app.bxs`
 
 ## Related Skills
 

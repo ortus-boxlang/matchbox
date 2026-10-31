@@ -211,7 +211,7 @@ fn compile_source_file_with_kind(
         vec![],
         false,
         false,
-        &[],
+        false,
         &[],
     )
     .with_context(|| format!("Failed to compile {}", path.display()))?;

@@ -1,0 +1,30 @@
+function expect( actual, expected, label ) {
+	if ( actual != expected ) {
+		throw( message = label & ": expected [" & expected & "] got [" & actual & "]" );
+	}
+}
+q = queryNew( "id,name", "integer,varchar", [ { id: 1, name: "a" }, { id: 2, name: "b" } ] );
+seen = [];
+for ( r in q ) {
+	seen.append( r.id & r.name );
+}
+expect( seen.toList(), "1a,2b", "rows" );
+
+idx = [];
+for ( r, i in q ) {
+	idx.append( i );
+}
+expect( idx.toList(), "1,2", "row numbers" );
+
+empty = queryNew( "id" );
+n = 0;
+for ( r in empty ) { n++; }
+expect( n, 0, "empty query" );
+
+function sum( query ) {
+	total = 0;
+	for ( row in query ) { total += row.id; }
+	return total;
+}
+expect( sum( q ), 3, "in function" );
+println( "query for-in ok" );

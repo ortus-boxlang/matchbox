@@ -1,4 +1,6 @@
-use anyhow::{Context, Result, bail};
+use super::application_runtime::RenderJob;
+pub use super::application_runtime::WebrootRuntime;
+use anyhow::{Context, Result, bail, ensure};
 use matchbox_compiler::{compiler::Compiler, parser};
 use matchbox_vm::types::{BxVM, BxValue};
 use matchbox_vm::vm::VM;
@@ -6,7 +8,7 @@ use matchbox_vm::vm::chunk::Chunk;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WebrootConfig {
@@ -29,14 +31,48 @@ pub struct WebrootRequest {
     pub path: String,
     pub query: HashMap<String, String>,
     pub form: HashMap<String, String>,
+    pub form_arrays: HashMap<String, Vec<String>>,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
+    #[cfg(not(target_family = "wasm"))]
+    pub uploads: Vec<crate::multipart::UploadedFile>,
+}
+
+/// Transport metadata supplied by an HTTP host, separate from the resolved asset path.
+#[derive(Clone, Debug)]
+pub struct WebrootContext {
+    pub debug: bool,
+    pub uri: String,
+    pub script_name: String,
+    pub query_string: String,
+    pub protocol: String,
+    pub scheme: String,
+    pub remote_addr: String,
+    pub remote_port: u16,
+    pub server_port: u16,
+}
+
+impl Default for WebrootContext {
+    fn default() -> Self {
+        Self {
+            debug: false,
+            uri: String::new(),
+            script_name: String::new(),
+            query_string: String::new(),
+            protocol: "HTTP/1.1".into(),
+            scheme: "http".into(),
+            remote_addr: String::new(),
+            remote_port: 0,
+            server_port: 8080,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebrootResponse {
     pub status: u16,
-    pub headers: HashMap<String, String>,
+    /// Repeated fields (including Set-Cookie) remain separate and ordered.
+    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -46,6 +82,10 @@ pub trait AssetStore {
 
     fn compiled_template(&self, _relative_path: &str) -> Result<Option<Chunk>> {
         Ok(None)
+    }
+
+    fn source_path(&self, relative_path: &str) -> Result<String> {
+        Ok(relative_path.to_string())
     }
 }
 
@@ -80,6 +120,13 @@ impl FileSystemAssetStore {
 }
 
 impl AssetStore for FileSystemAssetStore {
+    fn source_path(&self, relative_path: &str) -> Result<String> {
+        Ok(self
+            .full_path(relative_path)?
+            .to_string_lossy()
+            .into_owned())
+    }
+
     fn metadata(&self, relative_path: &str) -> Result<Option<AssetMetadata>> {
         let full = self.full_path(relative_path)?;
         match std::fs::metadata(full) {
@@ -203,23 +250,39 @@ impl AssetStore for EmbeddedAssetStore {
 }
 
 pub struct WebrootEngine<S> {
-    store: S,
+    store: Arc<S>,
     config: WebrootConfig,
-    sessions: Mutex<HashMap<String, HashMap<String, String>>>,
+    runtime: WebrootRuntime,
+    scope_id: String,
 }
 
-impl<S: AssetStore> WebrootEngine<S> {
+impl<S: AssetStore + Send + Sync + 'static> WebrootEngine<S> {
     pub fn new(store: S, config: WebrootConfig) -> Self {
+        Self::with_runtime(store, config, WebrootRuntime::default())
+    }
+
+    pub fn with_runtime(store: S, config: WebrootConfig, runtime: WebrootRuntime) -> Self {
         Self {
-            store,
+            store: Arc::new(store),
             config,
-            sessions: Mutex::new(HashMap::new()),
+            runtime,
+            scope_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 
     pub fn handle(&self, request: WebrootRequest) -> Result<WebrootResponse> {
+        self.handle_with_context(request, WebrootContext::default())
+    }
+
+    pub fn handle_with_context(
+        &self,
+        request: WebrootRequest,
+        context: WebrootContext,
+    ) -> Result<WebrootResponse> {
+        #[cfg(not(target_family = "wasm"))]
+        let _uploads = crate::multipart::Cleanup(request.uploads.clone());
         let method = request.method.to_ascii_uppercase();
-        if !matches!(method.as_str(), "GET" | "HEAD" | "POST") {
+        if matches!(method.as_str(), "TRACE" | "TRACK") {
             return Ok(text_response(405, "Method Not Allowed"));
         }
 
@@ -246,24 +309,34 @@ impl<S: AssetStore> WebrootEngine<S> {
             .map(|metadata| metadata.is_dir)
             .unwrap_or(false)
         {
-            asset_path = first_existing_index(&self.store, &asset_path)?.unwrap_or(asset_path);
+            asset_path =
+                first_existing_index(self.store.as_ref(), &asset_path)?.unwrap_or(asset_path);
         }
 
-        let Some(bytes) = self.read_or_rewrite(&mut asset_path)? else {
-            return Ok(text_response(404, "Not Found"));
-        };
-
+        let extension = Path::new(&asset_path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if matches!(extension.as_str(), "bx" | "cfm" | "cfc" | "cfs" | "cfml") {
+            return Ok(text_response(501, "Unsupported executable source type"));
+        }
+        let bytes = self.read_or_rewrite(&mut asset_path)?;
         let mut response = if is_template_path(&asset_path) {
-            let source = String::from_utf8(bytes)?;
-            self.render_template(&asset_path, &source, &request)?
+            self.render_template(&asset_path, request, context)?
         } else {
-            let mut headers = HashMap::new();
-            headers.insert(
+            let Some(bytes) = bytes else {
+                return Ok(text_response(404, "Not Found"));
+            };
+            if !matches!(method.as_str(), "GET" | "HEAD" | "POST") {
+                return Ok(text_response(405, "Method Not Allowed"));
+            }
+            let headers = vec![(
                 "content-type".to_string(),
                 mime_guess::from_path(&asset_path)
                     .first_or_octet_stream()
                     .to_string(),
-            );
+            )];
             WebrootResponse {
                 status: 200,
                 headers,
@@ -271,7 +344,21 @@ impl<S: AssetStore> WebrootEngine<S> {
             }
         };
 
-        if method == "HEAD" {
+        if !response
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        {
+            response
+                .headers
+                .push(("content-length".into(), response.body.len().to_string()));
+        }
+        if response.status == 204 {
+            response
+                .headers
+                .retain(|(name, _)| !name.eq_ignore_ascii_case("content-length"));
+        }
+        if method == "HEAD" || response.status == 204 || response.status == 304 {
             response.body.clear();
         }
         Ok(response)
@@ -284,10 +371,8 @@ impl<S: AssetStore> WebrootEngine<S> {
 
         if self.config.rewrites {
             let rewrite_path = normalize_request_path(&self.config.rewrite_file_name)?;
-            if let Some(bytes) = self.store.read(&rewrite_path)? {
-                *asset_path = rewrite_path;
-                return Ok(Some(bytes));
-            }
+            *asset_path = rewrite_path;
+            return self.store.read(asset_path);
         }
 
         Ok(None)
@@ -296,119 +381,125 @@ impl<S: AssetStore> WebrootEngine<S> {
     fn render_template(
         &self,
         asset_path: &str,
-        source: &str,
-        request: &WebrootRequest,
+        request: WebrootRequest,
+        context: WebrootContext,
     ) -> Result<WebrootResponse> {
-        let chunk = if let Some(chunk) = self.store.compiled_template(asset_path)? {
-            chunk
-        } else {
-            compile_template(asset_path, source)?
-        };
-        let mut vm = VM::new();
-        vm.output_buffer = Some(String::new());
-        let mut cookies = request
-            .headers
-            .get("cookie")
-            .map(|raw| parse_cookie_header(raw))
-            .unwrap_or_default();
-        let session_id = cookies
-            .get("MBX_SESSION_ID")
-            .cloned()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        cookies.insert("MBX_SESSION_ID".to_string(), session_id.clone());
-
-        let form = form_scope_from_request(request);
-        insert_scope(&mut vm, "url", &request.query);
-        insert_scope(&mut vm, "form", &form);
-        insert_scope(&mut vm, "cookie", &cookies);
-        let session_snapshot = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(&session_id)
-            .cloned()
-            .unwrap_or_default();
-        let session_scope_id = insert_scope(&mut vm, "session", &session_snapshot);
-        let cgi = cgi_scope_from_request(request, asset_path);
-        insert_scope(&mut vm, "cgi", &cgi);
-        vm.interpret(chunk)?;
-        self.persist_session(&mut vm, &session_id, session_scope_id);
-
-        let mut headers = HashMap::new();
-        headers.insert("content-type".to_string(), "text/html".to_string());
-        headers.insert(
-            "set-cookie".to_string(),
-            format!("MBX_SESSION_ID={}; Path=/; HttpOnly", session_id),
-        );
-        Ok(WebrootResponse {
-            status: 200,
-            headers,
-            body: vm.output_buffer.unwrap_or_default().into_bytes(),
-        })
-    }
-
-    fn persist_session(&self, vm: &mut VM, session_id: &str, scope_id: usize) {
-        let mut data = HashMap::new();
-        for key in vm.struct_key_array(scope_id) {
-            let value = vm.struct_get(scope_id, &key);
-            data.insert(key, vm.to_string(value));
-        }
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string(), data);
+        let result = self.runtime.render(RenderJob {
+            store: self.store.clone(),
+            asset_path: asset_path.into(),
+            scope_id: self.scope_id.clone(),
+            request,
+            context,
+        })?;
+        Ok(result.response)
     }
 }
 
-fn insert_scope(vm: &mut VM, name: &str, values: &HashMap<String, String>) -> usize {
+pub(crate) fn insert_scope(vm: &mut VM, name: &str, values: &HashMap<String, String>) -> usize {
     let scope_id = vm.struct_new();
-    for (key, value) in values {
+    vm.insert_global(name.to_string(), BxValue::new_ptr(scope_id));
+    let mut entries: Vec<_> = values.iter().collect();
+    if name == "cgi" {
+        // Reuse shape transitions for identical CGI field sets across requests.
+        entries.sort_unstable_by_key(|(key, _)| *key);
+    }
+    for (key, value) in entries {
         let value_id = vm.string_new(value.clone());
         vm.struct_set(scope_id, key, BxValue::new_ptr(value_id));
     }
-    vm.insert_global(name.to_string(), BxValue::new_ptr(scope_id));
     scope_id
 }
 
-fn parse_cookie_header(raw: &str) -> HashMap<String, String> {
+pub(crate) fn parse_cookie_header(raw: &str) -> HashMap<String, String> {
     let mut cookies = HashMap::new();
     for part in raw.split(';') {
         let mut kv = part.splitn(2, '=');
         if let (Some(key), Some(value)) = (kv.next(), kv.next()) {
-            cookies.insert(key.trim().to_string(), value.trim().to_string());
+            let value = value.trim();
+            let bytes = value.as_bytes();
+            let valid = bytes.iter().enumerate().all(|(index, byte)| {
+                *byte != b'%'
+                    || (bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
+                        && bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit))
+            });
+            let value = if valid {
+                percent_encoding::percent_decode_str(&value.replace('+', " "))
+                    .decode_utf8_lossy()
+                    .into_owned()
+            } else {
+                value.to_owned()
+            };
+            cookies.insert(key.trim().to_string(), value);
         }
     }
     cookies
 }
 
-fn form_scope_from_request(request: &WebrootRequest) -> HashMap<String, String> {
-    if !request.form.is_empty() {
-        return request.form.clone();
+pub(crate) type ParameterValues = (HashMap<String, String>, HashMap<String, Vec<String>>);
+pub(crate) fn parameter_values(raw: &[u8], keep_empty: bool) -> ParameterValues {
+    let mut values = HashMap::<String, String>::new();
+    let mut arrays = HashMap::<String, Vec<String>>::new();
+    for (name, value) in url::form_urlencoded::parse(raw) {
+        if let Some(name) = name.strip_suffix("[]") {
+            arrays
+                .entry(name.into())
+                .or_default()
+                .push(value.into_owned());
+        } else {
+            values
+                .entry(name.into_owned())
+                .and_modify(|previous| {
+                    if keep_empty || !value.is_empty() {
+                        if keep_empty || !previous.is_empty() {
+                            previous.push(',');
+                        }
+                        previous.push_str(&value);
+                    }
+                })
+                .or_insert(value.into_owned());
+        }
     }
-
-    if request.method.eq_ignore_ascii_case("POST")
-        && request
-            .headers
-            .get("content-type")
-            .map(|value| {
-                value
-                    .split(';')
-                    .next()
-                    .unwrap_or(value)
-                    .trim()
-                    .eq_ignore_ascii_case("application/x-www-form-urlencoded")
-            })
-            .unwrap_or(false)
-    {
-        return url::form_urlencoded::parse(&request.body)
-            .into_owned()
-            .collect();
+    (values, arrays)
+}
+pub(crate) fn insert_parameter_scope(vm: &mut VM, name: &str, parameters: ParameterValues) {
+    let scope = insert_scope(vm, name, &parameters.0);
+    for (name, values) in parameters.1 {
+        let array = vm.array_new();
+        vm.struct_set(scope, &name, BxValue::new_ptr(array));
+        for value in values {
+            let value = vm.string_new(value);
+            vm.array_push(array, BxValue::new_ptr(value));
+        }
     }
-
-    HashMap::new()
+}
+pub(crate) fn form_scope_from_request(request: &WebrootRequest) -> ParameterValues {
+    let (mut values, arrays) = if !request.form.is_empty() || !request.form_arrays.is_empty() {
+        (request.form.clone(), request.form_arrays.clone())
+    } else if request.headers.get("content-type").is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+    }) {
+        parameter_values(&request.body, false)
+    } else {
+        (HashMap::new(), HashMap::new())
+    };
+    if request.method.eq_ignore_ascii_case("POST") {
+        let keys = values
+            .keys()
+            .chain(arrays.keys())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(",");
+        values.insert("fieldnames".into(), keys);
+    }
+    (values, arrays)
 }
 
-fn compile_template(asset_path: &str, source: &str) -> Result<Chunk> {
+pub(crate) fn compile_template(asset_path: &str, source: &str) -> Result<Chunk> {
     let ast = if asset_path.ends_with(".bxm") {
         parser::parse_bxm(source, Some(asset_path))?
     } else {
@@ -418,21 +509,139 @@ fn compile_template(asset_path: &str, source: &str) -> Result<Chunk> {
     compiler.compile(&ast, source)
 }
 
-fn cgi_scope_from_request(request: &WebrootRequest, asset_path: &str) -> HashMap<String, String> {
+/// Opt-in trust of the first X-Forwarded-* values, matching MiniServer's proxy handler.
+/// Enable only behind a proxy that overwrites these headers; never infer trust from their presence.
+pub fn apply_proxy_headers(
+    request: &mut WebrootRequest,
+    context: &mut WebrootContext,
+) -> Result<()> {
+    let first = |name: &str| {
+        request
+            .headers
+            .get(name)
+            .map(|value| value.split(',').next().unwrap_or("").trim().to_string())
+    };
+    let remote = first("x-forwarded-for");
+    let scheme = first("x-forwarded-proto");
+    let host = first("x-forwarded-host");
+    let port = first("x-forwarded-port");
+    if let Some(remote) = remote {
+        ensure!(
+            !remote.is_empty()
+                && (remote.parse::<std::net::IpAddr>().is_ok()
+                    || remote
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b".-_".contains(&byte))),
+            "Invalid forwarded client address"
+        );
+        context.remote_addr = remote;
+        context.remote_port = 0;
+    }
+    if let Some(scheme) = scheme {
+        ensure!(
+            !scheme.is_empty()
+                && scheme
+                    .bytes()
+                    .enumerate()
+                    .all(|(index, byte)| byte.is_ascii_alphabetic()
+                        || (index > 0 && (byte.is_ascii_digit() || b"+-.".contains(&byte)))),
+            "Invalid forwarded scheme"
+        );
+        context.scheme = scheme.to_ascii_lowercase();
+    }
+    if let Some(host) = host {
+        ensure!(
+            !host.is_empty() && !host.contains('@'),
+            "Invalid forwarded host"
+        );
+        let authority = host
+            .parse::<http::uri::Authority>()
+            .context("Invalid forwarded host")?;
+        ensure!(
+            authority.port().is_none() || authority.port_u16().is_some(),
+            "Invalid forwarded host port"
+        );
+        let port = if let Some(value) = authority.port_u16() {
+            Some(value)
+        } else {
+            port.map(|value| value.parse::<u16>())
+                .transpose()
+                .context("Invalid forwarded port")?
+        };
+        ensure!(port != Some(0), "Invalid forwarded port");
+        let default = if context.scheme == "https" { 443 } else { 80 };
+        context.server_port = port.unwrap_or(default);
+        let host = authority.host();
+        let host = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        };
+        let host = if let Some(port) = port.filter(|port| *port != default) {
+            format!("{host}:{port}")
+        } else {
+            host
+        };
+        request.headers.insert("host".into(), host);
+    }
+    Ok(())
+}
+
+pub(crate) fn cgi_scope_from_request(
+    request: &WebrootRequest,
+    asset_path: &str,
+    context: &WebrootContext,
+) -> HashMap<String, String> {
     let host = request
         .headers
         .get("host")
         .cloned()
         .unwrap_or_else(|| "localhost:8080".to_string());
-    let (server_name, server_port) = split_host_port(&host);
-
-    HashMap::from([
+    let authority = host.parse::<http::uri::Authority>().ok();
+    let server_name = authority
+        .as_ref()
+        .map(|a| a.host().trim_matches(['[', ']']).to_string())
+        .unwrap_or_else(|| host.clone());
+    let server_port = authority
+        .as_ref()
+        .and_then(|a| a.port_u16())
+        .unwrap_or(context.server_port)
+        .to_string();
+    let uri = if context.uri.is_empty() {
+        &request.path
+    } else {
+        &context.uri
+    };
+    let script_name = if context.script_name.is_empty() {
+        format!("/{asset_path}")
+    } else {
+        context.script_name.clone()
+    };
+    let mut cgi = HashMap::from([
         (
             "request_method".to_string(),
             request.method.to_ascii_uppercase(),
         ),
-        ("script_name".to_string(), format!("/{}", asset_path)),
-        ("path_info".to_string(), request.path.clone()),
+        ("script_name".to_string(), script_name),
+        ("path_info".to_string(), String::new()),
+        ("query_string".to_string(), context.query_string.clone()),
+        (
+            "request_url".to_string(),
+            format!("{}://{}{}", context.scheme, host, uri),
+        ),
+        ("server_protocol".to_string(), context.protocol.clone()),
+        ("remote_addr".to_string(), context.remote_addr.clone()),
+        ("remote_host".to_string(), context.remote_addr.clone()),
+        ("remote_port".to_string(), context.remote_port.to_string()),
+        (
+            "https".to_string(),
+            if context.scheme == "https" {
+                "on"
+            } else {
+                "off"
+            }
+            .into(),
+        ),
         ("server_name".to_string(), server_name),
         ("server_port".to_string(), server_port),
         ("http_host".to_string(), host),
@@ -445,17 +654,14 @@ fn cgi_scope_from_request(request: &WebrootRequest, asset_path: &str) -> HashMap
                 .unwrap_or_default(),
         ),
         ("content_length".to_string(), request.body.len().to_string()),
-    ])
-}
-
-fn split_host_port(host: &str) -> (String, String) {
-    if let Some((name, port)) = host.rsplit_once(':') {
-        if !name.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) {
-            return (name.to_string(), port.to_string());
-        }
+    ]);
+    for (name, value) in &request.headers {
+        cgi.insert(
+            format!("http_{}", name.to_ascii_lowercase().replace('-', "_")),
+            value.clone(),
+        );
     }
-
-    (host.to_string(), "8080".to_string())
+    cgi
 }
 
 fn normalize_request_path(path: &str) -> Result<String> {
@@ -526,10 +732,14 @@ fn is_template_path(path: &str) -> bool {
     path.ends_with(".bxm") || path.ends_with(".bxs")
 }
 
-fn text_response(status: u16, body: &str) -> WebrootResponse {
+pub(crate) fn text_response(status: u16, body: &str) -> WebrootResponse {
     WebrootResponse {
         status,
-        headers: HashMap::new(),
+        headers: if status == 405 {
+            vec![("allow".into(), "GET, HEAD, POST".into())]
+        } else {
+            Vec::new()
+        },
         body: body.as_bytes().to_vec(),
     }
 }
@@ -550,6 +760,8 @@ mod tests {
             .handle(WebrootRequest {
                 method: "GET".to_string(),
                 path: "/styles.css".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 query: Default::default(),
                 form: Default::default(),
                 headers: Default::default(),
@@ -559,7 +771,11 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(
-            response.headers.get("content-type").map(String::as_str),
+            response
+                .headers
+                .iter()
+                .find(|(name, _)| name == "content-type")
+                .map(|(_, value)| value.as_str()),
             Some("text/css")
         );
         assert_eq!(response.body, b"body { color: red; }");
@@ -581,12 +797,17 @@ mod tests {
                 form: Default::default(),
                 headers: Default::default(),
                 body: Vec::new(),
+                ..Default::default()
             })
             .unwrap();
 
         assert_eq!(response.status, 200);
         assert_eq!(
-            response.headers.get("content-type").map(String::as_str),
+            response
+                .headers
+                .iter()
+                .find(|(name, _)| name == "content-type")
+                .map(|(_, value)| value.as_str()),
             Some("text/html")
         );
         assert_eq!(String::from_utf8(response.body).unwrap(), "<h1>Index</h1>");
@@ -610,6 +831,7 @@ mod tests {
                 form: Default::default(),
                 headers: Default::default(),
                 body: Vec::new(),
+                ..Default::default()
             })
             .unwrap();
 
@@ -632,6 +854,8 @@ mod tests {
             .handle(WebrootRequest {
                 method: "GET".to_string(),
                 path: "/assets/styles.css".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 query: Default::default(),
                 form: Default::default(),
                 headers: Default::default(),
@@ -670,6 +894,8 @@ mod tests {
             .handle(WebrootRequest {
                 method: "GET".to_string(),
                 path: "/hello.bxm".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 query: HashMap::from([("name".to_string(), "MatchBox".to_string())]),
                 form: Default::default(),
                 headers: Default::default(),
@@ -701,6 +927,7 @@ mod tests {
                 form: HashMap::from([("name".to_string(), "FormValue".to_string())]),
                 headers: Default::default(),
                 body: b"name=FormValue".to_vec(),
+                ..Default::default()
             })
             .unwrap();
 
@@ -734,6 +961,7 @@ mod tests {
                     "application/x-www-form-urlencoded".to_string(),
                 )]),
                 body: b"name=Encoded+Value&city=San%20Antonio".to_vec(),
+                ..Default::default()
             })
             .unwrap();
 
@@ -745,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_methods_return_405() {
+    fn trace_method_returns_405() {
         let temp = tempfile::tempdir().unwrap();
         let webroot = temp.path().canonicalize().unwrap();
         std::fs::write(webroot.join("index.bxm"), "<h1>Index</h1>").unwrap();
@@ -754,7 +982,9 @@ mod tests {
             WebrootEngine::new(FileSystemAssetStore::new(webroot), WebrootConfig::default());
         let response = engine
             .handle(WebrootRequest {
-                method: "PUT".to_string(),
+                method: "TRACE".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 path: "/".to_string(),
                 query: Default::default(),
                 form: Default::default(),
@@ -781,6 +1011,8 @@ mod tests {
         let response = engine
             .handle(WebrootRequest {
                 method: "HEAD".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 path: "/styles.css".to_string(),
                 query: Default::default(),
                 form: Default::default(),
@@ -791,7 +1023,11 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(
-            response.headers.get("content-type").map(String::as_str),
+            response
+                .headers
+                .iter()
+                .find(|(name, _)| name == "content-type")
+                .map(|(_, value)| value.as_str()),
             Some("text/css")
         );
         assert!(response.body.is_empty());
@@ -811,6 +1047,8 @@ mod tests {
             .handle(WebrootRequest {
                 method: "GET".to_string(),
                 path: "/.env".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 query: Default::default(),
                 form: Default::default(),
                 headers: Default::default(),
@@ -828,6 +1066,8 @@ mod tests {
             .handle(WebrootRequest {
                 method: "GET".to_string(),
                 path: "/../outside.txt".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 query: Default::default(),
                 form: Default::default(),
                 headers: Default::default(),
@@ -855,6 +1095,8 @@ mod tests {
             .handle(WebrootRequest {
                 method: "GET".to_string(),
                 path: "/missing/route".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 query: Default::default(),
                 form: Default::default(),
                 headers: Default::default(),
@@ -882,6 +1124,8 @@ mod tests {
             .handle(WebrootRequest {
                 method: "GET".to_string(),
                 path: "/cookie.bxm".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 query: Default::default(),
                 form: Default::default(),
                 headers: HashMap::from([("cookie".to_string(), "theme=dark".to_string())]),
@@ -909,6 +1153,8 @@ mod tests {
             .handle(WebrootRequest {
                 method: "POST".to_string(),
                 path: "/cgi.bxm".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 query: Default::default(),
                 form: Default::default(),
                 headers: HashMap::from([("host".to_string(), "example.test:9090".to_string())]),
@@ -928,6 +1174,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let webroot = temp.path().canonicalize().unwrap();
         std::fs::write(
+            webroot.join("Application.bx"),
+            "class {this.name='session-fixture';this.sessionManagement=true;}",
+        )
+        .unwrap();
+        std::fs::write(
             webroot.join("set.bxm"),
             "<bx:set session.favorite = \"blue\"><bx:output>set</bx:output>",
         )
@@ -944,6 +1195,8 @@ mod tests {
             .handle(WebrootRequest {
                 method: "GET".to_string(),
                 path: "/set.bxm".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 query: Default::default(),
                 form: Default::default(),
                 headers: Default::default(),
@@ -952,7 +1205,9 @@ mod tests {
             .unwrap();
         let session_cookie = first
             .headers
-            .get("set-cookie")
+            .iter()
+            .find(|(name, _)| name == "set-cookie")
+            .map(|(_, value)| value)
             .unwrap()
             .split(';')
             .next()
@@ -963,6 +1218,8 @@ mod tests {
             .handle(WebrootRequest {
                 method: "GET".to_string(),
                 path: "/read.bxm".to_string(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 query: Default::default(),
                 form: Default::default(),
                 headers: HashMap::from([("cookie".to_string(), session_cookie)]),

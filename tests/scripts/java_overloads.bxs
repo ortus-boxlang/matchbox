@@ -1,0 +1,33 @@
+function expect( actual, expected, label ) {
+	if ( actual != expected ) {
+		throw( message = label & ": expected [" & expected & "] got [" & actual & "]" );
+	}
+}
+Math = createObject( "java", "java.lang.Math" );
+expect( Math.max( 1, 2 ), 2, "static max" );
+expect( Math.abs( -3 ), 3, "static abs" );
+expect( Math.pow( 2, 3 ), 8, "static pow" );
+expect( Math.max( 1.5, 0.5 ), 1.5, "static max double" );
+
+expect( createObject( "java", "java.lang.Integer" ).parseInt( "42" ), 42, "parseInt" );
+expect( createObject( "java", "java.lang.String" ).valueOf( 5 ), "5", "valueOf int" );
+expect( createObject( "java", "java.lang.String" ).valueOf( true ), "true", "valueOf boolean" );
+
+sb = createObject( "java", "java.lang.StringBuilder" ).init();
+sb.append( "x" );
+sb.append( 2 );
+sb.append( 1.5 );
+sb.append( true );
+expect( sb.toString(), "x21.5true", "overloaded append" );
+
+sized = createObject( "java", "java.util.ArrayList" ).init( 10 );
+sized.add( "a" );
+expect( sized.size(), 1, "constructor with int" );
+
+try {
+	createObject( "java", "java.lang.Integer" ).parseInt( "nope" );
+	throw( message = "parseInt should have failed" );
+} catch ( any e ) {
+	expect( findNoCase( "NumberFormatException", e.message ) > 0, true, "java exception message: " & e.message );
+}
+println( "java overloads ok" );

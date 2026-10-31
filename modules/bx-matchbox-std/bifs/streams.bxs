@@ -1,0 +1,12 @@
+// New standard-library APIs live here, not in the VM/prelude.
+// Reads return binary, null on timeout, or empty binary at EOF.
+function tcpListen(numeric port=0, string host="127.0.0.1") {
+    return __stdTcpListen(port=port, host=host);
+}
+function tcpConnect(required string host, required numeric port, numeric timeoutMs=5000) {
+    return __stdTcpConnect(host=host, port=port, timeoutMs=timeoutMs);
+}
+function stdInput() { return __stdInput(); }
+function stdOutput() { return __stdOutput(); }
+// Unlike lossy conversion, invalid UTF-8 is an explicit error at protocol boundaries.
+function utf8Decode(required binary data) { return __stdUtf8Decode(data=data); }

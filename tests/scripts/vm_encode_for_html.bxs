@@ -1,0 +1,137 @@
+// encodeForHTML / htmlEditFormat
+// Expected values from BoxLang JVM: Ortus BoxLang™ v1.17.6+65
+// see tests/fixtures/encode_for_html/expected-jvm.txt
+// direct calls and no #39 Case
+
+// case sensitive check
+function check(label, actual,expected){
+    if (compare(actual,expected) != 0){
+        throw( label & ": expected [" & expected & "] but got [" & actual & "]" );
+    }
+}
+
+// lines 14-16
+check("brackets false", encodeForHTML("<b>bold</b>"), "&lt;b&gt;bold&lt;/b&gt;");
+check("brackets true", encodeForHTML("<b>bold</b>", true), "&lt;b&gt;bold&lt;/b&gt;");
+
+// lines 17-19
+check("ampersand false", encodeForHTML("Tom & Jerry"), "Tom &amp; Jerry");
+check("ampersand true", encodeForHTML("Tom & Jerry", true), "Tom &amp; Jerry");
+
+// lines 20-22
+check("double quotes false", encodeForHTML('He said "hi"'), "He said &quot;hi&quot;");
+check("double quotes true", encodeForHTML('He said "hi"', true), "He said &quot;hi&quot;");
+
+// lines 23-25
+check("apostrophe false", encodeForHTML( "it's" ), "it's" );
+check("apostrophe true",  encodeForHTML( "it's", true ), "it's" );
+
+//lines 26-28
+check("accents false", encodeForHTML("café ñ ü ©"), "caf&eacute; &ntilde; &uuml; &copy;" );
+check("accents true",  encodeForHTML("café ñ ü ©", true), "caf&eacute; &ntilde; &uuml; &copy;" );
+
+// lines 29-31
+check("symbols false", encodeForHTML("€ ™ — “quoted” α β ≤ →"),"&euro; &trade; &mdash; &ldquo;quoted&rdquo; &alpha; &beta; &le; &rarr;" );
+check("symbols true",  encodeForHTML("€ ™ — “quoted” α β ≤ →", true),"&euro; &trade; &mdash; &ldquo;quoted&rdquo; &alpha; &beta; &le; &rarr;" );
+
+// lines 32-34
+check( "unicode false", encodeForHTML("日本語 😀"), "日本語 😀");
+check( "unicode true",  encodeForHTML("日本語 😀", true), "日本語 😀");
+
+// lines 35-37
+check("empty false", encodeForHTML( "" ), "");
+check("empty true",  encodeForHTML( "", true ), "");
+
+// lines 38-40 (no #39)
+check( "already encoded false", encodeForHTML("&amp; &lt;b&gt;"), "&amp;amp; &amp;lt;b&amp;gt;" );
+check( "already encoded true",  encodeForHTML("&amp; &lt;b&gt;", true), "&amp;amp; &amp;lt;b&amp;gt;" );
+
+// lines 41-43
+check("url encoded false", encodeForHTML("%3Cscript%3E"), "%3Cscript%3E");
+check("url encoded true",  encodeForHTML("%3Cscript%3E", true), "%3Cscript%3E");
+
+// lines 44-46
+check( "script false", encodeForHTML( "<script>alert('x')</script>" ), "&lt;script&gt;alert('x')&lt;/script&gt;" );
+check( "script true",  encodeForHTML( "<script>alert('x')</script>", true ), "&lt;script&gt;alert('x')&lt;/script&gt;" );
+
+// lines 47-52
+whitespace = "line1" & char(10) & "line2" & char(9) & "tab";
+check("whitespace false", encodeForHTML(whitespace), whitespace);
+check("whitespace true",  encodeForHTML(whitespace, true), whitespace);
+
+// lines 53-55
+check("alias htmlEditFormat", htmlEditFormat("<a>"), "&lt;a&gt;");
+check("UPPER CASE",ENCODEFORHTML("<a>"), "&lt;a&gt;");
+check("Mixed Case alias", HtmlEditFormat("<a>"), "&lt;a&gt;");
+
+// line 56
+check( "named args", encodeForHTML( string = "<a>", canonicalize = true ), "&lt;a&gt;" );
+
+// lines 57-58
+check("number",  encodeForHTML( 123.5 ), "123.5");
+check("boolean", encodeForHTML( true ), "true");
+
+// lines 65-67
+check("canon=yes", encodeForHTML("<x>","yes"), "&lt;x&gt;");
+check("canon=1", encodeForHTML("<x>", 1), "&lt;x&gt;");
+check("3 args",encodeForHTML("<x>", false, "extra"),"&lt;x&gt;");
+
+// lines 59-60
+if (!isNull(encodeForHTML(null))){
+    throw("null: expected NULL");
+}
+if (!isNull( encodeForHTML(null, true))){
+    throw("null + canon: expected NULL");
+}
+
+// lines 61-64, 68
+errored = false;
+try {
+    encodeForHTML({});
+} catch(e){
+    errored = true;
+}
+if (!errored) {
+    throw("struct: expected an error");
+}
+errored = false;
+try {
+    encodeForHTML([]);
+} catch(e) {
+    errored = true;
+}
+if (!errored){
+    throw("array: expected an error");
+}
+
+errored = false;
+try {
+    encodeForHTML("<x>", "banana");
+} catch(e) {
+    errored = true;
+}
+if (!errored ){
+    throw( "canon=banana: expected an error");
+}
+
+errored = false;
+try {
+    "<a>".encodeForHTML();
+} catch(e) {
+    errored = true;
+}
+if (!errored ){
+    throw("member call: expected an error");
+}
+
+errored = false;
+try {
+    encodeForHTML();
+} catch(e) {
+    errored = true;
+}
+if (!errored){
+    throw("no args: expected an error");
+}
+
+println("encodeForHTML OK");

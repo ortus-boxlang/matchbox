@@ -1,0 +1,42 @@
+// Script-level `variables` is the same store as bare variables; `request` exists in scripts and classes.
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+variables.k = 1;
+expect( k, 1, "variables.k is visible as k" );
+j = 2;
+expect( variables.j, 2, "bare j is visible as variables.j" );
+k = 5;
+expect( variables.k, 5, "bare assignment updates variables.k" );
+variables.k = 6;
+expect( k, 6, "variables assignment updates k" );
+
+variables.n = 1;
+variables.n++;
+expect( n, 2, "increment through variables" );
+variables.n += 3;
+expect( n, 5, "compound assignment through variables" );
+
+function bump() { variables.counter = ( variables.counter ?: 0 ) + 1; return counter; }
+expect( bump(), 1, "function writes script variables" );
+expect( bump(), 2, "function reads script variables" );
+expect( counter, 2, "script sees the function's writes" );
+
+// class instances keep their own variables scope
+shared = 1;
+class Holder {
+    function init() { variables.shared = 99; return this; }
+    function get() { return variables.shared; }
+}
+expect( new Holder().get(), 99, "instance variables" );
+expect( shared, 1, "instance variables do not leak into the script" );
+
+// request scope
+request.x = 1;
+expect( request.x, 1, "request in script" );
+request.x++;
+expect( request.x, 2, "request increment" );
+class RequestUser { function m() { request.fromClass = 5; return request.x + request.fromClass; } }
+expect( new RequestUser().m(), 7, "request in a class method" );
+expect( request.fromClass, 5, "request is shared with the script" );

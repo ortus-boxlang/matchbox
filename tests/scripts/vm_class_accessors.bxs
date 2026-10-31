@@ -1,0 +1,46 @@
+// BoxLang generates property accessors by default, setters return the instance, and
+// obj.name / obj.name = v use getName() / setName() (invokeImplicitAccessor).
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+class Person {
+    property name="title" default="x";
+    property string label default="L";
+    property numeric count default=5;
+}
+p = new Person();
+expect( p.getTitle() & p.getLabel() & p.getCount(), "xL5", "generated getters with defaults" );
+
+p.setTitle( "z" );
+expect( p.getTitle(), "z", "generated setter" );
+expect( p.setTitle( "a" ).setLabel( "b" ).getLabel(), "b", "setters return the instance so calls chain" );
+expect( p.getTitle(), "a", "chained setter applied" );
+
+// implicit accessors
+expect( p.title & p.label, "ab", "obj.name calls the getter" );
+p.title = "q";
+expect( p.getTitle(), "q", "obj.name = v calls the setter" );
+
+// opt out
+class Plain accessors=false { property name="a" default="1"; function read() { return variables.a; } }
+n = new Plain();
+expect( n.read(), "1", "default still applied" );
+caught = "";
+try { n.getA(); } catch ( any e ) { caught = "missing"; }
+expect( caught, "missing", "accessors=false generates nothing" );
+
+// user-defined methods win, also for the implicit accessor
+class Custom {
+    property name="v" default="1";
+    function getV() { return "custom"; }
+    function setV( value ) { this.log = "setV:" & value; return this; }
+}
+c = new Custom();
+expect( c.getV() & c.v, "customcustom", "user getter wins" );
+c.v = "x";
+expect( c.log, "setV:x", "user setter runs for obj.name = v" );
+
+// existing fields are not intercepted
+class Field { function init() { this.shared = 1; return this; } function getShared() { return 99; } }
+expect( new Field().shared, 1, "a real field wins over the implicit getter" );

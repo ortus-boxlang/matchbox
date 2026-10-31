@@ -1,0 +1,25 @@
+// BoxLang class annotations accept a bare name: class extends=Base implements=Speaker
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+interface Speaker { function speak(); }
+interface Walker { function walk(); }
+class Base { function hello() { return "base"; } }
+
+class Child extends=Base implements=Speaker { function speak() { return "woof"; } }
+c = new Child();
+expect( c.hello() & c.speak(), "basewoof", "unquoted extends and implements" );
+expect( c instanceof Speaker, true, "instanceof the unquoted interface" );
+
+class Colon extends:Base { }
+expect( new Colon().hello(), "base", "extends: form" );
+
+class Quoted extends="Base" implements="Speaker" { function speak() { return "q"; } }
+expect( new Quoted().hello() & new Quoted().speak(), "baseq", "quoted form still works" );
+
+class Both extends=Base implements="Speaker,Walker" {
+    function speak() { return "s"; }
+    function walk() { return "w"; }
+}
+expect( new Both().speak() & new Both().walk(), "sw", "several interfaces" );

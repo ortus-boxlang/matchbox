@@ -1,0 +1,45 @@
+// Closures at script level must see the for-in loop variable (shared, like BoxLang).
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+fs = [];
+for ( n in [ 1, 2, 3 ] ) { fs.append( () => n * 10 ); }
+expect( fs[ 1 ](), 30, "closure sees shared loop variable" );
+
+seen = [];
+for ( n in [ 1, 2 ] ) { seen.append( runAsync( () => n * n ).get() ); }
+expect( seen.toList(), "1,4", "runAsync sees loop variable" );
+
+pairs = [];
+for ( v, i in [ 5, 6 ] ) { f = () => v & i; pairs.append( f() ); }
+expect( pairs.toList(), "51,62", "item and index visible" );
+
+for ( n in [ 7, 8 ] ) { }
+expect( n, 8, "loop variable after loop" );
+
+// inside a function it already worked: keep it covered
+function inFunction() {
+    var out = [];
+    for ( n in [ 1, 2 ] ) { out.append( ( () => n * 2 )() ); }
+    return out.toList();
+}
+expect( inFunction(), "2,4", "function loop variable" );
+
+// the body can assign the loop variable and closures see the assignment
+for ( n in [ 1 ] ) { n = 9; g = () => n; }
+expect( g(), 9, "assignment in body reaches closures" );
+expect( n, 9, "assignment in body is visible after the loop" );
+for ( n in [ 1, 2 ] ) { n++; }
+expect( n, 3, "increment of the loop variable" );
+
+// class bodies must not write into the caller's script variables
+outer = 99;
+class LoopHolder { function init() { for ( outer in [ 1, 2 ] ) { } return this; } }
+new LoopHolder();
+expect( outer, 99, "class loops do not touch script variables" );
+outer2 = 5;
+class PseudoLoop { for ( outer2 in [ 1, 2 ] ) { } }
+
+new PseudoLoop();
+expect( outer2, 5, "class body loops do not touch script variables" );

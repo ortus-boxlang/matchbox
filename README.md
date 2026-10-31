@@ -126,11 +126,14 @@ MatchBox is fully compatible with the WebAssembly System Interface (WASI). Compi
 matchbox --target wasm my_app.bxs   # Produces a standalone WASM/WASI binary
 matchbox --target js   my_lib.bxs   # Produces an ES Module wrapper
 ```
+Desktop `bif-zip` is not forwarded to WASM/WASI runners: its C codecs require
+an additional C sysroot. Native runners retain ZIP support; enabling it on the
+CLI must not prevent packaging web code that does not use ZIP.
 
 ### ESP32 Embedded
 MatchBox can flash BoxLang bytecode directly to ESP32 microcontrollers, enabling high-level language features on low-power hardware.
 ```bash
-matchbox --target esp32 --chip esp32s3 app.bxs --flash
+matchbox --target esp32 --chip esp32s3 --flash app.bxs
 ```
 
 ## Technical Architecture
@@ -140,3 +143,34 @@ matchbox --target esp32 --chip esp32s3 app.bxs --flash
 3. **VM**: Stack-based machine with a cooperative fiber scheduler.
 4. **BXM Transpiler**: Ahead-of-time markup transpilation for near-native template rendering.
 5. **Portability**: Native binaries are produced by appending bytecode to pre-compiled architecture-specific runner stubs.
+
+Struct/instance shape layouts use structurally shared HAMT field maps (`rpds`),
+not complete field-map copies for each insertion. Shape IDs/property indices
+remain immutable for member caches and JIT guards. Layouts still live for the VM
+lifetime; this removes quadratic prefix copying, not all metadata retention.
+`python3 tests/wide_struct.py /path/to/matchbox` checks source-free wide structs,
+ordering/deletion, case-sensitive keys, copies, GC and a Linux 256 MiB RSS ceiling.
+It adds no consumer startup download or native-provider ABI change.
+
+Positional native calls skip global-name recovery; named calls still resolve the
+BIF name for argument ordering. `python3 tests/native_call_scaling.py /path/to/matchbox`
+checks source-free positional/named/reference/callback behavior and rejects
+positional-call slowdown from 8,192 unrelated globals.
+
+Canonical interner hits borrow the existing map key before allocating a lowercase
+fallback. Mixed-case misses keep Unicode folding/presentation behavior; exact
+case-sensitive IDs remain separate. `cargo test -p matchbox_vm --test canonical_keys`
+checks allocation-free repeated ASCII/Unicode struct reads and writes through the
+public VM API; the wide-struct fixture also checks key spelling and exact Unicode keys.
+
+VM-owned functions share guarded inline-cache buffers across calls instead of
+cloning instruction-sized arrays and compiler constant maps. Invocation scopes,
+arguments, receivers and promoted GC constants remain independent. Cache state
+is reset on script entry/constant promotion; immutable programs remain Send/Sync
+and serialized bytecode/native-provider ABI are unchanged. Cache buffers now live
+with their owning function: lower allocation traffic trades for retained cache
+memory, not a guaranteed RSS reduction. The same public allocation suite checks
+cold identifier sites (1/100 reads: 10/10 allocations) and ten warmed calls to
+small/padded functions (24,160/24,160 allocated bytes), plus VM identity and
+Unicode rope operands. `vm_function_execution.bxs` covers recursion, aliases,
+independent closures, changing layouts, case sensitivity and GC.

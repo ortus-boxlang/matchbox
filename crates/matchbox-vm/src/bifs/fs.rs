@@ -15,8 +15,8 @@ use uuid::Uuid;
 
 #[cfg(all(feature = "bif-io", not(target_arch = "wasm32")))]
 use crate::datasource::{
-    traits::{QueryColumn, QueryColumnType, QueryResult, SqlValue},
     BxQuery,
+    traits::{QueryColumn, QueryColumnType, QueryResult, SqlValue},
 };
 #[cfg(feature = "bif-io")]
 use std::{cell::RefCell, rc::Rc};
@@ -240,7 +240,9 @@ pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
 
 #[cfg(feature = "bif-io")]
 fn file_name(path: &Path) -> &str {
-    path.file_name().and_then(|name| name.to_str()).unwrap_or_default()
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
 }
 
 #[cfg(feature = "bif-io")]
@@ -353,7 +355,10 @@ fn directory_entries_to_query(entries: &[PathBuf]) -> QueryResult {
         .iter()
         .map(|path| {
             let metadata = path.metadata().ok();
-            let size = metadata.as_ref().map(|metadata| metadata.len()).unwrap_or(0);
+            let size = metadata
+                .as_ref()
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
             let modified = metadata
                 .as_ref()
                 .and_then(|metadata| metadata.modified().ok())
@@ -422,11 +427,9 @@ pub fn file_move(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     let src = vm.to_string(args[0]);
     let dest = vm.to_string(args[1]);
 
-    if Path::new(&dest).exists() {
-        fs::remove_file(&dest).map_err(|e| e.to_string())?;
-    }
-    fs_extra::file::move_file(&src, &dest, &fs_extra::file::CopyOptions::new())
-        .map_err(|e| e.to_string())?;
+    // ponytail: atomic same-filesystem moves; cross-device moves need a staged-copy implementation.
+    // Never remove the destination first: a failed move must leave its contents intact.
+    fs::rename(&src, &dest).map_err(|e| e.to_string())?;
 
     Ok(BxValue::new_bool(true))
 }
@@ -1290,7 +1293,10 @@ mod tests {
 
     #[test]
     fn preserves_either_supported_separator() {
-        assert_eq!(with_trailing_separator("C:\\Temp\\".to_string()), "C:\\Temp\\");
+        assert_eq!(
+            with_trailing_separator("C:\\Temp\\".to_string()),
+            "C:\\Temp\\"
+        );
         assert_eq!(with_trailing_separator("C:/Temp/".to_string()), "C:/Temp/");
     }
 

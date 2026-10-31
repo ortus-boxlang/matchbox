@@ -1,0 +1,19 @@
+function checkBoxAST() {
+var source = "function add(a, b) { return a + b; }";
+var ast = boxAST(source=source);
+if (ast.ASTType != "BoxScript" || len(ast.statements) != 1) { throw "Expected a real script AST"; }
+var fn = ast.statements[1];
+if (fn.ASTType != "BoxFunctionDeclaration" || fn.name != "add" || len(fn.args) != 2) { throw "Missing function declaration"; }
+if (fn.body[1].expression.ASTType != "BoxBinaryOperation") { throw "Missing return expression"; }
+if (fn.position.start.line != 1 || fn.position.start.column != 0) { throw "Incorrect source position"; }
+if (find("BoxFunctionDeclaration", source.toAST(returnType="json")) == 0) { throw "String member or named arguments failed"; }
+if (len(boxAST(source=source, returnType="text")) == 0) { throw "Missing text output"; }
+var rejected = false;
+try { boxAST(source="function broken() {"); } catch (any e) { rejected = true; }
+if (!rejected) { throw "Strict parsing accepted an incomplete block"; }
+rejected = false;
+try { boxAST(source="x=1", returnType="invalid"); } catch (any e) { rejected = true; }
+if (!rejected) { throw "Invalid returnType accepted"; }
+println("boxAST contract: OK");
+}
+checkBoxAST();

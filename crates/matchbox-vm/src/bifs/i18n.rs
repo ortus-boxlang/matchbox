@@ -29,7 +29,11 @@ fn parse_locale(value: &str) -> Result<String, String> {
 
     let normalized = value.replace('-', "_");
     let alias = match normalized.to_ascii_lowercase().as_str() {
-        "us" | "united states" | "english" | "english (us)" | "english (usa)"
+        "us"
+        | "united states"
+        | "english"
+        | "english (us)"
+        | "english (usa)"
         | "english (united states)" => Some("en_US"),
         "germany" | "german" | "german (standard)" => Some("de_DE"),
         "france" | "french" | "french (standard)" => Some("fr_FR"),
@@ -155,14 +159,32 @@ pub fn register_i18n_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
     bifs.insert("getlocale".to_string(), get_locale as BxNativeFunction);
     bifs.insert("setlocale".to_string(), set_locale as BxNativeFunction);
     bifs.insert("clearlocale".to_string(), clear_locale as BxNativeFunction);
-    bifs.insert("currencyformat".to_string(), currency_format as BxNativeFunction);
-    bifs.insert("lscurrencyformat".to_string(), currency_format as BxNativeFunction);
-    bifs.insert("getlocaledisplayname".to_string(), get_locale_display_name as BxNativeFunction);
-    bifs.insert("getlocaleinfo".to_string(), get_locale_info as BxNativeFunction);
+    bifs.insert(
+        "currencyformat".to_string(),
+        currency_format as BxNativeFunction,
+    );
+    bifs.insert(
+        "lscurrencyformat".to_string(),
+        currency_format as BxNativeFunction,
+    );
+    bifs.insert(
+        "getlocaledisplayname".to_string(),
+        get_locale_display_name as BxNativeFunction,
+    );
+    bifs.insert(
+        "getlocaleinfo".to_string(),
+        get_locale_info as BxNativeFunction,
+    );
     bifs.insert("iscurrency".to_string(), is_currency as BxNativeFunction);
     bifs.insert("lsiscurrency".to_string(), is_currency as BxNativeFunction);
-    bifs.insert("parsecurrency".to_string(), parse_currency as BxNativeFunction);
-    bifs.insert("lsparsecurrency".to_string(), parse_currency as BxNativeFunction);
+    bifs.insert(
+        "parsecurrency".to_string(),
+        parse_currency as BxNativeFunction,
+    );
+    bifs.insert(
+        "lsparsecurrency".to_string(),
+        parse_currency as BxNativeFunction,
+    );
 }
 
 fn get_locale(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
@@ -181,7 +203,9 @@ fn set_locale(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     }
     let locale = parse_locale(&vm.to_string(args[0]))?;
     store_locale(vm, &locale);
-    Ok(BxValue::new_ptr(vm.string_new(locale_display_name(&locale, "en_US"))))
+    Ok(BxValue::new_ptr(
+        vm.string_new(locale_display_name(&locale, "en_US")),
+    ))
 }
 
 fn clear_locale(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
@@ -197,7 +221,9 @@ fn currency_format(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
         args[0].as_number()
     } else {
         let s = vm.to_string(args[0]);
-        s.trim().parse::<f64>().map_err(|_| format!("currencyFormat() expected number, got '{}'", s))?
+        s.trim()
+            .parse::<f64>()
+            .map_err(|_| format!("currencyFormat() expected number, got '{}'", s))?
     };
     let kind = args
         .get(1)
@@ -223,7 +249,9 @@ fn get_locale_display_name(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValu
     } else {
         locale.clone()
     };
-    Ok(BxValue::new_ptr(vm.string_new(locale_display_name(&locale, &display_locale))))
+    Ok(BxValue::new_ptr(
+        vm.string_new(locale_display_name(&locale, &display_locale)),
+    ))
 }
 
 fn get_locale_info(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -298,7 +326,9 @@ fn is_currency(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     } else {
         current_locale(vm)
     };
-    let has_marker = s.chars().any(|ch| matches!(ch, '$' | '€' | '£' | '¥' | '￥'))
+    let has_marker = s
+        .chars()
+        .any(|ch| matches!(ch, '$' | '€' | '£' | '¥' | '￥'))
         || s.contains("USD")
         || s.contains("EUR")
         || s.contains("GBP")
@@ -328,7 +358,8 @@ fn parse_currency(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String
     } else {
         current_locale(vm)
     };
-    let num = parse_currency_value(&s, &locale).map_err(|_| format!("parseCurrency() cannot parse '{}'", s))?;
+    let num = parse_currency_value(&s, &locale)
+        .map_err(|_| format!("parseCurrency() cannot parse '{}'", s))?;
     Ok(BxValue::new_number(num))
 }
 
@@ -338,15 +369,16 @@ fn format_currency(number: f64, kind: &str, locale: &str) -> Result<String, Stri
         return Err(format!("currencyFormat() has invalid type '{}'", kind));
     }
     let parts = locale_parts(locale);
-    let (symbol, code, decimal, group, fraction_digits, space_before) = match (parts.language, parts.country) {
-        ("de", _) => ('€', "EUR", ',', '.', 2, true),
-        ("ja", _) => ('￥', "JPY", '.', ',', 0, false),
-        ("en", "GB") => ('£', "GBP", '.', ',', 2, false),
-        ("en", _) => ('$', "USD", '.', ',', 2, false),
-        ("zh", _) => ('¥', "CNY", '.', ',', 2, false),
-        ("ar", "JO") => ('د', "JOD", '.', ',', 3, true),
-        _ => ('$', "USD", '.', ',', 2, false),
-    };
+    let (symbol, code, decimal, group, fraction_digits, space_before) =
+        match (parts.language, parts.country) {
+            ("de", _) => ('€', "EUR", ',', '.', 2, true),
+            ("ja", _) => ('￥', "JPY", '.', ',', 0, false),
+            ("en", "GB") => ('£', "GBP", '.', ',', 2, false),
+            ("en", _) => ('$', "USD", '.', ',', 2, false),
+            ("zh", _) => ('¥', "CNY", '.', ',', 2, false),
+            ("ar", "JO") => ('د', "JOD", '.', ',', 3, true),
+            _ => ('$', "USD", '.', ',', 2, false),
+        };
     let negative = number.is_sign_negative();
     let rounded = format!("{:.*}", fraction_digits, number.abs());
     let (whole, fraction) = rounded.split_once('.').unwrap_or((&rounded, ""));

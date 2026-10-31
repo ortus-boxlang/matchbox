@@ -1,0 +1,59 @@
+function expect( actual, expected, label ) {
+	if ( actual != expected ) {
+		throw( message = label & ": expected [" & expected & "] got [" & actual & "]" );
+	}
+}
+out = [];
+outer: for ( i = 1; i <= 3; i++ ) {
+	for ( j = 1; j <= 3; j++ ) {
+		if ( j == 2 ) { continue outer; }
+		out.append( i & "-" & j );
+	}
+}
+expect( out.toList(), "1-1,2-1,3-1", "continue outer (classic)" );
+
+out = [];
+outer: for ( i in [ 1, 2, 3 ] ) {
+	for ( j in [ 1, 2, 3 ] ) {
+		if ( i == 2 ) { break outer; }
+		if ( j == 2 ) { continue outer; }
+		out.append( i & "-" & j );
+	}
+}
+expect( out.toList(), "1-1", "break and continue outer (for-in)" );
+
+out = [];
+n = 0;
+loop1: while ( n < 5 ) {
+	n++;
+	m = 0;
+	do {
+		m++;
+		if ( m == 2 ) { continue loop1; }
+		if ( n == 4 ) { break loop1; }
+		out.append( n & ":" & m );
+	} while ( m < 3 );
+}
+expect( out.toList(), "1:1,2:1,3:1", "while and do labels" );
+
+out = [];
+outer: for ( i = 1; i <= 2; i++ ) {
+	switch ( i ) {
+		case 1: out.append( "one" ); break;
+		case 2: out.append( "two" ); break outer;
+	}
+	out.append( "after" & i );
+}
+expect( out.toList(), "one,after1,two", "break outer from switch" );
+
+function find( rows ) {
+	found = "";
+	rows: for ( row in rows ) {
+		for ( cell in row ) {
+			if ( cell == 5 ) { found = "yes"; break rows; }
+		}
+	}
+	return found;
+}
+expect( find( [ [ 1, 2 ], [ 4, 5 ] ] ), "yes", "label in function" );
+println( "labeled loops ok" );

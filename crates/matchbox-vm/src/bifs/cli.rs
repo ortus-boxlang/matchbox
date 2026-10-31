@@ -1,4 +1,3 @@
-#[cfg(feature = "bif-cli")]
 use crate::types::{BxVM, BxValue};
 #[cfg(feature = "bif-cli")]
 use std::io::{self, IsTerminal, Write};
@@ -30,68 +29,92 @@ pub fn cli_exit(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     Ok(BxValue::new_null())
 }
 
-#[cfg(feature = "bif-cli")]
-pub fn cli_get_args(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
-    let all_args = vm.get_cli_args();
-    let options_id = vm.struct_new();
-    let positionals_id = vm.array_new();
+/// Value of a parsed command line option.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CliOptionValue {
+    Flag(bool),
+    Text(String),
+}
 
-    let mut user_args = Vec::new();
-    // Always skip the first argument (executable path)
-    if !all_args.is_empty() {
-        let mut skip = true;
-        for arg in all_args {
-            if skip {
-                skip = false;
-                continue;
-            }
-            user_args.push(arg);
-        }
+fn clean_quoted_value(value: &str) -> &str {
+    let quoted = |quote: char| value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote);
+    if quoted('"') || quoted('\'') {
+        &value[1..value.len() - 1]
+    } else {
+        value
     }
+}
 
-    let mut index = 0;
-    while index < user_args.len() {
-        let arg = &user_args[index];
-        if arg.starts_with("--") {
-            let part = &arg[2..];
-            if part.starts_with('!') {
-                vm.struct_set(options_id, &part[1..], BxValue::new_bool(false));
-            } else if part.starts_with("no-") {
-                vm.struct_set(options_id, &part[3..], BxValue::new_bool(false));
-            } else if let Some(idx) = part.find('=') {
-                let key = &part[..idx];
-                let val = &part[idx + 1..];
-                let val_id = vm.string_new(val.to_string());
-                vm.struct_set(options_id, key, BxValue::new_ptr(val_id));
-            } else if index + 1 < user_args.len() && !user_args[index + 1].starts_with('-') {
-                index += 1;
-                let val_id = vm.string_new(user_args[index].clone());
-                vm.struct_set(options_id, part, BxValue::new_ptr(val_id));
+/// Port of BoxLang's `CLIUtil.parseArguments`: `--option`, `--option=value` (optionally quoted),
+/// `--!option` / `--no-option` (false), `-o`, `-o=value`, combined `-abc`; everything else is
+/// positional. A value is only ever attached with `=`, and a repeated option overrides the earlier one.
+pub fn parse_cli_arguments(args: &[String]) -> (Vec<(String, CliOptionValue)>, Vec<String>) {
+    let mut options: Vec<(String, CliOptionValue)> = Vec::new();
+    let mut positionals = Vec::new();
+    let mut put = |key: String, value: CliOptionValue| {
+        options.retain(|(existing, _)| !existing.eq_ignore_ascii_case(&key));
+        options.push((key, value));
+    };
+    for arg in args {
+        if let Some(rest) = arg.strip_prefix("--") {
+            if let Some(negated) = arg.strip_prefix("--!").or_else(|| arg.strip_prefix("--no-")) {
+                put(negated.trim().to_string(), CliOptionValue::Flag(false));
             } else {
-                vm.struct_set(options_id, part, BxValue::new_bool(true));
+                match rest.split_once('=') {
+                    None => put(rest.trim().to_string(), CliOptionValue::Flag(true)),
+                    Some((key, value)) => put(
+                        key.trim().to_string(),
+                        CliOptionValue::Text(clean_quoted_value(value.trim()).to_string()),
+                    ),
+                }
             }
-        } else if arg.starts_with('-') && arg.len() > 1 {
-            let part = &arg[1..];
-            if let Some(idx) = part.find('=') {
-                let key = &part[..idx];
-                let val = &part[idx + 1..];
-                let val_id = vm.string_new(val.to_string());
-                vm.struct_set(options_id, key, BxValue::new_ptr(val_id));
-            } else {
-                vm.struct_set(options_id, part, BxValue::new_bool(true));
+        } else if arg.starts_with('-') && arg.chars().count() > 1 {
+            let chars: Vec<char> = arg.chars().collect();
+            for i in 1..chars.len() {
+                if i == 1 && chars.len() > 2 && chars[2] == '=' {
+                    let value: String = chars[3..].iter().collect();
+                    put(chars[1].to_string(), CliOptionValue::Text(clean_quoted_value(value.trim()).to_string()));
+                    break;
+                }
+                put(chars[i].to_string(), CliOptionValue::Flag(true));
             }
         } else {
-            let s_id = vm.string_new(arg.clone());
-            vm.array_push(positionals_id, BxValue::new_ptr(s_id));
+            positionals.push(arg.clone());
         }
-        index += 1;
+    }
+    (options, positionals)
+}
+
+/// `{ options, positionals }` for the given user arguments (the executable is not included).
+pub fn parsed_arguments_value(vm: &mut dyn BxVM, user_args: &[String]) -> BxValue {
+    let (options, positionals) = parse_cli_arguments(user_args);
+
+    let options_id = vm.struct_new();
+    for (key, value) in options {
+        let value = match value {
+            CliOptionValue::Flag(flag) => BxValue::new_bool(flag),
+            CliOptionValue::Text(text) => BxValue::new_ptr(vm.string_new(text)),
+        };
+        vm.struct_set(options_id, &key, value);
+    }
+    let positionals_id = vm.array_new();
+    for positional in positionals {
+        let value = BxValue::new_ptr(vm.string_new(positional));
+        vm.array_push(positionals_id, value);
     }
 
     let result_id = vm.struct_new();
     vm.struct_set(result_id, "options", BxValue::new_ptr(options_id));
     vm.struct_set(result_id, "positionals", BxValue::new_ptr(positionals_id));
 
-    Ok(BxValue::new_ptr(result_id))
+    BxValue::new_ptr(result_id)
+}
+
+#[cfg(feature = "bif-cli")]
+pub fn cli_get_args(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    // The first entry is the executable.
+    let user_args: Vec<String> = vm.get_cli_args().into_iter().skip(1).collect();
+    Ok(parsed_arguments_value(vm, &user_args))
 }
 
 #[cfg(feature = "bif-cli")]
@@ -394,4 +417,62 @@ pub fn cli_select(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String
 
     #[cfg(target_arch = "wasm32")]
     Err("cliSelect not supported in WASM environment".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use CliOptionValue::{Flag, Text};
+
+    fn parse(args: &[&str]) -> (Vec<(String, CliOptionValue)>, Vec<String>) {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        parse_cli_arguments(&args)
+    }
+
+    fn option(options: &[(String, CliOptionValue)], key: &str) -> Option<CliOptionValue> {
+        options.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn boxlang_documented_example() {
+        let (options, positionals) = parse(&["--debug", "--!verbose", "--config=prod.json", "-o='/path/to/file'", "-v", "my/path/template"]);
+        assert_eq!(option(&options, "debug"), Some(Flag(true)));
+        assert_eq!(option(&options, "verbose"), Some(Flag(false)));
+        assert_eq!(option(&options, "config"), Some(Text("prod.json".into())));
+        assert_eq!(option(&options, "o"), Some(Text("/path/to/file".into())));
+        assert_eq!(option(&options, "v"), Some(Flag(true)));
+        assert_eq!(positionals, ["my/path/template"]);
+    }
+
+    #[test]
+    fn cli_scripting_docs_example() {
+        let (options, positionals) = parse(&["hola", "luis=majano", "--test"]);
+        assert_eq!(positionals, ["hola", "luis=majano"]);
+        assert_eq!(options, [("test".to_string(), Flag(true))]);
+    }
+
+    #[test]
+    fn values_are_only_attached_with_equals() {
+        let (options, positionals) = parse(&["--name", "luis"]);
+        assert_eq!(option(&options, "name"), Some(Flag(true)));
+        assert_eq!(positionals, ["luis"]);
+    }
+
+    #[test]
+    fn negation_quotes_and_combined_shorthand() {
+        let (options, _) = parse(&["--no-debug", "--message=\"Hello World\"", "--single='a b'", "-abc"]);
+        assert_eq!(option(&options, "debug"), Some(Flag(false)));
+        assert_eq!(option(&options, "message"), Some(Text("Hello World".into())));
+        assert_eq!(option(&options, "single"), Some(Text("a b".into())));
+        for key in ["a", "b", "c"] {
+            assert_eq!(option(&options, key), Some(Flag(true)));
+        }
+    }
+
+    #[test]
+    fn repeated_options_override_and_a_lone_dash_is_positional() {
+        let (options, positionals) = parse(&["--x=1", "--x=2", "-"]);
+        assert_eq!(options, [("x".to_string(), Text("2".into()))]);
+        assert_eq!(positionals, ["-"]);
+    }
 }

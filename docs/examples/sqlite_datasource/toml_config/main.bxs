@@ -1,0 +1,12 @@
+// TOML-configured SQLite datasource example.
+// Requires: cargo build --features bif-datasource
+
+result = queryExecute("SELECT 1 AS val", null, { datasource: "db" })
+if (result.recordCount != 1) {
+    throw "expected 1 row, got " & result.recordCount
+}
+if (queryColumnData(result, "val")[1] != 1) {
+    throw "expected val == 1"
+}
+
+println("toml sqlite datasource: OK")

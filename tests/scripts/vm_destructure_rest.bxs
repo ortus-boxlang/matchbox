@@ -1,0 +1,43 @@
+// Destructuring rest elements: [ a, ...rest ] and { a, ...rest } (BoxLang ArrayDestructurer / ObjectDestructurer).
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+[ a, ...rest ] = [ 1, 2, 3 ];
+expect( a, 1, "array head" );
+expect( rest.toList(), "2,3", "array rest" );
+
+[ first, second, ...tail ] = [ 1, 2, 3, 4, 5 ];
+expect( tail.toList(), "3,4,5", "array rest after two" );
+
+[ only, ...none ] = [ 1 ];
+expect( only, 1, "single element" );
+expect( none.len(), 0, "empty array rest" );
+
+[ ...everything ] = [ 7, 8 ];
+expect( everything.toList(), "7,8", "rest only" );
+
+source = [ 1, 2, 3 ];
+[ h, ...copy ] = source;
+copy.append( 99 );
+expect( source.len(), 3, "rest is a copy" );
+
+{ name, ...others } = { name: "x", age: 3, city: "y" };
+expect( name, "x", "struct name" );
+expect( others.keyExists( "age" ), true, "struct rest has age" );
+expect( others.keyExists( "city" ), true, "struct rest has city" );
+expect( others.keyExists( "name" ), false, "struct rest excludes bound key" );
+expect( others.len(), 2, "struct rest size" );
+
+{ name: alias, ...remaining } = { name: "x", age: 3 };
+expect( alias, "x", "renamed key" );
+expect( remaining.len(), 1, "rest after renamed key" );
+
+{ ...all } = { a: 1, b: 2 };
+expect( all.len(), 2, "struct rest only" );
+
+function inFunction( data ) {
+    [ head, ...restOfData ] = data;
+    return head & ":" & restOfData.toList();
+}
+expect( inFunction( [ 1, 2, 3 ] ), "1:2,3", "inside a function" );

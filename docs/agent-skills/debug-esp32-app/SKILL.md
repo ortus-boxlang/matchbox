@@ -205,7 +205,7 @@ espcoredump.py info_corefile \
 
 **Fix:**
 ```bash
-matchbox app.bxs --target esp32 --chip esp32s3 --full-flash
+matchbox --target esp32 --chip esp32s3 --full-flash app.bxs
 ```
 
 ### "Platform services failed"

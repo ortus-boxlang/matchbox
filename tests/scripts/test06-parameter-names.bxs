@@ -1,0 +1,8 @@
+// Existing accepted bytecode permits duplicate folded names; their scope is authoritative.
+function sameParameterName(value = 7, VALUE = 11) {
+    assert value == 7 : "Folded duplicate parameter names lost shared scope behavior";
+    return VALUE;
+}
+assert sameParameterName() == 7;
+assert sameParameterName(7) == 7;
+println("Duplicate folded parameter names preserve shared argument binding: OK");

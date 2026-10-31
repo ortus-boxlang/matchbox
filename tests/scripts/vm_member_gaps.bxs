@@ -1,0 +1,47 @@
+function expect( actual, expected, label ) {
+	if ( actual != expected ) {
+		throw( message = label & ": expected [" & expected & "] got [" & actual & "]" );
+	}
+}
+s = { a: 1, b: 2, c: 3 };
+expect( s.keyArray().toList(), "a,b,c", "keyArray" );
+expect( s.keyList(), "a,b,c", "keyList" );
+expect( s.valueArray().toList(), "1,2,3", "valueArray" );
+expect( s.filter( ( k, v ) => v > 1 ).keyList(), "b,c", "struct filter" );
+expect( s.map( ( k, v ) => v * 2 ).b, 4, "struct map" );
+expect( s.reduce( ( acc, k, v ) => acc + v, 0 ), 6, "struct reduce" );
+expect( s.some( ( k, v ) => v == 2 ), true, "struct some" );
+expect( s.every( ( k, v ) => v > 0 ), true, "struct every" );
+expect( s.none( ( k, v ) => v > 5 ), true, "struct none" );
+c = { a: 1, b: 2 };
+c.delete( "a" );
+expect( c.keyList(), "b", "struct delete" );
+c.insert( "z", 26 );
+expect( c.z, 26, "struct insert" );
+c.update( "z", 27 );
+expect( c.z, 27, "struct update" );
+expect( c.copy().z, 27, "struct copy" );
+c.clear();
+expect( c.isEmpty(), true, "struct clear" );
+
+expect( "a,b,c".listToArray().len(), 3, "listToArray" );
+expect( "b,c".listPrepend( "a" ), "a,b,c", "listPrepend" );
+expect( "a,c".listInsertAt( 2, "b" ), "a,b,c", "listInsertAt" );
+expect( "a,x,c".listSetAt( 2, "b" ), "a,b,c", "listSetAt" );
+expect( "1,2,3".listReduce( ( acc, v ) => acc + v, 0 ), 6, "listReduce" );
+expect( "[1,2]".jsonDeserialize().len(), 2, "jsonDeserialize" );
+expect( "abc".toBase64(), "YWJj", "toBase64" );
+expect( toString( "YWJj".toBinary() ), "abc", "toBinary" );
+expect( "true".yesNoFormat(), "Yes", "yesNoFormat" );
+
+expect( [ "a", "b" ].join( "-" ), "a-b", "array join" );
+expect( [ "a", "B" ].findNoCase( "b" ), 2, "array findNoCase" );
+expect( [ 1, 2 ].isDefined( 2 ), true, "array isDefined" );
+
+expect( 3.max( 5 ), 5, "number max" );
+expect( 3.min( 5 ), 3, "number min" );
+
+f = runAsync( () => 42 );
+f.get();
+expect( f.isDone(), true, "future isDone" );
+println( "member gaps ok" );

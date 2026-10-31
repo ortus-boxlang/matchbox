@@ -33,7 +33,9 @@ static FUSION_BUILD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 mod browser;
 mod embedded;
-mod modules;
+use matchbox_modules::discovery as modules;
+#[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+use matchbox_modules::programs as module_programs;
 mod stubs;
 
 use postcard;
@@ -188,8 +190,8 @@ fn collect_esp32_unsupported_features_in_stmt(
 
     match &stmt.kind {
         StatementKind::Import { .. }
-        | StatementKind::Continue
-        | StatementKind::Break
+        | StatementKind::Continue(_)
+        | StatementKind::Break(_)
         | StatementKind::Rethrow
         | StatementKind::Not(_)
         | StatementKind::Include(_)
@@ -248,6 +250,15 @@ fn collect_esp32_unsupported_features_in_stmt(
             if let Some(update) = update {
                 collect_esp32_unsupported_features_in_expr(update, findings, embedded_web_enabled);
             }
+            for statement in body {
+                collect_esp32_unsupported_features_in_stmt(
+                    statement,
+                    findings,
+                    embedded_web_enabled,
+                );
+            }
+        }
+        StatementKind::Labeled { body, .. } => {
             for statement in body {
                 collect_esp32_unsupported_features_in_stmt(
                     statement,
@@ -356,6 +367,17 @@ fn collect_esp32_unsupported_features_in_stmt(
                 }
             }
         }
+        StatementKind::Component { attributes, body, .. } => {
+            for (key, value) in attributes {
+                collect_esp32_unsupported_features_in_expr(key, findings, embedded_web_enabled);
+                collect_esp32_unsupported_features_in_expr(value, findings, embedded_web_enabled);
+            }
+            if let Some(body) = body {
+                for statement in body {
+                    collect_esp32_unsupported_features_in_stmt(statement, findings, embedded_web_enabled);
+                }
+            }
+        }
         StatementKind::VariableDecl { value, .. } | StatementKind::Expression(value) => {
             collect_esp32_unsupported_features_in_expr(value, findings, embedded_web_enabled);
         }
@@ -392,7 +414,7 @@ fn collect_esp32_unsupported_features_in_function_body(
     embedded_web_enabled: bool,
 ) {
     match body {
-        ast::FunctionBody::Block(statements) => {
+        ast::FunctionBody::Block(statements) | ast::FunctionBody::Component(statements) => {
             for statement in statements {
                 collect_esp32_unsupported_features_in_stmt(
                     statement,
@@ -756,149 +778,115 @@ pub fn run() -> Result<()> {
     }
 
     // 2. Check for embedded bytecode at end of binary (Native)
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+    {
+        let bytes = fs::read(std_env::current_exe()?)?;
+        if bytes.ends_with(matchbox_vm::bundle::MAGIC) {
+            let application = matchbox_vm::bundle::Application::from_executable(&bytes)?;
+            let mut vm = vm::VM::new_with_args(std_env::args().collect());
+            #[cfg(feature = "jit")]
+            vm.enable_jit();
+            application.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
+            return Ok(());
+        }
+    }
     if let Ok(embedded_chunk) = load_embedded_bytecode() {
         return run_chunk(embedded_chunk, &[]);
     }
 
-    let args: Vec<String> = std_env::args().collect();
-    if args.get(1).map(|s| s.as_str()) == Some("esp32-doctor") {
+    let all_args: Vec<String> = std_env::args().collect();
+    if all_args.get(1).map(|s| s.as_str()) == Some("esp32-doctor") {
         run_esp32_doctor()?;
         return Ok(());
     }
-    if args.get(1).map(|s| s.as_str()) == Some("lambda") {
-        run_lambda_command(&args[2..])?;
+    if all_args.get(1).map(|s| s.as_str()) == Some("lambda") {
+        run_lambda_command(&all_args[2..])?;
         return Ok(());
     }
-    if args.contains(&"--help".to_string()) || args.contains(&"-h".to_string()) {
-        print_usage();
+    let cli = match parse_cli(&all_args) {
+        Ok(cli) => cli,
+        Err(message) => {
+            eprint!("{}", usage_text());
+            bail!("{message}");
+        }
+    };
+    if cli.help {
+        print!("{}", usage_text());
         return Ok(());
     }
 
-    if args.contains(&"--version".to_string()) || args.contains(&"-v".to_string()) {
+    if cli.version {
         print_version();
         return Ok(());
     }
 
-    if args.contains(&"--verbose".to_string()) {
+    if cli.verbose || cli.bx_debug {
         enable_logging();
     }
-
-    if let Some(idx) = args.iter().position(|a| a == "--eval" || a == "-e") {
-        return run_eval(&args, idx);
+    // MatchBox has no boxlang.json or runtime home: accept the BoxLang flags (they must never
+    // reach the script) but say so instead of silently pretending to apply them.
+    for (flag, value) in [("--bx-config", &cli.bx_config), ("--bx-home", &cli.bx_home)] {
+        if let Some(value) = value {
+            eprintln!("[matchbox] {flag} {value} is not supported by MatchBox and is ignored");
+        }
+    }
+    if cli.bx_transpile {
+        bail!("--bx-transpile is not supported by MatchBox (BoxLang uses it to transpile to Java)");
+    }
+    if cli.bx_print_ast {
+        return print_ast(&cli);
+    }
+    if let Some(code) = &cli.bx_code {
+        if cli.build || cli.target.is_some() || cli.serve {
+            bail!("--bx-code runs inline code and cannot be combined with --build, --target or --serve");
+        }
+        let script_args = vec![all_args[0].clone()];
+        #[cfg(not(target_arch = "wasm32"))]
+        let started = std::time::Instant::now();
+        let result = run_inline_code("inline", code, cli.no_shaking, cli.no_std_lib, script_args);
+        #[cfg(not(target_arch = "wasm32"))]
+        if cli.bx_debug {
+            eprintln!("[matchbox] executed in {:?}", started.elapsed());
+        }
+        return result;
     }
 
-    let is_build = args.contains(&"--build".to_string());
-    let mut is_flash = args.contains(&"--flash".to_string());
-    let is_full_flash = args.contains(&"--full-flash".to_string());
-    let is_watch = args.contains(&"--watch".to_string());
-    let esp32_web = args.contains(&"--esp32-web".to_string());
+    if let Some(code) = &cli.eval {
+        return run_inline_code("<eval>", code, cli.no_shaking, cli.no_std_lib, vec![all_args[0].clone()]);
+    }
+
+    let is_build = cli.build;
+    let mut is_flash = cli.flash;
+    let is_full_flash = cli.full_flash;
+    let is_watch = cli.watch;
+    let esp32_web = cli.esp32_web;
     if is_full_flash || is_watch {
         is_flash = true;
     }
-    let mut is_fast_deploy = args.contains(&"--fast-deploy".to_string());
-    let chip = if let Some(idx) = args.iter().position(|a| a == "--chip") {
-        args.get(idx + 1).map(|s| s.as_str())
-    } else {
-        None
-    };
-    let target = if let Some(idx) = args.iter().position(|a| a == "--target") {
-        args.get(idx + 1).map(|s| s.as_str())
-    } else {
-        None
-    };
+    let mut is_fast_deploy = cli.fast_deploy;
+    let chip = cli.chip.as_deref();
+    let target = cli.target.as_deref();
 
     // For ESP32, --flash defaults to fast deploy unless --full-flash is present.
     if target == Some("esp32") && is_flash && !is_full_flash {
         is_fast_deploy = true;
     }
 
-    let no_shaking = args.contains(&"--no-shaking".to_string());
-    let no_std_lib = args.contains(&"--no-std-lib".to_string());
-    let strip_source = args.contains(&"--strip-source".to_string());
-    let is_serve = args.contains(&"--serve".to_string());
-
-
-    //=================================================
-    // implementing flag detection, conflict validation, 
-    // and input checks for --check <file>       
-    //===================================================
-
-
-    // Check for --check <file> flag
-    if let Some(idx) = args.iter().position(|a| a == "--check") {
-        let file_arg = args.get(idx + 1).ok_or_else(|| {
-            anyhow::anyhow!("--check requires a file path argument")
-        })?;
-
-        let conflicting_flags = ["--build", "--target", "--serve", "--flash", "--watch", "--output", "--full-flash", "--fast-deploy"];
-        for flag in &conflicting_flags {
-            if args.contains(&(*flag).to_string()) || (flag.starts_with("--target") && target.is_some()) {
-                bail!("Conflicting option '{}' cannot be used with --check", flag);
-            }
-        }
-
-        let path = Path::new(file_arg);
-        if !path.exists() {
-            bail!("Check file not found: {}", path.display());
-        }
-        if path.is_dir() {
-            bail!("--check does not support directories; specify a source file (.bxs, .bx, or .bxm)");
-        }
-        if path.extension().and_then(|s| s.to_str()) == Some("bxb") {
-            bail!("--check cannot validate compiled bytecode (.bxb) files; provide a source file (.bxs, .bx, or .bxm)");
-        }
-
-        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        if !matches!(ext, "bxs" | "bx" | "bxm") {
-            bail!("Unsupported file extension '.{}' for syntax checking. Expected .bxs, .bx, or .bxm", ext);
-        }
-
-        let source = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read file for syntax check: {}", path.display()))?;
-        
-        let parse_result = if ext == "bxm" {
-            parser::parse_bxm(&source, path.to_str())
-        } else {
-            parser::parse(&source, path.to_str())
-        };
-
-        match parse_result {
-            Ok(_) => {
-                return Ok(());
-            }
-            Err(e) => {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
-        }
-    }
-
-    
-    let webroot = if let Some(idx) = args.iter().position(|a| a == "--webroot") {
-        args.get(idx + 1)
-            .cloned()
-            .unwrap_or_else(|| ".".to_string())
-    } else {
-        ".".to_string()
-    };
+    let no_shaking = cli.no_shaking;
+    let no_std_lib = cli.no_std_lib;
+    let strip_source = cli.strip_source;
+    let is_serve = cli.serve;
+    let webroot = cli.webroot.clone().unwrap_or_else(|| ".".to_string());
 
     if is_serve {
         #[cfg(feature = "server")]
         {
-            let port = if let Some(idx) = args.iter().position(|a| a == "--port") {
-                args.get(idx + 1)
-                    .and_then(|s| s.parse::<u16>().ok())
-                    .unwrap_or(8080)
-            } else {
-                8080
-            };
-            let host = if let Some(idx) = args.iter().position(|a| a == "--host") {
-                args.get(idx + 1)
-                    .cloned()
-                    .unwrap_or_else(|| "127.0.0.1".to_string())
-            } else {
-                "127.0.0.1".to_string()
-            };
+            let port = cli
+                .port
+                .as_deref()
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(8080);
+            let host = cli.host.clone().unwrap_or_else(|| "127.0.0.1".to_string());
             let server_args = matchbox_server::Args {
                 port,
                 host,
@@ -919,18 +907,13 @@ pub fn run() -> Result<()> {
         }
     }
 
-    let mut keep_symbols = Vec::new();
-    if let Some(idx) = args.iter().position(|a| a == "--keep") {
-        if let Some(val) = args.get(idx + 1) {
-            keep_symbols = val.split(',').map(|s| s.trim().to_string()).collect();
-        }
-    }
+    let keep_symbols: Vec<String> = cli
+        .keep
+        .as_deref()
+        .map(|val| val.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
 
-    let output: Option<PathBuf> = if let Some(idx) = args.iter().position(|a| a == "--output") {
-        args.get(idx + 1).map(|s| PathBuf::from(s))
-    } else {
-        None
-    };
+    let output: Option<PathBuf> = cli.output.as_ref().map(PathBuf::from);
 
     if target == Some("wasi-http") {
         let out_path = output
@@ -940,57 +923,17 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    // Collect --module <path> flags.
-    let extra_module_paths: Vec<PathBuf> = args
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| *a == "--module")
-        .filter_map(|(i, _)| args.get(i + 1).map(|p| PathBuf::from(p)))
-        .collect();
+    let extra_module_paths: Vec<PathBuf> = cli.modules.iter().map(PathBuf::from).collect();
 
-    let filename = args.iter().skip(1).find(|a| {
-        !a.starts_with("--")
-            && *a != "native"
-            && *a != "wasm"
-            && *a != "wasi"
-            && *a != "wasi-http"
-            && *a != "js"
-            && *a != "esp32"
-            && (args
-                .iter()
-                .position(|arg| arg == *a)
-                .map(|pos| pos == 0 || args[pos - 1] != "--target")
-                .unwrap_or(true))
-            && (args
-                .iter()
-                .position(|arg| arg == *a)
-                .map(|pos| pos == 0 || args[pos - 1] != "--keep")
-                .unwrap_or(true))
-            && (args
-                .iter()
-                .position(|arg| arg == *a)
-                .map(|pos| pos == 0 || args[pos - 1] != "--output")
-                .unwrap_or(true))
-            && (args
-                .iter()
-                .position(|arg| arg == *a)
-                .map(|pos| pos == 0 || args[pos - 1] != "--module")
-                .unwrap_or(true))
-            && (args
-                .iter()
-                .position(|arg| arg == *a)
-                .map(|pos| pos == 0 || args[pos - 1] != "--chip")
-                .unwrap_or(true))
-    });
+    // `cliGetArgs()` skips element 0, which is the executable (as in a native binary).
+    let script_args: Vec<String> = std::iter::once(all_args[0].clone())
+        .chain(cli.script_args.iter().cloned())
+        .collect();
+    let filename = cli.file.as_ref();
 
     match filename {
         Some(name) => {
             let path = Path::new(name);
-            let script_args = args
-                .iter()
-                .position(|arg| arg == name)
-                .map(|position| args[position + 1..].to_vec())
-                .unwrap_or_default();
             if path.is_dir() {
                 process_directory(
                     path,
@@ -1042,138 +985,204 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// CLI flags that consume the argument immediately following them.
-const VALUE_FLAGS: &[&str] = &[
-    "--target", "--keep", "--output", "--module", "--chip", "--port", "--host", "--webroot",
-    "--check", "--eval", "-e",
-];
+/// Options and script arguments of a `matchbox` invocation, parsed like BoxLang's `BoxRunner`:
+/// MatchBox options are consumed in order; the first token that is not one of them is the target
+/// (file); everything after it belongs to the script. `-h/--help` and `-v/--version` only mean help
+/// and version when they are the sole token left, so `matchbox app.bxs -v` runs `app.bxs` with `-v`.
+/// Unknown options are not rejected: like BoxLang they fall through as positionals.
+#[derive(Debug, Default, PartialEq)]
+struct CliOptions {
+    help: bool,
+    version: bool,
+    verbose: bool,
+    build: bool,
+    flash: bool,
+    full_flash: bool,
+    watch: bool,
+    esp32_web: bool,
+    fast_deploy: bool,
+    no_shaking: bool,
+    no_std_lib: bool,
+    strip_source: bool,
+    serve: bool,
+    target: Option<String>,
+    chip: Option<String>,
+    keep: Option<String>,
+    output: Option<String>,
+    webroot: Option<String>,
+    port: Option<String>,
+    host: Option<String>,
+    modules: Vec<String>,
+    file: Option<String>,
+    script_args: Vec<String>,
+    /// `--bx-*` options (BoxLang's runtime flags).
+    bx_debug: bool,
+    bx_config: Option<String>,
+    bx_home: Option<String>,
+    bx_code: Option<String>,
+    eval: Option<String>,
+    bx_print_ast: bool,
+    bx_transpile: bool,
+}
 
-/// Collect positional (non-flag) arguments, skipping values owned by a flag.
-fn positional_args(args: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
+fn parse_cli(args: &[String]) -> std::result::Result<CliOptions, String> {
+    let mut cli = CliOptions::default();
+    // Runtime startup flags are honored anywhere in the argument list and never reach the script
+    // (BoxLang's pre-parse pass); both `--bx-config path` and `--bx-config=path` are accepted.
+    let mut rest: Vec<String> = Vec::new();
     let mut i = 1;
     while i < args.len() {
-        let a = &args[i];
-        if a.starts_with('-') {
-            if VALUE_FLAGS.contains(&a.as_str()) {
-                i += 2;
+        let arg = args[i].as_str();
+        let lower = arg.to_ascii_lowercase();
+        let name = lower.split_once('=').map_or(lower.as_str(), |(name, _)| name);
+        if lower == "--bx-debug" {
+            cli.bx_debug = true;
+        } else if name == "--bx-config" || name == "--bx-home" {
+            let value = match arg.split_once('=') {
+                Some((_, value)) => value.to_string(),
+                None => {
+                    i += 1;
+                    args.get(i)
+                        .ok_or_else(|| format!("Missing path for {name}, it must be the next argument. [{name} /path]"))?
+                        .clone()
+                }
+            };
+            if name == "--bx-config" {
+                cli.bx_config = Some(value);
             } else {
-                i += 1;
+                cli.bx_home = Some(value);
             }
-            continue;
+        } else {
+            rest.push(arg.to_string());
         }
-        out.push(a.clone());
         i += 1;
     }
-    out
-}
 
-/// Execute inline BoxLang source supplied via `--eval <source>` / `-e <source>`.
-/// Compiles through the normal pipeline (prelude + tree-shaking) and runs
-/// in-process. Writes no temporary source or build artifacts and shows no REPL
-/// prompt. Diagnostics report the source location as `<eval>`.
-fn run_eval(args: &[String], flag_index: usize) -> Result<()> {
-    const EVAL_NAME: &str = "<eval>";
-
-    if args
-        .iter()
-        .enumerate()
-        .any(|(i, a)| i != flag_index && (a == "--eval" || a == "-e"))
-    {
-        bail!("--eval may only be specified once");
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = rest[i].as_str();
+        match arg.to_ascii_lowercase().as_str() {
+            "--bx-printast" => cli.bx_print_ast = true,
+            "--bx-transpile" => cli.bx_transpile = true,
+            "--bx-code" => {
+                i += 1;
+                cli.bx_code = Some(
+                    rest.get(i)
+                        .ok_or_else(|| "Missing inline code to execute with --bx-code flag.".to_string())?
+                        .clone(),
+                );
+                break;
+            }
+            "--eval" | "-e" => {
+                if cli.eval.is_some() { return Err("--eval may only be specified once".into()); }
+                i += 1;
+                let source = rest.get(i).ok_or("--eval requires inline source")?;
+                if source.trim().is_empty() { return Err("--eval was given empty source code".into()); }
+                cli.eval = Some(source.clone());
+            }
+            "--verbose" => cli.verbose = true,
+            "--build" => cli.build = true,
+            "--flash" => cli.flash = true,
+            "--full-flash" => cli.full_flash = true,
+            "--watch" => cli.watch = true,
+            "--esp32-web" => cli.esp32_web = true,
+            "--fast-deploy" => cli.fast_deploy = true,
+            "--no-shaking" => cli.no_shaking = true,
+            "--no-std-lib" => cli.no_std_lib = true,
+            "--strip-source" => cli.strip_source = true,
+            "--serve" => cli.serve = true,
+            option @ ("--target" | "--chip" | "--keep" | "--output" | "--webroot" | "--port"
+            | "--host" | "--module") => {
+                i += 1;
+                let value = rest
+                    .get(i)
+                    .ok_or_else(|| format!("Option '{arg}' requires a value"))?
+                    .clone();
+                match option {
+                    "--target" => cli.target = Some(value),
+                    "--chip" => cli.chip = Some(value),
+                    "--keep" => cli.keep = Some(value),
+                    "--output" => cli.output = Some(value),
+                    "--webroot" => cli.webroot = Some(value),
+                    "--port" => cli.port = Some(value),
+                    "--host" => cli.host = Some(value),
+                    _ => cli.modules.push(value),
+                }
+            }
+            _ => {
+                cli.file = Some(arg.to_string());
+                cli.script_args = rest[i + 1..].to_vec();
+                break;
+            }
+        }
+        i += 1;
     }
-
-    for flag in [
-        "--build", "--target", "--serve", "--watch", "--flash", "--full-flash", "--output",
-        "--check",
-    ] {
-        if args.iter().any(|a| a.as_str() == flag) {
-            bail!("{flag} cannot be combined with --eval");
+    if cli.eval.is_some() && (cli.file.is_some() || cli.bx_code.is_some() || cli.bx_print_ast
+        || cli.build || cli.target.is_some() || cli.serve || cli.watch || cli.flash
+        || cli.full_flash || cli.output.is_some()) {
+        return Err("--eval cannot be combined with file arguments, --bx-code, --bx-printAST, --build, --target, --serve, --watch, --flash, --full-flash or --output".into());
+    }
+    // Help and version are global only when nothing else is left (BoxLang: `cliArgs.size() == 1`).
+    if cli.bx_code.is_none() && cli.eval.is_none() && cli.script_args.is_empty() {
+        match cli.file.as_deref().map(|f| f.to_ascii_lowercase()).as_deref() {
+            Some("-h" | "--help") => {
+                cli.help = true;
+                cli.file = None;
+            }
+            Some("-v" | "--version") => {
+                cli.version = true;
+                cli.file = None;
+            }
+            _ => {}
         }
     }
-
-    let source = args.get(flag_index + 1).ok_or_else(|| {
-        anyhow::anyhow!("--eval requires inline source, e.g. matchbox --eval 'println(1 + 2);'")
-    })?;
-
-    if source.trim().is_empty() {
-        bail!("--eval was given empty source code");
-    }
-
-    let extras = positional_args(args);
-    if !extras.is_empty() {
-        bail!(
-            "--eval executes inline source; unexpected file argument '{}'",
-            extras[0]
-        );
-    }
-
-    let ast = parser::parse(source, Some(EVAL_NAME))
-        .map_err(|e| anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e))?;
-
-    let mut chunk = matchbox_compiler::compile_with_treeshaking(
-        EVAL_NAME,
-        &ast,
-        source,
-        Vec::new(),
-        args.contains(&"--no-shaking".to_string()),
-        args.contains(&"--no-std-lib".to_string()),
-        &[],
-        &[],
-    )
-    .map_err(|e| anyhow::anyhow!("Compiler Error in {}: {}", EVAL_NAME, e))?;
-
-    chunk.reconstruct_functions();
-
-    // Anything after the source string is passed through as script arguments.
-    let script_args = args
-        .get(flag_index + 2..)
-        .map(|rest| rest.to_vec())
-        .unwrap_or_default();
-
-    run_chunk_with_args(chunk, &[], script_args)
+    Ok(cli)
 }
 
-fn print_usage() {
-    println!("Usage: matchbox [options] [file.bxs|file.bxb|directory]");
-    println!("       matchbox esp32-doctor");
-    println!("\nOptions:");
-    println!("  -h, --help          Show this help message");
-    println!("  -v, --version       Show version information");
-    println!("  --verbose           Emit verbose build logging");
-    println!("  -e, --eval <source> Execute inline BoxLang source and exit");
-    println!("                      Example: matchbox --eval 'println(1 + 2);'");
-    println!("                      Supports multiple statements, UDFs, BIFs and prelude functions");
-    println!("                      Incompatible with file arguments, --build, --target, --serve, --check");
-    println!("  --build             Compile to bytecode (.bxb)");
-    println!("  --target <native>   Produce a standalone native binary");
-    println!("  --target <wasi>     Produce a standalone WASI container binary");
-    println!("  --target <wasi-http> Produce a WASI HTTP component from --webroot");
-    println!("  --target <wasm>     Produce a standalone WASM binary (Web)");
-    println!("  --target <js>       Produce a JavaScript module wrapper");
-    println!("  --target <esp32>    Produce an ESP32 firmware binary");
-    println!("  --esp32-web         Enable the embedded routed web runtime build flavor for ESP32");
-    println!(
+fn usage_text() -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "Usage: matchbox [options] [file.bxs|file.bxb|directory] [script arguments]");
+    let _ = writeln!(out, "       matchbox esp32-doctor");
+    let _ = writeln!(out, "\nOptions:");
+    let _ = writeln!(out, "  -h, --help          Show this help message (when it is the only argument)");
+    let _ = writeln!(out, "  -v, --version       Show version information (when it is the only argument)");
+    let _ = writeln!(out, "  --verbose           Emit verbose build logging");
+    let _ = writeln!(out, "  --bx-debug          Enable debug mode (verbose logging and timing); honored anywhere, never passed to the script");
+    let _ = writeln!(out, "  --bx-code <code>    Execute inline BoxLang code");
+    let _ = writeln!(out, "  -e, --eval <source> Execute inline BoxLang source (cannot combine with files or build/server options)");
+    let _ = writeln!(out, "  --bx-printAST       Print the AST (JSON) of a file, --bx-code or stdin");
+    let _ = writeln!(out, "  --bx-config <path>, --bx-home <path>, --bx-transpile");
+    let _ = writeln!(out, "                      Accepted for BoxLang compatibility; not supported by MatchBox");
+    let _ = writeln!(out, "  --build             Compile to bytecode (.bxb)");
+    let _ = writeln!(out, "  --target <native>   Produce a standalone native binary");
+    let _ = writeln!(out, "  --target <wasi>     Produce a standalone WASI container binary");
+    let _ = writeln!(out, "  --target <wasi-http> Produce a WASI HTTP component from --webroot");
+    let _ = writeln!(out, "  --target <wasm>     Produce a standalone WASM binary (Web)");
+    let _ = writeln!(out, "  --target <js>       Produce a JavaScript module wrapper");
+    let _ = writeln!(out, "  --target <esp32>    Produce an ESP32 firmware binary");
+    let _ = writeln!(out, "  --esp32-web         Enable the embedded routed web runtime build flavor for ESP32");
+    let _ = writeln!(out, 
         "  --flash             Flash to device. Defaults to fast bytecode-only flash for ESP32."
     );
-    println!("  --full-flash        Force a full firmware flash (includes VM/Runner)");
-    println!(
+    let _ = writeln!(out, "  --full-flash        Force a full firmware flash (includes VM/Runner)");
+    let _ = writeln!(out, 
         "  --fast-deploy       (Deprecated) Use --flash instead, which is now fast by default."
     );
-    println!("  --chip <name>       The target ESP32 chip (e.g. esp32, esp32s3, esp32c3)");
-    println!("  --keep <symbols>    Comma-separated list of BIFs to preserve");
-    println!("  --no-shaking        Disable tree-shaking and include all prelude BIFs");
-    println!("  --no-std-lib        Exclude the standard library (prelude) entirely");
-    println!("  --output <path>     Set the output file path for compiled artifacts");
-    println!("  --strip-source      Strip embedded source text from compiled output");
-    println!(
+    let _ = writeln!(out, "  --chip <name>       The target ESP32 chip (e.g. esp32, esp32s3, esp32c3)");
+    let _ = writeln!(out, "  --keep <symbols>    Comma-separated list of BIFs to preserve");
+    let _ = writeln!(out, "  --no-shaking        Disable tree-shaking and include all prelude BIFs");
+    let _ = writeln!(out, "  --no-std-lib        Exclude the standard library (prelude) entirely");
+    let _ = writeln!(out, "  --output <path>     Set the output file path for compiled artifacts");
+    let _ = writeln!(out, "  --strip-source      Strip embedded source text from compiled output");
+    let _ = writeln!(out, 
         "                      Errors still report file:line; native binaries fall back to disk for snippets"
     );
-    println!("  --serve             Start the built-in web server");
-    println!("  --port <number>     Web server port (default: 8080)");
-    println!("  --host <address>    Web server host (default: 127.0.0.1)");
-    println!("  --webroot <path>    Web server root directory (default: .)");
-    println!(
+    let _ = writeln!(out, "  --serve             Start the built-in web server");
+    let _ = writeln!(out, "  --port <number>     Web server port (default: 8080)");
+    let _ = writeln!(out, "  --host <address>    Web server host (default: 127.0.0.1)");
+    let _ = writeln!(out, "  --webroot <path>    Web server root directory (default: .)");
+    let _ = writeln!(out, 
         "  --module <path>     Load a BoxLang module directory (may be specified multiple times)"
     );
 
@@ -1190,7 +1199,10 @@ fn print_usage() {
     println!(
         "  lambda deploy <path> --function <name> --bootstrap <path> [--role <arn>] [--public] [--url]"
     );
-    println!("\nIf no file is provided, matchbox starts in REPL mode.");
+    let _ = writeln!(out, "\nOptions must come before the file name; everything after it is passed to the script");
+    let _ = writeln!(out, "and read with cliGetArgs(), exactly like BoxLang.");
+    let _ = writeln!(out, "If no file is provided, matchbox starts in REPL mode.");
+    out
 }
 
 fn run_lambda_command(args: &[String]) -> Result<()> {
@@ -1318,6 +1330,43 @@ fn run_lambda_deploy(args: &[String]) -> Result<()> {
         println!("{}", url);
     }
     Ok(())
+}
+
+/// `--bx-printAST`: print the AST as JSON for a file, inline code (`--bx-code`) or stdin.
+fn print_ast(cli: &CliOptions) -> Result<()> {
+    let (source, name) = match (&cli.file, &cli.bx_code) {
+        (Some(file), _) => (fs::read_to_string(file).with_context(|| format!("Cannot read {file}"))?, Some(file.clone())),
+        (None, Some(code)) => (code.clone(), None),
+        (None, None) => {
+            use std::io::Read;
+            let mut source = String::new();
+            io::stdin().read_to_string(&mut source)?;
+            (source, None)
+        }
+    };
+    let ast = matchbox_compiler::inspect::inspect(&source, name.as_deref(), false, false)
+        .map_err(|e| anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e))?;
+    println!("{}", serde_json::to_string_pretty(&ast)?);
+    Ok(())
+}
+
+/// `--bx-code`: compile and run a source string like a script file.
+fn run_inline_code(filename: &str, code: &str, no_shaking: bool, no_std_lib: bool, cli_args: Vec<String>) -> Result<()> {
+    let ast = parser::parse(code, Some(filename))
+        .map_err(|e| anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e))?;
+    let mut chunk = matchbox_compiler::compile_with_treeshaking(
+        filename,
+        &ast,
+        code,
+        Vec::new(),
+        no_shaking,
+        no_std_lib,
+        false,
+        &[],
+    )
+    .map_err(|e| anyhow::anyhow!("Compiler Error in {}: {}", filename, e))?;
+    chunk.reconstruct_functions();
+    run_chunk_with_args(chunk, &[], cli_args)
 }
 
 fn print_version() {
@@ -1745,6 +1794,15 @@ fn process_file_with_args(
 ) -> Result<()> {
     if source_path.extension().and_then(|s| s.to_str()) == Some("bxb") {
         let bytes = fs::read(source_path)?;
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        if bytes.ends_with(matchbox_vm::bundle::MAGIC) {
+            let app = matchbox_vm::bundle::Application::from_executable(&bytes)?;
+            let mut vm = vm::VM::new_with_args(cli_args);
+            #[cfg(feature = "jit")]
+            vm.enable_jit();
+            app.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
+            return Ok(());
+        }
         let mut chunk: Chunk = postcard::from_bytes(&bytes)?;
         chunk.reconstruct_functions();
         run_chunk_with_args(chunk, &[], cli_args)?;
@@ -1775,20 +1833,8 @@ fn process_file_with_args(
             None
         };
 
-        let module_mappings: Vec<(String, PathBuf)> = modules_info
-            .iter()
-            .map(|m| (m.name.clone(), m.path.clone()))
-            .collect();
-        let mut extra_preludes: Vec<String> = modules_info
-            .iter()
-            .flat_map(|m| m.bif_sources.iter().cloned())
-            .collect();
-        // Inject a getModuleSettings(name) function whose body is baked from the
-        // settings collected by each module's configure() lifecycle call.
-        if !modules_info.is_empty() {
-            let settings_bxs = modules::generate_get_module_settings_bxs(&modules_info);
-            extra_preludes.push(settings_bxs);
-        }
+        // Module BIFs and settings are installed at runtime, never baked by executing hooks.
+        let extra_preludes: Vec<String> = Vec::new();
         let mut chunk = matchbox_compiler::compile_with_treeshaking(
             source_path.to_str().unwrap_or("unknown"),
             &ast,
@@ -1796,7 +1842,7 @@ fn process_file_with_args(
             keep_symbols,
             no_shaking,
             no_std_lib,
-            &module_mappings,
+            !modules_info.is_empty(),
             &extra_preludes,
         )
         .map_err(|e| anyhow::anyhow!("Compiler Error: {}", e))?;
@@ -1808,7 +1854,17 @@ fn process_file_with_args(
         }
 
         if is_build {
-            let bytes = postcard::to_stdvec(&chunk)?;
+            if modules_info.iter().any(|module| module.has_native) {
+                bail!("Source-only native modules require --target native; publish prebuilt artifacts to create a module bytecode bundle");
+            }
+            let bytes = if modules_info.is_empty() { postcard::to_stdvec(&chunk)? } else {
+                #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+                { matchbox_vm::bundle::Application {
+                    chunk: chunk.clone(), modules: module_programs::prepare(&modules_info, matchbox_vm::bundle::TARGET)?,
+                }.append_to(&[])? }
+                #[cfg(any(target_family = "wasm", target_os = "espidf"))]
+                { bail!("Module application envelopes currently require a desktop host"); }
+            };
             let out_path = output
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| source_path.with_extension("bxb"));
@@ -1818,6 +1874,9 @@ fn process_file_with_args(
             let project_root = source_path.parent().unwrap_or(Path::new("."));
             let native_dir = project_root.join("native");
 
+            if !modules_info.is_empty() && matches!(t, "wasm" | "wasi" | "js" | "esp32") {
+                bail!("Module lifecycle/native artifact bundles currently support desktop targets only");
+            }
             let has_native_modules = modules_info.iter().any(|m| m.has_native);
             let should_use_fusion = ((native_dir.exists() && native_dir.is_dir())
                 || has_native_modules)
@@ -1840,7 +1899,7 @@ fn process_file_with_args(
 
             match t {
                 "wasi" => produce_wasi_binary(&chunk, source_path, output)?,
-                "wasm" => produce_wasm_binary(&chunk, source_path, output)?,
+                "wasm" => produce_wasi_binary(&chunk, source_path, output)?,
                 "js" => browser::packaging::produce_js_bundle(&chunk, source_path, &ast, output)?,
                 "esp32" => {
                     let esp32_config = read_esp32_box_config(&cwd)?;
@@ -1864,7 +1923,7 @@ fn process_file_with_args(
                         esp32_config.as_ref(),
                     )?;
                 }
-                target_val => produce_native_binary(&chunk, source_path, target_val, output)?,
+                target_val => produce_native_binary(&chunk, source_path, target_val, output, &modules_info)?,
             }
         } else {
             // Register datasources from matchbox.toml only when actually running.
@@ -1986,6 +2045,11 @@ fn register_datasources_from_config(project_dir: &Path) -> Result<()> {
                         })?;
                 matchbox_vm::datasource::registry::register(&name, Arc::new(driver));
             }
+            "sqlite" => {
+                let driver = matchbox_vm::datasource::drivers::sqlite::SqliteDriver::new(&config)
+                    .map_err(|error| anyhow::anyhow!("Failed to create datasource '{}': {}", name, error))?;
+                matchbox_vm::datasource::registry::register(&name, Arc::new(driver));
+            }
             other => {
                 eprintln!(
                     "Warning: datasource '{}' has unknown driver '{}', skipping.",
@@ -2021,32 +2085,24 @@ fn run_chunk_with_args(
         native_classes.extend(matchbox_tui::register_classes());
     }
 
-    // In a real implementation with dynamic loading, we would load .so/.dll here.
-    for m in modules {
-        if m.name == "native-math" {
-            // HACK for tests: since we can't easily dynamic-load from the same binary's crate
-            // we just manually register what we know is in there.
-            fn cube(
-                _vm: &mut dyn types::BxVM,
-                args: &[types::BxValue],
-            ) -> std::result::Result<types::BxValue, String> {
-                if args.len() != 1 {
-                    return Err("cube requires 1 argument".to_string());
-                }
-                let n = args[0].as_number();
-                Ok(types::BxValue::new_number(n * n * n))
-            }
-            external_bifs.insert("cube".to_string(), cube as types::BxNativeFunction);
-        }
-    }
-
     let mut vm = vm::VM::new_with_bifs(external_bifs, native_classes);
-    vm.cli_args = args;
+    vm.set_cli_args(args);
 
     #[cfg(feature = "jit")]
     vm.enable_jit();
 
-    vm.interpret(chunk)?;
+    if modules.is_empty() { vm.interpret(chunk)?; } else {
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        {
+            let prepared = module_programs::prepare(modules, matchbox_vm::bundle::TARGET)?;
+            if modules.iter().zip(&prepared).any(|(source, compiled)| source.has_native && compiled.artifact.is_none()) {
+                bail!("Source-only native modules require --target native; publish a prebuilt artifact for runtime loading");
+            }
+            matchbox_vm::bundle::Application { chunk, modules: prepared }.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
+        }
+        #[cfg(any(target_family = "wasm", target_os = "espidf"))]
+        { bail!("Runtime module initialization currently requires a desktop host"); }
+    }
     Ok(())
 }
 
@@ -2061,7 +2117,7 @@ fn run_repl() -> Result<()> {
         include_bif as types::BxNativeFunction,
     );
     let mut vm = vm::VM::new_with_bifs(external_bifs, HashMap::new());
-    vm.cli_args = args;
+    vm.set_cli_args(args);
 
     // Load full prelude for REPL
 
@@ -2126,7 +2182,7 @@ fn load_embedded_bytecode() -> Result<Chunk> {
     let mut len_bytes = [0u8; 8];
     len_bytes.copy_from_slice(&bytes[len_start..footer_start]);
     let len = u64::from_le_bytes(len_bytes) as usize;
-    let chunk_start = len_start - len;
+    let chunk_start = len_start.checked_sub(len).context("Invalid embedded bytecode length")?;
     let chunk_bytes = &bytes[chunk_start..len_start];
     let mut chunk: Chunk = postcard::from_bytes(chunk_bytes)?;
     chunk.reconstruct_functions();
@@ -2143,15 +2199,25 @@ fn produce_native_binary(
     source_path: &Path,
     target: &str,
     output: Option<&Path>,
+    modules: &[modules::ModuleInfo],
 ) -> Result<()> {
     let stub_key = if target == "native" { "host" } else { target };
     let native_bytes = stubs::get_stub(stub_key)?;
     let mut binary_bytes = native_bytes.to_vec();
     let chunk_bytes = postcard::to_stdvec(chunk)?;
     let chunk_len = chunk_bytes.len() as u64;
-    binary_bytes.extend_from_slice(&chunk_bytes);
-    binary_bytes.extend_from_slice(&chunk_len.to_le_bytes());
-    binary_bytes.extend_from_slice(MAGIC_FOOTER);
+    if modules.is_empty() {
+        binary_bytes.extend_from_slice(&chunk_bytes);
+        binary_bytes.extend_from_slice(&chunk_len.to_le_bytes());
+        binary_bytes.extend_from_slice(MAGIC_FOOTER);
+    } else {
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        { binary_bytes = matchbox_vm::bundle::Application {
+            chunk: chunk.clone(), modules: module_programs::prepare(modules, module_programs::output_target(Some(target)))?,
+        }.append_to(native_bytes)?; }
+        #[cfg(any(target_family = "wasm", target_os = "espidf"))]
+        { bail!("Native module packaging currently requires a desktop host"); }
+    }
     let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| {
         if cfg!(windows) {
             source_path.with_extension("exe")
@@ -2260,6 +2326,11 @@ fn produce_fusion_artifact(
         format!("matchbox_vm = {{ path = \"{}\" }}", vm_path)
     };
 
+    let native_dep_lines = read_native_dependencies(
+        native_dir,
+        &["matchbox_vm", "postcard", "bincode", "anyhow", "fusion_build"],
+    )?;
+
     let wasm_extra_dependencies = if is_wasm {
         r#"
 wasm-bindgen = "0.2"
@@ -2287,6 +2358,7 @@ bincode = "1.3.3"
 anyhow = "1.0"
 {wasm_extra_dependencies}
 {extra_dep_lines}
+{native_dep_lines}
 "#
     );
 
@@ -2488,6 +2560,27 @@ use std::collections::HashMap;
             &registration_calls,
             &bytecode,
         ));
+    } else if target == "native" && !modules.is_empty() {
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        {
+            let application = matchbox_vm::bundle::Application {
+                chunk: chunk.clone(), modules: module_programs::prepare(modules, matchbox_vm::bundle::TARGET)?,
+            };
+            let bytes = application.append_to(&[])?;
+            code.push_str(&format!(r#"
+fn run_interpreted() -> anyhow::Result<()> {{
+    let mut bifs = HashMap::new();
+    let mut classes = HashMap::new();
+{registration_calls}
+    let bytes = vec!{bytes:?};
+    let application = matchbox_vm::bundle::Application::from_executable(&bytes)?;
+    let mut vm = VM::new_with_bifs(bifs, classes);
+    vm.set_cli_args(std::env::args().collect());
+    application.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
+    Ok(())
+}}
+"#));
+        }
     } else {
         code.push_str(&format!(
             r#"
@@ -2696,6 +2789,57 @@ impl BoxLangVM {
     Ok(())
 }
 
+/// The `[dependencies]` of `native/Cargo.toml` as lines for the generated fusion manifest.
+/// Relative `path` dependencies are resolved against the `native/` directory.
+fn read_native_dependencies(native_dir: &Path, reserved: &[&str]) -> Result<String> {
+    let manifest = native_dir.join("Cargo.toml");
+    if !manifest.is_file() {
+        return Ok(String::new());
+    }
+    let table: toml::Table = fs::read_to_string(&manifest)?
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid {}: {}", manifest.display(), e))?;
+    let Some(dependencies) = table.get("dependencies").and_then(|d| d.as_table()) else {
+        return Ok(String::new());
+    };
+    let mut lines = String::new();
+    for (name, spec) in dependencies {
+        if reserved.contains(&name.as_str()) {
+            bail!(
+                "{} declares `{}`, which the fusion build already provides",
+                manifest.display(),
+                name
+            );
+        }
+        let mut spec = spec.clone();
+        if let Some(path) = spec.get("path").and_then(|p| p.as_str()).map(PathBuf::from) {
+            if path.is_relative() {
+                let absolute = native_dir.join(path).to_string_lossy().replace('\\', "/");
+                spec.as_table_mut().unwrap().insert("path".into(), toml::Value::String(absolute));
+            }
+        }
+        lines.push_str(&format!("{} = {}\n", toml::Value::String(name.clone()), inline_toml(&spec)));
+    }
+    Ok(lines)
+}
+
+/// Render a TOML value on one line (dependency specs are strings or small tables).
+fn inline_toml(value: &toml::Value) -> String {
+    match value {
+        toml::Value::Table(table) => {
+            let fields: Vec<String> = table
+                .iter()
+                .map(|(key, value)| format!("{} = {}", toml::Value::String(key.clone()), inline_toml(value)))
+                .collect();
+            format!("{{ {} }}", fields.join(", "))
+        }
+        toml::Value::Array(items) => {
+            format!("[{}]", items.iter().map(inline_toml).collect::<Vec<_>>().join(", "))
+        }
+        other => other.to_string(),
+    }
+}
+
 /// Extract the `[package] name` value from a `Cargo.toml` file.
 fn read_crate_name(cargo_toml_path: &Path) -> Result<String> {
     let text = fs::read_to_string(cargo_toml_path)?;
@@ -2862,29 +3006,6 @@ fn patch_wasi_http_runner_payload(wasm_bytes: &mut [u8], payload_bytes: &[u8]) -
     wasm_bytes[len_offset..len_offset + 4]
         .copy_from_slice(&(payload_bytes.len() as u32).to_le_bytes());
     wasm_bytes[data_offset..end].copy_from_slice(payload_bytes);
-    Ok(())
-}
-
-fn produce_wasm_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>) -> Result<()> {
-    let wasm_bytes = stubs::get_stub("wasi")?.to_vec();
-    let chunk_bytes = postcard::to_stdvec(chunk)?;
-
-    let mut out_bytes = wasm_bytes;
-    use wasm_encoder::Encode;
-    let custom_section = wasm_encoder::CustomSection {
-        name: "boxlang_bytecode".into(),
-        data: (&chunk_bytes).into(),
-    };
-    let mut section_bytes = Vec::new();
-    custom_section.encode(&mut section_bytes);
-    out_bytes.extend_from_slice(&section_bytes);
-
-    let out_path = output
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| source_path.with_extension("wasm"));
-    fs::write(&out_path, out_bytes)?;
-
-    println!("WASM binary produced: {}", out_path.display());
     Ok(())
 }
 
@@ -3459,7 +3580,7 @@ fn watch_mode(
                                 Vec::new(), // keep_symbols
                                 false,      // no_shaking
                                 false,      // no_std_lib
-                                &[],        // module_mappings
+                                false,      // runtime_module_classes
                                 &[],        // extra_preludes
                             )
                             .map_err(|e| anyhow::anyhow!("Compiler Error: {}", e))?;
@@ -3506,6 +3627,64 @@ fn watch_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(feature = "bif-datasource")]
+    fn sqlite_datasource_toml_registration_accepts_minimal_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = format!(
+            "[datasources.db]\ndriver = \"sqlite\"\ndatabase = {}\n",
+            toml::Value::String(tmp.path().join("app.db").to_string_lossy().into_owned())
+        );
+        fs::write(tmp.path().join("matchbox.toml"), manifest).unwrap();
+        let configs = modules::read_datasource_configs(tmp.path()).unwrap();
+        let entry = configs.get("db").unwrap();
+        assert_eq!(entry.driver, "sqlite");
+        assert_eq!(entry.host, "localhost");
+        assert_eq!(entry.username, "");
+        assert_eq!(entry.password, "");
+        register_datasources_from_config(tmp.path()).unwrap();
+        let result = matchbox_vm::datasource::registry::get("db").unwrap()
+            .execute("SELECT 1 AS val", &[]).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], matchbox_vm::datasource::traits::SqlValue::Int(1));
+    }
+
+    #[test]
+    fn native_manifest_dependencies_become_fusion_dependency_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "native"
+version = "0.1.0"
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+helper = { path = "../helper" }
+"#,
+        )
+        .unwrap();
+        let lines = read_native_dependencies(dir.path(), &["matchbox_vm"]).unwrap();
+        assert!(lines.contains("\"base64\" = \"0.22\"\n"), "{lines}");
+        assert!(lines.contains("\"serde\" = { \"features\" = [\"derive\"], \"version\" = \"1\" }"), "{lines}");
+        let helper_path = dir.path().join("../helper").to_string_lossy().replace('\\', "/");
+        assert!(lines.contains(&format!("\"helper\" = {{ \"path\" = \"{helper_path}\" }}")), "{lines}");
+    }
+
+    #[test]
+    fn native_manifest_is_optional_and_cannot_redeclare_reserved_crates() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_native_dependencies(dir.path(), &["matchbox_vm"]).unwrap(), "");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"native\"\n\n[dependencies]\nmatchbox_vm = \"1\"\n",
+        )
+        .unwrap();
+        let error = read_native_dependencies(dir.path(), &["matchbox_vm"]).unwrap_err();
+        assert!(error.to_string().contains("matchbox_vm"), "{error}");
+    }
 
     #[test]
     fn esp32_validator_allows_route_and_middleware_registration() {
@@ -3639,5 +3818,91 @@ mod tests {
         let len_offset = sentinel + 8;
         let payload_len = u32::from_le_bytes(wasm[len_offset..len_offset + 4].try_into().unwrap());
         assert!(payload_len > 0);
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> std::result::Result<CliOptions, String> {
+        let all: Vec<String> = std::iter::once("matchbox").chain(args.iter().copied()).map(String::from).collect();
+        parse_cli(&all)
+    }
+
+    #[test]
+    fn matchbox_options_before_the_file_are_consumed() {
+        let cli = parse(&["--build", "--target", "native", "app.bxs"]).unwrap();
+        assert!(cli.build);
+        assert_eq!(cli.target.as_deref(), Some("native"));
+        assert_eq!(cli.file.as_deref(), Some("app.bxs"));
+        assert!(cli.script_args.is_empty());
+    }
+
+    #[test]
+    fn everything_after_the_file_belongs_to_the_script() {
+        let cli = parse(&["app.bxs", "-v", "--build", "-h", "--bogus", "--", "x"]).unwrap();
+        assert!(!cli.version && !cli.build && !cli.help);
+        assert_eq!(cli.file.as_deref(), Some("app.bxs"));
+        assert_eq!(cli.script_args, ["-v", "--build", "-h", "--bogus", "--", "x"]);
+    }
+
+    #[test]
+    fn help_and_version_only_count_as_the_sole_token() {
+        assert!(parse(&["-h"]).unwrap().help);
+        assert!(parse(&["--help"]).unwrap().help);
+        assert!(parse(&["-v"]).unwrap().version);
+        assert!(parse(&["--version"]).unwrap().version);
+        assert!(parse(&["--verbose", "--version"]).unwrap().version);
+        let cli = parse(&["--help", "app.bxs"]).unwrap();
+        assert!(!cli.help);
+        assert_eq!(cli.file.as_deref(), Some("--help"));
+        assert_eq!(cli.script_args, ["app.bxs"]);
+    }
+
+    #[test]
+    fn unknown_options_are_not_rejected_they_fall_through_like_boxlang() {
+        let cli = parse(&["--bogus", "app.bxs"]).unwrap();
+        assert_eq!(cli.file.as_deref(), Some("--bogus"));
+        assert_eq!(cli.script_args, ["app.bxs"]);
+    }
+
+    #[test]
+    fn options_are_case_insensitive_and_value_options_need_a_value() {
+        assert!(parse(&["--BUILD", "app.bxs"]).unwrap().build);
+        assert_eq!(parse(&["--target"]).unwrap_err(), "Option '--target' requires a value");
+        let cli = parse(&["--module", "a", "--module", "b", "--keep", "x,y", "app.bxs"]).unwrap();
+        assert_eq!(cli.modules, ["a", "b"]);
+        assert_eq!(cli.keep.as_deref(), Some("x,y"));
+    }
+
+    #[test]
+    fn bx_runtime_flags_are_honored_anywhere_and_never_reach_the_script() {
+        let cli = parse(&["app.bxs", "one", "--bx-debug", "--bx-config=/c.json", "--BX-HOME", "/h", "two"]).unwrap();
+        assert!(cli.bx_debug);
+        assert_eq!(cli.bx_config.as_deref(), Some("/c.json"));
+        assert_eq!(cli.bx_home.as_deref(), Some("/h"));
+        assert_eq!(cli.file.as_deref(), Some("app.bxs"));
+        assert_eq!(cli.script_args, ["one", "two"]);
+        assert!(parse(&["--bx-config"]).unwrap_err().contains("--bx-config"));
+    }
+
+    #[test]
+    fn bx_code_print_ast_and_transpile() {
+        let cli = parse(&["--bx-code", "println( 1 )", "ignored", "args"]).unwrap();
+        assert_eq!(cli.bx_code.as_deref(), Some("println( 1 )"));
+        assert!(cli.file.is_none() && cli.script_args.is_empty());
+        assert_eq!(parse(&["--bx-code"]).unwrap_err(), "Missing inline code to execute with --bx-code flag.");
+        let cli = parse(&["--bx-printAST", "--bx-transpile", "app.bxs"]).unwrap();
+        assert!(cli.bx_print_ast && cli.bx_transpile);
+        assert_eq!(cli.file.as_deref(), Some("app.bxs"));
+        // a recognized flag can precede help/version, which is still global
+        assert!(parse(&["--bx-printAST", "--help"]).unwrap().help);
+    }
+
+    #[test]
+    fn no_arguments_means_repl() {
+        let cli = parse(&[]).unwrap();
+        assert!(cli.file.is_none() && cli.script_args.is_empty());
     }
 }

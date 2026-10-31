@@ -4,91 +4,7 @@
 
 // --- Math BIFs ---
 
-/**
- * Returns the absolute value of a number.
- */
-function abs(number) {
-    if (number < 0) {
-        return 0 - number;
-    }
-    return number;
-}
-
-/**
- * Returns the smaller of two numbers.
- */
-function min(n1, n2) {
-    if (n1 < n2) {
-        return n1;
-    }
-    return n2;
-}
-
-/**
- * Returns the larger of two numbers.
- */
-function max(n1, n2) {
-    if (n1 > n2) {
-        return n1;
-    }
-    return n2;
-}
-
 // --- Array BIFs ---
-
-/**
- * Maps an array to a new array using a callback function.
- */
-function arrayMap(array, callback, parallel = false, maxThreads = 0, virtual = false) {
-    return _arrayMapWithIndex(array, callback);
-}
-
-/**
- * Iterates over an array and calls a callback for each item.
- */
-function arrayEach(array, callback, parallel = false, maxThreads = 0, virtual = false) {
-    _arrayEachWithIndex(array, callback);
-}
-
-function _arrayMapWithIndex(array, callback) {
-    var result = [];
-    var length = len(array);
-    for (var i = 1; i <= length; i++) {
-        arrayAppend(result, callback(array[i], i));
-    }
-    return result;
-}
-
-function _arrayEachWithIndex(array, callback) {
-    var length = len(array);
-    for (var i = 1; i <= length; i++) {
-        callback(array[i], i);
-    }
-}
-
-/**
- * Filters an array based on a predicate function.
- */
-function arrayFilter(array, predicate) {
-    var result = [];
-    for (item in array) {
-        if (predicate(item)) {
-            arrayAppend(result, item);
-        }
-    }
-    return result;
-}
-
-/**
- * Reduces an array to a single value using an accumulator function.
- */
-function arrayReduce(array, callback, initialValue) {
-    var result = initialValue;
-    for (item in array) {
-        result = callback(result, item);
-    }
-    return result;
-}
 
 /**
  * Converts an array to a string using a delimiter.
@@ -121,17 +37,23 @@ function arrayReverse(array) {
 /**
  * Returns a slice of an array.
  */
-function arraySlice(array, offset, length) {
+function arraySlice(array, start = 1, length = 0) {
     var result = [];
-    var arrayLen = len(array);
-    if (offset < 1) {
-        offset = 1;
+    var size = len(array);
+    var from = start - 1;
+    if (from < 0) {
+        from = size + start;
     }
-    if (length > arrayLen) {
-        length = arrayLen;
+    var count = length;
+    if (count < 0) {
+        count = (size + count) - from;
+    } else if (count == 0) {
+        count = size - from;
     }
-    for (var i = offset; i <= length; i++) {
-        arrayAppend(result, array[i]);
+    for (var i = from; i < from + count; i++) {
+        if (i < size) {
+            arrayAppend(result, array[i + 1]);
+        }
     }
     return result;
 }
@@ -158,14 +80,6 @@ function arrayLast(array, defaultValue = null) {
 }
 
 /**
- * Prepends a value to the beginning of an array.
- */
-function arrayPrepend(array, value) {
-    arrayInsertAt(array, 1, value);
-    return true;
-}
-
-/**
  * Finds the index of a value in an array. Returns 0 if not found.
  */
 function arrayFind(array, value) {
@@ -176,13 +90,6 @@ function arrayFind(array, value) {
         }
     }
     return 0;
-}
-
-/**
- * Determines if an array contains a specific value.
- */
-function arrayContains(array, value) {
-    return arrayFind(array, value) > 0;
 }
 
 /**
@@ -239,37 +146,6 @@ function arrayMax(array) {
         }
     }
     return result;
-}
-
-/**
- * Determines if every element in an array satisfies a condition.
- */
-function arrayEvery(array, callback) {
-    for (item in array) {
-        if (!callback(item)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/**
- * Determines if at least one element in an array satisfies a condition.
- */
-function arraySome(array, callback) {
-    for (item in array) {
-        if (callback(item)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/**
- * Determines if no elements in an array satisfy a condition.
- */
-function arrayNone(array, callback) {
-    return !arraySome(array, callback);
 }
 
 /**
@@ -393,13 +269,6 @@ function arrayFindNoCase(array, value) {
 }
 
 /**
- * Determines if an array contains a specific value (case-insensitive).
- */
-function arrayContainsNoCase(array, value) {
-    return arrayFindNoCase(array, value) > 0;
-}
-
-/**
  * Deletes a value from an array using case-insensitive string equality.
  */
 function arrayDeleteNoCase(array, value, scope = "one") {
@@ -504,13 +373,6 @@ function arraySort(array, sortType = "text", sortOrder = "asc") {
 function arrayPush(array, value) {
     arrayAppend(array, value);
     return len(array);
-}
-
-/**
- * Returns true if the array is empty.
- */
-function arrayIsEmpty(array) {
-    return len(array) == 0;
 }
 
 /**
@@ -1186,4 +1048,31 @@ function structSort(struct, sortType = "text", sortOrder = "asc", path = "", cal
         width = doubledWidth;
     }
     return work;
+}
+
+// --- Destructuring ---
+
+/**
+ * Elements of an array from position `from` on (the `...rest` of `[ a, ...rest ] = source`).
+ */
+function _destructureArrayRest(source, from) {
+    var result = [];
+    var size = len(source);
+    for (var i = from; i <= size; i++) {
+        arrayAppend(result, source[i]);
+    }
+    return result;
+}
+
+/**
+ * Struct with every key of `source` that is not in `used` (the `...rest` of `{ a, ...rest } = source`).
+ */
+function _destructureObjectRest(source, used) {
+    var result = {};
+    for (key in structKeyArray(source)) {
+        if (!arrayContainsNoCase(used, key)) {
+            result[key] = source[key];
+        }
+    }
+    return result;
 }

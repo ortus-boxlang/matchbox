@@ -276,7 +276,8 @@ pub fn greet(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
         return Err("greet: expected one argument".to_string());
     }
     let name = vm.to_string(args[0]);
-    Ok(BxValue::new_string(format!("Hello, {}!", name)))
+    let greeting = format!("Hello, {}!", name);
+    Ok(BxValue::new_ptr(vm.string_new(greeting)))
 }
 
 pub fn register_bifs() -> HashMap<String, BxNativeFunction> {

@@ -1,8 +1,5 @@
-pub mod ast;
 pub mod compiler;
-pub mod cst;
-pub mod parser;
-pub mod tokenizer;
+pub use matchbox_parser::{ast, cst, inspect, parser, tokenizer};
 #[cfg(all(feature = "qoq", not(target_arch = "wasm32")))]
 pub use matchbox_vm::qoq;
 
@@ -10,15 +7,12 @@ pub const PRELUDE_SOURCE: &str = include_str!("prelude.bxs");
 
 use crate::ast::{Statement, StatementKind};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 
 /// Compile `ast` to bytecode, optionally tree-shaking the built-in prelude and any module BIFs.
 ///
 /// # Parameters
-/// - `module_mappings` — `(module_name, physical_path)` pairs collected from `matchbox.toml` or
-///   `--module` flags.  Each entry creates a `bxmodules.{name}` → `PathBuf` mapping used by the
-///   compiler's import resolver so that `import bxModules.foo.models.Person` resolves to
-///   `{foo_path}/models/Person.bxs`.
+/// - `runtime_module_classes` — defer module class creation/import references to the application
+///   VM. Descriptor mappings are evaluated only at execution; package classes are embedded separately.
 /// - `extra_preludes` — raw source text of each `bifs/*.bxs` file found in loaded modules.
 ///   These are tree-shaken together with the built-in prelude; module functions shadow built-ins
 ///   on name collision.
@@ -29,7 +23,7 @@ pub fn compile_with_treeshaking(
     extra_keep_symbols: Vec<String>,
     no_shaking: bool,
     no_std_lib: bool,
-    module_mappings: &[(String, PathBuf)],
+    runtime_module_classes: bool,
     extra_preludes: &[String],
 ) -> anyhow::Result<matchbox_vm::Chunk> {
     // Parse all module bif sources up front.
@@ -73,14 +67,8 @@ pub fn compile_with_treeshaking(
         println!("Tree-shaking: included {} prelude functions", prelude_len);
     }
 
-    // Build the module_paths map: "bxmodules.{name}" -> PathBuf (all lowercase for lookup).
-    let module_paths: HashMap<String, PathBuf> = module_mappings
-        .iter()
-        .map(|(name, path)| (format!("bxmodules.{}", name.to_lowercase()), path.clone()))
-        .collect();
-
     let mut compiler = compiler::Compiler::new(filename);
-    compiler.module_paths = module_paths;
+    compiler.runtime_module_classes = runtime_module_classes;
     let mut chunk = compiler.compile(&combined_ast, source)?;
     chunk.reconstruct_functions();
     Ok(chunk)

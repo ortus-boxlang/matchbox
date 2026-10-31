@@ -1,0 +1,1 @@
+println( base64encode_native( "abc" ) );

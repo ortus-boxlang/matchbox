@@ -20,9 +20,12 @@ impl StringInterner {
     /// Intern a string: preserve the first casing seen for presentation,
     /// but use its lowercase form for deduplication (case-insensitivity).
     pub fn intern(&mut self, s: &str) -> InternId {
+        // Direct hits are canonical lowercase keys and cannot upgrade presentation.
+        if let Some(&id) = self.lookup.get(s) {
+            return id;
+        }
         let lowered = s.to_lowercase();
         if let Some(&id) = self.lookup.get(&lowered) {
-            self.exact_lookup.entry(s.to_string()).or_insert(id);
             if let Some(existing) = self.strings.get_mut(id as usize) {
                 if existing == &lowered && s != lowered {
                     *existing = s.to_string();
@@ -33,12 +36,12 @@ impl StringInterner {
         let id = self.strings.len() as InternId;
         self.strings.push(s.to_string());
         self.lookup.insert(lowered, id);
-        self.exact_lookup.entry(s.to_string()).or_insert(id);
         id
     }
 
     /// Intern a key without case folding. Case-sensitive structs use this
-    /// path so distinct spellings can occupy distinct shape fields.
+    /// path so distinct spellings can occupy distinct shape fields. Exact IDs
+    /// must stay separate from folded IDs whose presentation can be upgraded.
     pub fn intern_case_sensitive(&mut self, s: &str) -> InternId {
         if let Some(&id) = self.exact_lookup.get(s) {
             return id;
@@ -57,8 +60,13 @@ impl StringInterner {
 
     /// Read-only lookup (no insert). Returns None if the string was never interned.
     pub fn get_id(&self, s: &str) -> Option<InternId> {
-        let lowered = s.to_lowercase();
-        self.lookup.get(&lowered).copied()
+        self.lookup.get(s).copied().or_else(|| {
+            // Already-folded ASCII misses cannot match a different lowercase key.
+            if s.bytes().all(|byte| byte.is_ascii() && !byte.is_ascii_uppercase()) {
+                return None;
+            }
+            self.lookup.get(&s.to_lowercase()).copied()
+        })
     }
 
     pub fn get_exact_id(&self, s: &str) -> Option<InternId> {

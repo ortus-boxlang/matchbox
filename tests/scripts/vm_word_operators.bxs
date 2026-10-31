@@ -1,0 +1,17 @@
+function expect( actual, expected, label ) {
+	if ( actual != expected ) {
+		throw( message = label & ": expected [" & expected & "] got [" & actual & "]" );
+	}
+}
+expect( 7 mod 3, 1, "mod" );
+expect( 7 MOD 3 + 1, 2, "mod precedence" );
+expect( 2 + 7 mod 4, 5, "mod binds like %" );
+mod = 10;
+expect( mod, 10, "mod as identifier" );
+f = false;
+expect( not f, true, "not false" );
+expect( not ( 1 == 2 ), true, "not group" );
+expect( not not f, false, "double not" );
+if ( not f and 1 eq 1 ) { ok = true; } else { ok = false; }
+expect( ok, true, "not in condition" );
+println( "word operators ok" );

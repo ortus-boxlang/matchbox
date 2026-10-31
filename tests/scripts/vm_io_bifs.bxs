@@ -61,6 +61,19 @@ if (!fileExists(secondSource)) { throw "filePublishExclusive should preserve a r
 fileDelete(secondSource);
 fileDelete(publishTarget);
 
+// A failed replacement must not delete the destination.
+var moveTarget = createTempFile("/tmp", "matchbox-move-", ".txt");
+var moveFailed = false;
+try {
+    fileWrite(moveTarget, "original");
+    try { fileMove(moveTarget & ".missing", moveTarget); } catch (error) { moveFailed = true; }
+    if (!moveFailed || !fileExists(moveTarget) || fileRead(moveTarget) != "original") { throw "Failed fileMove destroyed the destination"; }
+    var moveSource = createTempFile("/tmp", "matchbox-move-", ".txt");
+    fileWrite(moveSource, "replacement");
+    fileMove(moveSource, moveTarget);
+    if (fileExists(moveSource) || fileRead(moveTarget) != "replacement") { throw "fileMove replacement failed"; }
+} finally { if (fileExists(moveTarget)) { fileDelete(moveTarget); } }
+
 var rejectedTempTraversal = false;
 try {
     createTempFile("/tmp", "../escape", ".txt");

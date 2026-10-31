@@ -5,7 +5,7 @@ MatchBox can compile BoxLang for browser-oriented WebAssembly workflows. There a
 | Mode | Command | Use case |
 | :--- | :--- | :--- |
 | **JS Module (AOT)** | `--target js` | Ship a pre-compiled browser app/library as an ES module |
-| **WASM binary (AOT)** | `--target wasm` | Raw browser-oriented `.wasm` binary, bring your own loader |
+| **WASI binary (AOT)** | `--target wasm` / `--target wasi` | A `.wasm` module for WASI runtimes, not for browsers |
 | **Runtime (JIT-like)** | Build `pkg/` once, call `run_boxlang()` | Execute source strings at runtime in the browser |
 
 ---
@@ -66,26 +66,30 @@ function calculate(a, b) {
 }
 ```
 
+### BIFs in WASM Builds
+
+Native BIF groups are Cargo features of `matchbox_vm`, and a WASM build only contains the groups it was compiled with. The default feature set of a plain `js` build is empty, so groups such as `hash()` are absent unless the runtime is built with them.
+
+| Group (feature) | BIFs | In the browser |
+| :--- | :--- | :--- |
+| `bif-crypto` | `hash`, `hash40`, `hmac`, `generateSecretKey`, `generatePBKDFKey`, `encrypt`, `decrypt` | Compiles for `wasm32-unknown-unknown` with `js` (pure Rust digests and ciphers; random bytes come from the `js` feature's `getrandom` backend). Not part of the default WASM build: add `bif-crypto` to the features of the runtime you ship, for example `cargo build --target wasm32-unknown-unknown --features js,bif-crypto`. |
+| `bif-http` | `http()` | Not usable. The browser sandbox has no synchronous network access, and `http()` on WASM currently returns an error even when the feature is enabled. Use `fetch` from JavaScript and pass the result into BoxLang. |
+| `bif-io`, `bif-cli`, `bif-jni`, `bif-zip`, `bif-datasource` | filesystem, terminal, Java, archive and database BIFs | Not available in the browser. |
+
+A hosted playground that builds the runtime with default features off therefore has no `hash()` or `http()`: this is a build choice, not a runtime limitation, and `hash()` can be offered by enabling `bif-crypto` in that build.
+
 ---
 
-## Mode 2: Raw WASM Binary (AOT)
+## Mode 2: WASI Binary (AOT)
 
-Use `--target wasm` when you want the raw `.wasm` file and full control over how it is loaded in a browser-oriented environment.
+`--target wasm` (the same as `--target wasi`) produces a `.wasm` module built for WASI preview1 runtimes such as Wasmtime or Node's `node:wasi`. It is not a browser module: for the browser use Mode 1 (`--target js`) or Mode 3.
 
 ```bash
 matchbox --target wasm my_app.bxs
 # Produces: my_app.wasm
 ```
 
-Load it manually using the standard WebAssembly API:
-
-```js
-const response = await fetch('./my_app.wasm');
-const buffer   = await response.arrayBuffer();
-const module   = await WebAssembly.instantiate(buffer, importObject);
-```
-
-Refer to the [MDN WebAssembly docs](https://developer.mozilla.org/en-US/docs/WebAssembly) for the full instantiation API.
+See [WASM container deployment](wasm-container.md) for running it.
 
 ---
 

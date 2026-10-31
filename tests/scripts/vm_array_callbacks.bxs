@@ -1,0 +1,63 @@
+// Array members use Array semantics (not Set): duplicates kept, (value, index, array) passed.
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+// map keeps duplicate results (was deduplicated by the Set helper)
+expect( [1,2,3].map( f => 7 ).len(), 3, "map constant callback" );
+expect( [1,2,3].map( f => 7 ).toList(), "7,7,7", "map constant values" );
+
+// index and array arguments
+expect( [ "a", "b" ].map( ( v, i ) => i & v ).toList(), "1a,2b", "map index" );
+expect( [ "a", "b" ].map( ( v, i, arr ) => arr.len() ).toList(), "2,2", "map array" );
+var seen = [];
+[ "x", "y" ].each( ( v, i, arr ) => { seen.append( i & v & arr.len() ); } );
+expect( seen.toList(), "1x2,2y2", "each args" );
+expect( [ 1, 2, 3, 4 ].filter( ( v, i ) => i > 2 ).toList(), "3,4", "filter index" );
+expect( [ 5, 5, 5 ].filter( v => true ).len(), 3, "filter keeps duplicates" );
+expect( [ 1, 2, 3 ].reduce( ( acc, v, i ) => acc + v * i, 0 ), 14, "reduce index" );
+expect( [ 1, 2, 3 ].reduce( ( acc, v, i, arr ) => acc + arr.len(), 0 ), 9, "reduce array" );
+expect( [ 1, 2, 3 ].some( ( v, i ) => i == 3 ), true, "some index" );
+expect( [ 1, 2, 3 ].every( ( v, i ) => i < 4 ), true, "every index" );
+expect( [ 1, 2, 3 ].every( v => v < 3 ), false, "every false" );
+expect( [ 1, 2, 3 ].none( v => v > 3 ), true, "none" );
+expect( arrayMap( [ 1, 2 ], ( v, i ) => i ).toList(), "1,2", "arrayMap function form" );
+
+// closures created in a loop, then mapped (issue: results collapsed to one element)
+function loopClosures() {
+    var fs = [];
+    for ( i = 1; i <= 3; i++ ) { fs.append( () => i * 10 ); }
+    return fs.map( f => f() );
+}
+expect( loopClosures().toList(), "40,40,40", "closures in loop" );
+
+// closures capturing parameters and mutating enclosed locals
+function adder( n ) { return x => x + n; }
+expect( adder( 5 )( 10 ), 15, "closure captures parameter" );
+function counter() { var count = 0; var inc = () => { count = count + 1; }; inc(); inc(); return count; }
+expect( counter(), 2, "closure mutates local" );
+
+// sets still dedupe
+expect( setOf( 1, 2, 3 ).map( v => 7 ).len(), 1, "set map dedupes" );
+
+// named arguments in any order
+expect( arrayReduce( initialValue=0, callback=( a, v ) => a + v, array=[ 1, 2 ] ), 3, "reduce reordered named args" );
+expect( arrayMap( callback=v => v * 2, array=[ 1, 2 ] ).toList(), "2,4", "map reordered named args" );
+expect( arrayFilter( callback=v => v > 1, array=[ 1, 2, 3 ] ).toList(), "2,3", "filter reordered named args" );
+
+// predicate results use BoxLang boolean conversion
+expect( arraySome( [ 1 ], v => "false" ), false, "some with string false" );
+expect( arrayFilter( [ 1 ], v => "false" ).len(), 0, "filter with string false" );
+expect( arrayEvery( [ 1 ], v => "yes" ), true, "every with string yes" );
+expect( arrayNone( [ 1 ], v => 0 ), true, "none with zero" );
+
+// non-array input is rejected
+function failsWith( fn ) { try { fn(); } catch ( any e ) { return "error"; } return "no error"; }
+expect( failsWith( () => arrayEvery( "text", v => false ) ), "error", "every on a string" );
+expect( failsWith( () => arrayFilter( { a: 1 }, v => true ) ), "error", "filter on a struct" );
+
+// sets: results of set operations are sets, toArray gives an ordinary array
+expect( setOf( 1, 2 ).filter( v => true ).map( v => 7 ).len(), 1, "chained set filter and map" );
+expect( setOf( 1, 2 ).union( setOf( 2, 3 ) ).map( v => 7 ).len(), 1, "set union result is a set" );
+expect( setOf( 1, 2, 3 ).toArray().map( v => 7 ).len(), 3, "toArray result is an array" );
+expect( setOf( 1, 2, 3 ).len(), 3, "source set untouched" );

@@ -100,4 +100,47 @@ if (namedNames[1] != "Alice") {
     throw "Expected named QoQ query to match Alice, got: " & namedNames[1]
 }
 
+// Use the same expanded SQL/parameter sequence as ordinary datasource queries.
+options = {dbtype: "query"};
+repeated = queryExecute(
+    "SELECT name FROM employees WHERE id=:ID OR id=:id",
+    [{name: "id", value: 1, cfsqltype: "CF_SQL_INTEGER"}], options
+);
+assert repeated.recordCount == 1;
+assert queryColumnData(repeated, "name")[1] == "Alice";
+
+namedList = queryExecute(
+    "SELECT :ids FROM employees WHERE id=1",
+    {ids: {value: "1,2", list: true, cfsqltype: "CF_SQL_INTEGER"}}, options
+);
+assert namedList.recordCount == 1;
+columns = queryColumnArray(namedList);
+assert len(columns) == 2;
+assert queryColumnData(namedList, columns[1])[1] == 1;
+assert queryColumnData(namedList, columns[2])[1] == 2;
+
+positionalList = queryExecute(
+    "SELECT ? FROM employees WHERE id=1",
+    [{value: [1,2], list: true, cfsqltype: "CF_SQL_INTEGER"}], options
+);
+assert positionalList.recordCount == 1;
+columns = queryColumnArray(positionalList);
+assert len(columns) == 2;
+assert queryColumnData(positionalList, columns[1])[1] == 1;
+assert queryColumnData(positionalList, columns[2])[1] == 2;
+
+quoted = queryExecute(
+    "SELECT ':id ?' AS note FROM employees WHERE id=:id", {id: 1}, options
+);
+assert queryColumnData(quoted, "note")[1] == ":id ?";
+escaped = queryExecute("SELECT 'O''Brien' AS note FROM employees WHERE id=1", null, options);
+assert queryColumnData(escaped, "note")[1] == "O'Brien";
+bound = queryExecute("SELECT :note AS note FROM employees WHERE id=1", {note: "'quoted' :id ?"}, options);
+assert queryColumnData(bound, "note")[1] == "'quoted' :id ?";
+
+missing = false;
+try { queryExecute("SELECT name FROM employees WHERE id=:missing", {}, options); }
+catch (e) { missing = true; }
+assert missing;
+
 println("vm_qoq_query_execute: OK")

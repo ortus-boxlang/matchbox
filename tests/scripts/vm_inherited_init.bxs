@@ -1,0 +1,30 @@
+function expect( actual, expected, label ) {
+	if ( actual != expected ) {
+		throw( message = label & ": expected [" & expected & "] got [" & actual & "]" );
+	}
+}
+class Base {
+	function init() { this.n = 1; }
+}
+class Child extends="Base" {
+	function extra() { return 9; }
+}
+class GrandChild extends="Child" {
+}
+class WithArgs {
+	function init( x ) { this.x = x; return this; }
+}
+class ChildWithArgs extends="WithArgs" {
+}
+class Plain {
+	function hello() { return "hi"; }
+}
+class PlainChild extends="Plain" {
+}
+
+expect( ( new Child() ).n, 1, "inherited init without arguments" );
+expect( ( new GrandChild() ).n, 1, "init two levels up" );
+expect( ( new ChildWithArgs( 5 ) ).x, 5, "inherited init with arguments" );
+expect( ( new Base() ).n, 1, "own init" );
+expect( ( new PlainChild() ).hello(), "hi", "no init anywhere" );
+println( "inherited init ok" );

@@ -1,0 +1,37 @@
+// future.get() inside a native callback must let the producer fibers run (used to hang).
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+fs = [ 1, 2, 3 ].map( n => runAsync( () => n * n ) );
+expect( fs.len(), 3, "futures created in map" );
+expect( fs.map( f => f.get() ).toList(), "1,4,9", "get inside map" );
+
+loopFs = [];
+[ 1, 2, 3 ].each( n => { loopFs.append( runAsync( () => n * 10 ) ); } );
+expect( loopFs.map( f => f.get() ).toList(), "10,20,30", "get inside map, futures from each" );
+
+single = runAsync( () => 4 );
+expect( [ 1 ].map( x => single.get() ).toList(), "4", "get of a single future inside map" );
+expect( [ 1, 2, 3, 4 ].filter( x => runAsync( () => x % 2 == 0 ).get() ).toList(), "2,4", "get inside filter" );
+
+// nested callbacks
+nested = [ 1, 2 ].map( a => [ 10, 20 ].map( b => runAsync( () => a + b ).get() ).toList() );
+expect( nested.toList( "|" ), "11,21|12,22", "get inside nested callbacks" );
+
+// a failing future still throws from inside the callback
+caught = "";
+try { [ 1 ].map( x => runAsync( () => { throw "boom"; } ).get() ); } catch ( any e ) { caught = "caught"; }
+expect( caught, "caught", "error propagates" );
+
+// producer queued before nested callbacks that all wait on it (fiber slots must stay stable)
+producer = runAsync( () => 4 );
+waiting = [ 1, 2 ].map( x => [ 1, 2 ].map( y => producer.get() ).toList() );
+expect( waiting.toList( "|" ), "4,4|4,4", "nested callbacks waiting on one producer" );
+
+// a callback that waits on a future whose handler waits on another future
+a = runAsync( () => 1 );
+b = runAsync( () => 2 );
+chained = a.then( v => b.get() + v );
+expect( [ 1 ].map( x => chained.get() ).toList(), "3", "then handler waiting on another future" );
+expect( [ 1 ].map( x => a.get() + b.get() ).toList(), "3", "two producers" );

@@ -66,6 +66,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      # build.rs reads Git/date and writes generated files outside OUT_DIR.
+      KACHE_BUILD_SCRIPT_CACHE: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -73,20 +75,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
+        id: rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown, wasm32-wasip1, wasm32-wasip2
       - name: Cache Cargo
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: test
+          cache-bin: false
+          # Cache only dependencies, not workspace or incremental artifacts.
+          # On the Linux pilot Kache owns compiler artifacts instead.
+          cache-targets: ${{ matrix.os != 'ubuntu-latest' }}
+      - name: Cache Kache Store
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: host-${{ runner.os }}-test-${{ hashFiles('Cargo.lock') }}
+          path: ${{ runner.temp }}/kache
+          key: kache-v1-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
-            host-${{ runner.os }}-test-
-            host-${{ runner.os }}-
+            kache-v1-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}-
+            kache-v1-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.cachekey }}-
+      - name: Set Up Kache (Linux Pilot)
+        if: matrix.os == 'ubuntu-latest'
+        uses: kunobi-ninja/kache-action@b3491d5f4893a6513cb0162a72c735357f066569 # v1
+        with:
+          version: v1.0.0
+          github-cache: false
+          cache-dir: ${{ runner.temp }}/kache
+          cache-executables: true
+          max-size: 2GiB
+          pr-comment: false
       - name: Install wasm-bindgen-cli
         shell: bash
         run: |
@@ -162,17 +181,11 @@ jobs:
         with:
           targets: ${{ matrix.targets }}, wasm32-unknown-unknown, wasm32-wasip1, wasm32-wasip2
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: host-${{ runner.os }}-stubs-${{ matrix.tag }}-${{ hashFiles('Cargo.lock', 'crates/matchbox-runner/Cargo.lock') }}
-          restore-keys: |
-            host-${{ runner.os }}-stubs-${{ matrix.tag }}-
-            host-${{ runner.os }}-test-
-            host-${{ runner.os }}-
+          key: stubs-${{ matrix.tag }}
+          workspaces: crates/matchbox-runner -> ../../target
+          cache-bin: false
       
       - name: Install Cross-Compilers (Linux ARM)
         if: matrix.tag == 'linux-arm'
@@ -371,6 +384,8 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       MATCHBOX_BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+      # Always execute build scripts; cache compiler outputs, not their side effects.
+      KACHE_BUILD_SCRIPT_CACHE: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -403,6 +418,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
+        id: rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}, wasm32-unknown-unknown, wasm32-wasip1, wasm32-wasip2
@@ -413,35 +429,31 @@ jobs:
           name: aggregated-stubs
           path: stubs
 
-      - name: Get Stubs Hash
-        id: stubs-hash
-        shell: bash
-        run: |
-          # Create a hash of all stub files to use in cache key
-          STUBS_HASH=$(find stubs -type f -exec sha256sum {} \; | sha256sum | cut -d' ' -f1)
-          echo "hash=${STUBS_HASH}" >> $GITHUB_OUTPUT
-          echo "Stubs hash: ${STUBS_HASH}"
-
       - name: Cache Cargo
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: cli-${{ matrix.target }}
+          cache-bin: false
+          cache-targets: ${{ matrix.target != 'x86_64-unknown-linux-gnu' }}
+      - name: Cache Kache Store
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: host-${{ runner.os }}-cli-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          path: ${{ runner.temp }}/kache
+          key: kache-v1-cli-${{ matrix.target }}-${{ runner.arch }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
-            host-${{ runner.os }}-cli-${{ matrix.target }}-
-            host-${{ runner.os }}-stubs-
-            host-${{ runner.os }}-test-
-            host-${{ runner.os }}-
-
-      - name: Cache Target Directory
-        uses: actions/cache@v4
+            kache-v1-cli-${{ matrix.target }}-${{ runner.arch }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}-
+            kache-v1-cli-${{ matrix.target }}-${{ runner.arch }}-${{ steps.rust.outputs.cachekey }}-
+      - name: Set Up Kache (Linux Pilot)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: kunobi-ninja/kache-action@b3491d5f4893a6513cb0162a72c735357f066569 # v1
         with:
-          path: target
-          key: host-${{ runner.os }}-cli-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}-${{ steps.stubs-hash.outputs.hash }}
-          restore-keys: |
-            host-${{ runner.os }}-cli-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}-
+          version: v1.0.0
+          github-cache: false
+          cache-dir: ${{ runner.temp }}/kache
+          cache-executables: true
+          max-size: 2GiB
+          pr-comment: false
 
       - name: Install Cross-Compilers (Linux ARM)
         if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'
@@ -472,6 +484,15 @@ jobs:
           
           # One full-featured CLI, including the existing cross-platform stubs.
           cargo build --release --features cross-compile --target ${{ matrix.target }}
+
+      - name: Verify CLI build metadata
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          VERSION_OUTPUT=$(target/${{ matrix.target }}/release/matchbox --version)
+          printf '%s\n' "$VERSION_OUTPUT"
+          grep -Fx "matchbox version $MATCHBOX_BUILD_VERSION" <<< "$VERSION_OUTPUT"
+          grep -Fx "commit: $(git rev-parse --short HEAD)" <<< "$VERSION_OUTPUT"
 
       - name: Smoke test native runner BIFs
         if: matrix.target == 'x86_64-unknown-linux-gnu'

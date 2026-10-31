@@ -17,6 +17,8 @@ use md5::Md5;
 #[cfg(feature = "bif-crypto")]
 use rand::RngExt;
 #[cfg(feature = "bif-crypto")]
+use serde_json::Value as JsonValue;
+#[cfg(feature = "bif-crypto")]
 use sha1::Sha1;
 #[cfg(feature = "bif-crypto")]
 use sha2::{Sha224, Sha256, Sha384, Sha512};
@@ -24,8 +26,6 @@ use sha2::{Sha224, Sha256, Sha384, Sha512};
 use std::fs;
 #[cfg(feature = "bif-crypto")]
 use std::path::Path;
-#[cfg(feature = "bif-crypto")]
-use serde_json::Value as JsonValue;
 
 #[cfg(feature = "bif-crypto")]
 const DEFAULT_HASH_ALGORITHM: &str = "MD5";
@@ -228,7 +228,11 @@ fn resolve_hash_source(vm: &mut dyn BxVM, value: BxValue) -> Result<HashSource, 
 }
 
 #[cfg(feature = "bif-crypto")]
-fn resolve_message_bytes(vm: &mut dyn BxVM, value: BxValue, encoding: &str) -> Result<Vec<u8>, String> {
+fn resolve_message_bytes(
+    vm: &mut dyn BxVM,
+    value: BxValue,
+    encoding: &str,
+) -> Result<Vec<u8>, String> {
     if let Ok(bytes) = vm.to_bytes(value) {
         return Ok(bytes);
     }
@@ -271,7 +275,10 @@ fn encode_text(text: &str, encoding: &str) -> Result<Vec<u8>, String> {
             if text.is_ascii() {
                 Ok(text.as_bytes().to_vec())
             } else {
-                Err(format!("Unsupported non-ASCII input for encoding {}", encoding))
+                Err(format!(
+                    "Unsupported non-ASCII input for encoding {}",
+                    encoding
+                ))
             }
         }
         other => Err(format!("Unsupported encoding: {}", other)),
@@ -380,8 +387,8 @@ fn sha512_digest(input: &[u8]) -> [u8; 64] {
 #[cfg(feature = "bif-crypto")]
 fn hmac_md5(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
     type HmacMd5 = Hmac<Md5>;
-    let mut mac = HmacMd5::new_from_slice(key)
-        .map_err(|e| format!("Failed to create HMAC: {}", e))?;
+    let mut mac =
+        HmacMd5::new_from_slice(key).map_err(|e| format!("Failed to create HMAC: {}", e))?;
     mac.update(message);
     Ok(mac.finalize().into_bytes().to_vec())
 }
@@ -389,8 +396,8 @@ fn hmac_md5(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(feature = "bif-crypto")]
 fn hmac_sha1(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
     type HmacSha1 = Hmac<Sha1>;
-    let mut mac = HmacSha1::new_from_slice(key)
-        .map_err(|e| format!("Failed to create HMAC: {}", e))?;
+    let mut mac =
+        HmacSha1::new_from_slice(key).map_err(|e| format!("Failed to create HMAC: {}", e))?;
     mac.update(message);
     Ok(mac.finalize().into_bytes().to_vec())
 }
@@ -398,8 +405,8 @@ fn hmac_sha1(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(feature = "bif-crypto")]
 fn hmac_sha224(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
     type HmacSha224 = Hmac<Sha224>;
-    let mut mac = HmacSha224::new_from_slice(key)
-        .map_err(|e| format!("Failed to create HMAC: {}", e))?;
+    let mut mac =
+        HmacSha224::new_from_slice(key).map_err(|e| format!("Failed to create HMAC: {}", e))?;
     mac.update(message);
     Ok(mac.finalize().into_bytes().to_vec())
 }
@@ -407,8 +414,8 @@ fn hmac_sha224(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(feature = "bif-crypto")]
 fn hmac_sha256(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
     type HmacSha256 = Hmac<Sha256>;
-    let mut mac = HmacSha256::new_from_slice(key)
-        .map_err(|e| format!("Failed to create HMAC: {}", e))?;
+    let mut mac =
+        HmacSha256::new_from_slice(key).map_err(|e| format!("Failed to create HMAC: {}", e))?;
     mac.update(message);
     Ok(mac.finalize().into_bytes().to_vec())
 }
@@ -416,8 +423,8 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(feature = "bif-crypto")]
 fn hmac_sha384(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
     type HmacSha384 = Hmac<Sha384>;
-    let mut mac = HmacSha384::new_from_slice(key)
-        .map_err(|e| format!("Failed to create HMAC: {}", e))?;
+    let mut mac =
+        HmacSha384::new_from_slice(key).map_err(|e| format!("Failed to create HMAC: {}", e))?;
     mac.update(message);
     Ok(mac.finalize().into_bytes().to_vec())
 }
@@ -425,8 +432,8 @@ fn hmac_sha384(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(feature = "bif-crypto")]
 fn hmac_sha512(key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
     type HmacSha512 = Hmac<Sha512>;
-    let mut mac = HmacSha512::new_from_slice(key)
-        .map_err(|e| format!("Failed to create HMAC: {}", e))?;
+    let mut mac =
+        HmacSha512::new_from_slice(key).map_err(|e| format!("Failed to create HMAC: {}", e))?;
     mac.update(message);
     Ok(mac.finalize().into_bytes().to_vec())
 }
@@ -476,13 +483,18 @@ pub fn generate_secret_key(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValu
         *byte = rng.random();
     }
 
-    Ok(BxValue::new_ptr(vm.string_new(base64_encode_bytes(&key_bytes))))
+    Ok(BxValue::new_ptr(
+        vm.string_new(base64_encode_bytes(&key_bytes)),
+    ))
 }
 
 #[cfg(feature = "bif-crypto")]
 pub fn generate_pbkdf_key(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 3 {
-        return Err("generatePBKDFKey() expects at least 3 arguments: (algorithm, passphrase, salt)".to_string());
+        return Err(
+            "generatePBKDFKey() expects at least 3 arguments: (algorithm, passphrase, salt)"
+                .to_string(),
+        );
     }
 
     let algorithm = vm.to_string(args[0]);
@@ -508,9 +520,17 @@ pub fn generate_pbkdf_key(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue
         other => other.to_string(),
     };
 
-    let key_bytes = pbkdf2_derive(&normalized, passphrase.as_bytes(), salt.as_bytes(), iterations, key_size_bits)?;
+    let key_bytes = pbkdf2_derive(
+        &normalized,
+        passphrase.as_bytes(),
+        salt.as_bytes(),
+        iterations,
+        key_size_bits,
+    )?;
 
-    Ok(BxValue::new_ptr(vm.string_new(base64_encode_bytes(&key_bytes))))
+    Ok(BxValue::new_ptr(
+        vm.string_new(base64_encode_bytes(&key_bytes)),
+    ))
 }
 
 #[cfg(feature = "bif-crypto")]
@@ -574,10 +594,7 @@ fn encryption_plaintext(vm: &mut dyn BxVM, value: BxValue) -> Result<Vec<u8>, St
         .type_name_from_value(value)
         .is_some_and(|name| name.eq_ignore_ascii_case("datetime"))
     {
-        let timestamp = text
-            .strip_suffix('Z')
-            .unwrap_or(&text)
-            .replace('T', " ");
+        let timestamp = text.strip_suffix('Z').unwrap_or(&text).replace('T', " ");
         return Ok(format!("{{ts '{}'}}", &timestamp[..timestamp.len().min(19)]).into_bytes());
     }
     Ok(text.into_bytes())
@@ -585,10 +602,11 @@ fn encryption_plaintext(vm: &mut dyn BxVM, value: BxValue) -> Result<Vec<u8>, St
 
 #[cfg(feature = "bif-crypto")]
 fn encryption_plaintext_value(vm: &mut dyn BxVM, plaintext: Vec<u8>) -> Result<BxValue, String> {
-    let text = String::from_utf8(plaintext).map_err(|e| format!("Invalid decrypted text: {}", e))?;
+    let text =
+        String::from_utf8(plaintext).map_err(|e| format!("Invalid decrypted text: {}", e))?;
     if let Some(json) = text.strip_prefix("MBXSTRUCT:") {
-        let value: JsonValue = serde_json::from_str(json)
-            .map_err(|e| format!("Invalid decrypted object: {}", e))?;
+        let value: JsonValue =
+            serde_json::from_str(json).map_err(|e| format!("Invalid decrypted object: {}", e))?;
         return json_to_value(vm, value);
     }
     Ok(BxValue::new_ptr(vm.string_new(text)))
@@ -685,16 +703,14 @@ fn decode_ciphertext(text: &str, encoding: &str) -> Result<Vec<u8>, String> {
     }
     match normalize_encoding_name(encoding).as_str() {
         "uu" => uu_decode(text),
-        "base64" => base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            text.as_bytes(),
-        )
-        .map_err(|e| format!("Invalid encoded ciphertext: {}", e)),
-        "base64url" => base64::Engine::decode(
-            &base64::engine::general_purpose::URL_SAFE,
-            text.as_bytes(),
-        )
-        .map_err(|e| format!("Invalid encoded ciphertext: {}", e)),
+        "base64" => {
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text.as_bytes())
+                .map_err(|e| format!("Invalid encoded ciphertext: {}", e))
+        }
+        "base64url" => {
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE, text.as_bytes())
+                .map_err(|e| format!("Invalid encoded ciphertext: {}", e))
+        }
         other => Err(format!("Unsupported encryption encoding: {}", other)),
     }
 }
@@ -814,8 +830,8 @@ fn encrypt_bytes(
     }
     let (cipher, cbc_mode) = cipher_name(&normalized)?;
     let block_size = if cipher == "aes" { 16 } else { 8 };
-    let generated_iv = cbc_mode
-        && (iv_value.is_none() || iv_value.is_some_and(|value| value.is_null()));
+    let generated_iv =
+        cbc_mode && (iv_value.is_none() || iv_value.is_some_and(|value| value.is_null()));
     let iv = if generated_iv {
         random_iv(block_size)
     } else {
@@ -870,7 +886,9 @@ fn decrypt_bytes(
         ("aes", 16) => decrypt_blocks::<Aes128>(ciphertext, key, cbc_mode, &iv),
         ("aes", 24) => decrypt_blocks::<Aes192>(ciphertext, key, cbc_mode, &iv),
         ("aes", 32) => decrypt_blocks::<Aes256>(ciphertext, key, cbc_mode, &iv),
-        ("desede", _) => decrypt_blocks::<TdesEde3>(ciphertext, &expand_key(key, 24), cbc_mode, &iv),
+        ("desede", _) => {
+            decrypt_blocks::<TdesEde3>(ciphertext, &expand_key(key, 24), cbc_mode, &iv)
+        }
         ("blowfish", _) => decrypt_blocks::<Blowfish>(ciphertext, key, cbc_mode, &iv),
         _ => Err(format!("Unsupported decryption algorithm: {}", algorithm)),
     }?;
@@ -882,10 +900,16 @@ fn cipher_name(algorithm: &str) -> Result<(&str, bool), String> {
     match algorithm {
         "aes" | "aesecbpkcs5padding" | "aesecbpkcs7padding" => Ok(("aes", false)),
         "aescbcpkcs5padding" | "aescbcpkcs7padding" => Ok(("aes", true)),
-        "desede" | "tripledes" | "desedeecbpkcs5padding" | "desedeecbpkcs7padding"
-        | "tripledesecbpkcs5padding" | "tripledesecbpkcs7padding" => Ok(("desede", false)),
-        "desedecbcpkcs5padding" | "desedecbcpkcs7padding"
-        | "tripledescbcpkcs5padding" | "tripledescbcpkcs7padding" => Ok(("desede", true)),
+        "desede"
+        | "tripledes"
+        | "desedeecbpkcs5padding"
+        | "desedeecbpkcs7padding"
+        | "tripledesecbpkcs5padding"
+        | "tripledesecbpkcs7padding" => Ok(("desede", false)),
+        "desedecbcpkcs5padding"
+        | "desedecbcpkcs7padding"
+        | "tripledescbcpkcs5padding"
+        | "tripledescbcpkcs7padding" => Ok(("desede", true)),
         "blowfish" | "blowfishecbpkcs5padding" | "blowfishecbpkcs7padding" => {
             Ok(("blowfish", false))
         }
@@ -904,7 +928,11 @@ fn random_iv(block_size: usize) -> Vec<u8> {
 fn resolve_iv(vm: &mut dyn BxVM, value: Option<BxValue>, block_size: usize) -> Vec<u8> {
     let mut iv = value
         .filter(|value| !value.is_null())
-        .and_then(|value| vm.to_bytes(value).ok().or_else(|| Some(vm.to_string(value).into_bytes())))
+        .and_then(|value| {
+            vm.to_bytes(value)
+                .ok()
+                .or_else(|| Some(vm.to_string(value).into_bytes()))
+        })
         .unwrap_or_else(|| vec![0; block_size]);
     iv.resize(block_size, 0);
     iv.truncate(block_size);
@@ -931,8 +959,12 @@ fn pad_pkcs7(input: &[u8], block_size: usize) -> Vec<u8> {
 #[cfg(feature = "bif-crypto")]
 fn unpad_pkcs7(mut input: Vec<u8>, block_size: usize) -> Result<Vec<u8>, String> {
     let padding = *input.last().ok_or_else(|| "Empty ciphertext".to_string())? as usize;
-    if padding == 0 || padding > block_size || padding > input.len()
-        || input[input.len() - padding..].iter().any(|byte| *byte as usize != padding)
+    if padding == 0
+        || padding > block_size
+        || padding > input.len()
+        || input[input.len() - padding..]
+            .iter()
+            .any(|byte| *byte as usize != padding)
     {
         return Err("Invalid PKCS padding".to_string());
     }

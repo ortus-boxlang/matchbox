@@ -6,11 +6,10 @@
 //! records the JVM test it ties back to.
 //!
 //! This milestone is *transfer-first*: the `.bxs` files capture BoxLang runtime
-//! behavior. Every transferred test is registered and RUNS. Tests whose
-//! behavior MatchBox does not implement yet simply fail (red) — that is the
-//! signal the follow-up compatibility work consumes. Only tests that cannot be
-//! expressed in BoxLang at all (JVM-only infrastructure such as Java
-//! reflection) are skipped, and those are documented in the `.bxs` header.
+//! behavior. Every transferred test is registered. Tests requiring disabled
+//! Cargo features or an external database are explicitly ignored, not passed.
+//! With their requirements enabled, unsupported behavior fails (red). JVM-only
+//! infrastructure skips are documented in the `.bxs` header.
 
 #![allow(dead_code)]
 
@@ -27,7 +26,7 @@ fn run_compat(rel: &str) -> anyhow::Result<()> {
                 | "runtime/bifs/global/jdbc/QueryExecuteTest.bxs"
         )
     {
-        return Ok(());
+        anyhow::bail!("Set MATCHBOX_TEST_DB_HOST to run database compatibility tests");
     }
 
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -56,7 +55,8 @@ fn run_compat(rel: &str) -> anyhow::Result<()> {
 }
 
 macro_rules! compat_test {
-    ($name:ident, $file:expr) => {
+    ($(#[$attr:meta])* $name:ident, $file:expr) => {
+        $(#[$attr])*
         #[test]
         fn $name() {
             if let Err(e) = run_compat($file) {
@@ -65,13 +65,13 @@ macro_rules! compat_test {
         }
     };
     ($name:ident, $file:expr, $reason:literal) => {
-        #[test]
-        #[ignore = $reason]
-        fn $name() {
-            if let Err(e) = run_compat($file) {
-                panic!("BoxLang compat '{}' failed: {}", $file, e);
-            }
-        }
+        compat_test!(#[ignore = $reason] $name, $file);
+    };
+    ($name:ident, $file:expr, requires $feature:literal) => {
+        compat_test!(
+            #[cfg_attr(not(feature = $feature), ignore = concat!("requires feature ", $feature))]
+            $name, $file
+        );
     };
 }
 
@@ -79,8 +79,8 @@ macro_rules! compat_test {
 // runtime/operators — ortus/boxlang/runtime/operators/*.java
 // ---------------------------------------------------------------------------
 
-// Every transferred file runs. Failing assertions surface as red tests; the
-// `.bxs` header documents which behavior is still missing.
+// Feature-enabled fixtures run unchanged; disabled capabilities are reported
+// as ignored. Failing assertions remain red, never silently skipped.
 
 compat_test!(op_and, "runtime/operators/AndTest.bxs");
 compat_test!(op_assert, "runtime/operators/AssertTest.bxs");
@@ -225,7 +225,7 @@ compat_test!(bf_dec_is_date, "runtime/bifs/global/decision/IsDateTest.bxs");
 compat_test!(bf_dec_is_debug_mode, "runtime/bifs/global/decision/IsDebugModeTest.bxs");
 compat_test!(bf_dec_is_defined, "runtime/bifs/global/decision/IsDefinedTest.bxs");
 compat_test!(bf_dec_is_empty, "runtime/bifs/global/decision/IsEmptyTest.bxs");
-compat_test!(bf_dec_is_file_object, "runtime/bifs/global/decision/IsFileObjectTest.bxs");
+compat_test!(bf_dec_is_file_object, "runtime/bifs/global/decision/IsFileObjectTest.bxs", requires "bif-jni");
 compat_test!(bf_dec_is_ipv6, "runtime/bifs/global/decision/IsIPv6Test.bxs");
 compat_test!(bf_dec_is_json, "runtime/bifs/global/decision/IsJSONTest.bxs");
 compat_test!(bf_dec_is_leap_year, "runtime/bifs/global/decision/IsLeapYearTest.bxs");
@@ -233,10 +233,10 @@ compat_test!(bf_dec_is_localhost, "runtime/bifs/global/decision/IsLocalhostTest.
 compat_test!(bf_dec_is_null, "runtime/bifs/global/decision/IsNullTest.bxs");
 compat_test!(bf_dec_is_numeric_date, "runtime/bifs/global/decision/IsNumericDateTest.bxs");
 compat_test!(bf_dec_is_numeric, "runtime/bifs/global/decision/IsNumericTest.bxs");
-compat_test!(bf_dec_is_object, "runtime/bifs/global/decision/IsObjectTest.bxs");
-compat_test!(bf_dec_is_query, "runtime/bifs/global/decision/IsQueryTest.bxs");
+compat_test!(bf_dec_is_object, "runtime/bifs/global/decision/IsObjectTest.bxs", requires "bif-datasource");
+compat_test!(bf_dec_is_query, "runtime/bifs/global/decision/IsQueryTest.bxs", requires "bif-datasource");
 compat_test!(bf_dec_is_range, "runtime/bifs/global/decision/IsRangeTest.bxs");
-compat_test!(bf_dec_is_simple_value, "runtime/bifs/global/decision/IsSimpleValueTest.bxs");
+compat_test!(bf_dec_is_simple_value, "runtime/bifs/global/decision/IsSimpleValueTest.bxs", requires "bif-datasource");
 compat_test!(bf_dec_is_struct, "runtime/bifs/global/decision/IsStructTest.bxs");
 compat_test!(bf_dec_is_valid, "runtime/bifs/global/decision/IsValidTest.bxs");
 compat_test!(bf_dec_is_xml_attribute, "runtime/bifs/global/decision/IsXMLAttributeTest.bxs");
@@ -273,7 +273,7 @@ compat_test!(bf_cli_read, "runtime/bifs/global/cli/CLIReadTest.bxs");
 // ---------------------------------------------------------------------------
 
 compat_test!(bf_type_get_metadata, "runtime/bifs/global/type/GetMetaDataTest.bxs");
-compat_test!(bf_type_len, "runtime/bifs/global/type/LenTest.bxs");
+compat_test!(bf_type_len, "runtime/bifs/global/type/LenTest.bxs", requires "bif-datasource");
 compat_test!(bf_type_null_value, "runtime/bifs/global/type/NullValueTest.bxs");
 
 // ---------------------------------------------------------------------------
@@ -297,14 +297,14 @@ compat_test!(bf_stream_to_bx_struct, "runtime/bifs/global/stream/ToBXStructTest.
 // runtime/bifs/global/conversion — .../conversion/*.java
 // ---------------------------------------------------------------------------
 
-compat_test!(bf_conv_json_deserialize, "runtime/bifs/global/conversion/JSONDeserializeTest.bxs");
-compat_test!(bf_conv_json_serialize, "runtime/bifs/global/conversion/JSONSerializeTest.bxs");
+compat_test!(bf_conv_json_deserialize, "runtime/bifs/global/conversion/JSONDeserializeTest.bxs", requires "bif-datasource");
+compat_test!(bf_conv_json_serialize, "runtime/bifs/global/conversion/JSONSerializeTest.bxs", requires "bif-datasource");
 compat_test!(bf_conv_parse_number, "runtime/bifs/global/conversion/ParseNumberTest.bxs");
 compat_test!(bf_conv_to_base64, "runtime/bifs/global/conversion/ToBase64Test.bxs");
 compat_test!(bf_conv_to_binary, "runtime/bifs/global/conversion/ToBinaryTest.bxs");
 compat_test!(bf_conv_to_modifiable, "runtime/bifs/global/conversion/ToModifiableTest.bxs");
 compat_test!(bf_conv_to_numeric, "runtime/bifs/global/conversion/ToNumericTest.bxs");
-compat_test!(bf_conv_to_script, "runtime/bifs/global/conversion/ToScriptTest.bxs");
+compat_test!(bf_conv_to_script, "runtime/bifs/global/conversion/ToScriptTest.bxs", requires "bif-datasource");
 compat_test!(bf_conv_to_string, "runtime/bifs/global/conversion/ToStringTest.bxs");
 compat_test!(bf_conv_to_unmodifiable, "runtime/bifs/global/conversion/ToUnmodifiableTest.bxs");
 
@@ -612,41 +612,41 @@ compat_test!(bf_io_property_file, "runtime/bifs/global/io/PropertyFileTest.bxs")
 // runtime/bifs/global/zip — ortus/boxlang/runtime/bifs/global/zip/*.java
 // ---------------------------------------------------------------------------
 
-compat_test!(bf_zip_compress, "runtime/bifs/global/zip/CompressTest.bxs");
-compat_test!(bf_zip_extract, "runtime/bifs/global/zip/ExtractTest.bxs");
+compat_test!(bf_zip_compress, "runtime/bifs/global/zip/CompressTest.bxs", requires "bif-zip");
+compat_test!(bf_zip_extract, "runtime/bifs/global/zip/ExtractTest.bxs", requires "bif-zip");
 
-compat_test!(bf_query_query_add_column, "runtime/bifs/global/query/QueryAddColumnTest.bxs");
-compat_test!(bf_query_query_add_row, "runtime/bifs/global/query/QueryAddRowTest.bxs");
-compat_test!(bf_query_query_append, "runtime/bifs/global/query/QueryAppendTest.bxs");
-compat_test!(bf_query_query_clear, "runtime/bifs/global/query/QueryClearTest.bxs");
-compat_test!(bf_query_query_column_array, "runtime/bifs/global/query/QueryColumnArrayTest.bxs");
-compat_test!(bf_query_query_column_count, "runtime/bifs/global/query/QueryColumnCountTest.bxs");
-compat_test!(bf_query_query_column_data, "runtime/bifs/global/query/QueryColumnDataTest.bxs");
-compat_test!(bf_query_query_column_exists, "runtime/bifs/global/query/QueryColumnExistsTest.bxs");
-compat_test!(bf_query_query_column_list, "runtime/bifs/global/query/QueryColumnListTest.bxs");
+compat_test!(bf_query_query_add_column, "runtime/bifs/global/query/QueryAddColumnTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_add_row, "runtime/bifs/global/query/QueryAddRowTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_append, "runtime/bifs/global/query/QueryAppendTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_clear, "runtime/bifs/global/query/QueryClearTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_column_array, "runtime/bifs/global/query/QueryColumnArrayTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_column_count, "runtime/bifs/global/query/QueryColumnCountTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_column_data, "runtime/bifs/global/query/QueryColumnDataTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_column_exists, "runtime/bifs/global/query/QueryColumnExistsTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_column_list, "runtime/bifs/global/query/QueryColumnListTest.bxs", requires "bif-datasource");
 compat_test!(bf_query_query_current_row, "runtime/bifs/global/query/QueryCurrentRowTest.bxs");
-compat_test!(bf_query_query_delete_column, "runtime/bifs/global/query/QueryDeleteColumnTest.bxs");
-compat_test!(bf_query_query_delete_row, "runtime/bifs/global/query/QueryDeleteRowTest.bxs");
-compat_test!(bf_query_query_each, "runtime/bifs/global/query/QueryEachTest.bxs");
-compat_test!(bf_query_query_every, "runtime/bifs/global/query/QueryEveryTest.bxs");
-compat_test!(bf_query_query_filter, "runtime/bifs/global/query/QueryFilterTest.bxs");
-compat_test!(bf_query_query_get_cell, "runtime/bifs/global/query/QueryGetCellTest.bxs");
-compat_test!(bf_query_query_get_result, "runtime/bifs/global/query/QueryGetResultTest.bxs");
-compat_test!(bf_query_query_insert_at, "runtime/bifs/global/query/QueryInsertAtTest.bxs");
-compat_test!(bf_query_query_key_exists, "runtime/bifs/global/query/QueryKeyExistsTest.bxs");
-compat_test!(bf_query_query_map, "runtime/bifs/global/query/QueryMapTest.bxs");
-compat_test!(bf_query_query_new, "runtime/bifs/global/query/QueryNewTest.bxs");
-compat_test!(bf_query_query_none, "runtime/bifs/global/query/QueryNoneTest.bxs");
-compat_test!(bf_query_query_prepend, "runtime/bifs/global/query/QueryPrependTest.bxs");
-compat_test!(bf_query_query_record_count, "runtime/bifs/global/query/QueryRecordCountTest.bxs");
-compat_test!(bf_query_query_reduce, "runtime/bifs/global/query/QueryReduceTest.bxs");
-compat_test!(bf_query_query_reverse, "runtime/bifs/global/query/QueryReverseTest.bxs");
-compat_test!(bf_query_query_row_data, "runtime/bifs/global/query/QueryRowDataTest.bxs");
-compat_test!(bf_query_query_row_swap, "runtime/bifs/global/query/QueryRowSwapTest.bxs");
-compat_test!(bf_query_query_set_cell, "runtime/bifs/global/query/QuerySetCellTest.bxs");
-compat_test!(bf_query_query_set_row, "runtime/bifs/global/query/QuerySetRowTest.bxs");
-compat_test!(bf_query_query_slice, "runtime/bifs/global/query/QuerySliceTest.bxs");
-compat_test!(bf_query_query_some, "runtime/bifs/global/query/QuerySomeTest.bxs");
+compat_test!(bf_query_query_delete_column, "runtime/bifs/global/query/QueryDeleteColumnTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_delete_row, "runtime/bifs/global/query/QueryDeleteRowTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_each, "runtime/bifs/global/query/QueryEachTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_every, "runtime/bifs/global/query/QueryEveryTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_filter, "runtime/bifs/global/query/QueryFilterTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_get_cell, "runtime/bifs/global/query/QueryGetCellTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_get_result, "runtime/bifs/global/query/QueryGetResultTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_insert_at, "runtime/bifs/global/query/QueryInsertAtTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_key_exists, "runtime/bifs/global/query/QueryKeyExistsTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_map, "runtime/bifs/global/query/QueryMapTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_new, "runtime/bifs/global/query/QueryNewTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_none, "runtime/bifs/global/query/QueryNoneTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_prepend, "runtime/bifs/global/query/QueryPrependTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_record_count, "runtime/bifs/global/query/QueryRecordCountTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_reduce, "runtime/bifs/global/query/QueryReduceTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_reverse, "runtime/bifs/global/query/QueryReverseTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_row_data, "runtime/bifs/global/query/QueryRowDataTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_row_swap, "runtime/bifs/global/query/QueryRowSwapTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_set_cell, "runtime/bifs/global/query/QuerySetCellTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_set_row, "runtime/bifs/global/query/QuerySetRowTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_slice, "runtime/bifs/global/query/QuerySliceTest.bxs", requires "bif-datasource");
+compat_test!(bf_query_query_some, "runtime/bifs/global/query/QuerySomeTest.bxs", requires "bif-datasource");
 
 // ---------------------------------------------------------------------------
 // runtime/bifs/global/cache - ortus/boxlang/runtime/bifs/global/cache/*.java
@@ -686,11 +686,11 @@ compat_test!(bf_system_get_box_context, "runtime/bifs/global/system/GetBoxContex
 compat_test!(bf_system_get_box_runtime, "runtime/bifs/global/system/GetBoxRuntimeTest.bxs", "JVM-only: internal BoxRuntime identity");
 compat_test!(bf_system_get_box_version_info, "runtime/bifs/global/system/GetBoxVersionInfoTest.bxs");
 compat_test!(bf_system_get_class_metadata, "runtime/bifs/global/system/GetClassMetadataTest.bxs", "JVM-only: class files, annotations, and class metadata loader");
-compat_test!(bf_system_get_component_list, "runtime/bifs/global/system/GetComponentListTest.bxs");
+compat_test!(bf_system_get_component_list, "runtime/bifs/global/system/GetComponentListTest.bxs", "Unsupported: complete JVM component descriptor reflection");
 compat_test!(bf_system_get_current_template_path, "runtime/bifs/global/system/GetCurrentTemplatePathTest.bxs");
 compat_test!(bf_system_get_file_from_path, "runtime/bifs/global/system/GetFileFromPathTest.bxs");
 compat_test!(bf_system_get_function_called_name, "runtime/bifs/global/system/GetFunctionCalledNameTest.bxs");
-compat_test!(bf_system_get_function_list, "runtime/bifs/global/system/GetFunctionListTest.bxs");
+compat_test!(bf_system_get_function_list, "runtime/bifs/global/system/GetFunctionListTest.bxs", "Unsupported: complete JVM BIF descriptor reflection");
 compat_test!(bf_system_get_module_info, "runtime/bifs/global/system/GetModuleInfoTest.bxs");
 compat_test!(bf_system_get_module_list, "runtime/bifs/global/system/GetModuleListTest.bxs");
 compat_test!(bf_system_get_semver, "runtime/bifs/global/system/GetSemverTest.bxs", "JVM-only: org.semver4j Java library");
@@ -701,7 +701,7 @@ compat_test!(bf_system_invoke, "runtime/bifs/global/system/InvokeTest.bxs");
 compat_test!(bf_system_is_instance_of, "runtime/bifs/global/system/IsInstanceOfTest.bxs");
 compat_test!(bf_system_java_cast, "runtime/bifs/global/system/JavaCastTest.bxs", "JVM-only: Java primitive and native-array interop");
 compat_test!(bf_system_lock, "runtime/bifs/global/system/LockTest.bxs");
-compat_test!(bf_system_module_reload, "runtime/bifs/global/system/ModuleReloadTest.bxs");
+compat_test!(bf_system_module_reload, "runtime/bifs/global/system/ModuleReloadTest.bxs", "Unsupported: modules and native libraries have process lifetime, no hot reload");
 compat_test!(bf_system_object_marshaller, "runtime/bifs/global/system/ObjectMarshallerTest.bxs", "JVM-only: Java object serialization");
 compat_test!(bf_system_print, "runtime/bifs/global/system/PrintTest.bxs");
 compat_test!(bf_system_println, "runtime/bifs/global/system/PrintlnTest.bxs");
@@ -716,7 +716,7 @@ compat_test!(bf_system_trace, "runtime/bifs/global/system/TraceTest.bxs");
 compat_test!(bf_system_url_encoded_format, "runtime/bifs/global/system/URLEncodedFormatTest.bxs");
 compat_test!(bf_system_write_log, "runtime/bifs/global/system/WriteLogTest.bxs");
 compat_test!(bf_system_create_dynamic_proxy, "runtime/bifs/global/system/java/CreateDynamicProxyTest.bxs", "JVM-only: Java dynamic proxies and threads");
-compat_test!(bf_query_query_sort, "runtime/bifs/global/query/QuerySortTest.bxs");
+compat_test!(bf_query_query_sort, "runtime/bifs/global/query/QuerySortTest.bxs", requires "bif-datasource");
 
 // ---------------------------------------------------------------------------
 // runtime/bifs/global/net — ortus/boxlang/runtime/bifs/global/net/*.java
@@ -730,10 +730,11 @@ compat_test!(bf_net_soap, "runtime/bifs/global/net/SOAPTest.bxs");
 // ---------------------------------------------------------------------------
 
 compat_test!(bf_jdbc_derby_sleep, "runtime/bifs/global/jdbc/DerbySleep.bxs");
-compat_test!(bf_jdbc_is_in_transaction, "runtime/bifs/global/jdbc/IsInTransactionTest.bxs");
-compat_test!(bf_jdbc_preserve_single_quotes, "runtime/bifs/global/jdbc/PreserveSingleQuotesTest.bxs");
-compat_test!(bf_jdbc_query_execute, "runtime/bifs/global/jdbc/QueryExecuteTest.bxs");
-compat_test!(bf_jdbc_transaction_commit, "runtime/bifs/global/jdbc/TransactionCommitTest.bxs");
+// Run these explicitly with --ignored and MATCHBOX_TEST_DB_HOST configured.
+compat_test!(bf_jdbc_is_in_transaction, "runtime/bifs/global/jdbc/IsInTransactionTest.bxs", "requires MATCHBOX_TEST_DB_HOST and bif-datasource");
+compat_test!(bf_jdbc_preserve_single_quotes, "runtime/bifs/global/jdbc/PreserveSingleQuotesTest.bxs", "requires MATCHBOX_TEST_DB_HOST and bif-datasource");
+compat_test!(bf_jdbc_query_execute, "runtime/bifs/global/jdbc/QueryExecuteTest.bxs", "requires MATCHBOX_TEST_DB_HOST and bif-datasource");
+compat_test!(bf_jdbc_transaction_commit, "runtime/bifs/global/jdbc/TransactionCommitTest.bxs", requires "bif-datasource");
 
 // ---------------------------------------------------------------------------
 // runtime/bifs/global/temporal — .../temporal/*.java
@@ -797,7 +798,7 @@ compat_test!(bf_watcher_stop, "runtime/bifs/global/watcher/WatcherStopTest.bxs")
 // runtime/bifs/global/set — ortus/boxlang/runtime/bifs/global/set/*.java
 // ---------------------------------------------------------------------------
 
-compat_test!(bf_set_set_bifs, "runtime/bifs/global/set/SetBIFsTest.bxs");
+compat_test!(bf_set_set_bifs, "runtime/bifs/global/set/SetBIFsTest.bxs", requires "bif-datasource");
 
 // ---------------------------------------------------------------------------
 // runtime/bifs/global/scheduler — ortus/boxlang/runtime/bifs/global/scheduler/*.java

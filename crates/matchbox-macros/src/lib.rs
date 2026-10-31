@@ -1,7 +1,7 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
-use quote::{quote, format_ident};
-use syn::{parse_macro_input, ItemFn, FnArg, Pat, ItemStruct, ItemImpl, ImplItem, ReturnType};
+use quote::{format_ident, quote};
+use syn::{parse_macro_input, FnArg, ImplItem, ItemFn, ItemImpl, ItemStruct, Pat, ReturnType};
 
 #[proc_macro_attribute]
 pub fn matchbox_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -18,7 +18,7 @@ pub fn matchbox_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
             if let Pat::Ident(pat_ident) = &*pat_type.pat {
                 let arg_name = &pat_ident.ident;
                 let arg_type = &pat_type.ty;
-                
+
                 let conversion = if quote!(#arg_type).to_string().contains("f64") {
                     quote! { let #arg_name = args[#i].as_number(); }
                 } else if quote!(#arg_type).to_string().contains("i32") {
@@ -30,7 +30,7 @@ pub fn matchbox_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 } else {
                     quote! { let #arg_name = args[#i]; }
                 };
-                
+
                 arg_conversions.push(conversion);
                 call_args.push(quote!(#arg_name));
             }
@@ -38,7 +38,7 @@ pub fn matchbox_fn(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let arg_count = call_args.len();
-    
+
     let expanded = quote! {
         #input
 
@@ -77,7 +77,7 @@ pub fn bx_object_derive(input: TokenStream) -> TokenStream {
         let name = &f.ident;
         let ty = &f.ty;
         let ty_str = quote!(#ty).to_string().replace(" ", "");
-        
+
         if ty_str.contains("BxValue") {
             if ty_str.contains("Vec<") {
                 quote! {
@@ -128,18 +128,18 @@ pub fn bx_object_derive(input: TokenStream) -> TokenStream {
 pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemImpl);
     let self_ty = &input.self_ty;
-    
+
     let mut dispatch_arms = Vec::new();
 
     for item in &input.items {
         if let ImplItem::Fn(method) = item {
             let name = &method.sig.ident;
             let mut name_str = name.to_string().to_lowercase();
-            
+
             if name_str.starts_with("bx_") {
                 name_str = name_str[3..].to_string();
             }
-            
+
             let mut arg_conversions = Vec::new();
             let mut call_args = Vec::new();
             let mut skip_first = false;
@@ -161,11 +161,13 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                     if let Pat::Ident(pat_ident) = &*pat_type.pat {
                         let arg_name = &pat_ident.ident;
-                        let arg_idx = if skip_first { 
+                        let arg_idx = if skip_first {
                             // We need to count how many non-receiver, non-VM arguments we've seen
                             let mut idx = 0;
                             for (j, prev_arg) in method.sig.inputs.iter().enumerate() {
-                                if j >= i { break; }
+                                if j >= i {
+                                    break;
+                                }
                                 if let FnArg::Typed(pt) = prev_arg {
                                     let pt_str = quote!(#pt).to_string();
                                     if !pt_str.contains("BxVM") {
@@ -174,8 +176,8 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                 }
                             }
                             idx
-                        } else { 
-                            i 
+                        } else {
+                            i
                         };
 
                         let conversion = if arg_type_str.contains("f64") {
@@ -189,7 +191,7 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         } else {
                             quote! { let #arg_name = args[#arg_idx]; }
                         };
-                        
+
                         arg_conversions.push(conversion);
                         call_args.push(quote!(#arg_name));
                     }
@@ -212,9 +214,9 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             let return_wrapping = match &method.sig.output {
-                ReturnType::Default => quote! { 
+                ReturnType::Default => quote! {
                     self.#name(#(#call_args),*);
-                    Ok(matchbox_vm::types::BxValue::new_null()) 
+                    Ok(matchbox_vm::types::BxValue::new_null())
                 },
                 ReturnType::Type(_, ty) => {
                     let ty_str = quote!(#ty).to_string();
@@ -226,33 +228,33 @@ pub fn bx_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     };
 
                     if ty_str.contains("& mut Self") || ty_str.contains("& mut self") {
-                         quote! { 
-                            #call;
-                            Ok(matchbox_vm::types::BxValue::new_ptr(id))
-                         }
+                        quote! {
+                           #call;
+                           Ok(matchbox_vm::types::BxValue::new_ptr(id))
+                        }
                     } else if ty_str.contains("BxValue") {
-                         quote! { Ok(#call) }
+                        quote! { Ok(#call) }
                     } else if ty_str.contains("()") {
-                         quote! { 
-                            #call;
-                            Ok(matchbox_vm::types::BxValue::new_null()) 
-                         }
+                        quote! {
+                           #call;
+                           Ok(matchbox_vm::types::BxValue::new_null())
+                        }
                     } else if ty_str.contains("f64") {
-                         quote! { Ok(matchbox_vm::types::BxValue::new_number(#call)) }
+                        quote! { Ok(matchbox_vm::types::BxValue::new_number(#call)) }
                     } else if ty_str.contains("i32") {
-                         quote! { Ok(matchbox_vm::types::BxValue::new_int(#call)) }
+                        quote! { Ok(matchbox_vm::types::BxValue::new_int(#call)) }
                     } else if ty_str.contains("bool") {
-                         quote! { Ok(matchbox_vm::types::BxValue::new_bool(#call)) }
+                        quote! { Ok(matchbox_vm::types::BxValue::new_bool(#call)) }
                     } else if ty_str.contains("String") {
-                         quote! { 
-                            let result = #call;
-                            Ok(matchbox_vm::types::BxValue::new_ptr(vm.string_new(result))) 
-                         }
+                        quote! {
+                           let result = #call;
+                           Ok(matchbox_vm::types::BxValue::new_ptr(vm.string_new(result)))
+                        }
                     } else {
-                         quote! { 
-                            #call;
-                            Ok(matchbox_vm::types::BxValue::new_null()) 
-                         }
+                        quote! {
+                           #call;
+                           Ok(matchbox_vm::types::BxValue::new_null())
+                        }
                     }
                 }
             };

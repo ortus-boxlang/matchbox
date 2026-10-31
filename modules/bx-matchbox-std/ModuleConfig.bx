@@ -1,0 +1,4 @@
+class {
+    this.mapping = "matchboxStd";
+    function configure() { settings = {}; }
+}

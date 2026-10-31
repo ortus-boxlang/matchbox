@@ -557,7 +557,7 @@ fn compile_source(path: &Path, source: &str) -> Result<matchbox_vm::Chunk> {
         Vec::new(),
         false,
         false,
-        &[],
+        false,
         &[],
     )
     .map_err(|err| anyhow!("Compiler Error in {}: {}", path.display(), err))?;

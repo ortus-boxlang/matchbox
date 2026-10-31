@@ -1,0 +1,34 @@
+// new C() yields the instance unless init() returns a non-null value (BoxLang DynamicInteropService.bootstrapBLClass)
+class NoReturn { function init() { this.n = 1; } function get() { return 1; } }
+class ReturnThis { function init() { this.n = 2; return this; } function get() { return 2; } }
+class ReturnNull { function init() { this.n = 3; return null; } function get() { return 3; } }
+class ReturnOther { function init() { this.n = 4; return "other"; } }
+class WithArgs { function init( a, b ) { this.sum = a + b; } }
+class ChildOverrides extends="ReturnThis" { function init() { this.child = 5; } }
+
+c = new NoReturn();
+assert !isNull( c ) : "no return yields instance";
+assert c.get() == 1 : "no return instance is usable";
+assert c.n == 1 : "no return init ran";
+
+c = new ReturnThis();
+assert !isNull( c ) && c.get() == 2 && c.n == 2 : "return this";
+
+c = new ReturnNull();
+assert !isNull( c ) && c.get() == 3 && c.n == 3 : "return null yields instance";
+
+c = new ReturnOther();
+assert c == "other" : "non-null return replaces the instance";
+
+c = new WithArgs( 2, 3 );
+assert c.sum == 5 : "positional args";
+c = new WithArgs( b = 3, a = 4 );
+assert c.sum == 7 : "named args";
+
+// inheritance (super.init() and inherited init are tracked separately)
+c = new ChildOverrides();
+assert !isNull( c ) && c.child == 5 && c.get() == 2 : "child init without return over parent that returns this";
+
+x = new NoReturn().get();
+assert x == 1 : "chained call on new without return";
+println( "ok" );

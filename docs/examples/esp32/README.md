@@ -9,7 +9,7 @@ This example demonstrates how to compile and flash a simple BoxLang script to an
 3.  Run the following command (replacing `esp32s3` with your chip type):
 
 ```bash
-matchbox docs/examples/esp32/hello_esp32.bxs --target esp32 --chip esp32s3 --full-flash
+matchbox --target esp32 --chip esp32s3 --full-flash docs/examples/esp32/hello_esp32.bxs
 ```
 
 ## What Happens Next?

@@ -1,0 +1,89 @@
+// Actual bytecodes, not a Rust implementation/pattern match of binary search.
+function lowerBound(tokens, offset=1) {
+    var low=1; var high=len(tokens)+1; var middle=0;
+    while (low < high) {
+        middle=int((low+high)/2);
+        if (tokens[middle].start < offset) { low=middle+1; } else { high=middle; }
+    }
+    return low;
+}
+function countLocals(limit) {
+    var count=0;
+    while (count < limit) { count=count+1; }
+    return count;
+}
+function untakenMember(record, limit, flag) {
+    var count=0; var total=0;
+    while (count < limit) { if (flag) { total=total+record.VaLuE; } count=count+1; }
+    return total;
+}
+function scopeAlias() {
+    var i=0; var total=0; var objects=[local]; var limit=5;
+    while (i < limit) { i=i+1; total=total+objects[1].i; }
+    return total;
+}
+function makeShadowedSearch() {
+    var calls={value:0};
+    var int=(number)=>{ calls.value+=1; return floor(number); };
+    var shadowedSearch=(tokens, offset)=>{
+        var low=1; var high=len(tokens)+1; var middle=0;
+        while (low < high) {
+            middle=int((low+high)/2);
+            if (tokens[middle].start < offset) { low=middle+1; } else { high=middle; }
+        }
+        return low;
+    };
+    return {invoke:shadowedSearch, calls:calls};
+}
+function runLoopContract() {
+    var tokens=[]; var i=0; var offset=0; var expected=0; var fn=lowerBound;
+    var sensitive=structNew("casesensitive"); var presentation={value:4};
+    var caught=false;
+    for (i=1; i<=257; i++) { arrayAppend(tokens, {start:i*3, "Élève中😀":i}); }
+    for (offset=0; offset<=800; offset++) {
+        expected=1;
+        while (expected<=len(tokens) && tokens[expected].start<offset) { expected+=1; }
+        assert lowerBound(tokens, offset)==expected;
+        assert countLocals(4)==4;
+        // This aliases the function's own declaring scope through an array.
+        assert scopeAlias()==15;
+        assert untakenMember(presentation,4,false)==0;
+    }
+    assert jsonSerialize(presentation)=='{"value":4}';
+    assert lowerBound([])==1;
+    assert fn(offset=12, tokens=tokens)==4;
+    assert fn(tokens)==1;
+    assert fn(tokens, "12")==4;
+    assert lowerBound([{start:3},{start:3},{start:9}], 3)==1;
+    assert lowerBound([{start:3},{start:"6"},{start:9}], 6)==2;
+    sensitive.start=6;
+    assert lowerBound([{START:3},sensitive,{start:9}],6)==2;
+    // Invalid data reached only after the first interpreted iteration.
+    try { lowerBound([{start:3},6,{start:9},{start:12},{start:15},{start:18},{start:21}], 3); }
+    catch(any error) { caught=true; }
+    assert caught;
+    // 1024-backedge native chunks must preserve progress and normal VM yields.
+    assert countLocals(100000)==100000;
+    for (i=0; i<100000; i++) { var garbage={value:i}; }
+    assert fn(tokens,12)==4 && tokens[4]["ÉLÈVE中😀"]==4;
+    println("Function loop JIT / rollback / scope aliases / intrinsic guards / yields / GC: OK");
+}
+runLoopContract();
+// MatchBox-specific: JVM int floors negatives and takes precedence over this
+// captured binding. The JIT must preserve current VM truncation/lookup semantics.
+function truncatedLoop(value, limit) {
+    var result=0; var count=0;
+    while (count<limit) { result=int(value); count=count+1; }
+    return result;
+}
+function checkShadowedIntrinsic() {
+    var shadowed=makeShadowedSearch(); var i=0; var before=0;
+    var tokens=[{start:3},{start:6},{start:9},{start:12},{start:15},{start:18},{start:21}];
+    for (i=0; i<250; i++) {
+        assert truncatedLoop(-2.3,4)==-2;
+        assert shadowed.invoke(tokens,12)==4;
+    }
+    before=shadowed.calls.value;
+    assert shadowed.invoke(tokens,12)==4 && shadowed.calls.value>before;
+}
+checkShadowedIntrinsic();

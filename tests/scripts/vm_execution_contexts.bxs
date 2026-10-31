@@ -1,0 +1,19 @@
+function keepContext(seed = 7) {
+    var count = 1;
+    var context = getBoxContext();
+    if (context != getBoxContext()) { throw "Context identity changed"; }
+    var visible = context.getVisibleScopes().contextual;
+    visible.local.count = seed;
+    visible.arguments.seed = 9;
+    if (count != 7 || seed != 9) { throw "Context scopes are not live"; }
+    if (context.getScopeNearby("local").count != 7) { throw "Nearby scope missing"; }
+    var reader = function(delta = 1) { count += delta; return count; };
+    return context;
+}
+savedContext = keepContext();
+savedContext.getScopeNearby("local").count = 12;
+if (savedContext.getVisibleScopes().contextual.local.count != 12 || savedContext.getScopeNearby("arguments").seed != 9) { throw "Retained context scopes are not live"; }
+readerReference = savedContext.getScopeNearby("local").reader;
+if (savedContext.invokeFunction(readerReference, {delta:2}) != 14 || savedContext.invokeFunction(readerReference) != 15) { throw "Named context callbacks lost declaring scopes"; }
+if (savedContext.invokeFunction(function(value) { return len(value); }, ["abc"]) != 3 || savedContext.invokeFunction(() => 42) != 42) { throw "Context callable dispatch failed"; }
+println("context scopes OK");

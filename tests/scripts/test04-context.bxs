@@ -1,0 +1,17 @@
+function mutateContext(context) {
+    context.getScopeNearby("local").count = 41;
+    context.getScopeNearby("arguments").value = 42;
+}
+function liveContext(value) {
+    var count = value + 2;
+    var context = getBoxContext();
+    context.invokeFunction(mutateContext, [context]);
+    assert count == 41 && value == 42 : "Reentrant context writes were hidden from the declaring frame";
+    try { throw "expected"; } catch (any problem) { count += 1; } finally { value += 1; }
+    assert context.getScopeNearby("local").count == 42 && context.getScopeNearby("arguments").value == 43 : "Finally writes stopped updating context aliases";
+    return context;
+}
+var kept = liveContext(1);
+mutateContext(kept);
+assert kept.getVisibleScopes().contextual.local.count == 41 : "Retained context lost scope ownership";
+println("Execution context / reentrant callback / catch-finally / retained live scopes: OK");

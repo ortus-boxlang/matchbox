@@ -28,9 +28,15 @@ use url::form_urlencoded;
 
 static EMBEDDED_BYTECODE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bytecode.bxb"));
 #[cfg(feature = "embedded-web")]
-const WIFI_SSID: &str = "Pixel_174";
+const WIFI_SSID: &str = match option_env!("MATCHBOX_ESP32_WIFI_SSID") {
+    Some(value) => value,
+    None => "",
+};
 #[cfg(feature = "embedded-web")]
-const WIFI_PASSWORD: &str = "myinternetpass";
+const WIFI_PASSWORD: &str = match option_env!("MATCHBOX_ESP32_WIFI_PASSWORD") {
+    Some(value) => value,
+    None => "",
+};
 #[cfg(feature = "embedded-web")]
 const WIFI_HOSTNAME: &str = "roastatron3k";
 
@@ -1086,7 +1092,14 @@ fn method_from_embedded(method: Method) -> &'static str {
 }
 
 #[cfg(feature = "embedded-web")]
-fn connect_wifi() -> Result<BlockingWifi<EspWifi<'static>>> {
+fn connect_wifi() -> Result<Option<BlockingWifi<EspWifi<'static>>>> {
+    if WIFI_SSID.is_empty() {
+        println!(
+            "[matchbox] No Wi-Fi credentials configured: Wi-Fi is disabled. \
+Set MATCHBOX_ESP32_WIFI_SSID and MATCHBOX_ESP32_WIFI_PASSWORD when building the firmware."
+        );
+        return Ok(None);
+    }
     let peripherals = Peripherals::take()?;
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
@@ -1128,7 +1141,7 @@ fn connect_wifi() -> Result<BlockingWifi<EspWifi<'static>>> {
         ip_info.ip
     );
 
-    Ok(wifi)
+    Ok(Some(wifi))
 }
 
 #[cfg(feature = "embedded-web")]

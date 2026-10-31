@@ -1,0 +1,81 @@
+// ++ / -- / += on member targets: variables, this, local, arguments, structs
+class Counter {
+    function init() { variables.n = 0; this.m = 0; return this; }
+    function postInc() { variables.n++; return variables.n; }
+    function preInc() { ++variables.n; return variables.n; }
+    function postDec() { variables.n--; return variables.n; }
+    function preDec() { --variables.n; return variables.n; }
+    function addTwo() { variables.n += 2; return variables.n; }
+    function thisInc() { this.m++; return this.m; }
+    function thisPreInc() { ++this.m; return this.m; }
+    function postValue() { return variables.n++; }
+    function preValue() { return ++variables.n; }
+    function postDecValue() { return variables.n--; }
+    function preDecValue() { return --variables.n; }
+    function localInc() { local.x = 5; local.x++; ++local.x; return local.x; }
+    function argInc( required n ) { arguments.n++; return arguments.n; }
+    function nonNumeric() { variables.s = "abc"; variables.s++; return variables.s; }
+    function get() { return variables.n; }
+}
+
+c = new Counter();
+assert c.postInc() == 1 : "variables.n++";
+assert c.preInc() == 2 : "++variables.n";
+assert c.postDec() == 1 : "variables.n--";
+assert c.preDec() == 0 : "--variables.n";
+assert c.addTwo() == 2 : "variables.n += 2";
+assert c.thisInc() == 1 : "this.m++";
+assert c.thisPreInc() == 2 : "++this.m";
+
+// value semantics
+c = new Counter();
+assert c.postValue() == 0 && c.get() == 1 : "post++ yields old value";
+assert c.preValue() == 2 && c.get() == 2 : "pre++ yields new value";
+assert c.postDecValue() == 2 && c.get() == 1 : "post-- yields old value";
+assert c.preDecValue() == 0 && c.get() == 0 : "pre-- yields new value";
+
+assert c.localInc() == 7 : "local scope";
+assert c.argInc( 4 ) == 5 : "arguments scope";
+
+threw = false;
+try { c.nonNumeric(); } catch ( any e ) { threw = true; }
+assert threw : "non numeric target throws";
+
+// plain struct targets
+s = { n = 1 };
+s.n++;
+assert s.n == 2 : "struct post++";
+++s.n;
+assert s.n == 3 : "struct pre++ statement";
+s.n--;
+assert s.n == 2 : "struct post--";
+--s.n;
+assert s.n == 1 : "struct pre-- statement";
+assert s.n++ == 1 && s.n == 2 : "struct post++ value";
+assert ++s.n == 3 : "struct pre++ value";
+assert s.n-- == 3 && s.n == 2 : "struct post-- value";
+assert --s.n == 1 : "struct pre-- value";
+s.n += 5;
+assert s.n == 6 : "struct +=";
+
+// script level variables scope
+variables.top = 1;
+variables.top++;
+assert variables.top == 2 : "script variables.top++";
+++variables.top;
+assert variables.top == 3 : "script ++variables.top";
+// consecutive prefix statements without semicolons stay separate statements
+i = 0;
+j = 5;
+++i
+++j;
+assert i == 1 && j == 6 : "consecutive ++ statements";
+--i
+--j;
+assert i == 0 && j == 5 : "consecutive -- statements";
+
+// the call inside a prefix member target survives tree shaking
+items = [ { n = 1 } ];
+++arrayFirst( items ).n;
+assert items[ 1 ].n == 2 : "prefix on a call result member";
+println( "ok" );

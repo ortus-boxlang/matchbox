@@ -1,0 +1,43 @@
+// Real compiler functions: compiled bodies must keep ordinary VM entry/exit semantics.
+function weighted(value=1.5, scale=2.0) { return value * scale + 0.5; }
+function choose(flag, value) { if (flag) { return value; } return value + 1.0; }
+function divide(a, b) { return a / b; }
+function ready() { return true; }
+function pairRecord(first, other) { return {MiXeD:first, "Élève中😀_long_record_field":other}; }
+function mutate(value) { arguments.value = 9; return value; }
+function maker(scale) { return (value) => value * scale; }
+function runContract() {
+var fn = weighted;
+var captured = maker(3.0);
+var caught = false;
+var live = {value:42};
+var record = {};
+for (var i=0; i<200; i++) {
+    assert weighted(2.0, 3.0) == 6.5;
+    assert choose(true, 7.0) == 7.0;
+    assert divide(4.0, 2.0) == 2.0;
+    assert ready();
+    record = pairRecord(first=i, other=live);
+    assert record.mixed == i && record["ÉLÈVE中😀_LONG_RECORD_FIELD"] == live;
+    assert mutate(1) == 9;
+    assert captured(2.0) == 6.0;
+}
+assert weighted() == 3.5;
+assert fn(scale=3.0, value=2.0) == 6.5;
+assert fn(2, 3) == 6.5;
+assert fn("2", "3") == 6.5;
+assert choose(0, 7.0) == 8.0;
+assert choose(null, 7.0) == 8.0;
+assert choose("false", 7.0) == 8.0;
+try { divide(1.0, 0.0); } catch (any error) { caught = true; }
+assert caught;
+// Keep captured scopes and returned values alive across collection pressure.
+for (var i=0; i<100000; i++) { var temporary = {value:i}; }
+assert captured(4.0) == 12.0;
+assert record.mixed == 199 && record["élève中😀_long_record_field"].value == 42;
+live.value = 64;
+assert record["élève中😀_long_record_field"].value == 64;
+assert fn() == 3.5;
+println("Function JIT / defaults / named calls / guards / scopes / GC: OK");
+}
+runContract();

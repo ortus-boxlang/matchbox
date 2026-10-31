@@ -1,0 +1,24 @@
+// Test SQLite: in-memory SELECT 1. No server needed.
+
+datasourceRegister("sqlite_select_1", {
+    driver: "sqlite",
+    database: ":memory:"
+})
+
+result = queryExecute("SELECT 1 AS val", null, {datasource: "sqlite_select_1"})
+
+if (result.recordCount != 1) {
+    throw "SELECT 1: expected recordCount 1, got: " & result.recordCount
+}
+
+colList = queryColumnList(result)
+if (indexof(colList, "val") < 1) {
+    throw "SELECT 1: expected column 'val', columnList was: " & colList
+}
+
+vals = queryColumnData(result, "val")
+if (vals[1] != 1) {
+    throw "SELECT 1: expected val == 1, got: " & vals[1]
+}
+
+println("sqlite_select: OK")

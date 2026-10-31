@@ -1,0 +1,47 @@
+function expect( actual, expected, label ) {
+	if ( actual != expected ) {
+		throw( message = label & ": expected [" & expected & "] got [" & actual & "]" );
+	}
+}
+class Base {
+	function init() { this.base = 1; return this; }
+	function who() { return "base"; }
+	function add( a, b ) { return a + b; }
+	function tag() { return "tag:" & this.kind; }
+}
+class Child extends="Base" {
+	function init() { super.init(); this.child = 2; return this; }
+	function who() { return "child>" & super.who(); }
+}
+class Grand extends="Child" {
+	function who() { return "grand>" & super.who(); }
+}
+class Calc extends="Base" {
+	function add( a, b ) { return super.add( a, b ) * 10; }
+	function viaClosure() { f = () => super.who(); return f(); }
+}
+class Kind extends="Base" {
+	function init() { this.kind = "kind"; return super.init(); }
+	function tag() { return super.tag(); }
+}
+class Orphan {
+	function broken() { return super.nothing(); }
+}
+
+c = new Child();
+expect( c.base, 1, "super.init() ran the parent init" );
+expect( c.child, 2, "child init continued" );
+expect( new Grand().who(), "grand>child>base", "super across three levels" );
+expect( new Calc().add( 1, 2 ), 30, "super with arguments" );
+expect( new Calc().viaClosure(), "base", "super inside a closure" );
+k = new Kind();
+expect( k.tag(), "tag:kind", "parent method sees the child's this" );
+expect( k.base, 1, "init return value" );
+
+try {
+	new Orphan().broken();
+	throw( message = "super without a parent should fail" );
+} catch ( any e ) {
+	expect( findNoCase( "no parent class", e.message ) > 0, true, "orphan error: " & e.message );
+}
+println( "super keyword ok" );

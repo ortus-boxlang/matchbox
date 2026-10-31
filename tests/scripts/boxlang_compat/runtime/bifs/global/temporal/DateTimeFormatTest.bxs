@@ -13,9 +13,10 @@ refDate = createDate( 2023, 12, 31 );
 result = dateFormat( refDate, "long" );
 assert result != "" : "testDateFormatCommonMasks long";
 result = dateFormat( refDate, "iso" );
-assert result == "2023-12-31" : "testDateFormatCommonMasks iso";
+// DateTimeFormatter.ISO_DATE prints the zone offset ("Z") for a zoned value, as the JVM test expects
+assert result == "2023-12-31Z" : "testDateFormatCommonMasks iso";
 result = dateFormat( refDate, "iso8601" );
-assert result == "2023-12-31" : "testDateFormatCommonMasks iso8601";
+assert result == "2023-12-31Z" : "testDateFormatCommonMasks iso8601";
 result = dateFormat( refDate, "short" );
 assert result != "" : "testDateFormatCommonMasks short";
 
@@ -34,6 +35,8 @@ assert result1Hours != result2Hours : "testDateTimeFormatTZChange hour";
 setLocale( "de-DE" );
 result = dateFormat( now(), "long" );
 assert result != "" : "testLocaleAwareness";
+// each JVM @Test runs in its own context; do not leak the locale into later blocks
+setLocale( "en-US" );
 
 // testDateTimeFormatBif
 setTimezone( "UTC" );

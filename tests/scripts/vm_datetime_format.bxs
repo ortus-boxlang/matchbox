@@ -1,0 +1,93 @@
+// dateFormat/timeFormat/dateTimeFormat mirror BoxLang's DateTimeFormat BIF:
+// the mask is a Java DateTimeFormatter pattern. Expected values come from the JDK
+// (see tests/fixtures/datetime_format/GenGolden.java); the full matrix is the golden unit test.
+function fails( f ) { try { f(); return false; } catch ( any e ) { return e.message; } }
+
+d = createDateTime( 2024, 3, 5, 14, 7, 9, 0, "UTC" );
+
+// Java pattern letters are case sensitive: mm is minutes, MM is month
+assert dateFormat( d, "yyyy-MM-dd" ) == "2024-03-05" : "MM is month";
+assert dateFormat( d, "yyyy-mm-dd" ) == "2024-07-05" : "mm is minutes";
+assert dateFormat( d, "mm/dd/yyyy" ) == "07/05/2024" : "mm/dd/yyyy minutes";
+assert dateFormat( d, "MMM d, yyyy" ) == "Mar 5, 2024" : "MMM short month";
+assert dateFormat( d, "MMMM d, yyyy" ) == "March 5, 2024" : "MMMM full month";
+assert dateFormat( d, "EEE, EEEE" ) == "Tue, Tuesday" : "weekday text";
+assert timeFormat( d, "hh:mm:ss a" ) == "02:07:09 PM" : "a is am/pm";
+assert timeFormat( d, "h:mm a" ) == "2:07 PM" : "h unpadded";
+assert timeFormat( d, "HH:mm:ss.SSS" ) == "14:07:09.000" : "millis";
+assert dateTimeFormat( d, "yyyy-MM-dd HH:mm:ss" ) == "2024-03-05 14:07:09" : "datetime";
+assert dateTimeFormat( d, "yyyy-MM-dd'T'HH:mm:ssXXX" ) == "2024-03-05T14:07:09Z" : "XXX zulu";
+assert dateTimeFormat( d, "yyyy-MM-dd'T'HH:mm:ssXXX", "+05:30" ) == "2024-03-05T19:37:09+05:30" : "offset zone";
+assert dateTimeFormat( d, "'at' HH 'o''clock'" ) == "at 14 o'clock" : "quoted literals";
+assert dateTimeFormat( d, "yy G Q w D" ) == "24 AD 1 10 65" : "reduced year, era, quarter, week, day of year";
+
+// letters and counts Java rejects raise Java's errors
+assert fails( () => dateFormat( d, "mmm d, yyyy" ) ) == "Too many pattern letters: m" : "mmm";
+assert fails( () => timeFormat( d, "hh:mm:ss tt" ) ) == "Unknown pattern letter: t" : "tt";
+assert fails( () => dateFormat( d, "'abc" ) ) contains "incomplete string literal" : "unterminated quote";
+assert fails( () => dateFormat( d, "yyyy ]" ) ) contains "without previous [" : "stray ]";
+assert fails( () => dateFormat( d, "{yyyy}" ) ) contains "reserved character" : "reserved character";
+
+// defaults per function
+assert dateFormat( d ) == "05-Mar-24" : "dateFormat default";
+assert timeFormat( d ) == "02:07 PM" : "timeFormat default";
+assert dateTimeFormat( d ) == "05-Mar-2024 14:07:09" : "dateTimeFormat default";
+
+// named masks (case insensitive, per function)
+assert dateFormat( d, "short" ) == "3/5/24" : "date short";
+assert dateFormat( d, "medium" ) == "Mar 5, 2024" : "date medium";
+assert dateFormat( d, "long" ) == "March 5, 2024" : "date long";
+assert dateFormat( d, "FULL" ) == "Tuesday, March 5, 2024" : "date full";
+assert dateFormat( d, "iso" ) == "2024-03-05Z" : "date iso keeps the zone";
+assert timeFormat( d, "short" ) == "2:07 PM" : "time short";
+assert timeFormat( d, "iso" ) == "14:07:09Z" : "time iso";
+assert dateTimeFormat( d, "short" ) == "3/5/24, 2:07 PM" : "datetime short";
+assert dateTimeFormat( d, "medium" ) == "Mar 5, 2024, 2:07:09 PM" : "datetime medium";
+assert dateTimeFormat( d, "iso" ) == "2024-03-05T14:07:09Z" : "datetime iso";
+assert dateTimeFormat( d, "odbc" ) == "{ts '2024-03-05 14:07:09'}" : "datetime odbc";
+assert dateFormat( d, "odbc" ) == "{d '2024-03-05'}" : "date odbc";
+assert timeFormat( d, "odbc" ) == "{t '14:07:09'}" : "time odbc";
+assert dateTimeFormat( d, "javascript" ) == "Tue Mar 05 2024 14:07:09 GMT+0000 (Coordinated Universal Time)" : "javascript";
+assert dateTimeFormat( d, "epoch" ) == "1709647629" : "epoch";
+assert dateTimeFormat( d, "epochms" ) == "1709647629000" : "epochms";
+
+// locale
+assert dateFormat( d, "MMMM", "UTC", "de-DE" ) == "März" : "German month";
+assert dateFormat( d, "EEEE", "UTC", "es-ES" ) == "martes" : "Spanish weekday";
+assert dateFormat( d, "long", "UTC", "de-DE" ) == "5. März 2024" : "German long date";
+assert dateFormat( date = d, mask = "MMMM", locale = "DE" ) == "März" : "named arguments";
+
+// member functions
+assert d.dateFormat( "yyyy" ) == "2024" : "dateFormat member";
+assert d.timeFormat( "HH" ) == "14" : "timeFormat member";
+assert d.dateTimeFormat( "yyyy-MM-dd" ) == "2024-03-05" : "dateTimeFormat member";
+
+// edge years and leap days
+assert dateFormat( createDateTime( 2024, 2, 29 ), "yyyy-MM-dd EEE" ) == "2024-02-29 Thu" : "leap day";
+assert dateFormat( createDateTime( 9999, 12, 31 ), "yyyy-MM-dd" ) == "9999-12-31" : "year 9999";
+assert dateFormat( createDateTime( 1, 1, 1 ), "yyyy-MM-dd G" ) == "0001-01-01 AD" : "year 1";
+assert dateFormat( createDateTime( 10000, 1, 1 ), "yyyy-MM-dd" ) == "+10000-01-01" : "year 10000 keeps the sign";
+assert dateFormat( createDateTime( 1970, 1, 1 ), "epoch" ) == "0" : "epoch zero";
+
+// GMT display names are localized like the JDK
+assert dateTimeFormat( d, "zzzz", "GMT", "de-DE" ) == "Mittlere Greenwich-Zeit" : "GMT full name in German";
+assert dateTimeFormat( d, "zzzz", "GMT" ) == "Greenwich Mean Time" : "GMT full name";
+
+// signed years: unzoned input uses the supplied timezone, Z input is UTC
+assert dateTimeFormat( parseDateTime( "+10000-01-01T00:00:00", timezone = "+05:30" ), "yyyy-MM-dd HH:mm:ssXXX", "UTC" ) == "9999-12-31 18:30:00Z" : "unzoned signed year";
+assert dateTimeFormat( parseDateTime( "+10000-01-01T00:00:00Z", timezone = "+05:30" ), "yyyy-MM-dd HH:mm:ssXXX", "UTC" ) == "+10000-01-01 00:00:00Z" : "zulu signed year";
+
+// invalid input
+assert fails( () => dateFormat( "notadate" ) ) == "Can't cast [notadate] to a DateTime." : "invalid date";
+
+// createDateTime: every argument is optional, as in BoxLang
+assert dateTimeFormat( createDateTime( 2024, 3, 5, 14, 7, 9 ), "yyyy-MM-dd HH:mm:ss" ) == "2024-03-05 14:07:09" : "6 args";
+assert dateTimeFormat( createDateTime( 2024, 3, 5, 14, 7 ), "yyyy-MM-dd HH:mm:ss" ) == "2024-03-05 14:07:00" : "5 args";
+assert dateTimeFormat( createDateTime( 2024, 3, 5 ), "yyyy-MM-dd HH:mm:ss" ) == "2024-03-05 00:00:00" : "3 args";
+assert dateTimeFormat( createDateTime( 2024, 3 ), "yyyy-MM-dd HH:mm:ss" ) == "2024-03-01 00:00:00" : "2 args";
+assert dateTimeFormat( createDateTime( 2024 ), "yyyy-MM-dd HH:mm:ss" ) == "2024-01-01 00:00:00" : "1 arg";
+assert isDateObject( createDateTime() ) : "no args is now";
+assert fails( () => createDateTime( 0, 1, 1 ) ) contains "year argument" : "year zero";
+assert fails( () => createDateTime( 2024, 0, 1 ) ) contains "month argument" : "month zero";
+assert fails( () => createDateTime( 2024, 1, 0 ) ) contains "day argument" : "day zero";
+println( "ok" );

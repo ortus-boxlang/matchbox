@@ -138,8 +138,58 @@ mod wasm {
 // Native Entry Point (CLI)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// WASI embedded bytecode
+//
+// A WASI module cannot read its own file, so `matchbox --target wasi` patches the
+// bytecode into this region of the stub (see `produce_wasi_binary` in src/lib.rs).
+// Layout: [0..8] magic "BXLG\0\0\0\x01", [8..12] bytecode length (u32 LE), [12..] bytecode.
+// ---------------------------------------------------------------------------
+#[cfg(target_os = "wasi")]
+mod wasi_embed {
+    use super::*;
+
+    const EMBED_CAPACITY: usize = 1024 * 1024; // keep in sync with produce_wasi_binary
+
+    #[used]
+    #[no_mangle]
+    static mut BOXLANG_EMBED: [u8; EMBED_CAPACITY] = {
+        let mut arr = [0u8; EMBED_CAPACITY];
+        arr[0] = b'B';
+        arr[1] = b'X';
+        arr[2] = b'L';
+        arr[3] = b'G';
+        arr[7] = 1;
+        arr
+    };
+
+    /// The patched-in bytecode, or `None` for an unpatched stub.
+    pub fn load() -> Result<Option<Chunk>> {
+        // Safety: WASI modules run single-threaded and nothing writes to the region at run time.
+        let embed: &[u8] =
+            unsafe { std::slice::from_raw_parts((&raw const BOXLANG_EMBED) as *const u8, EMBED_CAPACITY) };
+        if embed[0..8] != [b'B', b'X', b'L', b'G', 0, 0, 0, 1] {
+            anyhow::bail!("BOXLANG_EMBED sentinel missing: the runner stub is corrupt");
+        }
+        let len = u32::from_le_bytes([embed[8], embed[9], embed[10], embed[11]]) as usize;
+        if len == 0 {
+            return Ok(None);
+        }
+        if 12 + len > EMBED_CAPACITY {
+            anyhow::bail!("Embedded bytecode length {} exceeds the embed capacity", len);
+        }
+        let mut chunk: Chunk = postcard::from_bytes(&embed[12..12 + len])?;
+        chunk.reconstruct_functions();
+        Ok(Some(chunk))
+    }
+}
+
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn load_embedded_bytecode() -> Result<Chunk> {
+    #[cfg(target_os = "wasi")]
+    if let Some(chunk) = wasi_embed::load()? {
+        return Ok(chunk);
+    }
     let exe_path = std_env::current_exe()?;
     let bytes = fs::read(exe_path)?;
     
@@ -157,7 +207,7 @@ fn load_embedded_bytecode() -> Result<Chunk> {
     let len_bytes = &bytes[len_start..footer_start];
     let len = u64::from_le_bytes(len_bytes.try_into()?) as usize;
 
-    let chunk_start = len_start - len;
+    let chunk_start = len_start.checked_sub(len).ok_or_else(|| anyhow::anyhow!("Invalid embedded bytecode length"))?;
     let chunk_bytes = &bytes[chunk_start..len_start];
     
     let mut chunk: Chunk = postcard::from_bytes(chunk_bytes)?;
@@ -171,11 +221,19 @@ fn main() {}
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn main() -> Result<()> {
+    // Keep the OS default Ctrl+C action: VM polling cannot interrupt blocked native calls.
+    let mut vm = VM::new_with_args(std_env::args().collect());
+    #[cfg(feature = "jit")]
+    vm.enable_jit();
+
     #[cfg(not(target_family = "wasm"))]
     {
-        ctrlc::set_handler(move || {
-            matchbox_vm::vm::INTERRUPT_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
-        }).expect("Error setting Ctrl-C handler");
+        let bytes = fs::read(std_env::current_exe()?)?;
+        if bytes.ends_with(matchbox_vm::bundle::MAGIC) {
+            let application = matchbox_vm::bundle::Application::from_executable(&bytes)?;
+            application.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
+            return Ok(());
+        }
     }
 
     // 1. Try to load embedded bytecode from the executable itself
@@ -185,6 +243,12 @@ fn main() -> Result<()> {
             // 2. Fallback: Check for an external 'app.bxb' in the same directory
             let bytes = fs::read("app.bxb")
                 .map_err(|_| anyhow::anyhow!("No embedded bytecode or app.bxb found"))?;
+            #[cfg(not(target_family = "wasm"))]
+            if bytes.ends_with(matchbox_vm::bundle::MAGIC) {
+                let application = matchbox_vm::bundle::Application::from_executable(&bytes)?;
+                application.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
+                return Ok(());
+            }
             let mut chunk: Chunk = match postcard::from_bytes(&bytes) {
                 Ok(c) => c,
                 Err(e) => return Err(anyhow::anyhow!("Failed to deserialize app.bxb: {}", e)),
@@ -194,9 +258,6 @@ fn main() -> Result<()> {
         }
     };
 
-    // Collect CLI arguments (including the executable path as args[0])
-    let cli_args: Vec<String> = std_env::args().collect();
-    let mut vm = VM::new_with_args(cli_args);
     match vm.interpret(chunk) {
         Ok(_val) => {
             // println!("Result: {}", val);

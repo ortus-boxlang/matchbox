@@ -1807,7 +1807,12 @@ impl<'a> Parser<'a> {
             });
         }
         if self.peek_is(TokenKind::String) {
-            return Ok(Expression::String(self.consume_raw_text()?));
+            let raw = self.consume_raw_text()?;
+            let value = raw
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+                .ok_or_else(|| self.error_current("unterminated string literal"))?;
+            return Ok(Expression::String(value.replace("''", "'")));
         }
         if self.peek_is(TokenKind::Number) {
             return Ok(Expression::Number(self.consume_raw_text()?));

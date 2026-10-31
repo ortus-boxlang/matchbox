@@ -35,10 +35,9 @@ cd docs/examples/wasm_container
 matchbox --target wasi service.bxs
 ```
 
-> **`--target wasi` not `--target wasm`**  
-> `--target wasm` produces a browser-oriented binary. `--target wasi` compiles
-> to `wasm32-wasip1` using a pre-built runner stub — no `cargo` invocation
-> needed; compilation completes in under a second.
+> **`--target wasi` and `--target wasm`** are the same. Both patch the bytecode into the
+> pre-built `wasm32-wasip1` runner stub, so no `cargo` invocation is needed and
+> compilation completes in under a second. For the browser use `--target js`.
 
 This produces `service.wasm` — a self-contained WASI binary embedding the
 MatchBox VM and your compiled BoxLang bytecode.

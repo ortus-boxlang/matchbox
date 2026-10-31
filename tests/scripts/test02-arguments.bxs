@@ -1,0 +1,26 @@
+function lateArguments(value = 2, delta = value + 1) {
+    var original = value;
+    var view = arguments;
+    assert delta == original + 1 : "Dependent default changed";
+    view.VALUE = 17;
+    assert value == 17 : "Late arguments alias stopped reflecting writes";
+    value = 23;
+    assert view.value == 23 : "Parameter write stopped updating arguments";
+    structDelete(view, "value");
+    assert value == 23 : "Deleted argument lost existing stack fallback";
+    value = 29;
+    assert view.value == 29 : "Parameter reinsertion changed";
+    return structCount(view);
+}
+assert lateArguments() == 2;
+assert lateArguments(null) == 2;
+assert lateArguments(value=5) == 2;
+assert lateArguments(VALUE=5, delta=6) == 2;
+assert lateArguments(5, 6, 99) == 3;
+// Default expressions run before entry, but their aliases must remain live afterward.
+function defaultAlias(value = 2, view = arguments) {
+    view.value = 31;
+    assert value == 31 : "Default-expression arguments alias was re-enabled as stack-only";
+}
+defaultAlias();
+println("Arguments aliases / defaults / named / null / extras / deletion and reinsertion: OK");

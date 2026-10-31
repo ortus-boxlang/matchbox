@@ -1,7 +1,6 @@
 class ModuleConfig {
     function configure() {
-        s = {}
-        return s
+        settings = {}
     }
 
     function onLoad() {}

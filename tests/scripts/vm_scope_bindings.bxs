@@ -1,0 +1,75 @@
+// Numeric bindings must read the live declaring dictionaries, not cached values.
+function bindingLayout(value = 2) {
+    var original = value;
+    var kept = 3;
+    var view = local;
+    var argumentView = arguments;
+    var captured = function() { return kept; };
+    assert kept == 3 && value == original;
+    view.padding = 99;
+    view.kept = 4;
+    argumentView.value = 7;
+    assert kept == 4 && value == 7 && captured() == 4;
+    view.kept = null;
+    assert kept == null && captured() == null;
+    structDelete(view, "padding");
+    kept = 11;
+    value = 13;
+    assert view.kept == 11 && argumentView.value == 13 && captured() == 11;
+    for (var churn = 1; churn <= 2000; churn++) { var discarded = { marker: churn }; }
+    assert kept == 11 && value == 13 && captured() == 11;
+    return kept + value;
+}
+function nestedBindings(value) {
+    var kept = value;
+    for (var index = 1; index <= 3; index++) {
+        var inner = kept + index;
+        kept = inner;
+    }
+    try { throw("observed"); } catch (any error) { kept += 1; }
+    return kept;
+}
+for (index = 1; index <= 100; index++) {
+    assert bindingLayout() == 24;
+    assert bindingLayout(value = 5) == 24;
+    assert nestedBindings(10) == 17;
+}
+println("Scope bindings / aliases / captures / null / layouts / named defaults / GC: OK");
+
+// MatchBox-specific: preserve existing stack fallback and reinsert-after-clear behavior.
+// JVM does not reinsert a deleted parameter with the same unscoped assignment.
+function clearedBindings(value = 2) {
+    var kept = 3;
+    var view = local;
+    var argumentView = arguments;
+    var captured = function() { return kept; };
+    structClear(argumentView);
+    value = 17;
+    assert argumentView.value == 17 && value == 17;
+    structClear(view);
+    kept = 19;
+    assert view.kept == 19 && captured() == 19;
+    for (var churn = 1; churn <= 2000; churn++) { var discarded = { marker: churn }; }
+    assert kept == 19 && value == 17 && captured() == 19;
+}
+clearedBindings();
+clearedBindings(value = 5);
+function missingBindings(value = 2) {
+    var original = value;
+    var kept = 3;
+    var view = local;
+    view.kept = 4;
+    assert kept == 4;
+    structDelete(view, "kept");
+    assert kept == 3;
+    arguments.value = 7;
+    assert value == 7;
+    structDelete(arguments, "value");
+    assert value == original;
+    kept = 11;
+    value = 13;
+    assert view.kept == 11 && arguments.value == 13;
+}
+missingBindings();
+missingBindings(value = 5);
+println("Scope binding missing-field fallback: OK");

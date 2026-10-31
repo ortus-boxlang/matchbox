@@ -1,0 +1,62 @@
+function collectNative(node, phase, state) {
+    if (phase == 0) { arrayAppend(state.kinds, node.typeName()); }
+    return 0;
+}
+var native = boxAST(source="var answer=42;", returnType="native");
+var state = {kinds: []};
+var walked = boxASTVisit(tree=native, visitor=collectNative, state=state);
+if (!walked.completed || walked.state.kinds[1] != "Script" || !arrayContains(state.kinds, "Variable")) { throw "Native syntax traversal must invoke the real BoxLang visitor"; }
+if (jsonSerialize(native.toStruct()) != jsonSerialize(boxAST(source="var answer=42;"))) { throw "Native snapshots must preserve canonical export"; }
+var retained = native.nodes("Number")[1];
+var rejected = 0;
+try { retained.kind = -1; } catch (any error) { rejected++; }
+try { retained["kind"] = -1; } catch (any error) { rejected++; }
+if (rejected != 2) { throw "Native views must reject dot and indexed mutation"; }
+var exported = native.toStruct(); exported.statements = [];
+if (len(native.toStruct().statements) != 1) { throw "Canonical outputs must be independent"; }
+native = null;
+for (var i = 1; i <= 12000; i++) { var churn = {text: repeatString("x",100), value: i}; }
+if (retained.text() != "42") { throw "Retained node must own its source snapshot across collection"; }
+var calls = 0;
+function stopNative(node, phase, state) { state.calls++; return 2; }
+var interrupted = boxASTVisit(boxAST(source="x=1;",returnType="native"),stopNative,{calls:0});
+if (interrupted.completed || interrupted.state.calls != 1 || interrupted.stoppedAt.typeName() != "Script") { throw "Stop must retain its node and state"; }
+function badAction(node,phase,state) { return true; }
+var failed = false;
+try { boxASTVisit(retained,badAction,{}); } catch (any error) { failed = true; }
+if (!failed) { throw "Invalid visitor action must fail"; }
+function visitorThrows(node,phase,state){throw(type="VisitorProbe",message="visitor-original",detail="retained-detail");}
+var callbackTree=boxAST(source="var x=1;",returnType="native");
+failed=false;
+try{boxASTVisit(callbackTree,visitorThrows,{});}catch(VisitorProbe error){failed=error.message=="visitor-original"&&error.detail=="retained-detail"&&find("visitorThrows",error.stackTrace)>0;}
+if(!failed){throw "Visitor exception identity/fields changed";}
+class ThrowingAstVisitor {function visit(node,phase,state){throw(type="ClassVisitorProbe",message="class-original");}}
+failed=false;
+try{boxASTVisit(callbackTree,new ThrowingAstVisitor(),{});}catch(ClassVisitorProbe error){failed=error.message=="class-original";}
+if(!failed){throw "Class visitor original exception lost";}
+function innerCollector(node,phase,state){if(phase==0){state.count+=1;}return 0;}
+function reentrantVisitor(node,phase,state){if(phase==0){var nested=boxASTVisit(boxAST(source="var y=2;",returnType="native"),innerCollector,{count:0});if(!nested.completed||nested.state.count<2){throw "Reentrant visitor failed";}state.count+=1;}return 0;}
+var recovered=boxASTVisit(callbackTree,reentrantVisitor,{count:0});
+if(!recovered.completed||recovered.state.count<2){throw "Post-error traversal failed";}
+// The shared native callback boundary also preserves ordinary collection throws.
+failed=false;
+try{arrayMap([1],function(item){throw(type="MapProbe",message="map-original");});}catch(MapProbe error){failed=error.message=="map-original";}
+if(!failed){throw "Collection callback original throw lost";}
+failed=false;
+try{boxASTVisit(callbackTree,function(node,phase,state){return 99;},{});}catch(ExpressionException error){failed=true;}
+if(!failed){throw "Handled callback errors contaminated a later native validation error";}
+// External snapshot pressure inside a synchronous native callback must not
+// strand the callback at a GC safe point; its retained views still own syntax.
+function pressureNative(node,phase,state){
+    var parsed=boxAST(source=state.source,returnType="native");
+    state.retained=parsed.nodes("Number")[1];
+    return 2;
+}
+var pressureState={source:repeatString("var value=1;",2000)};
+var pressureWalk=boxASTVisit(callbackTree,pressureNative,pressureState);
+if(pressureWalk.completed||pressureState.retained.text()!="1"){throw "Native visitor stalled/lost ownership under snapshot pressure";}
+var pressureMapped=arrayMap([1],function(item){return boxAST(source=pressureState.source,returnType="native").nodes("Number")[1];});
+for(var pressureChurn=1;pressureChurn<=12000;pressureChurn++){var pressureGarbage={value:pressureChurn};}
+if(pressureState.retained.text()!="1"||pressureMapped[1].text()!="1"){throw "Callback snapshot ownership changed after collection";}
+println("Native and collection callbacks / snapshot pressure / retained ownership: OK");
+println("Native AST / real BoxLang visitor / independent export / readonly / retained ownership / stop / original exceptions / reentrancy: OK");

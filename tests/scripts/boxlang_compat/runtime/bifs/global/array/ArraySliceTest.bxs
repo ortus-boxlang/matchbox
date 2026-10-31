@@ -1,5 +1,27 @@
 // boxlang_compat: ortus/boxlang/runtime/bifs/global/array/ArraySliceTest.java
+// testSliceStartOnly
+r = arraySlice( [1,2,3,4,5], 2 );
+assert arrayLen( r ) == 4 : "testSliceStartOnly size";
+assert r[1] == 2 : "testSliceStartOnly 1";
+assert r[4] == 5 : "testSliceStartOnly 4";
+// testSliceStartAndLength
 r = arraySlice( [1,2,3,4,5], 2, 3 );
-assert arrayLen( r ) == 2 : "testSlice size";
-assert r[1] == 2 : "testSlice 1";
-assert r[2] == 3 : "testSlice 2";
+assert arrayLen( r ) == 3 : "testSliceStartAndLength size";
+assert r[1] == 2 : "testSliceStartAndLength 1";
+assert r[2] == 3 : "testSliceStartAndLength 2";
+assert r[3] == 4 : "testSliceStartAndLength 3";
+// testSliceLengthGreaterThanArray
+r = arraySlice( [1,2,3,4,5], 2, 100 );
+assert arrayLen( r ) == 4 : "testSliceLengthGreaterThanArray size";
+// testSliceNegativeLength
+r = arraySlice( ["one","two","three","four","five","six"], 4, -2 );
+assert arrayLen( r ) == 1 : "testSliceNegativeLength size";
+assert r[1] == "four" : "testSliceNegativeLength 1";
+// testSliceNegativeStart
+r = arraySlice( [1,2,3,4,5], -3, 1 );
+assert arrayLen( r ) == 1 : "testSliceNegativeStart size";
+assert r[1] == 3 : "testSliceNegativeStart 1";
+// testSliceNegativeStartAndLength
+r = arraySlice( [1,2,3,4,5], -3, -2 );
+assert arrayLen( r ) == 1 : "testSliceNegativeStartAndLength size";
+assert r[1] == 3 : "testSliceNegativeStartAndLength 1";

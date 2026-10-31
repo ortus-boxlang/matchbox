@@ -60,8 +60,11 @@ impl PlatformServices {
 
         let fallback_wifi_state = if wifi::active_ip().is_some() {
             None
-        } else {
+        } else if profile.has_wifi_credentials() {
             Some(wifi::connect(profile)?)
+        } else {
+            println!("{}", crate::profile::NO_WIFI_CREDENTIALS_MESSAGE);
+            None
         };
         let ip = wifi::active_ip()
             .or_else(|| fallback_wifi_state.as_ref().map(|state| state.ip.clone()))

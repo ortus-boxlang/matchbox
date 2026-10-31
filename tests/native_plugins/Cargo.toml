@@ -1,0 +1,18 @@
+[package]
+name = "matchbox-plugin-fixture"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+bundled-libraries = []
+
+[dependencies]
+matchbox-plugin-sdk = { path = "../../crates/matchbox-plugin-sdk" }
+
+[profile.release]
+panic = "unwind"

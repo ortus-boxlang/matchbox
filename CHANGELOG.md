@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-22
+
+### Added
+- **HTML Encoding**: Added `encodeForHTML()` and its `htmlEditFormat()` alias, matching BoxLang JVM output.
+- **SQLite Datasources**: Register SQLite databases programmatically or through minimal `matchbox.toml` datasource configuration.
+- **Inline CLI Execution**: Execute source with `--eval` or `-e`, including prelude functions and source-located diagnostics.
+
+### Changed
+- `dateFormat`, `timeFormat` and `dateTimeFormat` now mirror BoxLang's `DateTimeFormat` BIF: masks are Java `DateTimeFormatter` patterns (case sensitive, `mm` is minutes, `MM` is month, invalid letters and repeat counts raise Java's errors), with Java's default masks, named masks (`short`, `medium`, `long`, `full`, `iso`, `iso8601`, `odbc`, `javascript`, `epoch`, `epochms`), `timezone` and `locale` arguments and English, German, Spanish, French, Italian, Portuguese, Dutch, Russian, Japanese and Chinese locale text. Locales without bundled data fall back to `en_US`; named regions other than UTC/GMT use MatchBox's fixed-offset zone table (no tz database).
+- `createDateTime` and `createDate` accept every argument as optional, like BoxLang (`createDateTime( 2024, 3, 5, 14, 7, 9 )` works, no arguments returns now).
+
+### Fixed
+- **WASM time traps**: The VM scheduler and `getTickCount()` now use `web_time` clocks; synchronous scheduler waits poll instead of calling unsupported `std::thread::sleep` in WASM builds.
+- `<bx:switch>` evaluates its `expression`, runs only the matching `<bx:case>` (no fall-through, `value` with `delimiters` matches any listed item) and `<bx:defaultcase>` only when nothing matches; text after the switch is kept (`#93`).
+- `super.method( args )` works in class methods: it calls the parent class implementation with `this` bound to the current instance, across any depth of inheritance and inside closures. Named arguments are not supported with `super`.
+- `new Child()` calls `init()` inherited from a parent class when `Child` defines none (the compiler only looked at the class itself).
+- `--target wasi` works again: the WASI runner stub lost its embed region in an earlier refactor, so packaging always failed with "WASI stub is missing the BOXLANG_EMBED sentinel". `--target wasm` produced an invalid module (a custom section written without its header) that no runtime could load; it is now the same as `--target wasi`. The docs said `--target wasm` was browser oriented; use `--target js` for the browser.
+- Native Fusion reads `native/Cargo.toml`: its `[dependencies]` are added to the generated build (relative `path` dependencies are resolved against `native/`), as the Native Fusion guide already described. Redeclaring a crate the build provides (`matchbox_vm`, `postcard`, `bincode`, `anyhow`) is an error.
+- Java interop (`bif-jni`): methods and constructors are chosen by their parameter types, not just argument count (`sb.append( 2 )`, `String.valueOf( 5 )`), static methods work on `createObject( "java", ... )` references (`Math.max( 1, 2 )`, `Integer.parseInt( "42" )`), and Java exceptions report their class and message.
+- `for ( row in query )` iterates the rows of a query (it failed with "Iteration only supported for arrays and structs"). A BIF that is compiled out now says which build feature provides it, and the QoQ error names the `qoq` feature.
+- Member functions that map to existing BIFs now resolve: struct `keyArray`, `keyList`, `valueArray`, `filter`, `map`, `reduce`, `some`, `every`, `none`, `delete`, `insert`, `update`, `clear`, `copy`, `sort`, `findValue`, `hash`; string `listToArray`, `listPrepend`, `listInsertAt`, `listSetAt`, `listReduce`, `jsonDeserialize`, `toBase64`, `toBinary`, `yesNoFormat` and other list/string members; array `join`, `findNoCase`, `isDefined`; number `max`, `min`, `formatBaseN`; date `hash`; future `isDone`.
+- Script `lock name="x" timeout=n { ... }` blocks parse and run their body (a lock never contends in the single-threaded VM). Script `thread { ... }` now parses and reports "The thread component is not supported yet in MatchBox" instead of a struct-literal parse error.
+- Labeled loops: `outer: for ( ... )` with `continue outer` / `break outer` (also `while` and `do`) now work like BoxLang. Labels were parsed and silently ignored, so `continue outer` only continued the inner loop.
+- The `mod` operator (`7 mod 3`) and unary `not` (`not x`) now parse, like BoxLang. `mod` stays usable as an identifier.
+- `private` class methods are enforced: calling one from outside the class (or an unrelated class) throws, while calls from the class, its subclasses and its closures keep working.
+- Class properties generate `getX()`/`setX()` by default (`accessors=false` opts out), generated setters return the instance so calls chain, and `obj.name` / `obj.name = v` use the accessors when there is no such field, as in BoxLang.
+- `<bx:include template="...">` includes the named template instead of an empty path (`#93`).
+- `class extends=Base implements=Speaker` (and `extends:Base`) accept an unquoted class name like BoxLang; only the quoted form parsed before.
+- Script-level `variables` is now the same store as bare variables (`variables.k = 1; k` and `j = 2; variables.j` work), and CLI scripts and class methods have a `request` scope.
+- CLI argument handling now follows BoxLang's `BoxRunner` and `CLIGetArgs`: options only count before the script file, everything after it goes to the script (`matchbox app.bxs -v` runs the script with `-v`), `-h`/`--help`/`-v`/`--version` are global only as the sole argument, unknown options fall through like BoxLang, and `cliGetArgs()` parses `--opt=value`, `--!opt`/`--no-opt`, `-o=value`, `-abc` and quoted values exactly like BoxLang (a value is never taken from the next token) and keeps the first script argument. **Breaking:** put MatchBox options before the file (`matchbox --target esp32 --chip esp32s3 --flash app.bxs`); the documentation is updated, and the old `--` separator is no longer special. Adds BoxLang's runtime flags: `--bx-debug`, `--bx-code <code>`, `--bx-printAST` (file, `--bx-code` or stdin) are implemented, `--bx-config`/`--bx-home` are accepted (never reach the script) with a warning that MatchBox ignores them, `--bx-transpile` is rejected clearly; and the `server.cli` scope (`args`, `parsed`, `executionPath`, `command`) with `server.boxlang.cliMode`.
+- `<bx:loop>` works: `from`/`to`/`step`/`index` counting loops, `array`, `list`, `collection` and `condition` loops no longer run forever or print `null` (`#93`).
+- Security: ESP32 firmware no longer ships default Wi-Fi credentials. Without `MATCHBOX_ESP32_WIFI_SSID` / `MATCHBOX_ESP32_WIFI_PASSWORD` at build time Wi-Fi stays off and the boot log says so (the credentials that were in the source should be considered public).
+- Destructuring rest elements (`[ a, ...rest ] = arr`, `{ a, ...others } = struct`) are now assigned instead of silently dropped.
+- `arraySlice` now follows BoxLang: `start` defaults to 1, `length` is a count (0 or omitted means to the end, negative trims from the end) and a negative `start` counts from the end.
+- Calling a function without a `required` argument now throws `Required argument [a] is missing for function [f]` (type `Application`) like BoxLang, instead of silently passing null.
+- Tree-shaking no longer drops prelude functions that are only reached through member calls (`[3,1,2].sort()`, `.first()`, `.reverse()`, `.sum()`, ... failed with "BIF arraysort not found" outside `--no-shaking`).
+- Removed prelude copies of `abs`, `min`, `max`, `arrayIsEmpty`, `arrayPrepend`, `arrayContains` and `arrayContainsNoCase` that shadowed the native BIFs depending on tree-shaking; `arrayPrepend` now returns the array and `arrayContains` is case-sensitive for arrays and case-aware for sets.
+- Closures at script level can now see the `for ( n in ... )` loop variable (and index) instead of failing with "Variable 'n' not found"; assignments to the loop variable in the body are shared with closures.
+- `future.get()` inside a native callback (`map`, `filter`, ...) no longer hangs: the nested callback now lets other fibers run while it waits.
+- Array members `map`, `each`, `filter`, `reduce`, `some`, `every` and `none` no longer use the Set helpers: `map` kept only unique results, and callbacks now receive `(value, index, array)` (`(accumulator, value, index, array)` for `reduce`) like BoxLang.
+- `variables.n++` / `++variables.n` inside classes and scripts no longer fail with "Fused increment only supported on structs and instances", and prefix `++`/`--` now accept member targets such as `++s.n`.
+- `new C()` now evaluates to the instance when `init()` returns nothing or `null`, and to the returned value otherwise, matching BoxLang.
+- Tree-shaking no longer drops prelude functions that are only reached through member calls (`[3,1,2].sort()`, `.first()`, `.reverse()`, `.sum()`, ... failed with "BIF arraysort not found" outside `--no-shaking`).
+- Removed prelude copies of `abs`, `min`, `max`, `arrayIsEmpty`, `arrayPrepend`, `arrayContains` and `arrayContainsNoCase` that shadowed the native BIFs depending on tree-shaking; `arrayPrepend` now returns the array and `arrayContains` is case-sensitive for arrays and case-aware for sets.
+- Corrected the native fusion documentation example that used the nonexistent `BxValue::new_string`; strings are returned with `BxValue::new_ptr( vm.string_new( text ) )`.
+
+### Documentation
+- Documented which BIF groups exist in WASM builds: `hash()` needs the `bif-crypto` feature, `http()` is not usable in the browser.
+
 ## [0.11.0] - 2026-10-02
 
 ### Added

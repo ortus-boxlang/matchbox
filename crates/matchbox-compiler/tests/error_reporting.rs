@@ -118,8 +118,14 @@ fn eof_error_carries_end_of_input_location() {
     if let Some(pe) = err.downcast_ref::<ParseError>() {
         assert_eq!(
             pe.span,
-            Span { start: 13, end: 13, line: 1, col: 14 },
-            "EOF span should point at end of input; got {:?}", pe.span
+            Span {
+                start: 13,
+                end: 13,
+                line: 1,
+                col: 14
+            },
+            "EOF span should point at end of input; got {:?}",
+            pe.span
         );
     } else {
         panic!("error should be a ParseError");
@@ -252,10 +258,3 @@ fn template_output_node_has_real_line_number() {
         stmts.iter().map(|s| s.line).collect::<Vec<_>>()
     );
 }
-
-
-
-
-
-
-

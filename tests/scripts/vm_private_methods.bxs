@@ -1,0 +1,38 @@
+// private methods are only callable from inside the class (BoxLang ClassTest: "private methods error").
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+function failure( fn ) {
+    try { fn(); } catch ( any e ) { return e.message; }
+    return "no error";
+}
+
+class Base {
+    private function secret() { return "s"; }
+    function viaThis() { return this.secret(); }
+    function viaUnqualified() { return secret(); }
+    function other( o ) { return o.secret(); }
+    function viaClosure() { return ( () => this.secret() )(); }
+}
+class Child extends="Base" {
+    function fromChild() { return this.secret(); }
+}
+class Stranger {
+    function peek( o ) { return o.secret(); }
+}
+
+b = new Base();
+expect( b.viaThis(), "s", "this.secret() inside the class" );
+expect( b.viaUnqualified(), "s", "secret() inside the class" );
+expect( b.other( new Base() ), "s", "another instance of the same class" );
+expect( b.viaClosure(), "s", "closure created inside the class" );
+expect( new Child().fromChild(), "s", "subclass" );
+
+message = failure( () => b.secret() );
+expect( find( "secret", message ) > 0 && find( "private", message ) > 0, true, "outside call throws: #message#" );
+expect( find( "private", failure( () => new Child().secret() ) ) > 0, true, "outside call on a subclass instance throws" );
+expect( find( "private", failure( () => new Stranger().peek( b ) ) ) > 0, true, "an unrelated class cannot call it" );
+
+// public methods still work from anywhere
+class Open { function visible() { return "v"; } }
+expect( new Open().visible(), "v", "public method" );

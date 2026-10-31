@@ -1,0 +1,63 @@
+function makeCounter(start = 1) {
+    var value = start;
+    return function(step = 1) {
+        value = value + step;
+        return value;
+    };
+}
+
+firstCounter = makeCounter(start = 10);
+secondCounter = makeCounter();
+if (firstCounter() != 11 || firstCounter(step = 4) != 15 || secondCounter() != 2 || firstCounter() != 16) {
+    throw "Closures must retain independent mutable declaring scopes";
+}
+function sharedState(seed = 3) {
+    var value = seed;
+    var read = function() { return value + seed; };
+    var write = function(replacement) { value = replacement; seed++; };
+    write(5);
+    if (value != 5 || seed != 4) { throw "Declaring frames must observe closure mutations"; }
+    value++;
+    return {
+        read: read,
+        write: write,
+        nested: function() { return function() { return read(); }; }
+    };
+}
+state = sharedState();
+if (state.read() != 10) { throw "Sibling closures must share locals and arguments"; }
+state.write(20);
+if (state.nested()() != 25) { throw "Nested closures must retain the complete declaring chain"; }
+
+function captureBeforeDeclaration() {
+    var read = function() { return later; };
+    var later = 42;
+    return read;
+}
+lateReader = captureBeforeDeclaration();
+if (lateReader() != 42) { throw "Captured scopes must observe later declarations"; }
+function hotState() {
+    var value = 0;
+    var read = function() { return value; };
+    for (var index = 0; index < 20000; index++) { value += 1; }
+    if (value != 20000 || read() != 20000 || index != 20000) {
+        throw "JIT loop updates must remain visible through shared scopes";
+    }
+    return read;
+}
+hotReader = hotState();
+if (hotReader() != 20000) { throw "JIT-updated locals must survive their declaring frame"; }
+globalSecret = 101;
+restricted = () -> globalSecret;
+rejected = false;
+try { restricted(); } catch (e) { rejected = true; }
+if (!rejected) { throw "Lambdas must not capture or search declaring variables"; }
+localLambda = (amount) -> { var result = amount + 1; return result; };
+if (localLambda(6) != 7) { throw "Lambdas must retain their own local and argument scopes"; }
+function shadowBuiltin() {
+    len = 17;
+    if (len != 17) { throw "Implicit function locals must be able to shadow BIF names"; }
+}
+shadowBuiltin();
+if (len("abc") != 3) { throw "Local assignment must not replace a global BIF"; }
+println("lexical closures OK");

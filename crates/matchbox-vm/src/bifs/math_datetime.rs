@@ -7,44 +7,95 @@ use std::str::Chars;
 use super::{datetime_from_parts, parse_datetime_input, parse_timezone_offset};
 
 pub fn register_math_datetime_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert("incrementvalue".to_string(), increment_value as BxNativeFunction);
-    bifs.insert("decrementvalue".to_string(), decrement_value as BxNativeFunction);
+    bifs.insert(
+        "incrementvalue".to_string(),
+        increment_value as BxNativeFunction,
+    );
+    bifs.insert(
+        "decrementvalue".to_string(),
+        decrement_value as BxNativeFunction,
+    );
     bifs.insert("fix".to_string(), fix_bif as BxNativeFunction);
     bifs.insert("formatbasen".to_string(), format_base_n as BxNativeFunction);
     bifs.insert("inputbasen".to_string(), input_base_n as BxNativeFunction);
     bifs.insert("sgn".to_string(), sgn_bif as BxNativeFunction);
     bifs.insert("sqr".to_string(), sqr_bif as BxNativeFunction);
-    bifs.insert("precisionevaluate".to_string(), precision_evaluate as BxNativeFunction);
+    bifs.insert(
+        "precisionevaluate".to_string(),
+        precision_evaluate as BxNativeFunction,
+    );
     bifs.insert("createtime".to_string(), create_time as BxNativeFunction);
-    bifs.insert("createtimespan".to_string(), create_time_span as BxNativeFunction);
+    bifs.insert(
+        "createtimespan".to_string(),
+        create_time_span as BxNativeFunction,
+    );
     bifs.insert("datecompare".to_string(), date_compare as BxNativeFunction);
     bifs.insert("dateconvert".to_string(), date_convert as BxNativeFunction);
     bifs.insert("datepart".to_string(), date_part as BxNativeFunction);
-    bifs.insert("gettimezoneinfo".to_string(), get_timezone_info as BxNativeFunction);
+    bifs.insert(
+        "gettimezoneinfo".to_string(),
+        get_timezone_info as BxNativeFunction,
+    );
     bifs.insert("settimezone".to_string(), set_timezone as BxNativeFunction);
-    bifs.insert("cleartimezone".to_string(), clear_timezone as BxNativeFunction);
-    bifs.insert("createodbcdatetime".to_string(), create_odbc_date_time as BxNativeFunction);
-    bifs.insert("createodbcdate".to_string(), create_odbc_date as BxNativeFunction);
-    bifs.insert("createodbctime".to_string(), create_odbc_time as BxNativeFunction);
+    bifs.insert(
+        "cleartimezone".to_string(),
+        clear_timezone as BxNativeFunction,
+    );
+    bifs.insert(
+        "createodbcdatetime".to_string(),
+        create_odbc_date_time as BxNativeFunction,
+    );
+    bifs.insert(
+        "createodbcdate".to_string(),
+        create_odbc_date as BxNativeFunction,
+    );
+    bifs.insert(
+        "createodbctime".to_string(),
+        create_odbc_time as BxNativeFunction,
+    );
     bifs.insert("timeunits".to_string(), time_units as BxNativeFunction);
     bifs.insert("year".to_string(), year_bif as BxNativeFunction);
     bifs.insert("quarter".to_string(), quarter_bif as BxNativeFunction);
     bifs.insert("month".to_string(), month_bif as BxNativeFunction);
-    bifs.insert("monthasstring".to_string(), month_as_string_bif as BxNativeFunction);
-    bifs.insert("monthshortasstring".to_string(), month_short_as_string_bif as BxNativeFunction);
+    bifs.insert(
+        "monthasstring".to_string(),
+        month_as_string_bif as BxNativeFunction,
+    );
+    bifs.insert(
+        "monthshortasstring".to_string(),
+        month_short_as_string_bif as BxNativeFunction,
+    );
     bifs.insert("day".to_string(), day_bif as BxNativeFunction);
-    bifs.insert("daysinmonth".to_string(), days_in_month_bif as BxNativeFunction);
-    bifs.insert("daysinyear".to_string(), days_in_year_bif as BxNativeFunction);
+    bifs.insert(
+        "daysinmonth".to_string(),
+        days_in_month_bif as BxNativeFunction,
+    );
+    bifs.insert(
+        "daysinyear".to_string(),
+        days_in_year_bif as BxNativeFunction,
+    );
     bifs.insert("dayofweek".to_string(), day_of_week_bif as BxNativeFunction);
-    bifs.insert("dayofweekasstring".to_string(), day_of_week_as_string_bif as BxNativeFunction);
-    bifs.insert("dayofweekshortasstring".to_string(), day_of_week_short_as_string_bif as BxNativeFunction);
+    bifs.insert(
+        "dayofweekasstring".to_string(),
+        day_of_week_as_string_bif as BxNativeFunction,
+    );
+    bifs.insert(
+        "dayofweekshortasstring".to_string(),
+        day_of_week_short_as_string_bif as BxNativeFunction,
+    );
     bifs.insert("dayofyear".to_string(), day_of_year_bif as BxNativeFunction);
-    bifs.insert("firstdayofmonth".to_string(), first_day_of_month_bif as BxNativeFunction);
+    bifs.insert(
+        "firstdayofmonth".to_string(),
+        first_day_of_month_bif as BxNativeFunction,
+    );
     bifs.insert("week".to_string(), week_bif as BxNativeFunction);
     bifs.insert("hour".to_string(), hour_bif as BxNativeFunction);
     bifs.insert("minute".to_string(), minute_bif as BxNativeFunction);
     bifs.insert("second".to_string(), second_bif as BxNativeFunction);
-    bifs.insert("millisecond".to_string(), millisecond_bif as BxNativeFunction);
+    bifs.insert(
+        "millisecond".to_string(),
+        millisecond_bif as BxNativeFunction,
+    );
     bifs.insert("nanosecond".to_string(), nanosecond_bif as BxNativeFunction);
 }
 
@@ -56,14 +107,18 @@ fn increment_value(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Stri
     if args.is_empty() {
         return Err("incrementValue() expects 1 argument".to_string());
     }
-    Ok(BxValue::new_number(((args[0].as_number() + 1.0) * 1e12).round() / 1e12))
+    Ok(BxValue::new_number(
+        ((args[0].as_number() + 1.0) * 1e12).round() / 1e12,
+    ))
 }
 
 fn decrement_value(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
         return Err("decrementValue() expects 1 argument".to_string());
     }
-    Ok(BxValue::new_number(((args[0].as_number() - 1.0) * 1e12).round() / 1e12))
+    Ok(BxValue::new_number(
+        ((args[0].as_number() - 1.0) * 1e12).round() / 1e12,
+    ))
 }
 
 fn fix_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -128,8 +183,8 @@ fn input_base_n(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
         .strip_prefix("0x")
         .or_else(|| raw.strip_prefix("0X"))
         .unwrap_or(&raw);
-    let result = i64::from_str_radix(s, radix)
-        .map_err(|e| format!("inputBaseN() invalid input: {}", e))?;
+    let result =
+        i64::from_str_radix(s, radix).map_err(|e| format!("inputBaseN() invalid input: {}", e))?;
     Ok(BxValue::new_number(result as f64))
 }
 
@@ -138,7 +193,13 @@ fn sgn_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
         return Err("sgn() expects 1 argument".to_string());
     }
     let n = args[0].as_number();
-    let result = if n > 0.0 { 1.0 } else if n < 0.0 { -1.0 } else { 0.0 };
+    let result = if n > 0.0 {
+        1.0
+    } else if n < 0.0 {
+        -1.0
+    } else {
+        0.0
+    };
     Ok(BxValue::new_number(result))
 }
 
@@ -173,7 +234,9 @@ struct PrecisionParser<'a> {
 
 impl<'a> PrecisionParser<'a> {
     fn new(input: &'a str) -> Self {
-        Self { input: input.chars().peekable() }
+        Self {
+            input: input.chars().peekable(),
+        }
     }
 
     fn skip_whitespace(&mut self) {
@@ -249,7 +312,11 @@ impl<'a> PrecisionParser<'a> {
         }
         self.skip_whitespace();
         let mut number = String::new();
-        while self.input.peek().is_some_and(|ch| ch.is_ascii_digit() || *ch == '.') {
+        while self
+            .input
+            .peek()
+            .is_some_and(|ch| ch.is_ascii_digit() || *ch == '.')
+        {
             number.push(self.input.next().unwrap());
         }
         number
@@ -261,7 +328,10 @@ impl<'a> PrecisionParser<'a> {
         self.skip_whitespace();
         let mut chars = self.input.clone();
         for expected in word.chars() {
-            if chars.next().is_none_or(|actual| !actual.eq_ignore_ascii_case(&expected)) {
+            if chars
+                .next()
+                .is_none_or(|actual| !actual.eq_ignore_ascii_case(&expected))
+            {
                 return false;
             }
         }
@@ -291,18 +361,18 @@ fn create_time(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
 
 fn create_time_span(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 4 {
-        return Err("createTimeSpan() expects at least 4 arguments: (days, hours, minutes, seconds)".to_string());
+        return Err(
+            "createTimeSpan() expects at least 4 arguments: (days, hours, minutes, seconds)"
+                .to_string(),
+        );
     }
     let days = args[0].as_number();
     let hours = args[1].as_number();
     let minutes = args[2].as_number();
     let seconds = args[3].as_number();
     let millis = args.get(4).map(|v| v.as_number()).unwrap_or(0.0);
-    let total_millis = days * 86_400_000.0
-        + hours * 3_600_000.0
-        + minutes * 60_000.0
-        + seconds * 1_000.0
-        + millis;
+    let total_millis =
+        days * 86_400_000.0 + hours * 3_600_000.0 + minutes * 60_000.0 + seconds * 1_000.0 + millis;
     let total_seconds = total_millis / 1_000.0;
     Ok(BxValue::new_number(total_seconds))
 }
@@ -315,10 +385,20 @@ fn date_compare(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
     let dt1 = parse_datetime_input(&vm.to_string(args[0]), None, None)?;
     let dt2 = parse_datetime_input(&vm.to_string(args[1]), None, None)?;
 
-    let result = match datepart.as_deref().map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+    let result = match datepart
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .as_deref()
+    {
         None | Some("s" | "second" | "seconds") => {
             let diff = dt1.timestamp() - dt2.timestamp();
-            if diff == 0 { 0 } else if diff < 0 { -1 } else { 1 }
+            if diff == 0 {
+                0
+            } else if diff < 0 {
+                -1
+            } else {
+                1
+            }
         }
         Some("n" | "minute" | "minutes") => {
             let d1 = dt1.with_second(0).unwrap().with_nanosecond(0).unwrap();
@@ -330,8 +410,20 @@ fn date_compare(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
             }
         }
         Some("h" | "hour" | "hours") => {
-            let d1 = dt1.with_minute(0).unwrap().with_second(0).unwrap().with_nanosecond(0).unwrap();
-            let d2 = dt2.with_minute(0).unwrap().with_second(0).unwrap().with_nanosecond(0).unwrap();
+            let d1 = dt1
+                .with_minute(0)
+                .unwrap()
+                .with_second(0)
+                .unwrap()
+                .with_nanosecond(0)
+                .unwrap();
+            let d2 = dt2
+                .with_minute(0)
+                .unwrap()
+                .with_second(0)
+                .unwrap()
+                .with_nanosecond(0)
+                .unwrap();
             match d1.cmp(&d2) {
                 std::cmp::Ordering::Equal => 0,
                 std::cmp::Ordering::Less => -1,
@@ -350,12 +442,24 @@ fn date_compare(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
         Some("m" | "month" | "months") => {
             let y1 = dt1.year() as i64 * 12 + dt1.month() as i64;
             let y2 = dt2.year() as i64 * 12 + dt2.month() as i64;
-            if y1 == y2 { 0 } else if y1 < y2 { -1 } else { 1 }
+            if y1 == y2 {
+                0
+            } else if y1 < y2 {
+                -1
+            } else {
+                1
+            }
         }
         Some("y" | "yyyy" | "yy" | "year" | "years") => {
             let y1 = dt1.year();
             let y2 = dt2.year();
-            if y1 == y2 { 0 } else if y1 < y2 { -1 } else { 1 }
+            if y1 == y2 {
+                0
+            } else if y1 < y2 {
+                -1
+            } else {
+                1
+            }
         }
         Some(other) => return Err(format!("dateCompare() invalid datepart: {}", other)),
     };
@@ -385,7 +489,7 @@ fn date_convert(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
             return Err(format!(
                 "dateConvert() invalid conversion type: {}. Use 'utc2Local' or 'local2Utc'",
                 conversion
-            ))
+            ));
         }
     }
 }
@@ -395,10 +499,10 @@ fn date_part(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
         return Err("datePart() expects 2 arguments: (datepart, date)".to_string());
     }
     let part = vm.to_string(args[0]).trim().to_ascii_lowercase();
-    let tz = args
-        .get(2)
-        .map(|v| vm.to_string(*v))
-        .or_else(|| vm.resolve_variable_path("__default_timezone").map(|v| vm.to_string(v)));
+    let tz = args.get(2).map(|v| vm.to_string(*v)).or_else(|| {
+        vm.resolve_variable_path("__default_timezone")
+            .map(|v| vm.to_string(v))
+    });
     let dt = parse_datetime_input(&vm.to_string(args[1]), None, tz.as_deref())?;
 
     let result = match part.as_str() {
@@ -441,7 +545,9 @@ fn get_timezone_info(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
         ),
         Some(requested) => (
             requested.to_string(),
-            parse_timezone_offset(Some(requested)).map(|offset| offset.local_minus_utc()).unwrap_or(local_seconds),
+            parse_timezone_offset(Some(requested))
+                .map(|offset| offset.local_minus_utc())
+                .unwrap_or(local_seconds),
             "Local".to_string(),
             "Local".to_string(),
             "Local".to_string(),
@@ -470,15 +576,15 @@ fn get_timezone_info(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
     let tz_ptr = vm.string_new(id);
     vm.struct_set(s, "timezone", BxValue::new_ptr(tz_ptr));
     vm.struct_set(s, "offset", BxValue::new_number(total_seconds as f64));
-    vm.struct_set(
-        s,
-        "utcHourOffset",
-        BxValue::new_number(hour_offset as f64),
-    );
+    vm.struct_set(s, "utcHourOffset", BxValue::new_number(hour_offset as f64));
     vm.struct_set(
         s,
         "utcMinuteOffset",
-        BxValue::new_number(if total_seconds < 0 { -(minute_offset as f64) } else { minute_offset as f64 }),
+        BxValue::new_number(if total_seconds < 0 {
+            -(minute_offset as f64)
+        } else {
+            minute_offset as f64
+        }),
     );
     vm.struct_set(
         s,
@@ -529,15 +635,25 @@ fn create_odbc_date_time(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue,
 }
 
 fn create_odbc_date(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    let value = args.first().copied().ok_or_else(|| "createODBCDate() expects a date".to_string())?;
+    let value = args
+        .first()
+        .copied()
+        .ok_or_else(|| "createODBCDate() expects a date".to_string())?;
     let dt = parse_datetime_input(&vm.to_string(value), None, None)?;
-    Ok(BxValue::new_ptr(vm.string_new(dt.format("{d '%Y-%m-%d'}").to_string())))
+    Ok(BxValue::new_ptr(
+        vm.string_new(dt.format("{d '%Y-%m-%d'}").to_string()),
+    ))
 }
 
 fn create_odbc_time(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    let value = args.first().copied().ok_or_else(|| "createODBCTime() expects a date".to_string())?;
+    let value = args
+        .first()
+        .copied()
+        .ok_or_else(|| "createODBCTime() expects a date".to_string())?;
     let dt = parse_datetime_input(&vm.to_string(value), None, None)?;
-    Ok(BxValue::new_ptr(vm.string_new(dt.format("{t '%H:%M:%S'}").to_string())))
+    Ok(BxValue::new_ptr(
+        vm.string_new(dt.format("{t '%H:%M:%S'}").to_string()),
+    ))
 }
 
 pub(super) fn time_units(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -563,8 +679,18 @@ pub(super) fn time_units(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue,
         "month" | "m" => BxValue::new_number(dt.month() as f64),
         "monthasstring" => {
             let names = [
-                "January", "February", "March", "April", "May", "June",
-                "July", "August", "September", "October", "November", "December",
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
             ];
             let name = names[(dt.month0()) as usize];
             let ptr = vm.string_new(name.to_string());
@@ -582,7 +708,13 @@ pub(super) fn time_units(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue,
         }
         "dayofweekasstring" => {
             let names = [
-                "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+                "Sunday",
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
             ];
             let idx = dt.weekday().num_days_from_sunday() as usize;
             let ptr = vm.string_new(names[idx].to_string());
@@ -628,13 +760,21 @@ pub(super) fn time_units(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue,
             let seconds = offset.local_minus_utc();
             let sign = if seconds < 0 { '-' } else { '+' };
             let absolute = seconds.unsigned_abs();
-            let offset_str = format!("{}{:02}:{:02}", sign, absolute / 3600, (absolute % 3600) / 60);
+            let offset_str = format!(
+                "{}{:02}:{:02}",
+                sign,
+                absolute / 3600,
+                (absolute % 3600) / 60
+            );
             let ptr = vm.string_new(offset_str);
             BxValue::new_ptr(ptr)
         }
         "timezone" | "gettimezone" => {
             let timezone = requested_tz
-                .or_else(|| vm.resolve_variable_path("__default_timezone").map(|v| vm.to_string(v)))
+                .or_else(|| {
+                    vm.resolve_variable_path("__default_timezone")
+                        .map(|v| vm.to_string(v))
+                })
                 .unwrap_or_else(|| "UTC".to_string());
             let ptr = vm.string_new(timezone);
             BxValue::new_ptr(ptr)
@@ -647,8 +787,7 @@ pub(super) fn time_units(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue,
                     .unwrap(),
                 Utc,
             );
-            let epoch_days =
-                dt.signed_duration_since(epoch).num_milliseconds() as f64 / 86400000.0;
+            let epoch_days = dt.signed_duration_since(epoch).num_milliseconds() as f64 / 86400000.0;
             BxValue::new_number(epoch_days)
         }
         "gettime" => BxValue::new_number(dt.timestamp_millis() as f64),

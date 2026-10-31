@@ -1,0 +1,19 @@
+function liveCapture(seed) {
+    var count = seed + 1;
+    var write = function(next) { count = next; seed = next + 1; };
+    write(37);
+    assert count == 37 && seed == 38 : "Captured writes were hidden from the live parent";
+    count = 43;
+    var read = () => count + seed;
+    assert read() == 81 : "Parent write stopped updating retained captures";
+    return [write, read];
+}
+var kept = liveCapture(1);
+kept[1](53);
+assert kept[2]() == 107 : "Capture ownership or mutation after return changed";
+function defaultCapture(value = 2, write = function() { value = 61; }) {
+    write();
+    assert value == 61 : "Pre-entry capture was re-enabled as stack-only";
+}
+defaultCapture();
+println("Live and retained captures / parent mutation / lambda / pre-entry capture: OK");

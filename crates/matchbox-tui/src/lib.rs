@@ -5,18 +5,18 @@ use std::rc::Rc;
 use matchbox_vm::types::{BxNativeFunction, BxVM, BxValue};
 use matchbox_vm::{BxObject, bx_methods};
 
+pub mod rendering_context;
 mod terminal;
 mod widget;
-pub mod rendering_context;
 
 #[cfg(test)]
 mod tui_app_test;
 
 pub use terminal::TUI;
 pub use widget::{
-    BlockWidget, BorderType, InputWidget, ListStyle, ListWidget, ProgressBarWidget, TableColumn,
-    TableWidget, TextAlignment, TextWidget, WidgetKind, WidgetRegistry,
-    VBoxWidget, HBoxWidget, ButtonWidget
+    BlockWidget, BorderType, ButtonWidget, HBoxWidget, InputWidget, ListStyle, ListWidget,
+    ProgressBarWidget, TableColumn, TableWidget, TextAlignment, TextWidget, VBoxWidget, WidgetKind,
+    WidgetRegistry,
 };
 
 #[derive(Debug, BxObject)]
@@ -50,7 +50,7 @@ impl TUIApp {
                 if !event_val.is_null() {
                     if let Some(event_id) = event_val.as_gc_id() {
                         let event_type = vm.to_string(vm.struct_get(event_id, "type"));
-                        
+
                         if event_type == "key" {
                             let key = vm.to_string(vm.struct_get(event_id, "key"));
                             if key == "Ctrl+c" {
@@ -60,7 +60,9 @@ impl TUIApp {
                             let widget_id_val = vm.struct_get(event_id, "widgetId");
                             if !widget_id_val.is_null() {
                                 let widget_id = widget_id_val.as_number() as usize;
-                                if let Some(WidgetKind::Button(button)) = WidgetRegistry::get(widget_id) {
+                                if let Some(WidgetKind::Button(button)) =
+                                    WidgetRegistry::get(widget_id)
+                                {
                                     if let Some(callback) = button.on_click {
                                         // Spawn a fiber for the click handler
                                         if let Some(chunk) = vm.current_chunk() {

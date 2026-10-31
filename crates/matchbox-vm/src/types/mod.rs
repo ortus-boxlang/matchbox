@@ -114,13 +114,22 @@ impl BxValue {
 pub trait BxVM {
     fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>>;
     fn current_receiver(&self) -> Option<BxValue>;
+    fn execution_context(&mut self) -> Result<BxValue, String> { Err("Execution context unavailable".into()) }
+    fn has_method_by_value(&self, _receiver: BxValue, _name: &str) -> bool { false }
     fn current_function_called_name(&self) -> String {
         String::new()
     }
     fn interpret_chunk(&mut self, chunk: crate::vm::chunk::Chunk) -> Result<BxValue, String>;
+    fn interpret_chunk_with_receiver(&mut self, chunk: crate::vm::chunk::Chunk, receiver: Option<BxValue>) -> Result<BxValue, String> {
+        if receiver.is_some() { return Err("Class-context templates are unavailable in this host".into()); }
+        self.interpret_chunk(chunk)
+    }
     fn spawn(&mut self, func: Rc<BxCompiledFunction>, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> BxValue;
     fn spawn_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, priority: u8, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String>;
     fn call_function_by_value(&mut self, func: &BxValue, args: Vec<BxValue>, chunk: Rc<RefCell<crate::vm::chunk::Chunk>>) -> Result<BxValue, String>;
+    fn call_function_by_value_named(&mut self, _func: BxValue, _args: Vec<BxValue>, _names: Option<Vec<String>>) -> Result<BxValue, String> {
+        Err("Context callable dispatch unavailable".into())
+    }
     fn call_method_by_value(
         &mut self,
         receiver: BxValue,
@@ -137,10 +146,18 @@ pub trait BxVM {
     fn get_shape_index(&self, shape_id: u32, field_name: &str) -> Option<u32>;
     fn get_len(&self, id: usize) -> usize;
     fn is_array_value(&self, val: BxValue) -> bool;
+    /// BoxLang boolean conversion (numbers, "true"/"false", "yes"/"no", empty and null are falsy).
+    fn is_truthy(&self, val: BxValue) -> bool {
+        val.as_bool()
+    }
     fn is_struct_value(&self, val: BxValue) -> bool;
     fn is_string_value(&self, val: BxValue) -> bool;
     fn is_bytes(&self, val: BxValue) -> bool;
     fn type_name_from_value(&self, val: BxValue) -> Option<String>;
+    /// `super.name( args )`: call the parent of `defining_class`'s `name` with `receiver` as `this`.
+    fn call_super_method(&mut self, _receiver: BxValue, _defining_class: &str, _name: &str, _args: Vec<BxValue>) -> Result<BxValue, String> {
+        Err("super is unavailable".into())
+    }
     fn find_global_class_by_name(&self, type_name: &str) -> Option<Rc<RefCell<BxClass>>>;
     fn find_global_interface_by_name(&self, type_name: &str) -> Option<Rc<RefCell<BxInterface>>>;
     fn class_matches_type_name(&self, class: &Rc<RefCell<BxClass>>, type_name: &str) -> bool;
@@ -169,6 +186,7 @@ pub trait BxVM {
         self.struct_new()
     }
     fn struct_set(&mut self, id: usize, key: &str, val: BxValue);
+    fn struct_assign(&mut self, id: usize, key: &str, val: BxValue) -> Result<(), String> { self.struct_set(id, key, val); Ok(()) }
     fn struct_get(&self, id: usize, key: &str) -> BxValue;
     fn struct_delete(&mut self, id: usize, key: &str) -> bool;
     fn struct_key_exists(&self, id: usize, key: &str) -> bool;
@@ -202,9 +220,25 @@ pub trait BxVM {
     fn is_in_thread(&self) -> bool {
         false
     }
+    fn retain_value(&mut self, _value: BxValue) -> Result<Rc<crate::vm::gc::RootedValue>, String> {
+        Err("Value retention is not supported by this host".into())
+    }
+    fn read_retained_value(&self, _root: &crate::vm::gc::RootedValue) -> Result<BxValue, String> {
+        Err("Value retention is not supported by this host".into())
+    }
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize;
+    fn native_object_data(&self, _value: BxValue, _kind: &str) -> Option<*mut std::ffi::c_void> { None }
+    fn is_native_abort(&self, _message: &str) -> bool { false }
+    fn raise_abort(&mut self, _kind: &str, _cause: Option<String>) -> String { "Abort control flow is unsupported by this host".into() }
+    fn register_callback(&mut self, _name: &str, _callback: NativeCallback) -> Result<(), String> {
+        Err("Native callbacks are not supported by this host".into())
+    }
     fn native_object_call_method(&mut self, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
+    fn resolve_class_reference(&mut self, _name: &str) -> Result<BxValue, String> { Err("Class resolution unavailable".into()) }
     fn construct_native_class(&mut self, class_name: &str, args: &[BxValue]) -> Result<BxValue, String>;
+    fn construct_box_class(&mut self, _class_name: &str, _args: Vec<BxValue>, _names: Option<Vec<String>>) -> Result<BxValue, String> {
+        Err("BoxLang class construction unavailable".into())
+    }
     fn instance_class_name(&self, receiver: BxValue) -> Result<String, String>;
     fn instance_variables_json(&self, receiver: BxValue) -> Result<serde_json::Value, String>;
     fn datetime_new(&mut self, dt: chrono::DateTime<chrono::Utc>) -> usize;
@@ -218,8 +252,24 @@ pub trait BxVM {
     fn to_string(&self, val: BxValue) -> String;
     fn to_box_string(&self, val: BxValue) -> BoxString;
     fn insert_global(&mut self, name: String, val: BxValue);
+    fn append_interception_points(&mut self, _names: Vec<String>) -> Result<(), String> { Err("Interception unavailable".into()) }
+    fn interception_points(&self) -> Vec<String> { Vec::new() }
+    fn execution_components(&self) -> Result<Vec<BxValue>, String> { Err("Component context unavailable".into()) }
+    fn component_names(&self) -> Vec<String> { Vec::new() }
+    fn invoke_component(&mut self, _name: &str, _attributes: BxValue, _body: BxValue) -> Result<BxValue, String> { Err("Components unavailable".into()) }
+    fn register_interceptor(&mut self, _target: BxValue) -> Result<(), String> { Err("Interception unavailable".into()) }
+    fn unregister_interceptor(&mut self, _target: BxValue) -> Result<(), String> { Err("Interception unavailable".into()) }
+    fn new_interceptor(&mut self, _class: &str, _properties: BxValue, _name: &str, _record: Option<BxValue>) -> Result<BxValue, String> { Err("Interception unavailable".into()) }
+    fn announce(&mut self, _name: &str, _data: BxValue) -> Result<(), String> { Err("Interception unavailable".into()) }
+
     fn get_global_value(&self, _name: &str) -> Option<BxValue> {
         None
+    }
+    fn has_global_function(&self, name: &str) -> bool {
+        self.get_global_value(name).is_some_and(|value| self.value_matches_type_name(value, "function"))
+    }
+    fn global_function_names(&self) -> Vec<String> {
+        Vec::new()
     }
     fn soap_client_get(&self, _url: &str) -> Option<BxValue> {
         None
@@ -253,6 +303,17 @@ pub trait BxVM {
 }
 
 pub type BxNativeFunction = fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, String>;
+
+/// A native callable with owned context (for independently loaded plugins).
+#[derive(Clone)]
+pub struct NativeCallback {
+    pub parameters: Vec<String>,
+    pub callback: Rc<dyn Fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, String>>,
+}
+impl fmt::Debug for NativeCallback {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.debug_tuple("NativeCallback").field(&self.parameters).finish() }
+}
+
 
 #[derive(Debug, Clone)]
 pub enum NativeFutureValue {
@@ -371,7 +432,22 @@ pub(crate) fn take_wasm_future_thunk(id: u64) -> Option<WasmFutureThunk> {
 }
 
 pub trait BxNativeObject: fmt::Debug {
+    /// Internal language unwind payload; unlike ordinary exceptions it bypasses catch clauses.
+    fn abort_signal(&self) -> Option<crate::vm::AbortSignal> { None }
+    /// Internal VM class-reference adapter; not part of the plugin C ABI.
+    fn class_reference_target(&self) -> Option<BxValue> { None }
+    fn class_reference_instance(&self) -> Option<BxValue> { None }
+    fn has_method(&self, name: &str) -> bool { self.delegated_callback(name).is_some() }
+    fn delegated_callback(&self, _name: &str) -> Option<NativeCallback> { None }
+    fn native_data(&self, _kind: &str) -> Option<*mut std::ffi::c_void> { None }
     fn get_property(&self, name: &str) -> BxValue;
+    /// Internal opt-in: pure, allocation-free scalar reads; no callbacks, GC
+    /// values, interior mutation or VM access. Unknown fields must decline.
+    fn readonly_jit_property(&self, _name: &str) -> Option<BxValue> { None }
+    fn is_readonly(&self) -> bool { false }
+    /// Estimated new Rust-owned bytes charged when this wrapper is allocated.
+    /// Shared-owner views charge zero; this is GC pressure, not live-heap accounting.
+    fn external_allocation_bytes(&self) -> usize { 0 }
     fn set_property(&mut self, name: &str, value: BxValue);
     fn call_method(&mut self, vm: &mut dyn BxVM, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
     #[cfg(not(target_arch = "wasm32"))]
@@ -443,6 +519,7 @@ pub enum Constant {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct FunctionModifiers {
+    pub interception_point: bool,
     pub access: Option<String>,
     pub is_static: bool,
     pub is_abstract: bool,
@@ -455,6 +532,7 @@ pub enum FunctionKind {
     Udf,
     Closure,
     Lambda,
+    ComponentBody,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -470,10 +548,16 @@ pub struct BxCompiledFunction {
     pub arity: u32,     // Total parameters
     pub min_arity: u32, // Required parameters
     pub params: Vec<String>, // Parameter names
+    /// Runtime registration context, never part of compiled bytecode or the plugin ABI.
+    #[serde(skip)]
+    pub bif: Option<(String, bool)>,
     pub modifiers: FunctionModifiers,
-    /// Captured `this` for closures created inside class contexts.
+    /// Captured `this` for class closures and bound method references.
     #[serde(skip)]
     pub captured_receiver: Option<BxValue>,
+    /// Shared declaring local/arguments scopes, from nearest to outermost.
+    #[serde(skip)]
+    pub captured_scopes: Vec<BxValue>,
     /// The actual bytecode for this function.
     pub chunk: crate::vm::chunk::Chunk,
 }

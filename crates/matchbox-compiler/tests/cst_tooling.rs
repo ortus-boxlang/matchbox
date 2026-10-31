@@ -51,9 +51,11 @@ fn script_cst_preserves_tokens_trivia_and_source_text() {
 
     let flat_elements: Vec<&SyntaxElement> = tree.elements().collect();
     assert!(matches!(flat_elements[0], SyntaxElement::Token(_)));
-    assert!(flat_elements
-        .iter()
-        .any(|element| matches!(element, SyntaxElement::Trivia(_))));
+    assert!(
+        flat_elements
+            .iter()
+            .any(|element| matches!(element, SyntaxElement::Trivia(_)))
+    );
 }
 
 #[test]
@@ -243,12 +245,16 @@ fn script_cst_exposes_expression_structure_for_common_chains() {
         .find(|node| node.kind == SyntaxKind::Expression)
         .expect("expression node");
 
-    assert!(expression
-        .descendants()
-        .any(|node| node.kind == SyntaxKind::ParenthesizedExpression));
-    assert!(expression
-        .descendants()
-        .any(|node| node.kind == SyntaxKind::BinaryExpression));
+    assert!(
+        expression
+            .descendants()
+            .any(|node| node.kind == SyntaxKind::ParenthesizedExpression)
+    );
+    assert!(
+        expression
+            .descendants()
+            .any(|node| node.kind == SyntaxKind::BinaryExpression)
+    );
 
     assert_eq!(tree.text(expression.span), "foo((baz + qux))");
 }
@@ -270,9 +276,11 @@ fn script_cst_exposes_member_access_nodes() {
         .find(|node| node.kind == SyntaxKind::Expression)
         .expect("expression node");
 
-    assert!(expression
-        .descendants()
-        .any(|node| node.kind == SyntaxKind::MemberAccess));
+    assert!(
+        expression
+            .descendants()
+            .any(|node| node.kind == SyntaxKind::MemberAccess)
+    );
     assert_eq!(tree.text(expression.span), "foo.bar");
 }
 
@@ -293,18 +301,26 @@ fn script_cst_exposes_call_and_array_access_nodes() {
         .find(|node| node.kind == SyntaxKind::Expression)
         .expect("expression node");
 
-    assert!(expression
-        .descendants()
-        .any(|node| node.kind == SyntaxKind::MemberAccess));
-    assert!(expression
-        .descendants()
-        .any(|node| node.kind == SyntaxKind::CallExpression));
-    assert!(expression
-        .descendants()
-        .any(|node| node.kind == SyntaxKind::ArrayAccess));
-    assert!(expression
-        .descendants()
-        .any(|node| node.kind == SyntaxKind::BinaryExpression));
+    assert!(
+        expression
+            .descendants()
+            .any(|node| node.kind == SyntaxKind::MemberAccess)
+    );
+    assert!(
+        expression
+            .descendants()
+            .any(|node| node.kind == SyntaxKind::CallExpression)
+    );
+    assert!(
+        expression
+            .descendants()
+            .any(|node| node.kind == SyntaxKind::ArrayAccess)
+    );
+    assert!(
+        expression
+            .descendants()
+            .any(|node| node.kind == SyntaxKind::BinaryExpression)
+    );
 }
 
 #[test]
@@ -368,12 +384,14 @@ fn template_cst_distinguishes_escaped_hashes_from_interpolation() {
     let tree = matchbox_compiler::cst::parse_template(source);
 
     assert_eq!(tree.to_source(), source);
-    assert!(tree
-        .descendants()
-        .any(|node| node.kind == SyntaxKind::Interpolation && tree.text(node.span) == "#name#"));
-    assert!(tree
-        .tokens()
-        .any(|token| token.kind == TokenKind::ContentText && tree.text(token.span) == "##"));
+    assert!(
+        tree.descendants()
+            .any(|node| node.kind == SyntaxKind::Interpolation && tree.text(node.span) == "#name#")
+    );
+    assert!(
+        tree.tokens()
+            .any(|token| token.kind == TokenKind::ContentText && tree.text(token.span) == "##")
+    );
 }
 
 fn collect_nodes(

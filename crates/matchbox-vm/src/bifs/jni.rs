@@ -1,405 +1,468 @@
-#[cfg(not(target_arch = "wasm32"))]
-use jni::{
-    objects::{GlobalRef, JObject, JObjectArray, JValue},
-    InitArgsBuilder, JNIEnv, JNIVersion, JavaVM,
-};
-#[cfg(not(target_arch = "wasm32"))]
-use std::cell::RefCell;
-#[cfg(not(target_arch = "wasm32"))]
-use std::rc::Rc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::{Arc, OnceLock};
+use crate::types::{BxVM, BxValue};
 
-use crate::types::BxVM;
-use crate::types::BxValue;
-
-#[cfg(not(target_arch = "wasm32"))]
-use crate::types::BxNativeObject;
-
-#[cfg(not(target_arch = "wasm32"))]
-static JVM: OnceLock<Result<Arc<JavaVM>, String>> = OnceLock::new();
-
-#[cfg(not(target_arch = "wasm32"))]
-fn get_jvm() -> Result<Arc<JavaVM>, String> {
-    let res = JVM.get_or_init(|| {
-        let jvm_args = InitArgsBuilder::new()
-            .version(JNIVersion::V8)
-            .build()
-            .map_err(|e| format!("Failed to build JVM args: {}", e))?;
-        let jvm = JavaVM::new(jvm_args).map_err(|e| format!("Failed to create JVM: {}", e))?;
-        Ok(Arc::new(jvm))
-    });
-    res.clone()
+#[cfg(target_arch = "wasm32")]
+pub fn create_java_class(vm: &mut dyn BxVM, class_name: &str) -> Result<BxValue, String> {
+    let _ = (vm, class_name);
+    Err("JNI class loading is not supported in WASM".into())
 }
 
-pub fn create_java_object(
-    vm: &mut dyn BxVM,
-    class_name: &str,
-    args: &[BxValue],
-) -> Result<BxValue, String> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (vm, class_name, args);
-        return Err("Java interoperability is not supported in WASM environments.".to_string());
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::create_java_class;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native {
+    use super::{BxVM, BxValue};
+    use crate::types::BxNativeObject;
+    use jni::{
+        objects::{GlobalRef, JObject, JObjectArray, JValue},
+        InitArgsBuilder, JNIEnv, JNIVersion, JavaVM,
+    };
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::{Arc, OnceLock};
+
+    static JVM: OnceLock<Result<Arc<JavaVM>, String>> = OnceLock::new();
+
+    fn get_jvm() -> Result<Arc<JavaVM>, String> {
+        let res = JVM.get_or_init(|| {
+            let jvm_args = InitArgsBuilder::new()
+                .version(JNIVersion::V8)
+                .build()
+                .map_err(|e| format!("Failed to build JVM args: {}", e))?;
+            let jvm = JavaVM::new(jvm_args).map_err(|e| format!("Failed to create JVM: {}", e))?;
+            Ok(Arc::new(jvm))
+        });
+        res.clone()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    {
+    /// Optional JNI backend: resolve without invoking a constructor.
+    pub fn create_java_class(vm: &mut dyn BxVM, class_name: &str) -> Result<BxValue, String> {
         let jvm = get_jvm()?;
-        let mut env = jvm
-            .attach_current_thread()
-            .map_err(|e| format!("Failed to attach thread: {}", e))?;
+        let mut env = jvm.attach_current_thread().map_err(|error| error.to_string())?;
+        env.find_class(class_name.replace('.', "/")).map_err(|error| format!("Java class not provided and JNI lookup failed for {class_name}: {error}"))?;
+        Ok(BxValue::new_ptr(vm.native_object_new(Rc::new(RefCell::new(JniClassReference(class_name.into()))))))
+    }
 
-        // Convert class name from "java.util.ArrayList" to "java/util/ArrayList"
-        let jni_class_name = class_name.replace(".", "/");
-        let class = env
-            .find_class(&jni_class_name)
-            .map_err(|e| format!("Failed to find class {}: {}", class_name, e))?;
+    #[derive(Debug)]
+    struct JniClassReference(String);
 
-        // Support for non-default constructors via reflection
-        let constructors_array: JObjectArray = env
-            .call_method(
-                &class,
-                "getConstructors",
-                "()[Ljava/lang/reflect/Constructor;",
-                &[],
-            )
-            .map_err(|e| format!("Failed to get constructors for {}: {}", class_name, e))?
-            .l()
-            .map_err(|e| e.to_string())?
-            .into();
-
-        let constructors_count = env
-            .get_array_length(&constructors_array)
-            .map_err(|e| e.to_string())?;
-        let mut target_constructor = None;
-
-        for i in 0..constructors_count {
-            let constructor = env
-                .get_object_array_element(&constructors_array, i)
-                .map_err(|e| e.to_string())?;
-            let params_array: JObjectArray = env
-                .call_method(
-                    &constructor,
-                    "getParameterTypes",
-                    "()[Ljava/lang/Class;",
-                    &[],
-                )
-                .map_err(|e| e.to_string())?
-                .l()
-                .map_err(|e| e.to_string())?
-                .into();
-            let params_count = env
-                .get_array_length(&params_array)
-                .map_err(|e| e.to_string())?;
-
-            if params_count as usize == args.len() {
-                target_constructor = Some(constructor);
-                break;
+    impl BxNativeObject for JniClassReference {
+        fn get_property(&self, _name: &str) -> BxValue { BxValue::new_null() }
+        fn set_property(&mut self, _name: &str, _value: BxValue) {}
+        fn call_method(&mut self, vm: &mut dyn BxVM, _id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String> {
+            let jvm = get_jvm()?;
+            let mut env = jvm.attach_current_thread().map_err(|e| format!("Failed to attach thread: {}", e))?;
+            let class = env
+                .find_class(self.0.replace('.', "/"))
+                .map_err(|e| format!("Failed to find class {}: {}", self.0, e))?;
+            if name.eq_ignore_ascii_case("init") {
+                let object = new_instance(&mut env, vm, &class, &self.0, args)?;
+                return wrap_object(&mut env, vm, &jvm, &object);
             }
+            let result = invoke_method(&mut env, vm, &class, &JObject::null(), name, args, true)?;
+            java_result_to_bx(&mut env, vm, &jvm, &result)
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct JniObject {
+        jvm: Arc<JavaVM>,
+        global_ref: GlobalRef,
+    }
+
+    impl BxNativeObject for JniObject {
+        fn has_method(&self, _name: &str) -> bool { true }
+        fn get_property(&self, _name: &str) -> BxValue {
+            BxValue::new_null()
         }
 
-        let constructor = target_constructor.ok_or_else(|| {
-            format!(
-                "Constructor with {} arguments not found on class {}",
-                args.len(),
-                class_name
-            )
-        })?;
+        fn set_property(&mut self, _name: &str, _value: BxValue) {}
 
-        // 3. Prepare Arguments
-        let object_class = env
-            .find_class("java/lang/Object")
-            .map_err(|e| e.to_string())?;
-        let j_args_array = env
-            .new_object_array(args.len() as i32, object_class, JObject::null())
-            .map_err(|e| e.to_string())?;
-
-        let dummy_jni_obj = JniObject {
-            _jvm: Arc::clone(&jvm),
-            _global_ref: env
-                .new_global_ref(JObject::null())
-                .map_err(|e| e.to_string())?,
-        };
-
-        for (i, arg) in args.iter().enumerate() {
-            let j_arg = dummy_jni_obj.bx_to_java(&mut env, vm, arg)?;
-            env.set_object_array_element(&j_args_array, i as i32, j_arg)
-                .map_err(|e| e.to_string())?;
+        fn call_method(
+            &mut self,
+            vm: &mut dyn BxVM,
+            _id: usize,
+            name: &str,
+            args: &[BxValue],
+        ) -> Result<BxValue, String> {
+            let mut env = self
+                .jvm
+                .attach_current_thread()
+                .map_err(|e| format!("Failed to attach thread: {}", e))?;
+            let obj = self.global_ref.as_obj();
+            let class = env.get_object_class(obj).map_err(|e| e.to_string())?;
+            let result = invoke_method(&mut env, vm, &class, obj, name, args, false)?;
+            java_result_to_bx(&mut env, vm, &self.jvm, &result)
         }
+    }
 
-        // 4. Invoke Constructor
-        let obj = env
-            .call_method(
-                &constructor,
-                "newInstance",
-                "([Ljava/lang/Object;)Ljava/lang/Object;",
-                &[(&j_args_array).into()],
-            )
-            .map_err(|e| format!("Failed to instantiate {}: {}", class_name, e))?
-            .l()
-            .map_err(|e| e.to_string())?;
-
+    fn wrap_object(
+        env: &mut JNIEnv,
+        vm: &mut dyn BxVM,
+        jvm: &Arc<JavaVM>,
+        obj: &JObject,
+    ) -> Result<BxValue, String> {
         let global_ref = env
             .new_global_ref(obj)
             .map_err(|e| format!("Failed to create global ref: {}", e))?;
-
-        let jni_obj = JniObject {
-            _jvm: Arc::clone(&jvm),
-            _global_ref: global_ref,
-        };
-
-        let id = vm.native_object_new(Rc::new(RefCell::new(jni_obj)));
+        let id = vm.native_object_new(Rc::new(RefCell::new(JniObject {
+            jvm: Arc::clone(jvm),
+            global_ref,
+        })));
         Ok(BxValue::new_ptr(id))
     }
-}
 
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-pub struct JniObject {
-    _jvm: Arc<JavaVM>,
-    _global_ref: GlobalRef,
-}
+    /// The message of the pending Java exception (unwrapping reflection's wrapper), clearing it.
+    fn pending_exception_message(env: &mut JNIEnv) -> Option<String> {
+        if !env.exception_check().unwrap_or(false) {
+            return None;
+        }
+        let exception = env.exception_occurred().ok()?;
+        env.exception_clear().ok()?;
+        let mut target: JObject = exception.into();
+        if class_name_of(env, &target).ok()? == "java.lang.reflect.InvocationTargetException" {
+            let cause = env
+                .call_method(&target, "getCause", "()Ljava/lang/Throwable;", &[])
+                .ok()?
+                .l()
+                .ok()?;
+            if !cause.is_null() {
+                target = cause;
+            }
+        }
+        let text = env
+            .call_method(&target, "toString", "()Ljava/lang/String;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        Some(env.get_string(&text.into()).ok()?.into())
+    }
 
-#[cfg(not(target_arch = "wasm32"))]
-impl JniObject {
-    fn bx_to_java<'a>(
-        &self,
-        env: &mut JNIEnv<'a>,
-        vm: &dyn BxVM,
-        val: &BxValue,
-    ) -> Result<JObject<'a>, String> {
-        if val.is_null() {
-            Ok(JObject::null())
-        } else if val.is_bool() {
-            let class = env
-                .find_class("java/lang/Boolean")
-                .map_err(|e| e.to_string())?;
-            let obj = env
-                .new_object(class, "(Z)V", &[JValue::from(val.as_bool())])
-                .map_err(|e| e.to_string())?;
-            Ok(obj)
-        } else if val.is_int() {
-            let class = env
-                .find_class("java/lang/Integer")
-                .map_err(|e| e.to_string())?;
-            let obj = env
-                .new_object(class, "(I)V", &[JValue::from(val.as_int())])
-                .map_err(|e| e.to_string())?;
-            Ok(obj)
-        } else if val.is_number() {
-            let class = env
-                .find_class("java/lang/Double")
-                .map_err(|e| e.to_string())?;
-            let obj = env
-                .new_object(class, "(D)V", &[JValue::from(val.as_number())])
-                .map_err(|e| e.to_string())?;
-            Ok(obj)
-        } else {
-            let s = vm.to_string(*val);
-            let j_str = env.new_string(s).map_err(|e| e.to_string())?;
-            Ok(j_str.into())
+    fn jni_error(env: &mut JNIEnv, context: &str, error: jni::errors::Error) -> String {
+        match pending_exception_message(env) {
+            Some(message) => format!("{context}: {message}"),
+            None => format!("{context}: {error}"),
         }
     }
 
-    fn java_to_bx(&self, env: &mut JNIEnv, obj: &JObject) -> Result<BxValue, String> {
-        if obj.is_null() {
-            return Ok(BxValue::new_null());
-        }
-
+    fn class_name_of(env: &mut JNIEnv, obj: &JObject) -> Result<String, String> {
         let class = env.get_object_class(obj).map_err(|e| e.to_string())?;
-        let class_name_obj = env
+        class_name(env, &class)
+    }
+
+    fn class_name(env: &mut JNIEnv, class: &JObject) -> Result<String, String> {
+        let name = env
             .call_method(class, "getName", "()Ljava/lang/String;", &[])
             .map_err(|e| e.to_string())?
             .l()
             .map_err(|e| e.to_string())?;
-        let class_name: String = env
-            .get_string(&class_name_obj.into())
+        let name: String = env.get_string(&name.into()).map_err(|e| e.to_string())?.into();
+        Ok(name)
+    }
+
+    /// Java class names of a constructor's or method's parameters (`int`, `java.lang.String`, ...).
+    fn parameter_types(env: &mut JNIEnv, executable: &JObject) -> Result<Vec<String>, String> {
+        let params: JObjectArray = env
+            .call_method(executable, "getParameterTypes", "()[Ljava/lang/Class;", &[])
+            .map_err(|e| e.to_string())?
+            .l()
             .map_err(|e| e.to_string())?
             .into();
+        let count = env.get_array_length(&params).map_err(|e| e.to_string())?;
+        let mut names = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let class = env.get_object_array_element(&params, i).map_err(|e| e.to_string())?;
+            names.push(class_name(env, &class)?);
+        }
+        Ok(names)
+    }
 
-        match class_name.as_str() {
-            "java.lang.Boolean" => {
-                let val = env
-                    .call_method(obj, "booleanValue", "()Z", &[])
-                    .map_err(|e| e.to_string())?
-                    .z()
-                    .map_err(|e| e.to_string())?;
-                Ok(BxValue::new_bool(val))
-            }
-            "java.lang.Integer" | "java.lang.Short" | "java.lang.Byte" => {
-                let val = env
-                    .call_method(obj, "intValue", "()I", &[])
-                    .map_err(|e| e.to_string())?
-                    .i()
-                    .map_err(|e| e.to_string())?;
-                Ok(BxValue::new_int(val))
-            }
-            "java.lang.Long" => {
-                let val = env
-                    .call_method(obj, "longValue", "()J", &[])
-                    .map_err(|e| e.to_string())?
-                    .j()
-                    .map_err(|e| e.to_string())?;
-                Ok(BxValue::new_number(val as f64))
-            }
-            "java.lang.Double" | "java.lang.Float" => {
-                let val = env
-                    .call_method(obj, "doubleValue", "()D", &[])
-                    .map_err(|e| e.to_string())?
-                    .d()
-                    .map_err(|e| e.to_string())?;
-                Ok(BxValue::new_number(val))
-            }
-            _ => Err("Conversion requires VM access".to_string()),
+    fn integral(vm: &dyn BxVM, value: BxValue) -> Option<i64> {
+        let _ = vm;
+        if value.is_int() {
+            Some(value.as_int() as i64)
+        } else if value.is_number() {
+            let n = value.as_number();
+            (n.fract() == 0.0 && n.abs() < 9.0e15).then_some(n as i64)
+        } else {
+            None
         }
     }
-}
 
-#[cfg(not(target_arch = "wasm32"))]
-impl BxNativeObject for JniObject {
-    fn get_property(&self, _name: &str) -> BxValue {
-        BxValue::new_null()
+    fn is_numeric(value: BxValue) -> bool {
+        value.is_int() || value.is_number()
     }
 
-    fn set_property(&mut self, _name: &str, _value: BxValue) {}
+    /// How well `value` fits a Java parameter type (higher is better, `None` means it does not fit).
+    fn score_argument(vm: &dyn BxVM, value: BxValue, param: &str) -> Option<u32> {
+        if value.is_null() {
+            return match param {
+                "boolean" | "byte" | "short" | "char" | "int" | "long" | "float" | "double" => None,
+                _ => Some(1),
+            };
+        }
+        let fits_range = |min: i64, max: i64| integral(vm, value).filter(|n| *n >= min && *n <= max);
+        match param {
+            "boolean" | "java.lang.Boolean" => value.is_bool().then_some(5),
+            // Whole numbers prefer int, then long, then double, like BoxLang's integer literals.
+            "int" | "java.lang.Integer" => fits_range(i32::MIN as i64, i32::MAX as i64).map(|_| 5),
+            "long" | "java.lang.Long" => fits_range(i64::MIN, i64::MAX).map(|_| 4),
+            "short" | "java.lang.Short" => fits_range(i16::MIN as i64, i16::MAX as i64).map(|_| 1),
+            "byte" | "java.lang.Byte" => fits_range(i8::MIN as i64, i8::MAX as i64).map(|_| 1),
+            "double" | "java.lang.Double" => {
+                if integral(vm, value).is_some() { Some(2) } else { is_numeric(value).then_some(5) }
+            }
+            "float" | "java.lang.Float" => is_numeric(value).then_some(1),
+            "char" | "java.lang.Character" => {
+                (vm.is_string_value(value) && vm.to_string(value).chars().count() == 1).then_some(3)
+            }
+            "java.lang.String" => Some(if vm.is_string_value(value) { 4 } else { 1 }),
+            "java.lang.CharSequence" => vm.is_string_value(value).then_some(3),
+            "java.lang.Number" => is_numeric(value).then_some(3),
+            "java.lang.Object" => Some(1),
+            _ => None,
+        }
+    }
 
-    fn call_method(
-        &mut self,
-        vm: &mut dyn BxVM,
-        _id: usize,
+    fn new_wrapper<'a>(
+        env: &mut JNIEnv<'a>,
+        class: &str,
+        signature: &str,
+        value: JValue,
+    ) -> Result<JObject<'a>, String> {
+        let class = env.find_class(class).map_err(|e| e.to_string())?;
+        env.new_object(class, signature, &[value]).map_err(|e| e.to_string())
+    }
+
+    /// Box `value` as the Java type the selected overload expects.
+    fn to_java<'a>(
+        env: &mut JNIEnv<'a>,
+        vm: &dyn BxVM,
+        value: BxValue,
+        param: &str,
+    ) -> Result<JObject<'a>, String> {
+        if value.is_null() {
+            return Ok(JObject::null());
+        }
+        let whole = integral(vm, value);
+        let number = if value.is_int() { value.as_int() as f64 } else { value.as_number() };
+        match param {
+            "int" | "java.lang.Integer" => new_wrapper(env, "java/lang/Integer", "(I)V", JValue::Int(whole.unwrap_or(0) as i32)),
+            "long" | "java.lang.Long" => new_wrapper(env, "java/lang/Long", "(J)V", JValue::Long(whole.unwrap_or(0))),
+            "short" | "java.lang.Short" => new_wrapper(env, "java/lang/Short", "(S)V", JValue::Short(whole.unwrap_or(0) as i16)),
+            "byte" | "java.lang.Byte" => new_wrapper(env, "java/lang/Byte", "(B)V", JValue::Byte(whole.unwrap_or(0) as i8)),
+            "double" | "java.lang.Double" => new_wrapper(env, "java/lang/Double", "(D)V", JValue::Double(number)),
+            "float" | "java.lang.Float" => new_wrapper(env, "java/lang/Float", "(F)V", JValue::Float(number as f32)),
+            "char" | "java.lang.Character" => {
+                let code = vm.to_string(value).encode_utf16().next().unwrap_or(0);
+                new_wrapper(env, "java/lang/Character", "(C)V", JValue::Char(code))
+            }
+            _ => {
+                if value.is_bool() {
+                    new_wrapper(env, "java/lang/Boolean", "(Z)V", JValue::Bool(value.as_bool() as u8))
+                } else if value.is_int() {
+                    new_wrapper(env, "java/lang/Integer", "(I)V", JValue::Int(value.as_int()))
+                } else if value.is_number() {
+                    new_wrapper(env, "java/lang/Double", "(D)V", JValue::Double(value.as_number()))
+                } else {
+                    let text = env.new_string(vm.to_string(value)).map_err(|e| e.to_string())?;
+                    Ok(text.into())
+                }
+            }
+        }
+    }
+
+    /// The candidate whose parameter types fit `args` best, with those parameter types.
+    fn select_overload<'a>(
+        env: &mut JNIEnv<'a>,
+        vm: &dyn BxVM,
+        candidates: Vec<JObject<'a>>,
+        args: &[BxValue],
+    ) -> Result<Option<(JObject<'a>, Vec<String>)>, String> {
+        let mut best: Option<(u32, JObject<'a>, Vec<String>)> = None;
+        for candidate in candidates {
+            let params = parameter_types(env, &candidate)?;
+            if params.len() != args.len() {
+                continue;
+            }
+            let mut total = 0;
+            let mut fits = true;
+            for (value, param) in args.iter().zip(&params) {
+                match score_argument(vm, *value, param) {
+                    Some(score) => total += score,
+                    None => {
+                        fits = false;
+                        break;
+                    }
+                }
+            }
+            if fits && best.as_ref().is_none_or(|(score, _, _)| total > *score) {
+                best = Some((total, candidate, params));
+            }
+        }
+        Ok(best.map(|(_, candidate, params)| (candidate, params)))
+    }
+
+    fn argument_array<'a>(
+        env: &mut JNIEnv<'a>,
+        vm: &dyn BxVM,
+        args: &[BxValue],
+        params: &[String],
+    ) -> Result<JObjectArray<'a>, String> {
+        let object_class = env.find_class("java/lang/Object").map_err(|e| e.to_string())?;
+        let array = env
+            .new_object_array(args.len() as i32, object_class, JObject::null())
+            .map_err(|e| e.to_string())?;
+        for (i, (value, param)) in args.iter().zip(params).enumerate() {
+            let converted = to_java(env, vm, *value, param)?;
+            env.set_object_array_element(&array, i as i32, converted)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(array)
+    }
+
+    fn objects_of<'a>(env: &mut JNIEnv<'a>, array: JObjectArray<'a>) -> Result<Vec<JObject<'a>>, String> {
+        let count = env.get_array_length(&array).map_err(|e| e.to_string())?;
+        (0..count)
+            .map(|i| env.get_object_array_element(&array, i).map_err(|e| e.to_string()))
+            .collect()
+    }
+
+    fn new_instance<'a>(
+        env: &mut JNIEnv<'a>,
+        vm: &dyn BxVM,
+        class: &JObject,
+        class_name: &str,
+        args: &[BxValue],
+    ) -> Result<JObject<'a>, String> {
+        let constructors: JObjectArray = env
+            .call_method(class, "getConstructors", "()[Ljava/lang/reflect/Constructor;", &[])
+            .map_err(|e| format!("Failed to get constructors for {}: {}", class_name, e))?
+            .l()
+            .map_err(|e| e.to_string())?
+            .into();
+        let candidates = objects_of(env, constructors)?;
+        let (constructor, params) = select_overload(env, vm, candidates, args)?.ok_or_else(|| {
+            format!("No constructor of {} accepts {} argument(s) of these types", class_name, args.len())
+        })?;
+        let array = argument_array(env, vm, args, &params)?;
+        let created = env.call_method(
+            &constructor,
+            "newInstance",
+            "([Ljava/lang/Object;)Ljava/lang/Object;",
+            &[(&array).into()],
+        );
+        match created {
+            Ok(value) => value.l().map_err(|e| e.to_string()),
+            Err(error) => Err(jni_error(env, &format!("Failed to instantiate {class_name}"), error)),
+        }
+    }
+
+    /// Call `name` on `receiver` (null for a static call) by reflection.
+    fn invoke_method<'a>(
+        env: &mut JNIEnv<'a>,
+        vm: &dyn BxVM,
+        class: &JObject,
+        receiver: &JObject,
         name: &str,
         args: &[BxValue],
-    ) -> Result<BxValue, String> {
-        let mut env = self
-            ._jvm
-            .attach_current_thread()
-            .map_err(|e| format!("Failed to attach thread: {}", e))?;
-        let obj = self._global_ref.as_obj();
-
-        // 1. Get Class
-        let class = env.get_object_class(obj).map_err(|e| e.to_string())?;
-
-        // 2. Find Method via Reflection
-        let methods_array: JObjectArray = env
-            .call_method(&class, "getMethods", "()[Ljava/lang/reflect/Method;", &[])
+        static_only: bool,
+    ) -> Result<JObject<'a>, String> {
+        let methods: JObjectArray = env
+            .call_method(class, "getMethods", "()[Ljava/lang/reflect/Method;", &[])
             .map_err(|e| format!("Failed to get methods: {}", e))?
             .l()
             .map_err(|e| e.to_string())?
             .into();
-
-        let methods_count = env
-            .get_array_length(&methods_array)
-            .map_err(|e| e.to_string())?;
-        let mut target_method = None;
-
-        let name_lower = name.to_lowercase();
-
-        for i in 0..methods_count {
-            let method = env
-                .get_object_array_element(&methods_array, i)
-                .map_err(|e| e.to_string())?;
-            let m_name_obj = env
+        let mut candidates = Vec::new();
+        for method in objects_of(env, methods)? {
+            let method_name = env
                 .call_method(&method, "getName", "()Ljava/lang/String;", &[])
                 .map_err(|e| e.to_string())?
                 .l()
                 .map_err(|e| e.to_string())?;
-            let m_name: String = env
-                .get_string(&m_name_obj.into())
-                .map_err(|e| e.to_string())?
-                .into();
+            let method_name: String = env.get_string(&method_name.into()).map_err(|e| e.to_string())?.into();
+            if !method_name.eq_ignore_ascii_case(name) {
+                continue;
+            }
+            if static_only {
+                let modifiers = env
+                    .call_method(&method, "getModifiers", "()I", &[])
+                    .map_err(|e| e.to_string())?
+                    .i()
+                    .map_err(|e| e.to_string())?;
+                let is_static = env
+                    .call_static_method("java/lang/reflect/Modifier", "isStatic", "(I)Z", &[JValue::Int(modifiers)])
+                    .map_err(|e| e.to_string())?
+                    .z()
+                    .map_err(|e| e.to_string())?;
+                if !is_static {
+                    continue;
+                }
+            }
+            candidates.push(method);
+        }
+        if candidates.is_empty() {
+            return Err(format!("Method {name} not found on class"));
+        }
+        let (method, params) = select_overload(env, vm, candidates, args)?
+            .ok_or_else(|| format!("No overload of {name} accepts {} argument(s) of these types", args.len()))?;
+        let array = argument_array(env, vm, args, &params)?;
+        let result = env.call_method(
+            &method,
+            "invoke",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            &[receiver.into(), (&array).into()],
+        );
+        match result {
+            Ok(value) => value.l().map_err(|e| e.to_string()),
+            Err(error) => Err(jni_error(env, &format!("Invocation of {name} failed"), error)),
+        }
+    }
 
-            if m_name.to_lowercase() == name_lower {
-                let params_array: JObjectArray = env
-                    .call_method(&method, "getParameterTypes", "()[Ljava/lang/Class;", &[])
+    fn java_result_to_bx(
+        env: &mut JNIEnv,
+        vm: &mut dyn BxVM,
+        jvm: &Arc<JavaVM>,
+        result: &JObject,
+    ) -> Result<BxValue, String> {
+        if result.is_null() {
+            return Ok(BxValue::new_null());
+        }
+        match class_name_of(env, result)?.as_str() {
+            "java.lang.String" => {
+                let text: String = env
+                    .get_string(&JObject::from(env.new_local_ref(result).map_err(|e| e.to_string())?).into())
+                    .map_err(|e| e.to_string())?
+                    .into();
+                Ok(BxValue::new_ptr(vm.string_new(text)))
+            }
+            "java.lang.Boolean" => {
+                let value = env.call_method(result, "booleanValue", "()Z", &[]).map_err(|e| e.to_string())?.z().map_err(|e| e.to_string())?;
+                Ok(BxValue::new_bool(value))
+            }
+            "java.lang.Integer" | "java.lang.Short" | "java.lang.Byte" => {
+                let value = env.call_method(result, "intValue", "()I", &[]).map_err(|e| e.to_string())?.i().map_err(|e| e.to_string())?;
+                Ok(BxValue::new_int(value))
+            }
+            "java.lang.Long" => {
+                let value = env.call_method(result, "longValue", "()J", &[]).map_err(|e| e.to_string())?.j().map_err(|e| e.to_string())?;
+                Ok(BxValue::new_number(value as f64))
+            }
+            "java.lang.Double" | "java.lang.Float" => {
+                let value = env.call_method(result, "doubleValue", "()D", &[]).map_err(|e| e.to_string())?.d().map_err(|e| e.to_string())?;
+                Ok(BxValue::new_number(value))
+            }
+            "java.lang.Character" => {
+                let text = env
+                    .call_method(result, "toString", "()Ljava/lang/String;", &[])
                     .map_err(|e| e.to_string())?
                     .l()
-                    .map_err(|e| e.to_string())?
-                    .into();
-                let params_count = env
-                    .get_array_length(&params_array)
                     .map_err(|e| e.to_string())?;
-
-                if params_count as usize == args.len() {
-                    target_method = Some(method);
-                    break;
-                }
+                let text: String = env.get_string(&text.into()).map_err(|e| e.to_string())?.into();
+                Ok(BxValue::new_ptr(vm.string_new(text)))
             }
-        }
-
-        let method = target_method.ok_or_else(|| {
-            format!(
-                "Method {} with {} arguments not found on class",
-                name,
-                args.len()
-            )
-        })?;
-
-        // 3. Prepare Arguments
-        let object_class = env
-            .find_class("java/lang/Object")
-            .map_err(|e| e.to_string())?;
-        let j_args_array = env
-            .new_object_array(args.len() as i32, object_class, JObject::null())
-            .map_err(|e| e.to_string())?;
-
-        for (i, arg) in args.iter().enumerate() {
-            let j_arg = self.bx_to_java(&mut env, vm, arg)?;
-            env.set_object_array_element(&j_args_array, i as i32, j_arg)
-                .map_err(|e| e.to_string())?;
-        }
-
-        // 4. Invoke
-        let result_obj = env
-            .call_method(
-                &method,
-                "invoke",
-                "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
-                &[obj.into(), (&j_args_array).into()],
-            )
-            .map_err(|e| format!("Invocation of {} failed: {}", name, e))?
-            .l()
-            .map_err(|e| e.to_string())?;
-
-        // 5. Convert Result
-        if result_obj.is_null() {
-            Ok(BxValue::new_null())
-        } else {
-            let res_class = env
-                .get_object_class(&result_obj)
-                .map_err(|e| e.to_string())?;
-            let res_class_name_obj = env
-                .call_method(res_class, "getName", "()Ljava/lang/String;", &[])
-                .map_err(|e| e.to_string())?
-                .l()
-                .map_err(|e| e.to_string())?;
-            let res_class_name: String = env
-                .get_string(&res_class_name_obj.into())
-                .map_err(|e| e.to_string())?
-                .into();
-
-            if res_class_name == "java.lang.String" {
-                let s: String = env
-                    .get_string(&result_obj.into())
-                    .map_err(|e| e.to_string())?
-                    .into();
-                let id = vm.string_new(s);
-                Ok(BxValue::new_ptr(id))
-            } else {
-                match self.java_to_bx(&mut env, &result_obj) {
-                    Ok(val) => Ok(val),
-                    Err(_) => {
-                        let global_ref =
-                            env.new_global_ref(&result_obj).map_err(|e| e.to_string())?;
-                        let new_jni_obj = JniObject {
-                            _jvm: Arc::clone(&self._jvm),
-                            _global_ref: global_ref,
-                        };
-                        let id = vm.native_object_new(Rc::new(RefCell::new(new_jni_obj)));
-                        Ok(BxValue::new_ptr(id))
-                    }
-                }
-            }
+            _ => wrap_object(env, vm, jvm, result),
         }
     }
 }

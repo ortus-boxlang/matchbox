@@ -80,6 +80,8 @@ script_test!(bifs, "bifs.bxs");
 script_test!(deserialize_toml, "deserialize_toml.bxs");
 script_test!(deserialize_yaml, "deserialize_yaml.bxs");
 script_test!(bytes_bifs, "bytes_bifs.bxs");
+script_test!(vm_box_ast, "vm_box_ast.bxs");
+script_test!(vm_ast_visit, "vm_ast_visit.bxs");
 script_test!(for_in_loops, "for_in_loops.bxs");
 script_test!(for_loop, "for_loop.bxs");
 script_test!(functions, "functions.bxs");
@@ -92,6 +94,9 @@ script_test!(structs, "structs.bxs");
 script_test!(top_level_return, "top_level_return.bxs");
 script_test!(vm_basic, "vm_basic.bxs");
 script_test!(vm_classes, "vm_classes.bxs");
+script_test!(vm_datetime_format, "vm_datetime_format.bxs");
+script_test!(vm_member_increment, "vm_member_increment.bxs");
+script_test!(vm_new_init_result, "vm_new_init_result.bxs");
 script_test!(vm_complex_types, "vm_complex_types.bxs");
 script_test!(vm_exceptions, "vm_exceptions.bxs");
 script_test!(vm_try_finally, "vm_try_finally.bxs");
@@ -100,6 +105,47 @@ script_test!(
     "vm_throw_structured_exception.bxs"
 );
 script_test!(vm_functions, "vm_functions.bxs");
+script_test!(vm_function_execution, "vm_function_execution.bxs");
+script_test!(vm_scope_bindings, "vm_scope_bindings.bxs");
+script_test!(guarded_frame_local_alias, "test01-local.bxs");
+script_test!(guarded_frame_argument_alias, "test02-arguments.bxs");
+script_test!(guarded_frame_capture, "test03-capture.bxs");
+script_test!(guarded_frame_context, "test04-context.bxs");
+script_test!(guarded_frame_block_rebinding, "test05-rebinding.bxs");
+script_test!(guarded_frame_duplicate_parameters, "test06-parameter-names.bxs");
+script_test!(guarded_frame_boundaries, "test07-boundaries.bxs");
+script_test!(guarded_frame_wide_arguments, "guarded_frame_wide_arguments.bxs");
+script_test!(jit_function_contract, "jit_function_contract.bxs");
+script_test!(jit_loop_contract, "jit_loop_contract.bxs");
+script_test!(vm_lexical_closures, "vm_lexical_closures.bxs");
+script_test!(vm_execution_contexts, "vm_execution_contexts.bxs");
+
+#[cfg(feature = "jit")]
+#[test]
+fn compiled_loop_metadata_keeps_member_ids_vm_local() {
+    use matchbox_vm::{types::{BxVM, BxValue, Constant}, vm::{VM, chunk::Chunk, gc::GcObject, opcode::op}};
+    let source = "function read(record, limit) { var count=0; var total=0; while(count<limit) { total=total+record.start; count=count+1; } return total; } return read;";
+    let ast = matchbox_compiler::parser::parse(source, Some("shared-loop.bxs")).unwrap();
+    let script = matchbox_compiler::compiler::Compiler::new("shared-loop.bxs").compile(&ast, source).unwrap();
+    let mut first = VM::new(); first.enable_jit();
+    let function = first.interpret(script).unwrap();
+    let record = first.struct_new(); first.struct_set(record, "start", BxValue::new_number(3.0));
+    for _ in 0..200 {
+        assert_eq!(first.call_function_value(function, vec![BxValue::new_ptr(record), BxValue::new_number(6.0)], None).unwrap().as_number(), 18.0);
+    }
+    let GcObject::CompiledFunction(function) = first.heap.get(function.as_gc_id().unwrap()) else { panic!("Expected function"); };
+    let mut transferred = Chunk::new("shared-loop-copy.bxs");
+    let slot = transferred.add_constant(Constant::CompiledFunction((**function).clone()));
+    transferred.emit1(op::CONSTANT, slot, 1); transferred.emit0(op::RETURN, 1);
+    let mut second = VM::new(); second.enable_jit();
+    let record = second.struct_new();
+    for index in 0..256 { second.struct_set(record, &format!("padding{index}"), BxValue::new_number(-1.0)); }
+    second.struct_set(record, "start", BxValue::new_number(7.0));
+    let function = second.interpret(transferred).unwrap();
+    for _ in 0..200 {
+        assert_eq!(second.call_function_value(function, vec![BxValue::new_ptr(record), BxValue::new_number(6.0)], None).unwrap().as_number(), 42.0);
+    }
+}
 
 #[test]
 fn vm_locals_survive_stack_reallocation() {
@@ -134,6 +180,7 @@ fn vm_locals_survive_stack_reallocation() {
 script_test!(vm_if, "vm_if.bxs");
 script_test!(vm_loop, "vm_loop.bxs");
 script_test!(vm_struct_assign, "vm_struct_assign.bxs");
+script_test!(vm_wide_struct, "vm_wide_struct.bxs");
 script_test!(vm_struct_iter, "vm_struct_iter.bxs");
 script_test!(vm_struct_iter_single_var, "vm_struct_iter_single_var.bxs");
 script_test!(
@@ -183,6 +230,24 @@ script_test!(vm_instanceof_castas, "vm_instanceof_castas.bxs");
 script_test!(vm_assert_param_rethrow, "vm_assert_param_rethrow.bxs");
 script_test!(vm_contains, "vm_contains.bxs");
 script_test!(vm_array_bifs, "vm_array_bifs.bxs");
+script_test!(vm_super_keyword, "vm_super_keyword.bxs");
+script_test!(vm_inherited_init, "vm_inherited_init.bxs");
+script_test!(vm_query_for_in, "vm_query_for_in.bxs");
+script_test!(vm_member_gaps, "vm_member_gaps.bxs");
+script_test!(vm_lock_blocks, "vm_lock_blocks.bxs");
+script_test!(vm_labeled_loops, "vm_labeled_loops.bxs");
+script_test!(vm_word_operators, "vm_word_operators.bxs");
+script_test!(vm_private_methods, "vm_private_methods.bxs");
+script_test!(vm_class_accessors, "vm_class_accessors.bxs");
+script_test!(vm_class_annotation_names, "vm_class_annotation_names.bxs");
+script_test!(vm_variables_request_scope, "vm_variables_request_scope.bxs");
+script_test!(vm_destructure_rest, "vm_destructure_rest.bxs");
+script_test!(vm_array_slice, "vm_array_slice.bxs");
+script_test!(vm_required_arguments, "vm_required_arguments.bxs");
+script_test!(vm_member_shaking, "vm_member_shaking.bxs");
+script_test!(vm_closure_loop_variable, "vm_closure_loop_variable.bxs");
+script_test!(vm_future_get_in_callback, "vm_future_get_in_callback.bxs");
+script_test!(vm_array_callbacks, "vm_array_callbacks.bxs");
 script_test!(vm_repeat_string, "vm_repeat_string.bxs");
 script_test!(vm_char, "vm_char.bxs");
 script_test!(vm_amp_equal, "vm_amp_equal.bxs");
@@ -193,6 +258,7 @@ script_test!(vm_string_bifs_batch2, "vm_string_bifs_batch2.bxs");
 script_test!(vm_string_bifs, "vm_string_bifs.bxs");
 script_test!(vm_val, "vm_val.bxs");
 script_test!(vm_functional_bif, "vm_functional_bif.bxs");
+script_test!(vm_native_calls, "vm_native_calls.bxs");
 script_test!(vm_spread, "vm_spread.bxs");
 script_test!(vm_destructuring, "vm_destructuring.bxs");
 script_test!(vm_math_datetime, "vm_math_datetime.bxs");
@@ -215,6 +281,7 @@ script_test!(vm_cache_bifs, "vm_cache_bifs.bxs");
 script_test!(vm_qoq_query_execute, "vm_qoq_query_execute.bxs");
 #[cfg(feature = "qoq")]
 script_test!(vm_qoq_join, "vm_qoq_join.bxs");
+script_test!(vm_encode_for_html, "vm_encode_for_html.bxs");
 
 #[test]
 #[cfg(feature = "bif-tui")]
@@ -764,11 +831,39 @@ fn test_bytecode_roundtrip() {
 }
 
 #[test]
+#[cfg_attr(not(feature = "bif-jni"), ignore = "requires feature bif-jni")]
 fn test_java_import() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("scripts")
         .join("java_import.bxs");
+
+    process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
+#[cfg_attr(not(feature = "bif-jni"), ignore = "requires feature bif-jni")]
+fn test_java_overloads() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join("java_overloads.bxs");
 
     process_file(
         &path,
@@ -911,6 +1006,211 @@ fn test_module_loading() {
     ) {
         panic!("Module loading test failed: {}", e);
     }
+}
+
+const NESTED_SETTINGS_MODULE_CONFIG: &str = r##"class ModuleConfig {
+    function configure() {
+        hash = chr(35)
+        settings = {
+            "name": "nested",
+            "count": 42,
+            "ratio": 2.5,
+            "negative": -7,
+            "enabled": true,
+            "disabled": false,
+            "numericText": "42",
+            "nothing": null,
+            "database": {
+                "host": "localhost",
+                "port": 5432,
+                "options": { "ssl": true, "retries": [1, 2, 3] }
+            },
+            "tags": ["fast", "small"],
+            "servers": [
+                { "name": "a", "port": 1 },
+                { "name": "b", "port": 2 }
+            ],
+            "emptyStruct": {},
+            "emptyArray": [],
+            "nestedNulls": { "inner": null, "list": [null, "x"] },
+            "my key": "spaced",
+            "api-key": "hyphenated",
+            "nested keys": { "inner key": 1, "inner-key": 2 },
+            "quotes": "say ""hi""",
+            "backslashes": "C:\path\to\file \n",
+            "newline": "line1" & chr(10) & "line2",
+            "interpolation": hash & "now()" & hash,
+            ("key" & hash & "with" & hash & "hashes"): "hashed key"
+        }
+    }
+
+    function onLoad() {}
+
+    function onUnload() {}
+}
+"##;
+
+const NESTED_SETTINGS_CONSUMER: &str = r##"function check(condition, label) {
+    if (!condition) {
+        throw "nested settings check failed: " & label
+    }
+}
+
+hash = chr(35)
+s = getModuleSettings("nested-settings")
+
+// Flat values keep their types
+check(isString(s.name) && s.name == "nested", "name")
+check(!isString(s.count) && s.count == 42, "count")
+check(!isString(s.ratio) && s.ratio == 2.5, "ratio")
+check(!isString(s.negative) && s.negative == -7, "negative")
+check(!isString(s.enabled) && isBoolean(s.enabled) && s.enabled, "enabled")
+check(!isString(s.disabled) && isBoolean(s.disabled) && !s.disabled, "disabled")
+check(isString(s.numericText) && s.numericText == "42", "numericText")
+check(structKeyExists(s, "nothing") && isNull(s.nothing), "nothing")
+
+// Nested structs
+check(isStruct(s.database), "database is struct")
+check(s.database.host == "localhost", "database.host")
+check(!isString(s.database.port) && s.database.port == 5432, "database.port")
+check(isStruct(s.database.options) && s.database.options.ssl == true, "database.options.ssl")
+check(isArray(s.database.options.retries) && arrayLen(s.database.options.retries) == 3, "retries")
+check(s.database.options.retries[3] == 3, "retries[3]")
+
+// Arrays and arrays of structs
+check(isArray(s.tags) && arrayLen(s.tags) == 2, "tags is array")
+check(s.tags[1] == "fast" && s.tags[2] == "small", "tags values")
+check(isArray(s.servers) && arrayLen(s.servers) == 2, "servers is array")
+check(isStruct(s.servers[2]) && s.servers[2].name == "b" && s.servers[2].port == 2, "servers[2]")
+
+// Empty collections
+check(isStruct(s.emptyStruct) && structCount(s.emptyStruct) == 0, "emptyStruct")
+check(isArray(s.emptyArray) && arrayLen(s.emptyArray) == 0, "emptyArray")
+
+// Nulls inside nested collections
+check(structKeyExists(s.nestedNulls, "inner") && isNull(s.nestedNulls.inner), "nestedNulls.inner")
+check(arrayLen(s.nestedNulls.list) == 2 && isNull(s.nestedNulls.list[1]), "nestedNulls.list[1]")
+check(s.nestedNulls.list[2] == "x", "nestedNulls.list[2]")
+
+// Unusual keys
+check(s["my key"] == "spaced", "my key")
+check(s["api-key"] == "hyphenated", "api-key")
+check(s["nested keys"]["inner key"] == 1, "nested inner key")
+check(s["nested keys"]["inner-key"] == 2, "nested inner-key")
+check(s["key" & hash & "with" & hash & "hashes"] == "hashed key", "key with hashes")
+
+// Strings that need escaping survive unchanged
+check(s.quotes == "say ""hi""", "quotes")
+check(s.backslashes == "C:\path\to\file \n", "backslashes")
+check(s.newline == "line1" & chr(10) & "line2", "newline")
+check(s.interpolation == hash & "now()" & hash, "interpolation")
+
+// The live module registry rejects unknown modules, matching BoxLang's ModuleService.
+missingThrew = false
+try { getModuleSettings("missing") } catch (any e) { missingThrew = true }
+check(missingThrew, "missing module must throw")
+
+println("Nested module settings test passed!")
+"##;
+
+/// Create a temporary `nested-settings` module plus a consumer script that
+/// asserts on its settings. Returns (root, module_path, script_path).
+fn write_nested_settings_fixture(
+    label: &str,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "matchbox-nested-settings-{}-{}-{}",
+        label,
+        std::process::id(),
+        nonce
+    ));
+    let module_path = root.join("nested-settings");
+    fs::create_dir_all(&module_path).unwrap();
+    fs::write(
+        module_path.join("ModuleConfig.bx"),
+        NESTED_SETTINGS_MODULE_CONFIG,
+    )
+    .unwrap();
+    let script_path = root.join("consumer.bxs");
+    fs::write(&script_path, NESTED_SETTINGS_CONSUMER).unwrap();
+    (root, module_path, script_path)
+}
+
+#[test]
+fn test_module_settings_nested_interpreted() {
+    let (root, module_path, script_path) = write_nested_settings_fixture("interpreted");
+
+    let result = process_file(
+        &script_path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[module_path],
+        false,
+        None,
+        false,
+        false,
+        false,
+    );
+
+    let _ = fs::remove_dir_all(&root);
+    result.unwrap();
+}
+
+#[test]
+fn test_module_settings_nested_bytecode() {
+    let (root, module_path, script_path) = write_nested_settings_fixture("bytecode");
+    let out_path = root.join("consumer.bxb");
+
+    let build = process_file(
+        &script_path,
+        true,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        Some(&out_path),
+        &[module_path.clone()],
+        false,
+        None,
+        false,
+        false,
+        false,
+    );
+
+    // Remove the module before running so the settings must come from the .bxb.
+    let _ = fs::remove_dir_all(&module_path);
+
+    let run = build.and_then(|_| {
+        process_file(
+            &out_path,
+            false,
+            None,
+            Vec::new(),
+            false,
+            false,
+            false,
+            None,
+            &[],
+            false,
+            None,
+            false,
+            false,
+            false,
+        )
+    });
+
+    let _ = fs::remove_dir_all(&root);
+    run.unwrap();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1107,6 +1407,12 @@ fn datasource_select() {
     run_ds_script("datasource_select.bxs");
 }
 
+#[test]
+#[cfg(feature = "bif-datasource")]
+fn sqlite_select() {
+    run_ds_script("sqlite_select.bxs");
+}
+
 /// Full table scan: users and products tables with type assertions.
 #[test]
 #[cfg(feature = "bif-datasource")]
@@ -1152,24 +1458,88 @@ fn test_native_math_module() {
         .join("modules")
         .join("native-math");
 
-    if let Err(e) = process_file(
-        &script_path,
+    let error = process_file(
+        &script_path, false, None, Vec::new(), false, false, false, None,
+        &[module_path], false, None, false, false, false,
+    ).unwrap_err();
+    assert!(error.to_string().contains("Source-only native modules require --target native"));
+}
+
+#[test]
+fn test_wasm_and_wasi_targets_produce_the_same_patched_module() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join("vm_array_bifs.bxs");
+    let dir = tempfile::tempdir().unwrap();
+    let mut outputs = Vec::new();
+    for target in ["wasi", "wasm"] {
+        let output = dir.path().join(format!("{target}.wasm"));
+        let result = process_file(
+            &source,
+            false,
+            Some(target),
+            Vec::new(),
+            false,
+            false,
+            false,
+            Some(&output),
+            &[],
+            false,
+            None,
+            false,
+            false,
+            false,
+        );
+        if let Err(error) = result {
+            // The WASI runner stub is only embedded when the wasm32-wasip1 target is installed.
+            assert!(error.to_string().contains("stub"), "{error}");
+            eprintln!("skipping: {error}");
+            return;
+        }
+        outputs.push(std::fs::read(&output).unwrap());
+    }
+    assert_eq!(outputs[0].len(), outputs[1].len(), "--target wasm must package like --target wasi");
+
+    let sentinel = [b'B', b'X', b'L', b'G', 0, 0, 0, 1];
+    for module in &outputs {
+        assert_eq!(&module[0..4], b"\0asm");
+        let at = module.windows(8).position(|w| w == sentinel).expect("sentinel in stub");
+        let length = u32::from_le_bytes(module[at + 8..at + 12].try_into().unwrap());
+        assert!(length > 0, "the bytecode must be patched into the stub");
+    }
+}
+
+#[test]
+fn test_native_fusion_uses_native_cargo_toml_dependencies() {
+    let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("native_fusion_deps")
+        .join("script.bxs");
+    let dir = tempfile::tempdir().unwrap();
+    let output_path = dir.path().join(if cfg!(windows) { "fusion_deps.exe" } else { "fusion_deps" });
+
+    process_file(
+        &source_path,
         false,
-        None,
+        Some("native"),
         Vec::new(),
         false,
         false,
         false,
-        None,
-        &[module_path],
+        Some(&output_path),
+        &[],
         false,
         None,
         false,
         false,
         false,
-    ) {
-        panic!("Native math module test failed: {}", e);
-    }
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(&output_path).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "YWJj");
 }
 
 
@@ -1244,6 +1614,8 @@ mod eval_flag {
     fn rejects_missing_empty_and_conflicting_input() {
         assert!(!matchbox().arg("--eval").status().unwrap().success());
         assert!(!eval("   ").status.success());
+        assert!(!matchbox().args(["--eval", "println(1);", "-e", "println(2);"])
+            .status().unwrap().success());
 
         // File argument alongside --eval
         let dir = tempdir().unwrap();
@@ -1255,6 +1627,8 @@ mod eval_flag {
             .status().unwrap().success());
 
         for conflict in ["--build", "--serve", "--watch"] {
+            assert!(!matchbox().arg(conflict).args(["--eval", "println(1);"])
+                .status().unwrap().success(), "{conflict} before --eval was accepted");
             assert!(!matchbox()
                 .arg("--eval").arg("println(1);")
                 .arg(conflict)

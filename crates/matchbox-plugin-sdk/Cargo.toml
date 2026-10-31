@@ -1,0 +1,12 @@
+[package]
+name = "matchbox-plugin-sdk"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Stable C ABI and Rust helpers for independently built MatchBox native plugins"
+license = "Apache-2.0"
+repository = "https://github.com/ortus-boxlang/matchbox"
+readme = "README.md"
+keywords = ["boxlang", "matchbox", "plugin", "ffi"]
+categories = ["api-bindings", "development-tools::ffi"]
+include = ["Cargo.toml", "README.md", "LICENSE", "src/**"]

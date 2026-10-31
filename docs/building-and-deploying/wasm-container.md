@@ -19,7 +19,7 @@ matchbox --target wasm my_service.bxs
 # Produces: my_service.wasm
 ```
 
-The resulting binary contains the MatchBox VM core and your compiled BoxLang bytecode in a custom WASM section. It has no external JS dependencies and can be loaded by any WASM runtime that supports the WASI preview1 interface.
+`--target wasm` is the same as `--target wasi`: it patches your compiled BoxLang bytecode into the runner stub. The resulting binary contains the MatchBox VM core and your bytecode. It has no external JS dependencies and can be loaded by any WASM runtime that supports the WASI preview1 interface.
 
 ---
 

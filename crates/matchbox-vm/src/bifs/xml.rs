@@ -12,9 +12,15 @@ pub fn register_xml_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
     bifs.insert("xmlelemnew".to_string(), xml_elem_new as BxNativeFunction);
     bifs.insert("xmlformat".to_string(), xml_format as BxNativeFunction);
     bifs.insert("xmlsearch".to_string(), xml_search as BxNativeFunction);
-    bifs.insert("xmltransform".to_string(), xml_transform as BxNativeFunction);
+    bifs.insert(
+        "xmltransform".to_string(),
+        xml_transform as BxNativeFunction,
+    );
     bifs.insert("xmlvalidate".to_string(), xml_validate as BxNativeFunction);
-    bifs.insert("xmlgetnodetype".to_string(), xml_get_node_type as BxNativeFunction);
+    bifs.insert(
+        "xmlgetnodetype".to_string(),
+        xml_get_node_type as BxNativeFunction,
+    );
     bifs.insert("xmlchildpos".to_string(), xml_child_pos as BxNativeFunction);
     bifs.insert("xmlsize".to_string(), xml_size as BxNativeFunction);
 }
@@ -189,7 +195,12 @@ fn parse_xml(vm: &mut dyn BxVM, source: &str) -> Result<BxValue, String> {
     let document = new_xml_struct(vm, XML_DOCUMENT);
     let children = new_array(vm);
     vm.struct_set(document, "xmlChildren", children);
-    set_string(vm, document, "__xmlDeclaration", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>");
+    set_string(
+        vm,
+        document,
+        "__xmlDeclaration",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>",
+    );
     set_string(vm, document, "__xmlSource", source);
 
     let mut stack = Vec::new();
@@ -230,8 +241,8 @@ fn parse_xml(vm: &mut dyn BxVM, source: &str) -> Result<BxValue, String> {
             continue;
         }
 
-        let end = find_tag_end(source, start + 1)
-            .ok_or_else(|| "XML tag is not closed".to_string())?;
+        let end =
+            find_tag_end(source, start + 1).ok_or_else(|| "XML tag is not closed".to_string())?;
         let tag = source[start + 1..end].trim();
         cursor = end + 1;
         if tag.starts_with('?') || tag.starts_with('!') {
@@ -295,7 +306,12 @@ fn xml_new(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     let document = new_xml_struct(vm, XML_DOCUMENT);
     let children = new_array(vm);
     vm.struct_set(document, "xmlChildren", children);
-    set_string(vm, document, "__xmlDeclaration", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>");
+    set_string(
+        vm,
+        document,
+        "__xmlDeclaration",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>",
+    );
     Ok(BxValue::new_ptr(document))
 }
 
@@ -316,11 +332,15 @@ fn xml_elem_new(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
         .as_gc_id()
         .filter(|_| vm.is_struct_value(args[0]))
         .ok_or_else(|| "xmlElemNew() expects an XML document or element".to_string())?;
-    let parent_kind = xml_kind(vm, args[0]).ok_or_else(|| "xmlElemNew() expects XML".to_string())?;
+    let parent_kind =
+        xml_kind(vm, args[0]).ok_or_else(|| "xmlElemNew() expects XML".to_string())?;
     let (name, namespace) = if args.len() > 2 && parent_kind == XML_ELEMENT {
         (vm.to_string(args[2]), Some(vm.to_string(args[1])))
     } else {
-        (vm.to_string(args[1]), args.get(2).map(|value| vm.to_string(*value)))
+        (
+            vm.to_string(args[1]),
+            args.get(2).map(|value| vm.to_string(*value)),
+        )
     };
     let element = new_element(vm, &name);
     if let Some(namespace) = namespace {
@@ -364,14 +384,22 @@ fn xml_format(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
 
 fn xml_node_name(vm: &dyn BxVM, value: BxValue) -> Option<String> {
     let id = value.as_gc_id()?;
-    xml_kind(vm, value).filter(|kind| kind == XML_ELEMENT || kind == XML_ATTRIBUTE).map(|_| vm.to_string(vm.struct_get(id, "xmlName")))
+    xml_kind(vm, value)
+        .filter(|kind| kind == XML_ELEMENT || kind == XML_ATTRIBUTE)
+        .map(|_| vm.to_string(vm.struct_get(id, "xmlName")))
 }
 
 fn xml_children(vm: &dyn BxVM, value: BxValue) -> Vec<BxValue> {
-    let Some(id) = value.as_gc_id() else { return Vec::new() };
+    let Some(id) = value.as_gc_id() else {
+        return Vec::new();
+    };
     let children = vm.struct_get(id, "xmlChildren");
-    let Some(children_id) = children.as_gc_id() else { return Vec::new() };
-    (0..vm.array_len(children_id)).map(|index| vm.array_get(children_id, index)).collect()
+    let Some(children_id) = children.as_gc_id() else {
+        return Vec::new();
+    };
+    (0..vm.array_len(children_id))
+        .map(|index| vm.array_get(children_id, index))
+        .collect()
 }
 
 fn descendants(vm: &dyn BxVM, value: BxValue, include_self: bool, output: &mut Vec<BxValue>) {
@@ -390,7 +418,9 @@ fn element_text(vm: &dyn BxVM, value: BxValue) -> String {
             .map(|id| vm.to_string(vm.struct_get(id, "xmlValue")))
             .unwrap_or_default();
     }
-    let Some(id) = value.as_gc_id() else { return vm.to_string(value) };
+    let Some(id) = value.as_gc_id() else {
+        return vm.to_string(value);
+    };
     let text = vm.to_string(vm.struct_get(id, "xmlText"));
     let children = xml_children(vm, value)
         .iter()
@@ -400,11 +430,15 @@ fn element_text(vm: &dyn BxVM, value: BxValue) -> String {
 }
 
 fn parse_segment(segment: &str) -> (String, Option<String>, Option<String>) {
-    let Some(open) = segment.find('[') else { return (segment.to_string(), None, None) };
+    let Some(open) = segment.find('[') else {
+        return (segment.to_string(), None, None);
+    };
     let name = segment[..open].to_string();
     let predicate = segment[open + 1..].trim_end_matches(']').trim();
     let predicate = predicate.strip_prefix('@').unwrap_or(predicate);
-    let Some(equal) = predicate.find('=') else { return (name, None, None) };
+    let Some(equal) = predicate.find('=') else {
+        return (name, None, None);
+    };
     let key = predicate[..equal].trim().to_string();
     let value = predicate[equal + 1..]
         .trim()
@@ -420,7 +454,9 @@ fn segment_matches(vm: &dyn BxVM, node: BxValue, segment: &str, params: Option<B
         return false;
     }
     let Some(attr) = attr else { return true };
-    let Some(expected) = expected else { return true };
+    let Some(expected) = expected else {
+        return true;
+    };
     let expected = if let Some(parameter) = expected.strip_prefix('$') {
         params
             .and_then(|value| value.as_gc_id())
@@ -429,21 +465,34 @@ fn segment_matches(vm: &dyn BxVM, node: BxValue, segment: &str, params: Option<B
     } else {
         expected
     };
-    let Some(id) = node.as_gc_id() else { return false };
+    let Some(id) = node.as_gc_id() else {
+        return false;
+    };
     let attributes = vm.struct_get(id, "xmlAttributes");
-    let Some(attributes_id) = attributes.as_gc_id() else { return false };
+    let Some(attributes_id) = attributes.as_gc_id() else {
+        return false;
+    };
     vm.to_string(vm.struct_get(attributes_id, &attr)) == expected
 }
 
-fn match_child_path(vm: &dyn BxVM, starts: Vec<BxValue>, segments: &[&str], params: Option<BxValue>) -> Vec<BxValue> {
+fn match_child_path(
+    vm: &dyn BxVM,
+    starts: Vec<BxValue>,
+    segments: &[&str],
+    params: Option<BxValue>,
+) -> Vec<BxValue> {
     let mut current = starts;
     for segment in segments {
         let mut next = Vec::new();
         for node in current {
             if let Some(attribute_name) = segment.strip_prefix('@') {
-                let Some(node_id) = node.as_gc_id() else { continue };
+                let Some(node_id) = node.as_gc_id() else {
+                    continue;
+                };
                 let attributes = vm.struct_get(node_id, "__xmlAttributeNodes");
-                let Some(attributes_id) = attributes.as_gc_id() else { continue };
+                let Some(attributes_id) = attributes.as_gc_id() else {
+                    continue;
+                };
                 for index in 0..vm.array_len(attributes_id) {
                     let attribute = vm.array_get(attributes_id, index);
                     if xml_node_name(vm, attribute).as_deref() == Some(attribute_name) {
@@ -463,7 +512,12 @@ fn match_child_path(vm: &dyn BxVM, starts: Vec<BxValue>, segments: &[&str], para
     current
 }
 
-fn find_path(vm: &dyn BxVM, source: BxValue, expression: &str, params: Option<BxValue>) -> Vec<BxValue> {
+fn find_path(
+    vm: &dyn BxVM,
+    source: BxValue,
+    expression: &str,
+    params: Option<BxValue>,
+) -> Vec<BxValue> {
     let expression = expression.trim();
     if let Some(rest) = expression.strip_prefix("//@") {
         let mut nodes = Vec::new();
@@ -483,9 +537,16 @@ fn find_path(vm: &dyn BxVM, source: BxValue, expression: &str, params: Option<Bx
 
     let deep = expression.contains("//");
     let mut split = expression.splitn(2, "//");
-    let first_path = split.next().unwrap_or_default().trim_start_matches('.').trim_start_matches('/');
+    let first_path = split
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches('.')
+        .trim_start_matches('/');
     let second_path = split.next();
-    let first_segments = first_path.split('/').filter(|segment| !segment.is_empty()).collect::<Vec<_>>();
+    let first_segments = first_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
     let root = if xml_kind(vm, source).as_deref() == Some(XML_DOCUMENT) {
         source
             .as_gc_id()
@@ -505,7 +566,10 @@ fn find_path(vm: &dyn BxVM, source: BxValue, expression: &str, params: Option<Bx
         current = match_child_path(vm, current, &first_segments[1..], params);
     }
     if let Some(second_path) = second_path {
-        let rest = second_path.split('/').filter(|segment| !segment.is_empty()).collect::<Vec<_>>();
+        let rest = second_path
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>();
         let mut expanded = Vec::new();
         for node in current {
             let mut nodes = Vec::new();
@@ -513,7 +577,12 @@ fn find_path(vm: &dyn BxVM, source: BxValue, expression: &str, params: Option<Bx
             if rest.is_empty() {
                 expanded.extend(nodes);
             } else {
-                expanded.extend(nodes.iter().copied().filter(|candidate| segment_matches(vm, *candidate, rest[0], params)));
+                expanded.extend(
+                    nodes
+                        .iter()
+                        .copied()
+                        .filter(|candidate| segment_matches(vm, *candidate, rest[0], params)),
+                );
             }
         }
         current = expanded;
@@ -560,7 +629,11 @@ fn xml_search(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
         return Ok(string(vm, text));
     }
     if mode == "boolean" {
-        return Ok(BxValue::new_bool(matches.first().is_some_and(|value| !element_text(vm, *value).is_empty())));
+        return Ok(BxValue::new_bool(
+            matches
+                .first()
+                .is_some_and(|value| !element_text(vm, *value).is_empty()),
+        ));
     }
     if mode == "number" {
         let value = matches
@@ -611,7 +684,10 @@ fn xml_child_pos(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
 }
 
 fn xml_size(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    let count = args.first().map(|value| xml_children(vm, *value).len()).unwrap_or(0);
+    let count = args
+        .first()
+        .map(|value| xml_children(vm, *value).len())
+        .unwrap_or(0);
     Ok(BxValue::new_number(count as f64))
 }
 
@@ -649,7 +725,14 @@ fn xml_serialize(vm: &dyn BxVM, value: BxValue) -> Option<String> {
             if text.is_empty() && children.is_empty() {
                 Some(format!("<{}{} />", name, rendered_attributes))
             } else {
-                Some(format!("<{}{}>{}{}</{}>", name, rendered_attributes, xml_escape(&text), children, name))
+                Some(format!(
+                    "<{}{}>{}{}</{}>",
+                    name,
+                    rendered_attributes,
+                    xml_escape(&text),
+                    children,
+                    name
+                ))
             }
         }
         Some(XML_ATTRIBUTE) => value
@@ -678,7 +761,11 @@ fn xml_transform(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     let stylesheet = vm.to_string(args[1]);
     let template_start = stylesheet
         .find("<xsl:template")
-        .and_then(|start| stylesheet[start..].find('>').map(|offset| start + offset + 1))
+        .and_then(|start| {
+            stylesheet[start..]
+                .find('>')
+                .map(|offset| start + offset + 1)
+        })
         .ok_or_else(|| "xmlTransform() stylesheet has no template".to_string())?;
     let template_end = stylesheet
         .find("</xsl:template>")
@@ -717,7 +804,11 @@ fn xml_transform(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     if let Some(start) = stylesheet.find("doctype-public=\"") {
         let value_start = start + "doctype-public=\"".len();
         if let Some(value_end) = stylesheet[value_start..].find('"') {
-            output = format!("<!DOCTYPE html PUBLIC=\"{}\">{}", &stylesheet[value_start..value_start + value_end], output);
+            output = format!(
+                "<!DOCTYPE html PUBLIC=\"{}\">{}",
+                &stylesheet[value_start..value_start + value_end],
+                output
+            );
         }
     }
     Ok(string(vm, output))

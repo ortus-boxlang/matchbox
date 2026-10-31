@@ -1,0 +1,47 @@
+// Prelude BIFs reached only through member calls must survive tree-shaking.
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+// arrays
+expect( [ 3, 1, 2 ].sort( "numeric" ).toList(), "1,2,3", "array sort" );
+expect( [ "a", "b" ].first(), "a", "array first" );
+expect( [ "a", "b" ].last(), "b", "array last" );
+expect( [ 1, 2, 3 ].reverse().toList(), "3,2,1", "array reverse" );
+expect( [ 1, 2, 3 ].sum(), 6, "array sum" );
+expect( [ 1, 2, 3 ].avg(), 2, "array avg" );
+expect( [ 1, 5, 3 ].max(), 5, "array max" );
+expect( [ 4, 2, 3 ].min(), 2, "array min" );
+expect( [ 1, 2, 2, 3 ].unique().len(), 3, "array unique" );
+pre = [ 1, 2, 3 ];
+pre.prepend( 0 );
+expect( pre.toList(), "0,1,2,3", "array prepend" );
+expect( [ [ 1, 2 ], [ 3 ] ].flatten().len(), 3, "array flatten" );
+expect( [ 1, 2, 3, 4 ].chunk( 2 ).len(), 2, "array chunk" );
+expect( [ 1, 2, 3 ].findAll( v => v > 1 ).len(), 2, "array findAll" );
+expect( [ 1, 2, 3 ].reject( v => v > 1 ).toList(), "1", "array reject" );
+expect( [ 1, 2 ].zip( [ 3, 4 ] ).len(), 2, "array zip" );
+expect( [ "a", "b" ].indexExists( 2 ), true, "array indexExists" );
+
+// structs
+s = { a: 1, b: 2 };
+seen = [];
+s.each( ( k, v ) => { seen.append( k ); } );
+expect( seen.len(), 2, "struct each" );
+expect( s.keyExists( "a" ), true, "struct keyExists" );
+expect( s.isEmpty(), false, "struct isEmpty" );
+
+// strings
+expect( "abc".ucFirst(), "Abc", "string ucFirst" );
+expect( "abc".reverse(), "cba", "string reverse" );
+expect( "  a ".trim(), "a", "string trim" );
+
+// lists
+expect( "a,b,c".listLen(), 3, "list listLen" );
+expect( "a,b,c".listFirst(), "a", "list listFirst" );
+expect( "a,b,c".listLast(), "c", "list listLast" );
+
+// numbers and dates
+expect( ( -3 ).abs(), 3, "number abs" );
+expect( createDate( 2024, 3, 15 ).year(), 2024, "date year" );
+expect( createDate( 2024, 3, 15 ).month(), 3, "date month" );

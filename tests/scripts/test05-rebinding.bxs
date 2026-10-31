@@ -1,0 +1,9 @@
+// Block slots can share one function-local dictionary name without an explicit alias.
+function reboundLocal() {
+    var count = 2;
+    if (true) { var count = 7; }
+    assert count == 7 : "Block-slot rebinding stopped sharing the function-local name";
+    return count;
+}
+assert reboundLocal() == 7;
+println("Block-slot rebinding preserves live function-local names: OK");

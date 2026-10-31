@@ -25,7 +25,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 #[cfg(feature = "bif-datasource")]
-static QUERY_CACHE: OnceLock<Mutex<HashMap<String, (crate::datasource::traits::QueryResult, Instant)>>> = OnceLock::new();
+static QUERY_CACHE: OnceLock<
+    Mutex<HashMap<String, (crate::datasource::traits::QueryResult, Instant)>>,
+> = OnceLock::new();
 #[cfg(feature = "bif-datasource")]
 static TRANSACTION_CONTEXTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
 
@@ -67,6 +69,7 @@ pub fn datasource_register(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValu
     let driver_name = config.driver.to_lowercase();
 
     use crate::datasource::drivers::postgres::PostgresDriver;
+    use crate::datasource::drivers::sqlite::SqliteDriver;
     match driver_name.as_str() {
         "postgresql" | "postgres" => {
             let driver = PostgresDriver::new(&config)
@@ -74,9 +77,15 @@ pub fn datasource_register(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValu
             registry::register(&name, Arc::new(driver));
             return Ok(BxValue::new_bool(true));
         }
+        "sqlite" => {
+            let driver = SqliteDriver::new(&config)
+                .map_err(|e| format!("Failed to create SQLite datasource '{}': {}", name, e))?;
+            registry::register(&name, Arc::new(driver));
+            return Ok(BxValue::new_bool(true));
+        }
         other => {
             return Err(format!(
-                "Unknown datasource driver: '{}'. Supported: postgresql",
+                "Unknown datasource driver: '{}'. Supported: postgresql, sqlite",
                 other
             ));
         }
@@ -107,7 +116,20 @@ pub fn query_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
     } else {
         (raw_sql, vec![])
     };
-    let (datasource_name, return_type, db_type, column_key, result_name, max_rows, cache_enabled, cache_key, cache_timeout, cache_provider, cache_last_access_timeout, transformer) = if args.len() > 2 && !args[2].is_null() {
+    let (
+        datasource_name,
+        return_type,
+        db_type,
+        column_key,
+        result_name,
+        max_rows,
+        cache_enabled,
+        cache_key,
+        cache_timeout,
+        cache_provider,
+        cache_last_access_timeout,
+        transformer,
+    ) = if args.len() > 2 && !args[2].is_null() {
         if let Some(opts_id) = args[2].as_gc_id() {
             let ds = {
                 let v = vm.struct_get(opts_id, "datasource");
@@ -135,11 +157,19 @@ pub fn query_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
             };
             let ck = {
                 let value = vm.struct_get(opts_id, "columnKey");
-                if value.is_null() { None } else { Some(vm.to_string(value)) }
+                if value.is_null() {
+                    None
+                } else {
+                    Some(vm.to_string(value))
+                }
             };
             let result = {
                 let value = vm.struct_get(opts_id, "result");
-                if value.is_null() { None } else { Some(vm.to_string(value)) }
+                if value.is_null() {
+                    None
+                } else {
+                    Some(vm.to_string(value))
+                }
             };
             let max_rows = ["maxRows", "maxrows"]
                 .iter()
@@ -149,19 +179,35 @@ pub fn query_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
             let cache_enabled = vm.struct_get(opts_id, "cache").as_bool();
             let cache_key = {
                 let value = vm.struct_get(opts_id, "cacheKey");
-                if value.is_null() { None } else { Some(vm.to_string(value)) }
+                if value.is_null() {
+                    None
+                } else {
+                    Some(vm.to_string(value))
+                }
             };
             let cache_timeout = {
                 let value = vm.struct_get(opts_id, "cacheTimeout");
-                if value.is_number() { Some(value.as_number()) } else { None }
+                if value.is_number() {
+                    Some(value.as_number())
+                } else {
+                    None
+                }
             };
             let cache_provider = {
                 let value = vm.struct_get(opts_id, "cacheProvider");
-                if value.is_null() { None } else { Some(vm.to_string(value)) }
+                if value.is_null() {
+                    None
+                } else {
+                    Some(vm.to_string(value))
+                }
             };
             let cache_last_access_timeout = {
                 let value = vm.struct_get(opts_id, "cacheLastAccessTimeout");
-                if value.is_number() { Some(value.as_number()) } else { None }
+                if value.is_number() {
+                    Some(value.as_number())
+                } else {
+                    None
+                }
             };
             let transformer = {
                 let value = vm.struct_get(opts_id, "transformer");
@@ -182,25 +228,50 @@ pub fn query_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
                 transformer,
             )
         } else {
-            ("default".to_string(), "query".to_string(), String::new(), None, None, None, false, None, None, None, None, None)
+            (
+                "default".to_string(),
+                "query".to_string(),
+                String::new(),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
         }
     } else {
-        ("default".to_string(), "query".to_string(), String::new(), None, None, None, false, None, None, None, None, None)
+        (
+            "default".to_string(),
+            "query".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     };
 
     if db_type == "query" {
         #[cfg(feature = "qoq")]
         {
-            let qoq_params = if args.len() > 1 && !args[1].is_null() {
-                parse_qoq_bind_params(vm, args[1])?
-            } else {
-                qoq::BindParams::default()
+            let qoq_params = qoq::BindParams {
+                positional: params.iter().map(|param| param.value.clone()).collect(),
+                ..qoq::BindParams::default()
             };
             return query_execute_qoq(vm, &sql, &return_type, &qoq_params);
         }
         #[cfg(not(feature = "qoq"))]
         {
-            return Err("QoQ support is not enabled in this build".to_string());
+            return Err("Query of queries requires the `qoq` build feature".to_string());
         }
     }
 
@@ -216,23 +287,33 @@ pub fn query_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
     })?;
 
     let configured_cache_key = cache_key.clone();
-    let cache_key = cache_key.unwrap_or_else(|| format!("{}:{}:{:?}", datasource_name, sql, params));
+    let cache_key =
+        cache_key.unwrap_or_else(|| format!("{}:{}:{:?}", datasource_name, sql, params));
     let cache_expired = cache_timeout.is_some_and(|timeout| timeout < 0.0);
     if cache_expired {
         if let Some(cache) = QUERY_CACHE.get() {
-            cache.lock().map_err(|_| "Query cache is poisoned".to_string())?.clear();
+            cache
+                .lock()
+                .map_err(|_| "Query cache is poisoned".to_string())?
+                .clear();
         }
     }
     let mut cached = false;
     let result = if cache_enabled && !cache_expired {
         let cache = QUERY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut cache = cache.lock().map_err(|_| "Query cache is poisoned".to_string())?;
+        let mut cache = cache
+            .lock()
+            .map_err(|_| "Query cache is poisoned".to_string())?;
         let valid = cache.get(&cache_key).is_some_and(|(_, created)| {
-            cache_timeout.is_none_or(|timeout| timeout <= 0.0 || created.elapsed().as_secs_f64() < timeout)
+            cache_timeout
+                .is_none_or(|timeout| timeout <= 0.0 || created.elapsed().as_secs_f64() < timeout)
         });
         if valid {
             cached = true;
-            cache.get(&cache_key).map(|(query, _)| query.clone()).unwrap()
+            cache
+                .get(&cache_key)
+                .map(|(query, _)| query.clone())
+                .unwrap()
         } else {
             let result = driver.execute(&sql, &params)?;
             cache.insert(cache_key.clone(), (result.clone(), Instant::now()));
@@ -244,7 +325,10 @@ pub fn query_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
     let mut query = BxQuery::from_result(result);
     if query.columns.is_empty() {
         if let Some(cache) = QUERY_CACHE.get() {
-            cache.lock().map_err(|_| "Query cache is poisoned".to_string())?.clear();
+            cache
+                .lock()
+                .map_err(|_| "Query cache is poisoned".to_string())?
+                .clear();
         }
     }
     if let Some(max_rows) = max_rows {
@@ -283,18 +367,21 @@ pub fn query_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
             ));
         }
         let query_id = vm.native_object_new(Rc::new(RefCell::new(query)));
-        let metadata = metadata.ok_or_else(|| "Query transformer metadata was not created".to_string())?;
+        let metadata =
+            metadata.ok_or_else(|| "Query transformer metadata was not created".to_string())?;
         let chunk = vm
             .current_chunk()
             .ok_or_else(|| "Query transformer requires an active execution chunk".to_string())?;
         let transformer_args = vec![BxValue::new_ptr(query_id), BxValue::new_ptr(metadata)];
-        return match vm.call_function_by_value(
-            &transformer,
-            transformer_args.clone(),
-            chunk,
-        ) {
-            Err(error) if error.contains("not a callable function") => vm
-                .call_method_by_value(transformer, "transform", transformer_args, vm.current_chunk().ok_or_else(|| "Query transformer requires an active execution chunk".to_string())?),
+        return match vm.call_function_by_value(&transformer, transformer_args.clone(), chunk) {
+            Err(error) if error.contains("not a callable function") => vm.call_method_by_value(
+                transformer,
+                "transform",
+                transformer_args,
+                vm.current_chunk().ok_or_else(|| {
+                    "Query transformer requires an active execution chunk".to_string()
+                })?,
+            ),
             result => result,
         };
     }
@@ -474,79 +561,6 @@ fn qoq_error_to_string(prefix: &str, e: qoq::ExecutionError) -> String {
 
 #[cfg(all(
     feature = "bif-datasource",
-    feature = "qoq",
-    not(target_arch = "wasm32")
-))]
-fn parse_qoq_bind_params(vm: &mut dyn BxVM, val: BxValue) -> Result<qoq::BindParams, String> {
-    if let Some(id) = val.as_gc_id() {
-        if vm.struct_len(id) > 0 {
-            let mut named = std::collections::HashMap::new();
-            for key in vm.struct_key_array(id) {
-                let item = vm.struct_get(id, &key);
-                let sql_val = if let Some(item_id) = item.as_gc_id() {
-                    if vm.struct_key_exists(item_id, "value") {
-                        let v = vm.struct_get(item_id, "value");
-                        let sql_type_str = {
-                            let t = vm.struct_get(item_id, "cfsqltype");
-                            if t.is_null() {
-                                None
-                            } else {
-                                Some(vm.to_string(t))
-                            }
-                        };
-                        coerce_cf_sql_type(vm, v, sql_type_str.as_deref())
-                    } else {
-                        bx_to_sql(vm, item)
-                    }
-                } else {
-                    bx_to_sql(vm, item)
-                };
-                named.insert(key.to_lowercase(), sql_val);
-            }
-            Ok(qoq::BindParams {
-                positional: vec![],
-                named,
-            })
-        } else {
-            let len = vm.array_len(id);
-            let mut positional = Vec::with_capacity(len);
-            for i in 0..len {
-                let item = vm.array_get(id, i);
-                let sql_val = if let Some(item_id) = item.as_gc_id() {
-                    if vm.struct_key_exists(item_id, "value") {
-                        let v = vm.struct_get(item_id, "value");
-                        let sql_type_str = {
-                            let t = vm.struct_get(item_id, "cfsqltype");
-                            if t.is_null() {
-                                None
-                            } else {
-                                Some(vm.to_string(t))
-                            }
-                        };
-                        coerce_cf_sql_type(vm, v, sql_type_str.as_deref())
-                    } else {
-                        bx_to_sql(vm, item)
-                    }
-                } else {
-                    bx_to_sql(vm, item)
-                };
-                positional.push(sql_val);
-            }
-            Ok(qoq::BindParams {
-                positional,
-                named: std::collections::HashMap::new(),
-            })
-        }
-    } else {
-        Ok(qoq::BindParams {
-            positional: vec![bx_to_sql(vm, val)],
-            named: std::collections::HashMap::new(),
-        })
-    }
-}
-
-#[cfg(all(
-    feature = "bif-datasource",
     not(feature = "qoq"),
     not(target_arch = "wasm32")
 ))]
@@ -555,7 +569,7 @@ fn query_execute_qoq(
     _sql: &str,
     _return_type: &str,
 ) -> Result<BxValue, String> {
-    Err("QoQ support is not enabled in this build".to_string())
+    Err("Query of queries requires the `qoq` build feature".to_string())
 }
 
 // ─── queryNew ────────────────────────────────────────────────────────────────
@@ -1027,7 +1041,10 @@ pub fn transaction_commit(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValu
     if removed {
         Ok(BxValue::new_bool(true))
     } else {
-        Err("Transaction not started; Please place this method call inside a transaction{} block.".to_string())
+        Err(
+            "Transaction not started; Please place this method call inside a transaction{} block."
+                .to_string(),
+        )
     }
 }
 #[cfg(feature = "bif-datasource")]
@@ -1040,7 +1057,10 @@ pub fn transaction_rollback(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxVa
     if removed {
         Ok(BxValue::new_bool(true))
     } else {
-        Err("Transaction not started; Please place this method call inside a transaction{} block.".to_string())
+        Err(
+            "Transaction not started; Please place this method call inside a transaction{} block."
+                .to_string(),
+        )
     }
 }
 #[cfg(feature = "bif-datasource")]
@@ -1102,10 +1122,13 @@ fn expand_query_parameters(
         return expand_named_parameters(vm, sql, params_id);
     }
     if !vm.is_array_value(value) {
-        return Ok((sql.to_string(), vec![QueryParam {
-            value: bx_to_sql(vm, value),
-            sql_type: None,
-        }]));
+        return Ok((
+            sql.to_string(),
+            vec![QueryParam {
+                value: bx_to_sql(vm, value),
+                sql_type: None,
+            }],
+        ));
     }
 
     let named_params = vm.struct_new();
@@ -1192,7 +1215,10 @@ fn expand_named_parameters(
                     index = end;
                     continue;
                 }
-                return Err(format!("Named parameter [:{}] not provided to query.", name));
+                return Err(format!(
+                    "Named parameter [:{}] not provided to query.",
+                    name
+                ));
             }
         }
         output.push(character);
@@ -1400,7 +1426,11 @@ fn query_result_metadata(
             vm.struct_set(metadata_id, "cacheKey", cache_key);
         }
         if let Some(cache_timeout) = cache_timeout {
-            vm.struct_set(metadata_id, "cacheTimeout", BxValue::new_number(cache_timeout));
+            vm.struct_set(
+                metadata_id,
+                "cacheTimeout",
+                BxValue::new_number(cache_timeout),
+            );
         }
         if let Some(timeout) = cache_last_access_timeout {
             vm.struct_set(

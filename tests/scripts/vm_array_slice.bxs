@@ -1,0 +1,18 @@
+// arraySlice mirrors BoxLang's ArraySlice: start defaults to 1, length 0 means "to the end".
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+a = [ 1, 2, 3, 4 ];
+expect( arraySlice( a, 2, 2 ).toList(), "2,3", "start and length" );
+expect( arraySlice( a, 2 ).toList(), "2,3,4", "length omitted" );
+expect( arraySlice( a ).toList(), "1,2,3,4", "start and length omitted" );
+expect( arraySlice( a, 1, 4 ).toList(), "1,2,3,4", "whole array" );
+expect( arraySlice( a, -2 ).toList(), "3,4", "negative start" );
+expect( arraySlice( a, -1 ).toList(), "4", "last element" );
+expect( arraySlice( a, 2, -1 ).toList(), "2,3", "negative length" );
+expect( arraySlice( a, 3, 10 ).toList(), "3,4", "length past the end" );
+expect( arraySlice( a, 5 ).len(), 0, "start past the end" );
+expect( arraySlice( a, 2, 1 ).toList(), "2", "single element" );
+expect( arraySlice( [], 1 ).len(), 0, "empty array" );
+expect( a.len(), 4, "source array untouched" );

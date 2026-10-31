@@ -1,4 +1,4 @@
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryColumnType {
     Varchar,
     Integer,
@@ -13,7 +13,7 @@ pub enum QueryColumnType {
     Other(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SqlValue {
     Null,
     Bool(bool),

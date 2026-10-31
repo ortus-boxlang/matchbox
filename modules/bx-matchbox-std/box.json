@@ -1,0 +1,8 @@
+{
+  "name": "MatchBox Standard Library",
+  "slug": "bx-matchbox-std",
+  "version": "0.1.0",
+  "type": "boxlang-modules",
+  "license": "Apache-2.0",
+  "boxlang": { "moduleName": "bx-matchbox-std" }
+}

@@ -434,6 +434,9 @@ mod tests {
             let handler = js_sys::Object::new();
             let get_trap = Closure::wrap(Box::new(
                 move |target: JsValue, prop: JsValue, _receiver: JsValue| {
+                    if prop.as_string().is_some_and(|name| name.starts_with("__matchbox_")) {
+                        return Reflect::get(&target, &prop).unwrap();
+                    }
                     let ptr = Reflect::get(&target, &"__matchbox_vm_ptr".into())
                         .unwrap()
                         .as_f64()
@@ -446,7 +449,7 @@ mod tests {
 
                     // Call the bridge
                     use crate::vm::_matchbox_get_instance_prop;
-                    _matchbox_get_instance_prop(ptr, id, &name)
+                    _matchbox_get_instance_prop(ptr, id, &name).unwrap()
                 },
             )
                 as Box<dyn Fn(JsValue, JsValue, JsValue) -> JsValue>);
@@ -472,12 +475,14 @@ mod tests {
             implements: Vec::new(),
             constructor: BxCompiledFunction {
                 name: "init".to_string(),
+                bif: None,
                 kind: crate::types::FunctionKind::Udf,
                 arity: 0,
                 min_arity: 0,
                 params: Vec::new(),
                 modifiers: crate::types::FunctionModifiers::default(),
                 captured_receiver: None,
+                captured_scopes: Vec::new(),
                 chunk: Chunk::default(),
             },
             methods: Vec::new(),
@@ -492,11 +497,7 @@ mod tests {
         let instance = BxValue::new_ptr(inst_id);
 
         let bob_val = BxValue::new_ptr(vm.heap.alloc(GcObject::String(BoxString::new("Bob"))));
-        if let GcObject::Instance(inst) = vm.heap.get(inst_id) {
-            let name_id = vm.interner.intern("name");
-            inst.variables.borrow_mut().insert(name_id, bob_val);
-        }
-        vm.set_member(instance, "name", bob_val, None, None);
+        crate::vm::wasm_instance_prop_set(&mut vm, instance, "name", bob_val).unwrap();
 
         // 3. Convert Instance to JS Proxy
         let js_proxy = vm.bx_to_js(&instance);

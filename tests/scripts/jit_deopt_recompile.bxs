@@ -11,7 +11,7 @@ function mathOp(a, b) {
 
 function test() {
     println("Starting JIT Deopt Recompile Test...");
-    let sum = 0;
+    var sum = 0;
     
     // Phase 1: Numeric only (compiles as Mode 0)
     for (i = 0; i < 20000; i++) {

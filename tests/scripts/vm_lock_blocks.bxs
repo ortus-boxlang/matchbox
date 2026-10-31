@@ -1,0 +1,32 @@
+function expect( actual, expected, label ) {
+	if ( actual != expected ) {
+		throw( message = label & ": expected [" & expected & "] got [" & actual & "]" );
+	}
+}
+total = 0;
+lock name="counter" timeout=5 type="exclusive" {
+	total += 1;
+	total += 1;
+}
+expect( total, 2, "lock runs its body" );
+
+lock name="loop" timeout=5 {
+	for ( i = 1; i <= 3; i++ ) {
+		if ( i == 2 ) { continue; }
+		total += i;
+	}
+}
+expect( total, 6, "loop inside lock" );
+
+function guarded() {
+	lock name="fn" timeout=5 {
+		return "from lock";
+	}
+	return "after";
+}
+expect( guarded(), "from lock", "return inside lock" );
+
+lock = 5;
+thread = 7;
+expect( lock + thread, 12, "lock and thread stay usable as variable names" );
+println( "lock blocks ok" );

@@ -69,13 +69,13 @@ usbipd attach --busid <BUSID> --auto-attach
 Required the **first time** flashing a device. Installs the runner firmware + custom partition table.
 
 ```bash
-matchbox app.bxs --target esp32 --chip esp32s3 --full-flash
+matchbox --target esp32 --chip esp32s3 --full-flash app.bxs
 ```
 
 If your script uses the embedded web server subset, add `--esp32-web`:
 
 ```bash
-matchbox app.bxs --target esp32 --chip esp32s3 --esp32-web --full-flash
+matchbox --target esp32 --chip esp32s3 --esp32-web --full-flash app.bxs
 ```
 
 **Chip aliases:** `esp32`, `esp32s3`, `esp32c3`
@@ -85,7 +85,7 @@ matchbox app.bxs --target esp32 --chip esp32s3 --esp32-web --full-flash
 After the runner is flashed, update only the BoxLang bytecode (~1 second):
 
 ```bash
-matchbox app.bxs --target esp32 --chip esp32s3 --flash
+matchbox --target esp32 --chip esp32s3 --flash app.bxs
 ```
 
 ### 3. Watch Mode (Live Coding)
@@ -93,7 +93,7 @@ matchbox app.bxs --target esp32 --chip esp32s3 --flash
 Watches for `.bxs` file changes, auto-redeploys bytecode, and restarts the monitor:
 
 ```bash
-matchbox app.bxs --target esp32 --chip esp32s3 --watch
+matchbox --target esp32 --chip esp32s3 --watch app.bxs
 ```
 
 What watch mode does:

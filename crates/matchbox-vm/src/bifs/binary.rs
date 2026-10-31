@@ -2,13 +2,22 @@ use crate::types::{BxNativeFunction, BxVM, BxValue};
 use std::collections::HashMap;
 
 pub fn register_binary_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert("binarydecode".to_string(), binary_decode as BxNativeFunction);
-    bifs.insert("binaryencode".to_string(), binary_encode as BxNativeFunction);
+    bifs.insert(
+        "binarydecode".to_string(),
+        binary_decode as BxNativeFunction,
+    );
+    bifs.insert(
+        "binaryencode".to_string(),
+        binary_encode as BxNativeFunction,
+    );
     bifs.insert("bitand".to_string(), bit_and as BxNativeFunction);
     bifs.insert("bitor".to_string(), bit_or as BxNativeFunction);
     bifs.insert("bitxor".to_string(), bit_xor as BxNativeFunction);
     bifs.insert("bitnot".to_string(), bit_not as BxNativeFunction);
-    bifs.insert("bitmaskclear".to_string(), bit_mask_clear as BxNativeFunction);
+    bifs.insert(
+        "bitmaskclear".to_string(),
+        bit_mask_clear as BxNativeFunction,
+    );
     bifs.insert("bitmaskread".to_string(), bit_mask_read as BxNativeFunction);
     bifs.insert("bitmaskset".to_string(), bit_mask_set as BxNativeFunction);
     bifs.insert("bitsh".to_string(), bit_sh as BxNativeFunction);
@@ -181,8 +190,16 @@ fn base64_encode(data: &[u8]) -> String {
     let mut i = 0;
     while i < data.len() {
         let b0 = data[i] as u32;
-        let b1 = if i + 1 < data.len() { data[i + 1] as u32 } else { 0 };
-        let b2 = if i + 2 < data.len() { data[i + 2] as u32 } else { 0 };
+        let b1 = if i + 1 < data.len() {
+            data[i + 1] as u32
+        } else {
+            0
+        };
+        let b2 = if i + 2 < data.len() {
+            data[i + 2] as u32
+        } else {
+            0
+        };
         let triple = (b0 << 16) | (b1 << 8) | b2;
         result.push(BASE64_CHARS[((triple >> 18) & 0x3F) as usize] as char);
         result.push(BASE64_CHARS[((triple >> 12) & 0x3F) as usize] as char);
@@ -214,8 +231,16 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     while i < input.len() {
         let a = base64_char_val(input.as_bytes()[i])?;
         let b = base64_char_val(input.as_bytes()[i + 1])?;
-        let c_val = if input.as_bytes()[i + 2] == b'=' { 0 } else { base64_char_val(input.as_bytes()[i + 2])? };
-        let d_val = if input.as_bytes()[i + 3] == b'=' { 0 } else { base64_char_val(input.as_bytes()[i + 3])? };
+        let c_val = if input.as_bytes()[i + 2] == b'=' {
+            0
+        } else {
+            base64_char_val(input.as_bytes()[i + 2])?
+        };
+        let d_val = if input.as_bytes()[i + 3] == b'=' {
+            0
+        } else {
+            base64_char_val(input.as_bytes()[i + 3])?
+        };
         let triple = (a << 18) | (b << 12) | (c_val << 6) | d_val;
         result.push(((triple >> 16) & 0xFF) as u8);
         if input.as_bytes()[i + 2] != b'=' {
@@ -236,6 +261,9 @@ fn base64_char_val(c: u8) -> Result<u32, String> {
         b'0'..=b'9' => Ok((c - b'0' + 52) as u32),
         b'+' => Ok(62),
         b'/' => Ok(63),
-        _ => Err(format!("binaryDecode() invalid base64 character: {}", c as char)),
+        _ => Err(format!(
+            "binaryDecode() invalid base64 character: {}",
+            c as char
+        )),
     }
 }

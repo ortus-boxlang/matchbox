@@ -1,0 +1,17 @@
+// Positional fast path must not change named argument ordering, references or callbacks.
+function checkNativeCalls() {
+    assert len("abc") == 3 && ascii("a") == 97 && char(98) == "b";
+    assert listGetAt("a|b|c", 2, "|") == "b";
+    assert listGetAt(delimiter="|", position=2, list="a|b|c") == "b";
+    assert listGetAt(position=2, list="a,b,c") == "b"; // Default delimiter.
+    var pick = ::listGetAt;
+    assert pick("a|b|c", 3, "|") == "c";
+    assert pick(position=1, list="a|b|c", delimiter="|") == "a";
+    var upper = ::ucase("hello"); assert upper == "HELLO";
+    var selected = ::listGetAt(delimiter="|", position=2, list="a|b|c"); assert selected == "b";
+    var items = arrayMap(["a", "abcd"], function(value) { return len(value); });
+    assert items[1] == 1 && items[2] == 4;
+    assert listGetAt("a|b|c", 2, "|") == "b"; // Positional call after named calls.
+    println("Native positional / named / reference / callback calls: OK");
+}
+checkNativeCalls();

@@ -99,7 +99,7 @@ Use the `--target esp32` flag to trigger an ESP32 build. You should always speci
 The first time you flash a device, you must perform a "Full Flash." This installs the MatchBox Runner firmware and the custom partition table required for BoxLang.
 
 ```bash
-matchbox app.bxs --target esp32 --chip esp32s3 --full-flash
+matchbox --target esp32 --chip esp32s3 --full-flash app.bxs
 ```
 *Note: `--full-flash` implicitly triggers the flash process.*
 
@@ -110,7 +110,7 @@ The command must be run from a shell where the ESP-IDF environment has already b
 ```bash
 source /path/to/esp-idf/export.sh
 export RUSTUP_TOOLCHAIN=esp
-matchbox app.bxs --target esp32 --chip esp32s3 --full-flash
+matchbox --target esp32 --chip esp32s3 --full-flash app.bxs
 ```
 
 ### Flash Permissions
@@ -133,13 +133,13 @@ Avoid rerunning the entire `matchbox ... --full-flash` command with `sudo`, beca
 Once the Runner is on the device, you only need to update the BoxLang bytecode. This takes ~1 second and does not require re-flashing the firmware.
 
 ```bash
-matchbox app.bxs --target esp32 --chip esp32s3 --flash
+matchbox --target esp32 --chip esp32s3 --flash app.bxs
 ```
 
 If the script uses the embedded routed web subset, opt in explicitly:
 
 ```bash
-matchbox app.bxs --target esp32 --chip esp32s3 --esp32-web --full-flash
+matchbox --target esp32 --chip esp32s3 --esp32-web --full-flash app.bxs
 ```
 
 ## Watch Mode (Live Coding)
@@ -147,7 +147,7 @@ matchbox app.bxs --target esp32 --chip esp32s3 --esp32-web --full-flash
 MatchBox features a built-in watch mode that provides a "Hot Reload" experience for physical hardware.
 
 ```bash
-matchbox app.bxs --target esp32 --chip esp32s3 --watch
+matchbox --target esp32 --chip esp32s3 --watch app.bxs
 ```
 
 **What Watch Mode does:**

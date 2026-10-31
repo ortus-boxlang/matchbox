@@ -1,17 +1,31 @@
+#![cfg(target_os = "wasi")]
+
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
 use std::sync::OnceLock;
 
 use wasi::http::types::{
-    Fields, IncomingRequest, Method, OutgoingBody, OutgoingResponse, ResponseOutparam,
+    Fields, IncomingRequest, Method, OutgoingBody, OutgoingResponse, ResponseOutparam, Scheme,
 };
 
+#[path = "../../matchbox-server/src/web_context.rs"]
+mod web_context;
+#[path = "../../matchbox-server/src/cookies.rs"]
+mod cookies;
+#[path = "../../matchbox-server/src/sessions.rs"]
+mod sessions;
+#[path = "../../matchbox-server/src/application_runtime.rs"]
+mod application_runtime;
+#[path = "../../matchbox-server/src/template_cache.rs"]
+mod template_cache;
+#[path = "../../matchbox-server/src/application.rs"]
+mod application;
 #[path = "../../matchbox-server/src/webroot_core.rs"]
 mod webroot_core;
 
 use webroot_core::{
-    EmbeddedAssetPackage, EmbeddedAssetStore, WebrootConfig, WebrootEngine, WebrootRequest,
-    WebrootResponse,
+    EmbeddedAssetPackage, EmbeddedAssetStore, WebrootConfig, WebrootContext, WebrootEngine,
+    WebrootRequest, WebrootResponse,
 };
 
 wasi::http::proxy::export!(MatchBoxWasiHttp);
@@ -34,7 +48,7 @@ impl wasi::exports::http::incoming_handler::Guest for MatchBoxWasiHttp {
             Ok(response) => response,
             Err(error) => WebrootResponse {
                 status: 500,
-                headers: HashMap::from([("content-type".to_string(), "text/plain".to_string())]),
+                headers: vec![("content-type".to_string(), "text/plain".to_string())],
                 body: error.into_bytes(),
             },
         };
@@ -56,9 +70,13 @@ const fn empty_embed_region() -> [u8; EMBED_CAPACITY] {
     bytes
 }
 
-fn handle_webroot_request(request: WebrootRequest) -> Result<WebrootResponse, String> {
+fn handle_webroot_request(
+    (request, context): (WebrootRequest, WebrootContext),
+) -> Result<WebrootResponse, String> {
     match engine() {
-        Ok(engine) => engine.handle(request).map_err(|err| err.to_string()),
+        Ok(engine) => engine
+            .handle_with_context(request, context)
+            .map_err(|err| err.to_string()),
         Err(error) => Err(error.clone()),
     }
 }
@@ -112,12 +130,18 @@ struct WasiHttpPayload {
     assets: EmbeddedAssetPackage,
 }
 
-fn request_to_webroot_request(request: &IncomingRequest) -> Result<WebrootRequest, String> {
+fn request_to_webroot_request(
+    request: &IncomingRequest,
+) -> Result<(WebrootRequest, WebrootContext), String> {
     let method = method_to_string(request.method());
     let path_with_query = request.path_with_query().unwrap_or_else(|| "/".to_string());
     let (path, raw_query) = split_path_query(&path_with_query);
-    let headers = headers_to_map(request.headers());
+    let mut headers = headers_to_map(request.headers());
+    if let Some(authority) = request.authority() {
+        headers.entry("host".into()).or_insert(authority);
+    }
     let query = raw_query
+        .as_deref()
         .map(|query| {
             url::form_urlencoded::parse(query.as_bytes())
                 .into_owned()
@@ -126,14 +150,32 @@ fn request_to_webroot_request(request: &IncomingRequest) -> Result<WebrootReques
         .unwrap_or_default();
     let body = read_body(request)?;
 
-    Ok(WebrootRequest {
-        method,
-        path,
-        query,
-        form: HashMap::new(),
-        headers,
-        body,
-    })
+    let scheme = match request.scheme() {
+        Some(Scheme::Https) => "https".to_string(),
+        Some(Scheme::Other(scheme)) => scheme,
+        _ => "http".to_string(),
+    };
+    let context = WebrootContext {
+        uri: path.clone(),
+        query_string: raw_query.unwrap_or_default(),
+        server_port: if scheme == "https" { 443 } else { 80 },
+        scheme,
+        // WASI HTTP does not expose a connection's protocol version or peer address.
+        protocol: String::new(),
+        ..Default::default()
+    };
+    Ok((
+        WebrootRequest {
+            method,
+            path,
+            query,
+            form: HashMap::new(),
+            headers,
+            body,
+            ..Default::default()
+        },
+        context,
+    ))
 }
 
 fn method_to_string(method: Method) -> String {
@@ -163,7 +205,7 @@ fn headers_to_map(headers: Fields) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for (name, value) in headers.entries() {
         if let Ok(value) = String::from_utf8(value) {
-            map.insert(name.to_ascii_lowercase(), value);
+            map.entry(name.to_ascii_lowercase()).or_insert(value);
         }
     }
     map

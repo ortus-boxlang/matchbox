@@ -1,6 +1,6 @@
 # Matchbox Native Module Guide
 
-This guide explains how to create reusable, Rust-powered modules for the **Matchbox** runtime. These modules allow you to extend the BoxLang language with high-performance native code, custom classes, and hardware-specific features.
+This guide covers source-based Native Fusion modules. For a single BoxLang package with independently published desktop artifacts and a stable plugin ABI, see [Prebuilt Native Modules](native-plugins.md).
 
 ## 1. Directory Structure
 
@@ -19,26 +19,53 @@ my-utils/
 
 ## 2. Module Lifecycle (`ModuleConfig.bx`)
 
-Every module must have a `ModuleConfig.bx`. Matchbox executes this in an isolated VM at compile-time to collect metadata and settings.
+Every module must have a `ModuleConfig.bx`. MatchBox compiles it without executing hooks; initialization occurs in the application VM, with `configure()` before `onLoad()`.
 
 ```boxlang
 // ModuleConfig.bx
 class {
-    // Runs when the module is first discovered
+    // Runs on module activation in the application VM
     function onLoad() {
         println("Loading MyUtils module...");
     }
 
-    // Must return a struct of settings. 
+    // Populate variables-scope settings, matching the JVM module contract.
     // These are accessible via getModuleSettings("my-utils")
     function configure() {
-        return {
+        settings = {
             "version": "1.0.0",
-            "enabled": true
+            "enabled": true,
+            "database": {
+                "host": "localhost",
+                "port": 5432
+            },
+            "tags": [ "fast", "small" ],
+            "servers": [
+                { "name": "primary", "weight": 10 },
+                { "name": "backup", "weight": 1 }
+            ]
         };
     }
 }
 ```
+
+Settings can be nested to any depth: structs, arrays, arrays of structs, empty
+collections, and `null` all come back with the same shape and types. Keys may
+contain spaces or hyphens; read those with bracket notation.
+
+```boxlang
+// main.bxs — run with: matchbox --module ./my-utils main.bxs
+settings = getModuleSettings("my-utils")
+
+println(settings.version)                  // 1.0.0
+println(settings.database.host)            // localhost
+println(settings.database.port + 1)        // 5433
+println(arrayLen(settings.tags))           // 2
+println(settings.servers[2].name)          // backup
+```
+
+Settings are captured when the program is compiled, so a compiled `.bxb` file
+carries them with it and does not need the module directory at runtime.
 
 ## 3. Rust Implementation (`matchbox/`)
 
@@ -149,14 +176,16 @@ Add your modules to the `dependencies` or `devDependencies` section of your `box
 ```
 
 - **Relative Paths**: If the dependency value is a relative path (e.g., `./libs/my-mod`), Matchbox resolves it directly.
-- **Git/Remote**: For remote modules, run `box install`. CommandBox will clone them into the `modules/` or `boxlang_modules/` directory, where Matchbox will automatically discover them.
+- **Git/Remote**: For remote modules, run `box install`. CommandBox installs project modules into `boxlang_modules/`, where MatchBox automatically discovers them. Packages installed in `BOXLANG_HOME/modules/` are also discovered.
 
 ### Directory Conventions
 
 Matchbox automatically scans the following directories for modules (any folder containing a `ModuleConfig.bx`):
 
-1. `modules/`
-2. `boxlang_modules/`
+1. Project-local `boxlang_modules/`
+2. `BOXLANG_HOME/modules/` when the runtime-home environment variable is set
+
+Project packages and explicit selections override same-directory-name runtime-home packages. Other source/artifact layouts remain available through explicit paths; `modules/` is not an implicit project installation directory.
 
 You do **not** need to list these explicitly in `matchbox.toml` if they follow these conventions.
 
@@ -166,7 +195,7 @@ If you prefer not to use `box.json`, you can still use `matchbox.toml` for expli
 
 ```toml
 [modules]
-my-utils = "./custom/path/to/module"
+my-utils = { path = "./custom/path/to/module" }
 ```
 
 ---

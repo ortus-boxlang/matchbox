@@ -1,9 +1,6 @@
 class ModuleConfig {
     function configure() {
-        s = {}
-        s.language = "en"
-        s.enthusiastic = false
-        return s
+        settings = { language: "en", enthusiastic: false }
     }
 
     function onLoad() {}

@@ -11,7 +11,7 @@ fn compile_source(source: &str) -> matchbox_vm::Chunk {
         Vec::new(),
         false,
         false,
-        &[],
+        false,
         &[],
     )
     .unwrap();
@@ -190,7 +190,7 @@ fn repeated_route_execution_shares_program_data_without_recloning_constants() {
     let route_chunk = compile_source(&route_source);
     let program_ptr = Arc::as_ptr(&route_chunk.program) as usize;
     let first_constants_len = route_chunk.constants().len();
-    let first_runtime_cache_len = route_chunk.runtime.caches.len();
+    let first_runtime_cache_len = route_chunk.runtime.caches.lock().unwrap().len();
     assert!(
         first_constants_len >= 2000,
         "route should have a large constant table to exercise the clone path (got {})",
@@ -220,7 +220,7 @@ fn repeated_route_execution_shares_program_data_without_recloning_constants() {
             "program data must remain shared across executions"
         );
         assert_eq!(
-            route_chunk.runtime.caches.len(),
+            route_chunk.runtime.caches.lock().unwrap().len(),
             first_runtime_cache_len,
             "source chunk runtime caches must not be populated by route execution"
         );

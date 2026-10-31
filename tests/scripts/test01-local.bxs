@@ -1,0 +1,15 @@
+// Acquiring a live local alias after ordinary writes must keep subsequent reads live.
+function lateLocal(seed) {
+    var count = seed;
+    count += 2;
+    var view = local;
+    view.COUNT = 17;
+    assert count == 17 : "Late local alias stopped reflecting writes";
+    count = 23;
+    assert view.count == 23 : "Ordinary write stopped updating the local alias";
+    structDelete(view, "count");
+    assert count == 23 : "Existing missing-field stack fallback changed";
+    return count;
+}
+assert lateLocal(1) == 23;
+println("Late local alias / mixed case / live writes / deletion fallback: OK");

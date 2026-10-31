@@ -1,0 +1,35 @@
+// Existing declarations are guarded optimization hints, not unchecked casts.
+function typedDefaultSeed(value) { return value; }
+numeric function typedDistance(numeric first = typedDefaultSeed(value = 9), numeric second = 2) { return (first - second) * (first - second); }
+boolean function typedNot(boolean flag) { return !flag; }
+function typedGet(object, string key, fallback = null) { if (isStruct(object) && structKeyExists(object, key)) { return object[key]; } return fallback; }
+function dynamicDistance(first, second) { return (first - second) * (first - second); }
+function typedField(struct record) { return record.value; }
+function typedItem(array items, numeric index) { return items[index]; }
+function typedLowerBound(array tokens, numeric offset) {
+    var low = 1; var high = len(tokens) + 1; var middle = 0;
+    while (low < high) { middle = int((low + high) / 2); if (tokens[middle].start < offset) { low = middle + 1; } else { high = middle; } }
+    return low;
+}
+var typedTokens = [{start: 1}, {start: 4}, {start: 7}, {start: 10}];
+for (var typedWarm = 0; typedWarm < 200; typedWarm++) {
+    assert typedDistance(9, 2) == dynamicDistance(9, 2);
+    assert typedDistance() == 49;
+    assert typedDistance(second = 2, first = 9) == 49;
+    assert typedNot(true) == false;
+    assert typedGet({value: 42}, "VALUE", 64) == 42;
+    assert typedField({value: 42}) == 42;
+    assert typedItem(["kept", 64], 2) == 64;
+    assert typedLowerBound(typedTokens, 7) == 3;
+}
+// Wrong hints deopt rather than reinterpret a string/tag as machine data.
+assert typedDistance("9", 2) == dynamicDistance("9", 2);
+assert typedNot(1) == false;
+assert typedGet({"7": 64}, 7, 42) == 64;
+assert typedGet(null, "value", 42) == 42;
+assert typedLowerBound(typedTokens, "7") == 3;
+assert typedItem(["first", "last"], -1) == "last";
+var typedFailed = false; try { typedItem([42], 0); } catch (any error) { typedFailed = true; } assert typedFailed;
+var typedRecord = {value: null}; assert isNull(typedField(typedRecord));
+typedRecord.value = "changed"; assert typedField(typedRecord) == "changed";
+println("Type hints / checked specialization / dynamic fallback / layouts / numeric correctness: OK");

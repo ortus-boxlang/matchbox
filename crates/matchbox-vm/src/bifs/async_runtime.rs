@@ -94,6 +94,7 @@ pub fn register_async_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
         "futureiscompletedexceptionally".to_string(),
         future_is_completed_exceptionally as BxNativeFunction,
     );
+    bifs.insert("futureisdone".to_string(), future_is_done as BxNativeFunction);
     bifs.insert(
         "futureexceptionally".to_string(),
         future_exceptionally as BxNativeFunction,
@@ -209,6 +210,16 @@ fn future_is_completed_exceptionally(
     Ok(BxValue::new_bool(matches!(
         vm.future_status(args[0]),
         Some(FutureStatus::Failed(_))
+    )))
+}
+
+fn future_is_done(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 1 {
+        return Err("isDone() expects a future".to_string());
+    }
+    Ok(BxValue::new_bool(!matches!(
+        vm.future_status(args[0]),
+        Some(FutureStatus::Pending) | None
     )))
 }
 

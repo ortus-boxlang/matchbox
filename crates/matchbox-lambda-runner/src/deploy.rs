@@ -222,11 +222,7 @@ fn ensure_public_function_url_permissions(
     )
 }
 
-fn add_idempotent_permission(
-    cli: &mut dyn AwsCli,
-    cmd: AwsCommand,
-    context: &str,
-) -> Result<()> {
+fn add_idempotent_permission(cli: &mut dyn AwsCli, cmd: AwsCommand, context: &str) -> Result<()> {
     let permission = run_optional(cli, cmd)?;
     if let Some(output) = permission {
         if !output.success && !output.stderr.contains("ResourceConflictException") {

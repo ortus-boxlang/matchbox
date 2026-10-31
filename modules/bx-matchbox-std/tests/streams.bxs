@@ -1,0 +1,34 @@
+if (!getModuleInfo("bx-matchbox-std").activated) { throw "Standard library not activated"; }
+var listener = tcpListen(port=0);
+var endpoint = listener.address();
+if (endpoint.port <= 0 || endpoint.host != "127.0.0.1") { throw "Missing bound address"; }
+if (!isNull(listener.accept(timeoutMs=5))) { throw "Accept timeout must return null"; }
+var client = tcpConnect(host=endpoint.host, port=endpoint.port);
+var server = listener.accept(timeoutMs=1000);
+var bytes = binaryDecode("00ff0d0af09f9880", "hex");
+if (!isNull(server.read(maxBytes=32, timeoutMs=5))) { throw "Read timeout must return null"; }
+if (client.writeAll(data=bytes) != len(bytes)) { throw "Short write"; }
+var result = server.read(maxBytes=32, timeoutMs=1000);
+if (binaryEncode(result, "hex") != binaryEncode(bytes, "hex")) { throw "Binary data was changed"; }
+client.writeAll(charsetDecode("line" & chr(10) & "tail", "utf-8"));
+if (utf8Decode(server.readUntil(separator=charsetDecode(chr(10), "utf-8"))) != "line" & chr(10)) { throw "Delimited read failed"; }
+if (utf8Decode(server.readExactly(size=4)) != "tail") { throw "Buffered exact read failed"; }
+var invalidUtf8 = false;
+try { utf8Decode(binaryDecode("ff", "hex")); } catch (any e) { invalidUtf8 = true; }
+if (!invalidUtf8) { throw "UTF-8 decoding must reject invalid input"; }
+client.close(); client.close();
+if (len(server.read(maxBytes=32, timeoutMs=1000)) != 0) { throw "EOF must be empty binary, not timeout"; }
+server.close(); listener.close(); listener.close();
+var rejected = false;
+try { server.read(); } catch (any e) { rejected = true; }
+if (!rejected) { throw "Closed stream accepted"; }
+rejected = false;
+try { tcpListen(port=-1); } catch (any e) { rejected = true; }
+if (!rejected) { throw "Invalid port accepted"; }
+var output = stdOutput();
+rejected = false;
+try { output.readExactly(size=0); } catch (any e) { rejected = true; }
+if (!rejected) { throw "Output stream must not be readable"; }
+output.writeAll(charsetDecode("standard streams: OK" & chr(10), "utf-8"));
+output.close();
+println("TCP/binary/timeout/EOF/close: OK");

@@ -1,9 +1,9 @@
-use r2d2::Pool;
-use r2d2_postgres::{postgres::NoTls, PostgresConnectionManager};
 use postgres::types::{ToSql, Type};
+use r2d2::Pool;
+use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls};
 
 use crate::datasource::traits::{
-    DbDriver, DatasourceConfig, QueryColumn, QueryColumnType, QueryParam, QueryResult, SqlValue,
+    DatasourceConfig, DbDriver, QueryColumn, QueryColumnType, QueryParam, QueryResult, SqlValue,
 };
 
 pub struct PostgresDriver {
@@ -17,7 +17,9 @@ impl PostgresDriver {
             config.host, config.port, config.database, config.username, config.password
         );
         let manager = PostgresConnectionManager::new(
-            conn_str.parse().map_err(|e| format!("Invalid connection string: {}", e))?,
+            conn_str
+                .parse()
+                .map_err(|e| format!("Invalid connection string: {}", e))?,
             NoTls,
         );
         let pool = Pool::builder()
@@ -34,7 +36,10 @@ impl DbDriver for PostgresDriver {
     }
 
     fn execute(&self, sql: &str, params: &[QueryParam]) -> Result<QueryResult, String> {
-        let mut conn = self.pool.get().map_err(|e| format!("Failed to get connection: {}", e))?;
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|e| format!("Failed to get connection: {}", e))?;
 
         // Convert JDBC-style ? placeholders to PostgreSQL $1, $2, ...
         let converted_sql = convert_placeholders(sql);
@@ -79,19 +84,21 @@ impl DbDriver for PostgresDriver {
             .collect();
 
         if rows.is_empty() {
-            return Ok(QueryResult { columns, rows: vec![] });
+            return Ok(QueryResult {
+                columns,
+                rows: vec![],
+            });
         }
 
         let result_rows: Vec<Vec<SqlValue>> = rows
             .iter()
-            .map(|row| {
-                (0..columns.len())
-                    .map(|i| extract_value(row, i))
-                    .collect()
-            })
+            .map(|row| (0..columns.len()).map(|i| extract_value(row, i)).collect())
             .collect();
 
-        Ok(QueryResult { columns, rows: result_rows })
+        Ok(QueryResult {
+            columns,
+            rows: result_rows,
+        })
     }
 }
 
@@ -187,7 +194,9 @@ fn sql_value_as_bool(value: &SqlValue) -> bool {
         SqlValue::Bool(value) => *value,
         SqlValue::Int(value) => *value != 0,
         SqlValue::Float(value) => *value != 0.0,
-        SqlValue::Text(value) => matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes"),
+        SqlValue::Text(value) => {
+            matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes")
+        }
         SqlValue::Null | SqlValue::Bytes(_) => false,
     }
 }

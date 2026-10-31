@@ -1,0 +1,49 @@
+// Pure reads compile without bypassing ordinary frames, dynamic calls or GC roots.
+function guardedGet(record, key, fallback = null) {
+    if (isStruct(record) && structKeyExists(record, key)) { return record[key]; }
+    return fallback;
+}
+function readField(record) { return record.value; }
+function readItem(items, index) { return items[index]; }
+function leakIntrinsic() { return isStruct; }
+function leakBranch(flag) { return flag ? isStruct : structKeyExists; }
+var record = {value: 42, "Élève中😀": 17}; var items = [record, null, "hello"];
+for (var warm = 0; warm < 200; warm++) {
+    assert guardedGet(record, "value") == 42;
+    assert readField(record) == 42;
+    assert readItem(items, 1) == record;
+}
+assert guardedGet(record, "élève中😀") == 17;
+assert guardedGet({}, "missing", 64) == 64;
+assert guardedGet(null, "value", 64) == 64;
+assert guardedGet(9, "value", 64) == 64;
+record.value = null; assert isNull(guardedGet(record, "value", 64));
+record.value = "updated"; assert readField(record) == "updated";
+record.extra = true; assert readField(record) == "updated";
+structDelete(record, "value"); assert guardedGet(record, "value", 64) == 64;
+record.value = 42; structClear(record); assert guardedGet(record, "value", 64) == 64;
+var exact = structNew("casesensitive"); exact.Value = 12;
+assert guardedGet(exact, "Value", 64) == 12;
+assert guardedGet(exact, "value", 64) == 64;
+assert isNull(readItem(items, 2)); assert readItem(items, -1) == "hello";
+var failed = false; try { readItem(items, 0); } catch (any error) { failed = true; } assert failed;
+failed = false; try { readItem(items, 1.5); } catch (any error) { failed = true; } assert failed;
+failed = false; try { readItem(items, 9); } catch (any error) { failed = true; } assert failed;
+var originalIsStruct = isStruct; var originalKeyExists = structKeyExists;
+isStruct = function(value) { return false; };
+assert guardedGet({value: 42}, "value", 64) == 64;
+isStruct = originalIsStruct;
+structKeyExists = function(value, key) { return false; };
+assert guardedGet({value: 42}, "value", 64) == 64;
+structKeyExists = originalKeyExists;
+for (var warm = 0; warm < 200; warm++) {
+    assert leakIntrinsic() == originalIsStruct;
+    assert leakBranch(true) == originalIsStruct;
+    assert leakBranch(false) == originalKeyExists;
+}
+var numericKey = {"7": 23}; assert guardedGet(numericKey, 7) == 23;
+// Strings/records read from parameters remain live through ordinary collection.
+for (var churn = 0; churn < 30000; churn++) { var rubbish = [churn, {value: churn}]; }
+assert readItem(items, 3) == "hello";
+assert guardedGet(items[1], "missing", 64) == 64;
+println("Readonly JIT / live fields / layouts / dynamic callees / index guards / GC: OK");

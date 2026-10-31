@@ -25,3 +25,11 @@ p.sayHello()
 
 println("Direct access to name: " & p.name)
 println("Direct access to secret: " & p.secret) // should be null or error
+
+class Counter accessors=true {
+    property name="count" type="numeric" default=7;
+    property String label;
+}
+var instance = new Counter();
+assert instance.getCount() == 7;
+assert isNull(instance.getLabel());

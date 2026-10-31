@@ -1,0 +1,19 @@
+function earlyAlias(seed) {
+    var view = local;
+    var step = seed;
+    view.STEP = 73;
+    view["Étage中😀"] = 71;
+    assert step == 73 && view["éTAGE中😀"] == 71 : "Early alias or Unicode key folding changed";
+    var args = arguments;
+    structClear(args);
+    seed = 79;
+    assert args.seed == 79 : "Cleared arguments did not reinsert a parameter";
+    structClear(view);
+    step = 83;
+    assert view.step == 83 : "Cleared locals did not reinsert a binding";
+}
+earlyAlias(1);
+// Named fields unknown at compile time still participate in unscoped lookup/assignment.
+function dynamicNames() { hidden += 1; assert hidden == 90; return arguments.hidden; }
+assert dynamicNames(hidden=89) == 90;
+println("Early aliases / Unicode / clear and reinsert / undeclared named arguments: OK");

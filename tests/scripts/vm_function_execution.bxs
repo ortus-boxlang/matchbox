@@ -1,0 +1,46 @@
+// Reusing code/cache state must never reuse invocation-local values or scopes.
+function readState(data) { return data.VaLuE; }
+function recursiveRead(depth, data) {
+    if (depth == 0) { return readState(data); }
+    var kept = depth;
+    return kept + recursiveRead(depth - 1, data);
+}
+function aliases(value = 2, increment = 3) {
+    var kept = value;
+    var scope = local;
+    scope.kept += increment;
+    arguments.value += 4;
+    return kept + value;
+}
+function counter(seed) {
+    var next = seed;
+    return function(step = 1) { next += step; return next; };
+}
+ordered = structNew("ordered");
+ordered.padding = -1;
+ordered.value = 42;
+sensitive = structNew("ordered-casesensitive");
+sensitive.value = -1;
+sensitive.VaLuE = 81;
+for (index = 1; index <= 100; index++) {
+    assert recursiveRead(5, ordered) == 57;
+    assert recursiveRead(5, sensitive) == 96;
+    assert aliases() == 11;
+    assert aliases(increment = 7, value = 10) == 31;
+}
+structDelete(ordered, "padding");
+assert readState(ordered) == 42;
+structClear(ordered);
+ordered.newPadding = -2;
+ordered.value = 55;
+assert recursiveRead(5, ordered) == 70;
+firstCounter = counter(10);
+secondCounter = counter(100);
+assert firstCounter() == 11;
+assert secondCounter(step = 2) == 102;
+assert firstCounter(step = 4) == 15;
+for (index = 1; index <= 100000; index++) { discarded = { value: index }; }
+assert firstCounter() == 16;
+assert secondCounter() == 103;
+assert readState(ordered) == 55;
+println("Function execution / recursion / independent scopes / cache guards / GC: OK");

@@ -1,6 +1,21 @@
 pub mod chunk;
 pub mod gc;
 pub mod intern;
+#[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+mod members;
+mod calls;
+mod classes;
+mod scopes;
+mod contexts;
+mod events;
+mod interceptors;
+#[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+pub(crate) mod components;
+mod component_runtime;
+mod request_scope;
+mod struct_scope;
+mod abort;
+pub use abort::AbortSignal;
 #[cfg(feature = "jit")]
 pub mod jit;
 pub mod opcode;
@@ -21,7 +36,7 @@ use crate::types::{
 };
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 use crate::types::{register_wasm_future_thunk, take_wasm_future_thunk};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -29,10 +44,26 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 use std::vec;
 
 pub static INTERRUPT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+fn wait_until_instant(until: Instant) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let now = Instant::now();
+        if until > now {
+            std::thread::sleep(until - now);
+        }
+    }
+    // Browser WASM cannot park a thread; synchronous waits must poll the clock.
+    #[cfg(target_arch = "wasm32")]
+    while Instant::now() < until {
+        std::hint::spin_loop();
+    }
+}
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 fn browser_js_root() -> Option<JsValue> {
@@ -280,9 +311,16 @@ pub(crate) fn resolve_js_property(target: &JsValue, name: &str) -> JsValue {
 #[derive(Debug)]
 struct VariablesScopeProxy {
     variables: Rc<RefCell<HashMap<String, BxValue>>>,
+    /// Script-level `variables`: the VM globals are the real store (a bare `x` is `variables.x`).
+    script: bool,
 }
 
 impl BxNativeObject for VariablesScopeProxy {
+    fn native_data(&self, kind: &str) -> Option<*mut std::ffi::c_void> {
+        (kind == "matchbox.variables_scope" || (self.script && kind == "matchbox.script_variables"))
+            .then_some(self as *const Self as *mut std::ffi::c_void)
+    }
+
     fn get_property(&self, name: &str) -> BxValue {
         self.variables
             .borrow()
@@ -392,6 +430,15 @@ pub struct CallFrame {
     pub handlers: Vec<ExceptionHandler>,
     pending_completion: Option<PendingCompletion>,
     pub promoted_constants: Vec<Option<BxValue>>,
+    local_scope: Option<BxValue>,
+    context: Option<BxValue>,
+    // Invocation-local numeric scope bindings; no GC values or shared-program IDs.
+    local_names: scopes::SlotBindings,
+    scope_mode: scopes::ScopeMode,
+    #[cfg(feature = "jit")]
+    jit_loop_attempted: bool,
+    #[cfg(feature = "jit")]
+    jit_construct_unsupported: Option<usize>,
 }
 
 pub struct BxFiber {
@@ -401,6 +448,12 @@ pub struct BxFiber {
     pub future_id: usize,
     pub wait_until: Option<Instant>,
     pub yield_requested: bool,
+    /// Inside `run_fiber` right now: a suspended caller of a nested synchronous call.
+    pub running: bool,
+    /// Set when the fiber yielded in `future.get()` on a pending future.
+    pub blocked_on_future: bool,
+    /// Completed by a nested scheduler; removed at the next safe point (indexes must stay stable).
+    pub finished: bool,
     pub priority: u8,
     pub root_stack: Vec<BxValue>,
 }
@@ -489,10 +542,21 @@ pub enum HostFutureState {
     Failed(BxValue),
 }
 
+// Process-unique identities also distinguish independent VMs; never recycle on overflow.
+fn next_global_namespace() -> u64 {
+    static NEXT: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let mut next = NEXT.lock().expect("global namespace allocator poisoned");
+    *next = next.checked_add(1).expect("global namespace identities exhausted");
+    *next
+}
+
 pub struct VM {
     pub fibers: Vec<BxFiber>,
-    pub global_names: HashMap<u32, usize>,
-    pub global_values: Vec<BxValue>,
+    global_names: HashMap<u32, usize>,
+    global_values: Vec<BxValue>,
+    global_namespace: u64,
+    global_bifs: HashSet<Rc<str>>,
+    struct_assignment_hooks: HashMap<usize, (Rc<gc::RootedValue>, crate::types::NativeCallback)>,
     pub script_variables: Rc<RefCell<HashMap<String, BxValue>>>,
     pub current_fiber_idx: Option<usize>,
     pub shapes: ShapeRegistry,
@@ -501,8 +565,15 @@ pub struct VM {
     pub interner: StringInterner,
     pub cli_args: Vec<String>,
     soap_clients: HashMap<String, BxValue>,
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+    members: HashMap<String, HashMap<String, members::RegisteredMember>>,
     pub output_buffer: Option<String>,
+    output_capture_stack: Vec<Option<String>>,
     pub gc_suspended: bool,
+    native_exception_depth: usize,
+    native_callback_exception: Option<(String, Rc<gc::RootedValue>)>,
+    function_events: HashMap<usize, BxValue>,
+    automatic_event_depth: usize,
     thread_futures: HashSet<usize>,
     datetime_timezones: HashMap<usize, String>,
     /// GC tuning parameters; use `VM::with_config()` or accept defaults.
@@ -534,6 +605,39 @@ impl VM {
 }
 
 impl BxVM for VM {
+    fn call_super_method(&mut self, receiver: BxValue, defining_class: &str, name: &str, args: Vec<BxValue>) -> Result<BxValue, String> {
+        let id = receiver.as_gc_id().ok_or("super can only be used on a class instance")?;
+        let mut current = match self.heap.get(id) {
+            GcObject::Instance(instance) => Rc::clone(&instance.class),
+            _ => return Err("super can only be used on a class instance".into()),
+        };
+        // Find the class that wrote the calling method, then start from its parent.
+        let parent = loop {
+            let (is_defining, parent_name) = {
+                let class = current.borrow();
+                (class.name.eq_ignore_ascii_case(defining_class), class.extends.clone())
+            };
+            let parent_class = parent_name.and_then(|parent_name| match self.get_global(&parent_name).and_then(|v| v.as_gc_id()) {
+                Some(parent_id) => match self.heap.get(parent_id) {
+                    GcObject::Class(parent_class) => Some(Rc::clone(parent_class)),
+                    _ => None,
+                },
+                None => None,
+            });
+            if is_defining {
+                break parent_class.ok_or_else(|| format!("{defining_class} has no parent class, so super.{name}() cannot be called"))?;
+            }
+            current = parent_class.ok_or_else(|| format!("{defining_class} is not in the class chain of this instance"))?;
+        };
+        let method = self
+            .resolve_method(parent, name)
+            .ok_or_else(|| format!("Method {name} not found in the parent class of {defining_class}"))?;
+        let mut method = (*method).clone();
+        method.captured_receiver = Some(receiver);
+        let function = BxValue::new_ptr(self.heap.alloc(GcObject::CompiledFunction(Rc::new(method))));
+        self.call_function_value_named(function, args, None).map_err(|e| e.to_string())
+    }
+
     fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>> {
         if let Some(idx) = self.current_fiber_idx {
             self.fibers[idx].frames.last().map(|f| Rc::clone(&f.chunk))
@@ -541,6 +645,11 @@ impl BxVM for VM {
             None
         }
     }
+
+    fn call_function_by_value_named(&mut self, func: BxValue, args: Vec<BxValue>, names: Option<Vec<String>>) -> Result<BxValue, String> {
+        self.call_function_value_named(func, args, names).map_err(|error| error.to_string())
+    }
+    fn execution_context(&mut self) -> Result<BxValue, String> { VM::execution_context(self) }
 
     fn current_receiver(&self) -> Option<BxValue> {
         self.current_fiber_idx
@@ -578,6 +687,10 @@ impl BxVM for VM {
                     .then(|| self.interner.resolve(*name_id).to_string())
             })
             .unwrap_or(function_name)
+    }
+
+    fn interpret_chunk_with_receiver(&mut self, chunk: Chunk, receiver: Option<BxValue>) -> Result<BxValue, String> {
+        VM::interpret_chunk_with_receiver(self, &chunk, receiver).map_err(|error| error.to_string())
     }
 
     fn interpret_chunk(&mut self, chunk: Chunk) -> Result<BxValue, String> {
@@ -635,8 +748,10 @@ impl BxVM for VM {
         args: Vec<BxValue>,
         _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
     ) -> Result<BxValue, String> {
-        self.call_method_value(receiver, name, args)
-            .map_err(|e| e.to_string())
+        let previous=self.current_fiber_idx;
+        let result=self.native_exception_scope(|vm| vm.call_method_value(receiver,name,args).map_err(|error|error.to_string()));
+        self.current_fiber_idx=previous;
+        result
     }
 
     fn yield_fiber(&mut self) {
@@ -675,6 +790,10 @@ impl BxVM for VM {
             GcObject::DateTime(_) => 26,
             _ => 0,
         }
+    }
+
+    fn is_truthy(&self, val: BxValue) -> bool {
+        VM::is_truthy(self, val)
     }
 
     fn is_array_value(&self, val: BxValue) -> bool {
@@ -833,7 +952,7 @@ impl BxVM for VM {
                 .map(|id| {
                     matches!(
                         self.heap.get(id),
-                        GcObject::CompiledFunction(_) | GcObject::NativeFunction(_)
+                        GcObject::CompiledFunction(_) | GcObject::NativeFunction(_) | GcObject::NativeCallback(_)
                     )
                 })
                 .unwrap_or(false),
@@ -1003,7 +1122,7 @@ impl BxVM for VM {
                 if let Some(id) = val.as_gc_id() {
                     if matches!(
                         self.heap.get(id),
-                        GcObject::CompiledFunction(_) | GcObject::NativeFunction(_)
+                        GcObject::CompiledFunction(_) | GcObject::NativeFunction(_) | GcObject::NativeCallback(_)
                     ) {
                         Ok(val)
                     } else {
@@ -1235,16 +1354,10 @@ impl BxVM for VM {
     }
 
     fn struct_set(&mut self, id: usize, key: &str, val: BxValue) {
-        let key_id = self.struct_key_id(id, key);
-        if let GcObject::Struct(s) = self.heap.get_mut(id) {
-            if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
-                s.properties[idx as usize] = val;
-            } else {
-                s.shape_id = self.shapes.transition(s.shape_id, key_id);
-                s.properties.push(val);
-            }
-        }
+        self.struct_set_and_key(id, key, val);
     }
+
+    fn struct_assign(&mut self, id: usize, key: &str, value: BxValue) -> Result<(), String> { self.assign_struct(id, key, value) }
 
     fn struct_get(&self, id: usize, key: &str) -> BxValue {
         let key_id = self.struct_key_lookup_id(id, key).unwrap_or(u32::MAX);
@@ -1266,16 +1379,15 @@ impl BxVM for VM {
                 let current_shape = &self.shapes.shapes[s.shape_id as usize];
                 for (&fid, &fidx) in &current_shape.fields {
                     if fid != key_id {
-                        entries.push((fid, s.properties[fidx as usize]));
+                        entries.push((fidx, fid, s.properties[fidx as usize]));
                     }
                 }
 
-                // Sort by index to maintain some consistency if possible,
-                // but really we just want a shape that has these fields.
-                // For simplicity, we'll build a new shape chain from root.
+                // Hash-map iteration order is not insertion order. Preserve surviving slots.
+                entries.sort_unstable_by_key(|entry| entry.0);
                 let mut new_shape_id = self.shapes.get_root();
                 let mut new_properties = Vec::with_capacity(entries.len());
-                for (fid, val) in entries {
+                for (_, fid, val) in entries {
                     new_shape_id = self.shapes.transition(new_shape_id, fid);
                     new_properties.push(val);
                 }
@@ -1299,7 +1411,7 @@ impl BxVM for VM {
     fn struct_key_array(&self, id: usize) -> Vec<String> {
         if let GcObject::Struct(s) = self.heap.get(id) {
             let shape = &self.shapes.shapes[s.shape_id as usize];
-            let mut keys = vec![String::new(); shape.fields.len()];
+            let mut keys = vec![String::new(); shape.fields.size()];
             for (&fid, &fidx) in &shape.fields {
                 keys[fidx as usize] = self.interner.resolve(fid).to_string();
             }
@@ -1459,6 +1571,52 @@ impl BxVM for VM {
             .is_some_and(|fiber| self.thread_futures.contains(&fiber.future_id))
     }
 
+    fn has_global_function(&self, name: &str) -> bool {
+        self.global_bifs.contains(name.to_lowercase().as_str())
+    }
+
+    fn append_interception_points(&mut self, names: Vec<String>) -> Result<(), String> { VM::append_interception_points(self, names); Ok(()) }
+    fn interception_points(&self) -> Vec<String> { VM::interception_points(self) }
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+    fn execution_components(&self) -> Result<Vec<BxValue>, String> { Ok(VM::execution_components(self)) }
+    fn component_names(&self) -> Vec<String> { VM::component_names(self) }
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+    fn invoke_component(&mut self, name: &str, attributes: BxValue, body: BxValue) -> Result<BxValue, String> { VM::invoke_component(self, name, attributes, body).map_err(|error| error.to_string()) }
+    fn register_interceptor(&mut self, target: BxValue) -> Result<(), String> { VM::register_interceptor(self, target) }
+    fn unregister_interceptor(&mut self, target: BxValue) -> Result<(), String> { VM::unregister_interceptor(self, target) }
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+    fn new_interceptor(&mut self, class: &str, properties: BxValue, name: &str, record: Option<BxValue>) -> Result<BxValue, String> { crate::module_services::new_interceptor(self, class, properties, name, record).map_err(|error| error.to_string()) }
+    fn announce(&mut self, name: &str, data: BxValue) -> Result<(), String> { VM::announce(self, name, data) }
+
+    fn global_function_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.global_bifs.iter().map(|name| name.to_string()).collect();
+        names.sort();
+        names
+    }
+
+    fn is_native_abort(&self, message: &str) -> bool { VM::is_native_abort(self, message) }
+    fn raise_abort(&mut self, kind: &str, cause: Option<String>) -> String { VM::raise_abort(self, kind, cause) }
+    fn register_callback(&mut self, name: &str, callback: crate::types::NativeCallback) -> Result<(), String> {
+        let id = self.heap.alloc(GcObject::NativeCallback(callback));
+        self.register_global_bif(name.to_string(), BxValue::new_ptr(id));
+        Ok(())
+    }
+
+    fn native_object_data(&self, value: BxValue, kind: &str) -> Option<*mut std::ffi::c_void> {
+        match self.heap.get_opt(value.as_gc_id()?)? {
+            GcObject::NativeObject(object) => object.try_borrow().ok()?.native_data(kind),
+            _ => None,
+        }
+    }
+
+    fn retain_value(&mut self, value: BxValue) -> Result<Rc<crate::vm::gc::RootedValue>, String> {
+        self.heap.retain_value(value)
+    }
+
+    fn read_retained_value(&self, root: &crate::vm::gc::RootedValue) -> Result<BxValue, String> {
+        self.heap.read_retained_value(root)
+    }
+
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize {
         self.heap.alloc(GcObject::NativeObject(obj))
     }
@@ -1469,18 +1627,34 @@ impl BxVM for VM {
         name: &str,
         args: &[BxValue],
     ) -> Result<BxValue, String> {
+        let previous_gc = self.gc_suspended;
         self.gc_suspended = true;
         // Clone the Rc to release the heap borrow immediately
         let obj_rc = if let GcObject::NativeObject(obj) = self.heap.get_mut(id) {
             Rc::clone(obj)
         } else {
-            self.gc_suspended = false;
+            self.gc_suspended = previous_gc;
             return Err(format!("Value at id {} is not a native object", id));
         };
 
-        let res = obj_rc.borrow_mut().call_method(self, id, name, args);
-        self.gc_suspended = false;
+        let delegated = obj_rc.borrow().delegated_callback(name);
+        let res = if let Some(callback) = delegated {
+            let mut values = vec![BxValue::new_ptr(id)];
+            values.extend_from_slice(args);
+            self.invoke_callback(&callback, &values)
+        } else {
+            obj_rc.borrow_mut().call_method(self, id, name, args)
+        };
+        self.gc_suspended = previous_gc;
         res
+    }
+
+    fn has_method_by_value(&self, receiver: BxValue, name: &str) -> bool {
+        self.instance_has_method(receiver, name) || self.resolve_member_method(&receiver, name).is_some() || matches!(receiver.as_gc_id().and_then(|id| self.heap.get_opt(id)), Some(GcObject::NativeObject(object)) if object.borrow().has_method(name))
+    }
+
+    fn resolve_class_reference(&mut self, name: &str) -> Result<BxValue, String> {
+        VM::resolve_class_reference(self, name).map_err(|error| error.to_string())
     }
 
     fn construct_native_class(
@@ -1499,6 +1673,26 @@ impl BxVM for VM {
                 "Native class '{}' not found. Ensure it is registered.",
                 class_name
             ))
+        }
+    }
+
+    fn construct_box_class(&mut self, class_name: &str, args: Vec<BxValue>, names: Option<Vec<String>>) -> Result<BxValue, String> {
+        let class = self.resolve_class_reference(class_name).map_err(|error| error.to_string())?;
+        if self.class_reference_target(class).is_some() {
+            return self.call_method_value_named(class, "init", args, names.unwrap_or_default()).map_err(|error| error.to_string());
+        }
+        let instance = self.construct_class_value(class, vec![]).map_err(|error| error.to_string())?;
+        let _root = self.heap.retain_value(instance)?;
+        if self.instance_has_method(instance, "init") {
+            let result = match names {
+                Some(names) => self.call_method_value_named(instance, "init", args, names),
+                None => self.call_method_value(instance, "init", args),
+            }.map_err(|error| error.to_string())?;
+            Ok(if result.is_null() { instance } else { result })
+        } else if args.is_empty() {
+            Ok(instance)
+        } else {
+            Err("Implicit class constructor arguments are not yet supported".into())
         }
     }
 
@@ -1711,11 +1905,14 @@ impl BxVM for VM {
     }
 
     fn begin_output_capture(&mut self) {
+        self.output_capture_stack.push(self.output_buffer.take());
         self.output_buffer = Some(String::new());
     }
 
     fn end_output_capture(&mut self) -> Option<String> {
-        self.output_buffer.take()
+        let output = self.output_buffer.take();
+        self.output_buffer = self.output_capture_stack.pop().flatten();
+        output
     }
 
     fn suspend_gc(&mut self) {
@@ -1749,6 +1946,76 @@ impl BxVM for VM {
 }
 
 impl VM {
+    /// Property read on a native object. The script-level `variables` scope is the VM globals.
+    fn native_object_get(&self, object: &Rc<RefCell<dyn BxNativeObject>>, name: &str) -> BxValue {
+        if object.borrow().native_data("matchbox.script_variables").is_some() {
+            if let Some(value) = self.get_global(&name.to_lowercase()) {
+                return value;
+            }
+        }
+        object.borrow().get_property(name)
+    }
+
+    /// Property write on a native object; see `native_object_get`.
+    fn native_object_set(&mut self, object: &Rc<RefCell<dyn BxNativeObject>>, name: &str, value: BxValue) {
+        if object.borrow().native_data("matchbox.script_variables").is_some() {
+            self.insert_global(name.to_lowercase(), value);
+            return;
+        }
+        object.borrow_mut().set_property(name, value);
+    }
+
+    /// Shared GET_PRIVATE resolution; JIT intrinsic guards must respect the same scopes.
+    fn private_value(&mut self, fiber: usize, name: &str) -> Option<BxValue> {
+        let mut found = self.function_scope_value(fiber, name);
+        let lambda = self.fibers[fiber].frames.last().unwrap().function.kind == crate::types::FunctionKind::Lambda;
+        if let Some(receiver) = self.fibers[fiber].frames.last().unwrap()
+            .receiver.filter(|_| found.is_none() && !lambda)
+        {
+            if name == "this" {
+                found = Some(receiver);
+            } else if let Some(id) = self.receiver_instance_gc_id(receiver) {
+                if name == "variables" {
+                    if let GcObject::Instance(inst) = self.heap.get(id) {
+                        let proxy = VariablesScopeProxy { variables: Rc::clone(&inst.variables), script: false };
+                        found = Some(BxValue::new_ptr(self.heap.alloc(
+                            GcObject::NativeObject(Rc::new(RefCell::new(proxy))),
+                        )));
+                    }
+                } else if let GcObject::Instance(inst) = self.heap.get(id) {
+                    found = inst.variables.borrow().get(name).copied();
+                }
+            }
+            if found.is_none() && self.instance_has_method(receiver, name) {
+                found = self.method_reference(receiver, name).ok();
+            }
+        }
+        if found.is_none() && !lambda && name == "variables" {
+            let proxy = VariablesScopeProxy { variables: Rc::clone(&self.fibers[fiber].variables), script: true };
+            found = Some(BxValue::new_ptr(self.heap.alloc(
+                GcObject::NativeObject(Rc::new(RefCell::new(proxy))),
+            )));
+        }
+        if found.is_none() && (!lambda || self.has_global_function(name)) {
+            found = self.get_global(name);
+        }
+        found
+    }
+
+    /// Keep the write barrier and spelling rules in one path; bindings reuse its key.
+    fn struct_set_and_key(&mut self, id: usize, key: &str, val: BxValue) -> u32 {
+        let key_id = self.struct_key_id(id, key);
+        if let GcObject::Struct(s) = self.heap.get_mut(id) {
+            if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
+                s.properties[idx as usize] = val;
+            } else {
+                s.shape_id = self.shapes.transition(s.shape_id, key_id);
+                s.properties.push(val);
+            }
+        }
+        key_id
+    }
+
     fn struct_key_id(&mut self, id: usize, key: &str) -> u32 {
         let case_sensitive = matches!(self.heap.get_opt(id), Some(GcObject::Struct(s)) if s.case_sensitive);
         if case_sensitive {
@@ -1869,7 +2136,8 @@ impl VM {
         Ok((args, names))
     }
 
-    pub fn interpret_sync(&mut self, mut chunk: Chunk) -> Result<BxValue> {
+    pub fn interpret_sync(&mut self, chunk: Chunk) -> Result<BxValue> {
+        let mut chunk = chunk.clone_without_runtime_caches();
         chunk.ensure_caches();
         let chunk_for_func = chunk.clone();
         let function = Rc::new(BxCompiledFunction {
@@ -1880,7 +2148,9 @@ impl VM {
             params: Vec::new(),
             modifiers: crate::types::FunctionModifiers::default(),
             captured_receiver: None,
+            captured_scopes: Vec::new(),
             chunk: chunk_for_func,
+            bif: None,
         });
 
         let future = self.spawn(
@@ -1900,10 +2170,9 @@ impl VM {
         args: Vec<BxValue>,
         priority: u8,
         receiver: Option<BxValue>,
+        names: Option<Vec<String>>,
     ) -> BxValue {
-        let receiver = receiver
-            .or(function.captured_receiver)
-            .or(self.current_receiver());
+        let receiver = receiver.or(function.captured_receiver);
         let future_id = self.heap.alloc(GcObject::Future(BxFuture {
             value: BxValue::new_null(),
             status: FutureStatus::Pending,
@@ -1911,6 +2180,7 @@ impl VM {
             success_handler: None,
         }));
 
+        let args = self.function_arguments(args, names.as_deref(), &function);
         let mut stack = Vec::with_capacity(function.arity as usize + 1);
         stack.push(func);
         for arg in args {
@@ -1920,14 +2190,22 @@ impl VM {
             stack.push(BxValue::new_null());
         }
 
-        let chunk = Rc::new(RefCell::new(function.chunk.clone()));
+        let chunk = function.chunk.execution_chunk();
 
         let fiber = BxFiber {
             stack,
             frames: vec![CallFrame {
+                #[cfg(feature = "jit")]
+                jit_loop_attempted: false,
+                #[cfg(feature = "jit")]
+                jit_construct_unsupported: None,
                 function,
                 chunk,
+                context: None,
                 ip: 0,
+                scope_mode: scopes::ScopeMode::Binding,
+                local_scope: None,
+                local_names: scopes::SlotBindings::new(),
                 stack_base: 1,
                 receiver,
                 handlers: Vec::new(),
@@ -1938,6 +2216,9 @@ impl VM {
             future_id,
             wait_until: None,
             yield_requested: false,
+            running: false,
+            blocked_on_future: false,
+            finished: false,
             priority,
             root_stack: Vec::new(),
         };
@@ -1976,6 +2257,10 @@ impl VM {
     }
 
     fn drain_native_completions(&mut self) {
+        // Native senders remain counted/rooted until their terminal message is drained.
+        if self.pending_native_futures.is_empty() && self.native_completions.is_empty() {
+            return;
+        }
         while let Ok(message) = self.native_future_rx.try_recv() {
             match message {
                 NativeFutureMessage::Resolve { future, value } => {
@@ -2053,7 +2338,7 @@ impl VM {
                 GcObject::Instance(inst) => format!("<instance of {}>", inst.class.borrow().name),
                 GcObject::Future(_) => format!("<future id:{}>", id),
                 GcObject::CompiledFunction(f) => format!("<function {}>", f.name),
-                GcObject::NativeFunction(_) => "<native function>".to_string(),
+                GcObject::NativeFunction(_) | GcObject::NativeCallback(_) => "<native function>".to_string(),
                 GcObject::Class(c) => format!("<class {}>", c.borrow().name),
                 GcObject::Interface(i) => format!("<interface {}>", i.borrow().name),
                 GcObject::NativeObject(o) => format!("<native object {:?}>", o.borrow()),
@@ -2065,6 +2350,18 @@ impl VM {
         } else {
             "<invalid>".to_string()
         }
+    }
+
+    fn literal_struct(&mut self, pairs: &[(u32, BxValue)]) -> BxValue {
+        let mut shape_id = self.shapes.get_root();
+        let mut properties = Vec::with_capacity(pairs.len());
+        for &(key, value) in pairs {
+            shape_id = self.shapes.transition(shape_id, key);
+            properties.push(value);
+        }
+        BxValue::new_ptr(self.heap.alloc(GcObject::Struct(BxStruct {
+            shape_id, properties, case_sensitive: false, ordered: false,
+        })))
     }
 
     fn numeric_value(&self, val: BxValue) -> Option<f64> {
@@ -2174,6 +2471,34 @@ impl VM {
         a == b
     }
 
+    // Preserve original BoxLang throws across the existing String native ABI.
+    // Scoped save/restore prevents handled/retried/nested callback errors escaping.
+    fn native_exception_scope(&mut self, call: impl FnOnce(&mut Self) -> Result<BxValue, String>) -> Result<BxValue, String> {
+        let previous_gc = self.gc_suspended;
+        // Native arguments/temporaries may live only in Rust. Reentrant BoxLang
+        // callbacks must not yield for collection until this boundary returns.
+        self.gc_suspended = true;
+        let saved = self.native_callback_exception.take();
+        self.native_exception_depth += 1;
+        let result = call(self);
+        self.native_exception_depth -= 1;
+        self.gc_suspended = previous_gc;
+        let raised = self.native_callback_exception.take();
+        self.native_callback_exception = match (&result, raised) {
+            (Err(message), Some((original, root))) if *message == original => Some((original, root)),
+            _ => saved,
+        };
+        result
+    }
+
+    fn invoke_callback(&mut self, callback: &crate::types::NativeCallback, args: &[BxValue]) -> Result<BxValue, String> {
+        let previous = self.gc_suspended;
+        self.gc_suspended = true;
+        let result = self.native_exception_scope(|vm| (callback.callback)(vm, args));
+        self.gc_suspended = previous;
+        result
+    }
+
     pub fn new() -> Self {
         Self::new_with_bifs(HashMap::new(), HashMap::new())
     }
@@ -2188,8 +2513,42 @@ impl VM {
 
     pub fn new_with_args(args: Vec<String>) -> Self {
         let mut vm = Self::new();
-        vm.cli_args = args;
+        vm.set_cli_args(args);
         vm
+    }
+
+    /// Records the command line (executable first) and exposes it like BoxLang's CLI mode:
+    /// `server.cli` (`args`, `parsed`, `executionPath`, `command`) and `server.boxlang.cliMode`.
+    pub fn set_cli_args(&mut self, args: Vec<String>) {
+        use crate::types::BxVM as _;
+        let user_args: Vec<String> = args.iter().skip(1).cloned().collect();
+        let command = args.join(" ");
+        self.cli_args = args;
+        let Some(server_id) = self.get_global("server").and_then(|server| server.as_gc_id()) else {
+            return;
+        };
+        let vm: &mut dyn crate::types::BxVM = self;
+        let raw = vm.array_new();
+        for arg in &user_args {
+            let value = BxValue::new_ptr(vm.string_new(arg.clone()));
+            vm.array_push(raw, value);
+        }
+        let parsed = crate::bifs::cli::parsed_arguments_value(vm, &user_args);
+        #[cfg(not(target_arch = "wasm32"))]
+        let execution_path = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
+        #[cfg(target_arch = "wasm32")]
+        let execution_path = String::new();
+        let cli = vm.struct_new();
+        vm.struct_set(cli, "args", BxValue::new_ptr(raw));
+        vm.struct_set(cli, "parsed", parsed);
+        let execution_path = BxValue::new_ptr(vm.string_new(execution_path));
+        vm.struct_set(cli, "executionPath", execution_path);
+        let command = BxValue::new_ptr(vm.string_new(command));
+        vm.struct_set(cli, "command", command);
+        vm.struct_set(server_id, "cli", BxValue::new_ptr(cli));
+        let boxlang = vm.struct_new();
+        vm.struct_set(boxlang, "cliMode", BxValue::new_bool(true));
+        vm.struct_set(server_id, "boxlang", BxValue::new_ptr(boxlang));
     }
 
     pub fn new_with_bifs(
@@ -2201,6 +2560,9 @@ impl VM {
             fibers: Vec::new(),
             global_names: HashMap::new(),
             global_values: Vec::new(),
+            global_namespace: next_global_namespace(),
+            global_bifs: HashSet::new(),
+            struct_assignment_hooks: HashMap::new(),
             script_variables: Self::new_variables_scope(),
             current_fiber_idx: None,
             shapes: ShapeRegistry::new(),
@@ -2213,8 +2575,15 @@ impl VM {
             interner: StringInterner::new(),
             cli_args: Vec::new(),
             soap_clients: HashMap::new(),
+            #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+            members: HashMap::new(),
             output_buffer: None,
+            output_capture_stack: Vec::new(),
             gc_suspended: false,
+            native_exception_depth: 0,
+            native_callback_exception: None,
+            function_events: HashMap::new(),
+            automatic_event_depth: 0,
             thread_futures: HashSet::new(),
             datetime_timezones: HashMap::new(),
             native_completions: VecDeque::new(),
@@ -2248,13 +2617,13 @@ impl VM {
         // Register standard BIFs
         for (name, func) in crate::bifs::register_all() {
             let id = vm.heap.alloc(GcObject::NativeFunction(func));
-            vm.insert_global(name, BxValue::new_ptr(id));
+            vm.register_global_bif(name, BxValue::new_ptr(id));
         }
 
         // Register external/plugin BIFs
         for (name, func) in external_bifs {
             let id = vm.heap.alloc(GcObject::NativeFunction(func));
-            vm.insert_global(name, BxValue::new_ptr(id));
+            vm.register_global_bif(name, BxValue::new_ptr(id));
         }
 
         // Initialize 'server' scope
@@ -2480,6 +2849,14 @@ impl VM {
 
         let server_ptr = self.heap.alloc(GcObject::Struct(server_struct));
         self.insert_global("server".to_string(), BxValue::new_ptr(server_ptr));
+        // BoxLang's request context owns a `request` scope in CLI scripts too.
+        self.insert_empty_struct_global("request");
+    }
+
+    pub fn register_global_bif(&mut self, name: String, value: BxValue) {
+        self.global_bifs.insert(Rc::from(name.to_lowercase()));
+        let value = self.bif_function(value, &name, false);
+        self.insert_global(name, value);
     }
 
     pub fn insert_global(&mut self, name: String, val: BxValue) {
@@ -2504,6 +2881,11 @@ impl VM {
         Some(self.struct_get(id, member_name))
     }
 
+    /// Read-only host roots; binding changes must go through VM APIs.
+    pub fn global_values(&self) -> &[BxValue] {
+        &self.global_values
+    }
+
     fn insert_global_interned(&mut self, name_id: u32, val: BxValue) {
         if let Some(&idx) = self.global_names.get(&name_id) {
             self.global_values[idx] = val;
@@ -2522,6 +2904,44 @@ impl VM {
         } else {
             None
         }
+    }
+
+    /// One step of `for ( row in query )`: the row struct and the 1-based row number.
+    #[cfg(target_arch = "wasm32")]
+    fn query_iteration_step(
+        &mut self,
+        _collection: BxValue,
+        _cursor: usize,
+    ) -> Result<Option<(bool, Option<BxValue>, Option<BxValue>)>> {
+        Ok(None)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn query_iteration_step(
+        &mut self,
+        collection: BxValue,
+        cursor: usize,
+    ) -> Result<Option<(bool, Option<BxValue>, Option<BxValue>)>> {
+        let Some(id) = collection.as_gc_id() else { return Ok(None) };
+        if !matches!(self.heap.get_opt(id), Some(GcObject::NativeObject(_)))
+            || BxVM::native_object_query_columns(self, id).is_none()
+        {
+            return Ok(None);
+        }
+        let count = BxVM::native_object_call_method(self, id, "recordcount", &[])
+            .map_err(anyhow::Error::msg)?
+            .as_number() as usize;
+        if cursor >= count {
+            return Ok(Some((true, None, None)));
+        }
+        let row = BxVM::native_object_call_method(
+            self,
+            id,
+            "getrow",
+            &[BxValue::new_number((cursor + 1) as f64)],
+        )
+        .map_err(anyhow::Error::msg)?;
+        Ok(Some((false, Some(row), Some(BxValue::new_number(cursor as f64 + 1.0)))))
     }
 
     fn resolve_member_method(&self, receiver: &BxValue, method_name: &str) -> Option<String> {
@@ -2547,6 +2967,9 @@ impl VM {
                 "sgn" => Some("sgn".to_string()),
                 "sqr" => Some("sqr".to_string()),
                 "decimalformat" => Some("decimalformat".to_string()),
+                "max" => Some("max".to_string()),
+                "min" => Some("min".to_string()),
+                "formatbasen" => Some("formatbasen".to_string()),
                 "numberformat" => Some("numberformat".to_string()),
                 "currencyformat" => Some("currencyformat".to_string()),
                 "booleanformat" | "truefalseformat" => Some("booleanformat".to_string()),
@@ -2576,6 +2999,24 @@ impl VM {
                     "size" => Some("xmlsize".to_string()),
                     _ => None,
                 };
+            }
+            if matches!(self.heap.get(id), GcObject::Array(_)) && !crate::bifs::set::is_set(id) {
+                let bif = match name.as_str() {
+                    "each" => "arrayeach",
+                    "every" => "arrayevery",
+                    "map" => "arraymap",
+                    "reduce" => "arrayreduce",
+                    "filter" => "arrayfilter",
+                    "some" => "arraysome",
+                    "none" => "arraynone",
+                    "findnocase" => "arrayfindnocase",
+                    "join" => "arraytolist",
+                    "isdefined" => "arrayindexexists",
+                    _ => "",
+                };
+                if !bif.is_empty() {
+                    return Some(bif.to_string());
+                }
             }
             match self.heap.get(id) {
                 GcObject::String(_) => match name.as_str() {
@@ -2634,6 +3075,7 @@ impl VM {
                      "second" => Some("second".to_string()),
                      "millisecond" => Some("millisecond".to_string()),
                     "fromjson" => Some("deserializejson".to_string()),
+                    "toast" => Some("boxast".to_string()),
                     "rematch" => Some("rematch".to_string()),
                     "rematchnocase" => Some("rematchnocase".to_string()),
                     "refind" => Some("refind".to_string()),
@@ -2697,6 +3139,24 @@ impl VM {
                      "reduceright" => Some("stringreduceright".to_string()),
                      "some" => Some("stringsome".to_string()),
                      "sort" => Some("stringsort".to_string()),
+                    "listindexexists" => Some("listindexexists".to_string()),
+                    "listinsertat" => Some("listinsertat".to_string()),
+                    "listitemtrim" => Some("listitemtrim".to_string()),
+                    "listprepend" => Some("listprepend".to_string()),
+                    "listreduce" => Some("listreduce".to_string()),
+                    "listsetat" => Some("listsetat".to_string()),
+                    "listtoarray" => Some("listtoarray".to_string()),
+                    "listtrim" => Some("listcompact".to_string()),
+                    "jsondeserialize" => Some("deserializejson".to_string()),
+                    "jsonprettify" => Some("jsonprettify".to_string()),
+                    "inputbasen" => Some("inputbasen".to_string()),
+                    "tobase64" => Some("tobase64".to_string()),
+                    "tobinary" => Some("tobinary".to_string()),
+                    "yesnoformat" => Some("yesnoformat".to_string()),
+                    "parsedatetime" => Some("parsedatetime".to_string()),
+                    "stringreduceright" => Some("stringreduceright".to_string()),
+                    "stringsome" => Some("stringsome".to_string()),
+                    "stringsort" => Some("stringsort".to_string()),
                      _ => None,
                  },
                  GcObject::Array(_) => match name.as_str() {
@@ -2800,11 +3260,29 @@ impl VM {
                      "findkey" => Some("structfindkey".to_string()),
                      "keyset" => Some("structkeyset".to_string()),
                      "valueset" => Some("structvalueset".to_string()),
+                    "clear" => Some("structclear".to_string()),
+                    "copy" => Some("structcopy".to_string()),
+                    "delete" => Some("structdelete".to_string()),
+                    "every" => Some("structevery".to_string()),
+                    "filter" => Some("structfilter".to_string()),
+                    "findvalue" => Some("structfindvalue".to_string()),
+                    "hash" => Some("hash".to_string()),
+                    "insert" => Some("structinsert".to_string()),
+                    "keyarray" => Some("structkeyarray".to_string()),
+                    "keylist" => Some("structkeylist".to_string()),
+                    "map" => Some("structmap".to_string()),
+                    "none" => Some("structnone".to_string()),
+                    "reduce" => Some("structreduce".to_string()),
+                    "some" => Some("structsome".to_string()),
+                    "sort" => Some("structsort".to_string()),
+                    "update" => Some("structupdate".to_string()),
+                    "valuearray" => Some("structvaluearray".to_string()),
                     _ => None,
                 },
                 GcObject::Future(_) => match name.as_str() {
                     "onerror" => Some("futureonerror".to_string()),
                     "get" => Some("futureget".to_string()),
+                    "isdone" => Some("futureisdone".to_string()),
                     "completeexceptionally" => Some("futurecompleteexceptionally".to_string()),
                     "completeontimeout" => Some("futurecompleteontimeout".to_string()),
                     "joinordefault" => Some("futurejoinordefault".to_string()),
@@ -2831,6 +3309,7 @@ impl VM {
                      "toodbcdate" => Some("createodbcdate".to_string()),
                      "toodbctime" => Some("createodbctime".to_string()),
                      "toepochmillis" => Some("toepochmillis".to_string()),
+                     "hash" => Some("hash".to_string()),
                      "offset" => Some("offset".to_string()),
                      "timezone" | "gettimezone" => Some("gettimezone".to_string()),
                      "getnumericdate" => Some("getnumericdate".to_string()),
@@ -2907,9 +3386,10 @@ impl VM {
         }
     }
 
-    pub fn interpret(&mut self, mut chunk: Chunk) -> Result<BxValue> {
-        // Legacy consuming execution path. This still clones the chunk into a
-        // per-run Rc/RefCell wrapper and is kept as-is for existing callers.
+    pub fn interpret(&mut self, chunk: Chunk) -> Result<BxValue> {
+        // Script programs may be reused by independent VMs. Only functions
+        // already promoted into this VM share their invocation caches.
+        let mut chunk = chunk.clone_without_runtime_caches();
         chunk.ensure_caches();
         let chunk_for_func = chunk.clone();
         let chunk_rc = Rc::new(RefCell::new(chunk));
@@ -2920,9 +3400,9 @@ impl VM {
         // Borrowed execution path used by host tests. It still creates a
         // fresh Chunk wrapper so the caller's runtime caches are not mutated,
         // but the immutable program data is shared via Arc.
-        let mut chunk_for_func = chunk.clone_without_runtime_caches();
-        chunk_for_func.ensure_caches();
-        let chunk_rc = Rc::new(RefCell::new(chunk_for_func));
+        let mut route_chunk = chunk.fresh_route_chunk();
+        route_chunk.ensure_caches();
+        let chunk_rc = Rc::new(RefCell::new(route_chunk));
         let chunk_for_func = chunk.clone_without_runtime_caches();
         self.interpret_chunk_shared(chunk_for_func, chunk_rc)
     }
@@ -2933,11 +3413,26 @@ impl VM {
         // per-request runtime cache. This avoids the previous OOM-prone
         // `clone_without_runtime_caches()` path that duplicated the entire
         // route chunk on every HTTP request.
-        let mut route_chunk = chunk.clone_without_runtime_caches();
+        let mut route_chunk = chunk.fresh_route_chunk();
         route_chunk.ensure_caches();
         let chunk_rc = Rc::new(RefCell::new(route_chunk));
         let chunk_for_func = Chunk::default();
-        self.interpret_chunk_shared_current_task(chunk_for_func, chunk_rc)
+        self.interpret_chunk_shared_current_task(chunk_for_func, chunk_rc, None)
+    }
+
+    pub fn interpret_chunk_with_receiver(&mut self, chunk: &Chunk, receiver: Option<BxValue>) -> Result<BxValue> {
+        if let Some(receiver) = receiver { self.instance_class_name(receiver)?; }
+        let mut chunk = chunk.fresh_route_chunk();
+        chunk.ensure_caches();
+        let previous = self.current_fiber_idx;
+        let result = self.interpret_chunk_shared_current_task(Chunk::default(), Rc::new(RefCell::new(chunk)), receiver);
+        self.current_fiber_idx = previous;
+        // Page aborts stop this template, not its including caller or request hooks.
+        if result.as_ref().err().and_then(|error| error.downcast_ref::<AbortSignal>()).is_some_and(|signal| signal.kind == "page") {
+            self.native_callback_exception = None;
+            return Ok(BxValue::new_null());
+        }
+        result
     }
 
     fn interpret_chunk_shared(
@@ -2953,6 +3448,8 @@ impl VM {
             params: Vec::new(),
             modifiers: crate::types::FunctionModifiers::default(),
             captured_receiver: None,
+            captured_scopes: Vec::new(),
+            bif: None,
             chunk: chunk_for_func,
         });
 
@@ -2974,12 +3471,23 @@ impl VM {
                 handlers: Vec::new(),
                 pending_completion: None,
                 promoted_constants: Vec::new(),
+                local_scope: None,
+                local_names: scopes::SlotBindings::new(),
+                scope_mode: scopes::ScopeMode::Binding,
+                context: None,
+                #[cfg(feature = "jit")]
+                jit_loop_attempted: false,
+                #[cfg(feature = "jit")]
+                jit_construct_unsupported: None,
             }],
 
             variables: Self::new_variables_scope(),
             future_id,
             wait_until: None,
             yield_requested: false,
+            running: false,
+            blocked_on_future: false,
+            finished: false,
             priority: 0,
             root_stack: Vec::new(),
         };
@@ -2994,8 +3502,10 @@ impl VM {
         &mut self,
         chunk_for_func: Chunk,
         chunk_rc: Rc<RefCell<Chunk>>,
+        receiver: Option<BxValue>,
     ) -> Result<BxValue> {
         let function = Rc::new(BxCompiledFunction {
+            bif: None,
             name: "script".to_string(),
             kind: crate::types::FunctionKind::Udf,
             arity: 0,
@@ -3003,6 +3513,7 @@ impl VM {
             params: Vec::new(),
             modifiers: crate::types::FunctionModifiers::default(),
             captured_receiver: None,
+            captured_scopes: Vec::new(),
             chunk: chunk_for_func,
         });
 
@@ -3024,18 +3535,30 @@ impl VM {
                 handlers: Vec::new(),
                 pending_completion: None,
                 promoted_constants: Vec::new(),
+                local_scope: None,
+                local_names: scopes::SlotBindings::new(),
+                scope_mode: scopes::ScopeMode::Binding,
+                context: None,
+                #[cfg(feature = "jit")]
+                jit_loop_attempted: false,
+                #[cfg(feature = "jit")]
+                jit_construct_unsupported: None,
             }],
 
             variables: Self::new_variables_scope(),
             future_id,
             wait_until: None,
             yield_requested: false,
+            running: false,
+            blocked_on_future: false,
+            finished: false,
             priority: 0,
             root_stack: Vec::new(),
         };
 
         self.fibers.push(fiber);
         let fiber_idx = self.fibers.len() - 1;
+        self.fibers[fiber_idx].frames.last_mut().unwrap().receiver = receiver;
         let result = self.run_fiber_to_completion(fiber_idx);
         self.current_fiber_idx = None;
         result
@@ -3059,21 +3582,29 @@ impl VM {
             match self.heap.get(id) {
                 GcObject::CompiledFunction(f) => {
                     let f = Rc::clone(f);
-                    if args.len() < f.min_arity as usize || args.len() > f.arity as usize {
-                        anyhow::bail!(
-                            "Expected {}-{} arguments but got {}",
-                            f.min_arity,
-                            f.arity,
-                            args.len()
-                        );
+                    if args.len() < f.min_arity as usize {
+                        anyhow::bail!("Expected at least {} arguments but got {}", f.min_arity, args.len());
                     }
-                    Ok(self.enqueue_function_call(func, f, args, 0, receiver))
+                    Ok(self.enqueue_function_call(func, f, args, 0, receiver, None))
+                }
+                GcObject::NativeCallback(_) => {
+                    let res = self.call_function_value(func, args, None);
+                    let future = self.future_new();
+                    match res {
+                        Ok(value) => self.future_resolve(future, value).map_err(anyhow::Error::msg)?,
+                        Err(error) => {
+                            let id = self.string_new(error.to_string());
+                            self.future_reject(future, BxValue::new_ptr(id)).map_err(anyhow::Error::msg)?;
+                        }
+                    }
+                    Ok(future)
                 }
                 GcObject::NativeFunction(f) => {
                     let f = *f;
+                    let previous_gc = self.gc_suspended;
                     self.gc_suspended = true;
-                    let res = f(self, &args).map_err(|e| anyhow::anyhow!(e));
-                    self.gc_suspended = false;
+                    let res = self.native_exception_scope(|vm| f(vm, &args)).map_err(|e| anyhow::anyhow!(e));
+                    self.gc_suspended = previous_gc;
                     let future = self.future_new();
                     match res {
                         Ok(value) => {
@@ -3096,9 +3627,14 @@ impl VM {
 
     pub fn pump_until_blocked(&mut self) -> Result<()> {
         self.drain_native_completions();
+        self.sweep_finished_fibers();
         let mut i = 0;
 
         while i < self.fibers.len() {
+            if self.fibers[i].finished {
+                i += 1;
+                continue;
+            }
             if let Some(until) = self.fibers[i].wait_until {
                 if Instant::now() < until {
                     i += 1;
@@ -3131,11 +3667,13 @@ impl VM {
     }
 
     #[cfg(feature = "debugger")]
-    pub fn start_debug_chunk(&mut self, mut chunk: Chunk) -> Result<BxValue> {
+    pub fn start_debug_chunk(&mut self, chunk: Chunk) -> Result<BxValue> {
+        let mut chunk = chunk.clone_without_runtime_caches();
         chunk.ensure_caches();
         let chunk_for_func = chunk.clone();
         let chunk_rc = Rc::new(RefCell::new(chunk));
         let function = Rc::new(BxCompiledFunction {
+            bif: None,
             name: "script".to_string(),
             kind: crate::types::FunctionKind::Udf,
             arity: 0,
@@ -3143,6 +3681,7 @@ impl VM {
             params: Vec::new(),
             modifiers: crate::types::FunctionModifiers::default(),
             captured_receiver: None,
+            captured_scopes: Vec::new(),
             chunk: chunk_for_func,
         });
 
@@ -3164,11 +3703,22 @@ impl VM {
                 handlers: Vec::new(),
                 pending_completion: None,
                 promoted_constants: Vec::new(),
+                local_scope: None,
+                local_names: scopes::SlotBindings::new(),
+                scope_mode: scopes::ScopeMode::Binding,
+                context: None,
+                #[cfg(feature = "jit")]
+                jit_loop_attempted: false,
+                #[cfg(feature = "jit")]
+                jit_construct_unsupported: None,
             }],
             variables: Self::new_variables_scope(),
             future_id,
             wait_until: None,
             yield_requested: false,
+            running: false,
+            blocked_on_future: false,
+            finished: false,
             priority: 0,
             root_stack: Vec::new(),
         };
@@ -3289,7 +3839,7 @@ impl VM {
     }
 
     #[cfg(feature = "debugger")]
-    pub fn debug_get_value_json(&self, path: &str) -> Result<serde_json::Value> {
+    pub fn debug_get_value_json(&mut self, path: &str) -> Result<serde_json::Value> {
         let mut parts = path.split('.');
         let root = parts
             .next()
@@ -3299,27 +3849,23 @@ impl VM {
         }
 
         let fiber_idx = self.current_fiber_idx.unwrap_or(0);
-        let fiber = self
-            .fibers
-            .get(fiber_idx)
-            .ok_or_else(|| anyhow::anyhow!("No active debug fiber"))?;
+        anyhow::ensure!(
+            self.fibers.get(fiber_idx).is_some_and(|fiber| !fiber.frames.is_empty()),
+            "No active debug frame"
+        );
         let first = parts
             .next()
             .ok_or_else(|| anyhow::anyhow!("Value path must include a variables member"))?;
-        let mut value = fiber
-            .variables
-            .borrow()
-            .get(&first.to_lowercase())
-            .copied()
-            .unwrap_or(BxValue::new_null());
+        let mut value = self.private_value(fiber_idx, "variables")
+            .unwrap_or_else(BxValue::new_null);
 
-        for part in parts {
+        for part in std::iter::once(first).chain(parts) {
             let Some(id) = value.as_gc_id() else {
                 return Ok(serde_json::Value::Null);
             };
             value = match self.heap.get(id) {
                 GcObject::Struct(_) => self.struct_get(id, part),
-                GcObject::NativeObject(obj) => obj.borrow().get_property(part),
+                GcObject::NativeObject(obj) => self.native_object_get(obj, part),
                 _ => BxValue::new_null(),
             };
         }
@@ -3363,9 +3909,7 @@ impl VM {
         _chunk: Rc<RefCell<crate::vm::chunk::Chunk>>,
         receiver: Option<BxValue>,
     ) -> BxValue {
-        let receiver = receiver
-            .or(func.captured_receiver)
-            .or(self.current_receiver());
+        let receiver = receiver.or(func.captured_receiver);
         let future_id = self.heap.alloc(GcObject::Future(BxFuture {
             value: BxValue::new_null(),
             status: FutureStatus::Pending,
@@ -3373,6 +3917,7 @@ impl VM {
             success_handler: None,
         }));
 
+        let args = self.function_arguments(args, None, &func);
         let mut stack = Vec::with_capacity(func.arity as usize + 1);
         let func_val = BxValue::new_ptr(
             self.heap
@@ -3386,13 +3931,21 @@ impl VM {
             stack.push(BxValue::new_null());
         }
 
-        let chunk = Rc::new(RefCell::new(func.chunk.clone()));
+        let chunk = func.chunk.execution_chunk();
         let fiber = BxFiber {
             stack,
             frames: vec![CallFrame {
+                #[cfg(feature = "jit")]
+                jit_loop_attempted: false,
+                #[cfg(feature = "jit")]
+                jit_construct_unsupported: None,
                 function: func,
                 chunk,
+                context: None,
                 ip: 0,
+                scope_mode: scopes::ScopeMode::Binding,
+                local_scope: None,
+                local_names: scopes::SlotBindings::new(),
                 stack_base: 1,
                 receiver,
                 handlers: Vec::new(),
@@ -3403,6 +3956,9 @@ impl VM {
             future_id,
             wait_until: None,
             yield_requested: false,
+            running: false,
+            blocked_on_future: false,
+            finished: false,
             priority,
             root_stack: Vec::new(),
         };
@@ -3414,7 +3970,11 @@ impl VM {
     fn run_all(&mut self) -> Result<BxValue> {
         let mut last_result = BxValue::new_null();
 
-        while !self.fibers.is_empty() {
+        loop {
+            self.sweep_finished_fibers();
+            if self.fibers.is_empty() {
+                break;
+            }
             self.drain_native_completions();
             let mut i = 0;
             let mut all_waiting = true;
@@ -3423,7 +3983,7 @@ impl VM {
             // 1. Find the highest priority among non-waiting fibers
             let mut max_priority = 0;
             let now = Instant::now();
-            for f in &self.fibers {
+            for f in self.fibers.iter().filter(|f| !f.finished) {
                 if let Some(until) = f.wait_until {
                     if now < until {
                         if earliest_wait.is_none() || until < earliest_wait.unwrap() {
@@ -3438,6 +3998,10 @@ impl VM {
             }
 
             while i < self.fibers.len() {
+                if self.fibers[i].finished {
+                    i += 1;
+                    continue;
+                }
                 let now = Instant::now();
                 if let Some(until) = self.fibers[i].wait_until {
                     if now < until {
@@ -3512,13 +4076,10 @@ impl VM {
 
             if all_waiting && !self.fibers.is_empty() {
                 if let Some(until) = earliest_wait {
-                    let now = Instant::now();
-                    if until > now {
-                        std::thread::sleep(until - now);
-                    }
+                    wait_until_instant(until);
                 } else {
                     // Fallback if somehow all_waiting but no earliest_wait
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    wait_until_instant(Instant::now() + Duration::from_millis(1));
                 }
             }
 
@@ -3529,6 +4090,54 @@ impl VM {
         }
 
         Ok(last_result)
+    }
+
+    /// Runs one timeslice of every fiber that is not suspended on the Rust stack.
+    /// Finished fibers are only marked: removing them would move the fibers whose indexes
+    /// the suspended callers still hold.
+    fn run_other_fibers(&mut self) -> Result<()> {
+        self.drain_native_completions();
+        let mut ran = false;
+        let mut i = 0;
+        while i < self.fibers.len() {
+            if self.fibers[i].running || self.fibers[i].finished {
+                i += 1;
+                continue;
+            }
+            if let Some(until) = self.fibers[i].wait_until {
+                if Instant::now() < until {
+                    i += 1;
+                    continue;
+                }
+                self.fibers[i].wait_until = None;
+            }
+            ran = true;
+            self.current_fiber_idx = Some(i);
+            let outcome = self.run_fiber(i, Some(Instant::now() + Duration::from_millis(2)));
+            self.current_fiber_idx = None;
+            match outcome {
+                Ok(Some(result)) => {
+                    self.fibers[i].finished = true;
+                    let future_id = self.fibers[i].future_id;
+                    self.settle_future_success(future_id, result)?;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    self.fibers[i].finished = true;
+                    let future_id = self.fibers[i].future_id;
+                    let error = self.string_new(e.to_string());
+                    self.settle_future_error(future_id, BxValue::new_ptr(error))?;
+                }
+            }
+            i += 1;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if !ran {
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = ran;
+        Ok(())
     }
 
     fn settle_future_success(&mut self, future_id: usize, result: BxValue) -> Result<()> {
@@ -3593,10 +4202,7 @@ impl VM {
             }
 
             if let Some(until) = self.fibers[fiber_idx].wait_until {
-                let now = Instant::now();
-                if until > now {
-                    std::thread::sleep(until - now);
-                }
+                wait_until_instant(until);
                 if fiber_idx < self.fibers.len() {
                     self.fibers[fiber_idx].wait_until = None;
                 }
@@ -3636,6 +4242,35 @@ impl VM {
         fiber_idx: usize,
         timeslice_end: Option<Instant>,
     ) -> Result<Option<BxValue>> {
+        let future_id = self.fibers[fiber_idx].future_id;
+        self.fibers[fiber_idx].running = true;
+        let result = self.run_fiber_inner(fiber_idx, timeslice_end);
+        // Removal of other fibers is deferred while any fiber runs, so the index is still ours.
+        if let Some(fiber) = self.fibers.get_mut(fiber_idx) {
+            if fiber.future_id == future_id {
+                fiber.running = false;
+            }
+        }
+        result
+    }
+
+    /// Drops fibers finished by a nested scheduler. Only call where no scheduler index is held.
+    fn sweep_finished_fibers(&mut self) {
+        let mut i = 0;
+        while i < self.fibers.len() {
+            if self.fibers[i].finished && !self.fibers[i].running {
+                self.fibers.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn run_fiber_inner(
+        &mut self,
+        fiber_idx: usize,
+        timeslice_end: Option<Instant>,
+    ) -> Result<Option<BxValue>> {
         // Persistent state across dispatch iterations. Refreshed only when
         // `frame_changed` is true (after CALL/RETURN/THROW/NEW/etc.).
         // In tight loops there are no frame changes, so these are loaded just once.
@@ -3648,6 +4283,7 @@ impl VM {
         // Pointer to the base of the current frame's locals on the value stack.
         // Refreshed before every dispatch because any preceding opcode may have
         // reallocated the stack Vec.
+        #[cfg(feature = "jit")]
         let mut locals_ptr: *mut BxValue;
         // Counter used to throttle Instant::now() at safe points.
         // We only call the (expensive) system clock every 1024 backward branches
@@ -3723,6 +4359,7 @@ impl VM {
             // Any preceding opcode may grow and reallocate the value stack. Refresh
             // the frame-local base before every dispatch rather than relying on fixed
             // reserve headroom to keep a raw Vec pointer valid.
+            #[cfg(feature = "jit")]
             unsafe {
                 locals_ptr = self.fibers[fiber_idx].stack.as_mut_ptr().add(stack_base);
             }
@@ -3733,13 +4370,13 @@ impl VM {
             // run_fiber_to_completion) can run collect_garbage(). Throttled with safe_point_count
             // to avoid checking every single iteration.
             safe_point_count = safe_point_count.wrapping_add(1);
-            if safe_point_count & 1023 == 0 && self.heap.should_collect() {
+            if !self.gc_suspended && (safe_point_count & 1023 == 0 || self.heap.should_collect_promptly()) && self.heap.should_collect() {
                 self.fibers[fiber_idx].frames.last_mut().unwrap().ip = ip;
                 return Ok(None);
             }
 
             #[cfg(feature = "debugger")]
-            {
+            if self.debug_run.is_some() {
                 let loc = self.debug_location_at_ip(fiber_idx, ip);
                 let mut pause_reason = None;
                 if let Some(state) = self.debug_run.as_mut() {
@@ -3855,16 +4492,11 @@ impl VM {
                 // --- Hot Loop / Specialized Opcodes ---
                 op::INC_LOCAL => {
                     let slot = op0;
-                    let val = unsafe { *locals_ptr.add(slot as usize) };
+                    let val = self.local_value(fiber_idx, slot as usize);
                     if val.is_number() {
-                        unsafe {
-                            *locals_ptr.add(slot as usize) =
-                                BxValue::new_number(val.as_number() + 1.0)
-                        };
+                        self.set_local_value(fiber_idx, slot as usize, BxValue::new_number(val.as_number() + 1.0));
                     } else if val.is_int() {
-                        unsafe {
-                            *locals_ptr.add(slot as usize) = BxValue::new_int(val.as_int() + 1)
-                        };
+                        self.set_local_value(fiber_idx, slot as usize, BxValue::new_int(val.as_int() + 1));
                     } else {
                         flush_ip!();
                         self.throw_error(fiber_idx, "Increment operand must be a number")?;
@@ -3876,7 +4508,7 @@ impl VM {
                     let slot = op0;
                     let const_idx = next_word!();
                     let offset = next_word!();
-                    let val = unsafe { *locals_ptr.add(slot as usize) };
+                    let val = self.local_value(fiber_idx, slot as usize);
                     let limit: BxValue = {
                         let already =
                             unsafe { (&*promoted_ptr).get(const_idx as usize).copied().flatten() };
@@ -3914,7 +4546,7 @@ impl VM {
                     let slot = op0;
                     let const_idx = next_word!();
                     let offset = next_word!();
-                    let val = unsafe { *locals_ptr.add(slot as usize) };
+                    let val = self.local_value(fiber_idx, slot as usize);
                     let next_val = if val.is_int() {
                         BxValue::new_int(val.as_int() + 1)
                     } else if val.is_number() {
@@ -3922,7 +4554,7 @@ impl VM {
                     } else {
                         vm_throw!("For loop variable must be a number");
                     };
-                    unsafe { *locals_ptr.add(slot as usize) = next_val };
+                    self.set_local_value(fiber_idx, slot as usize, next_val);
                     // Hot-path: read the loop-limit constant without a RefCell borrow.
                     // SAFETY: single-threaded VM; the code_ptr borrow has already dropped;
                     // no concurrent mutable access to promoted_constants is possible here.
@@ -3954,10 +4586,7 @@ impl VM {
                                         let final_val = unsafe {
                                             compiled(next_val.as_number(), limit.as_number())
                                         };
-                                        unsafe {
-                                            *locals_ptr.add(slot as usize) =
-                                                BxValue::new_number(final_val);
-                                        }
+                                        self.set_local_value(fiber_idx, slot as usize, BxValue::new_number(final_val));
                                         // Loop complete — do NOT jump back.
                                         jit_active = None;
                                         jit_body_active = None;
@@ -4020,6 +4649,7 @@ impl VM {
                                                 "[JIT] calling compiled loop at ip={}!",
                                                 ip_at_start
                                             );
+                                            self.sync_jit_locals(fiber_idx, false);
                                             let deopt = unsafe {
                                                 compiled(
                                                     locals_ptr as *mut u64,
@@ -4027,6 +4657,7 @@ impl VM {
                                                         as *const std::ffi::c_void,
                                                 )
                                             };
+                                            self.sync_jit_locals(fiber_idx, true);
                                             if deopt == 1 {
                                                 eprintln!(
                                                     "[JIT] deoptimizing loop at ip={} (type mismatch)!",
@@ -4086,7 +4717,10 @@ impl VM {
                                             let frame =
                                                 self.fibers[fiber_idx].frames.last().unwrap();
                                             let c = frame.chunk.borrow();
-                                            c.cache_slice(body_start, body_len)
+                                            // JIT specializes shapes only, never namespace-bound slots.
+                                            c.cache_slice(body_start, body_len).into_iter()
+                                                .map(|entry| entry.filter(|entry| !matches!(entry, IcEntry::Global { .. })))
+                                                .collect::<Vec<_>>()
                                         };
                                         for &word in &body_code {
                                             if (word & 0xFF) as u8 == op::CONSTANT {
@@ -4175,7 +4809,9 @@ impl VM {
                         chunk.cache_get(ip_at_start)
                     };
 
-                    if let Some(IcEntry::Global { index }) = ic {
+                    if let Some(IcEntry::Global { index, namespace }) = ic
+                        && namespace == self.global_namespace
+                    {
                         let val = self.global_values[index];
                         if val.is_number() {
                             self.global_values[index] = BxValue::new_number(val.as_number() + 1.0);
@@ -4195,7 +4831,7 @@ impl VM {
                                     BxValue::new_number(val.as_number() + 1.0);
                                 let frame = self.fibers[fiber_idx].frames.last().unwrap();
                                 let mut chunk = frame.chunk.borrow_mut();
-                                chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx });
+                                chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx, namespace: self.global_namespace });
                             } else {
                                 flush_ip!();
                                 self.throw_error(
@@ -4224,7 +4860,9 @@ impl VM {
                         chunk.cache_get(ip_at_start)
                     };
 
-                    let val = if let Some(IcEntry::Global { index }) = ic {
+                    let val = if let Some(IcEntry::Global { index, namespace }) = ic
+                        && namespace == self.global_namespace
+                    {
                         self.global_values[index]
                     } else {
                         let name_id = self.read_intern_id(fiber_idx, name_idx as usize)?;
@@ -4232,7 +4870,7 @@ impl VM {
                             let v = self.global_values[global_idx];
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
                             let mut chunk = frame.chunk.borrow_mut();
-                            chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx });
+                            chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx, namespace: self.global_namespace });
                             v
                         } else {
                             BxValue::new_null()
@@ -4255,19 +4893,43 @@ impl VM {
 
                 // --- Basic Hot Opcodes ---
                 op::GET_LOCAL => {
-                    let slot = op0;
-                    let val = unsafe { *locals_ptr.add(slot as usize) };
+                    let val = self.local_value(fiber_idx, op0 as usize);
                     self.fibers[fiber_idx].stack.push(val);
                 }
                 op::SET_LOCAL => {
-                    let slot = op0;
                     let val = *self.fibers[fiber_idx].stack.last().unwrap();
-                    unsafe { *locals_ptr.add(slot as usize) = val };
+                    self.set_local_value(fiber_idx, op0 as usize, val);
                 }
                 op::SET_LOCAL_POP => {
-                    let slot = op0;
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
-                    unsafe { *locals_ptr.add(slot as usize) = val };
+                    self.set_local_value(fiber_idx, op0 as usize, val);
+                }
+                op::FUNCTION_ENTER => {
+                    self.enter_frame_scopes(fiber_idx);
+                    flush_ip!();
+                    if let Err(error) = self.enter_function_events(fiber_idx) {
+                        self.throw_error(fiber_idx, &error)?;
+                    } else {
+                        #[cfg(feature = "jit")]
+                        if let Some(result) = self.run_jit_fn_body(fiber_idx, ip) {
+                            if let Some(result) = self.handle_return(fiber_idx, result)? {
+                                return Ok(Some(result));
+                            }
+                        }
+                    }
+                    frame_changed = true;
+                    continue 'quantum;
+                }
+                op::BIND_LOCAL => {
+                    let key = next_word!();
+                    let mut name = self.read_string_constant(fiber_idx, key as usize)?;
+                    let name = name.as_flat_str();
+                    let folded = if name.bytes().all(|b| b.is_ascii() && !b.is_ascii_uppercase()) {
+                        std::borrow::Cow::Borrowed(name)
+                    } else {
+                        std::borrow::Cow::Owned(name.to_lowercase())
+                    };
+                    self.bind_local(fiber_idx, op0 as usize, &folded);
                 }
                 op::CONSTANT => {
                     let idx = op0;
@@ -4736,7 +5398,12 @@ impl VM {
                     self.fibers[fiber_idx].stack.push(BxValue::new_ptr(id));
                 }
                 op::POP => {
-                    self.fibers[fiber_idx].stack.pop();
+                    let fiber = &mut self.fibers[fiber_idx];
+                    fiber.stack.pop();
+                    let frame = fiber.frames.last_mut().unwrap();
+                    if let Some(slot) = fiber.stack.len().checked_sub(frame.stack_base) {
+                        frame.local_names.remove(&slot);
+                    }
                 }
                 op::JUMP_IF_FALSE => {
                     let offset = op0;
@@ -4757,6 +5424,22 @@ impl VM {
                 op::LOOP => {
                     let offset = op0;
                     ip -= offset as usize;
+                    #[cfg(feature = "jit")]
+                    {
+                        flush_ip!();
+                        match self.run_jit_construct_loop(fiber_idx, ip).or_else(||self.run_jit_fn_loop(fiber_idx, ip)) {
+                            Some(jit::FnJitOutcome::Return(result)) => {
+                                if let Some(result) = self.handle_return(fiber_idx, result)? {
+                                    return Ok(Some(result));
+                                }
+                                frame_changed = true;
+                                continue 'quantum;
+                            }
+                            Some(jit::FnJitOutcome::Yield) => break 'quantum,
+                            Some(jit::FnJitOutcome::Resume(resume)) => { ip=resume; }
+                            None => {}
+                        }
+                    }
                     // Safe point: yield to scheduler if timeslice expired.
                     // Skipped entirely (None fast-path) when only one fiber is running.
                     // Throttled to every 1024 backward branches when active.
@@ -4822,7 +5505,9 @@ impl VM {
                         chunk.cache_get(ip_at_start)
                     };
 
-                    if let Some(IcEntry::Global { index }) = ic {
+                    if let Some(IcEntry::Global { index, namespace }) = ic
+                        && namespace == self.global_namespace
+                    {
                         let val = self.global_values[index];
                         self.fibers[fiber_idx].stack.push(val);
                     } else {
@@ -4833,7 +5518,7 @@ impl VM {
 
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
                             let mut chunk = frame.chunk.borrow_mut();
-                            chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx });
+                            chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx, namespace: self.global_namespace });
                         } else {
                             self.fibers[fiber_idx].stack.push(BxValue::new_null());
                         }
@@ -4849,7 +5534,9 @@ impl VM {
 
                     let val = *self.fibers[fiber_idx].stack.last().unwrap();
 
-                    if let Some(IcEntry::Global { index }) = ic {
+                    if let Some(IcEntry::Global { index, namespace }) = ic
+                        && namespace == self.global_namespace
+                    {
                         self.global_values[index] = val;
                     } else {
                         let name_id = self.read_intern_id(fiber_idx, idx as usize)?;
@@ -4858,13 +5545,13 @@ impl VM {
 
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
                             let mut chunk = frame.chunk.borrow_mut();
-                            chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx });
+                            chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx, namespace: self.global_namespace });
                         } else {
                             self.insert_global_interned(name_id, val);
                             if let Some(&global_idx) = self.global_names.get(&name_id) {
                                 let frame = self.fibers[fiber_idx].frames.last().unwrap();
                                 let mut chunk = frame.chunk.borrow_mut();
-                                chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx });
+                                chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx, namespace: self.global_namespace });
                             }
                         }
                     }
@@ -4879,7 +5566,9 @@ impl VM {
 
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
 
-                    if let Some(IcEntry::Global { index }) = ic {
+                    if let Some(IcEntry::Global { index, namespace }) = ic
+                        && namespace == self.global_namespace
+                    {
                         self.global_values[index] = val;
                     } else {
                         let name_id = self.read_intern_id(fiber_idx, idx as usize)?;
@@ -4888,13 +5577,13 @@ impl VM {
 
                             let frame = self.fibers[fiber_idx].frames.last().unwrap();
                             let mut chunk = frame.chunk.borrow_mut();
-                            chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx });
+                            chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx, namespace: self.global_namespace });
                         } else {
                             self.insert_global_interned(name_id, val);
                             if let Some(&global_idx) = self.global_names.get(&name_id) {
                                 let frame = self.fibers[fiber_idx].frames.last().unwrap();
                                 let mut chunk = frame.chunk.borrow_mut();
-                                chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx });
+                                chunk.cache_set(ip_at_start, IcEntry::Global { index: global_idx, namespace: self.global_namespace });
                             }
                         }
                     }
@@ -4909,44 +5598,7 @@ impl VM {
                     let idx = op0;
                     let name_id = self.read_intern_id(fiber_idx, idx as usize)?;
                     let name = self.interner.resolve(name_id).to_string().to_lowercase();
-                    let val = {
-                        let mut found = None;
-                        if let Some(receiver) =
-                            self.fibers[fiber_idx].frames.last().unwrap().receiver
-                        {
-                            if name == "this" {
-                                found = Some(receiver);
-                            } else if let Some(id) = self.receiver_instance_gc_id(receiver) {
-                                if name == "variables" {
-                                    if let GcObject::Instance(inst) = self.heap.get(id) {
-                                        let proxy = VariablesScopeProxy {
-                                            variables: Rc::clone(&inst.variables),
-                                        };
-                                        found = Some(BxValue::new_ptr(self.heap.alloc(
-                                            GcObject::NativeObject(Rc::new(RefCell::new(proxy))),
-                                        )));
-                                    }
-                                } else if let GcObject::Instance(inst) = self.heap.get(id) {
-                                    found = inst.variables.borrow().get(&name).copied();
-                                }
-                            }
-                        }
-
-                        if found.is_none() && name == "variables" {
-                            let proxy = VariablesScopeProxy {
-                                variables: Rc::clone(&self.fibers[fiber_idx].variables),
-                            };
-                            found = Some(BxValue::new_ptr(
-                                self.heap
-                                    .alloc(GcObject::NativeObject(Rc::new(RefCell::new(proxy)))),
-                            ));
-                        }
-
-                        if found.is_none() {
-                            found = self.get_global(&name);
-                        }
-                        found
-                    };
+                    let val = self.private_value(fiber_idx, &name);
 
                     if let Some(v) = val {
                         self.fibers[fiber_idx].stack.push(v);
@@ -4965,17 +5617,30 @@ impl VM {
                     let name_id = self.read_intern_id(fiber_idx, idx as usize)?;
                     let name = self.interner.resolve(name_id).to_string().to_lowercase();
                     let val = *self.fibers[fiber_idx].stack.last().unwrap();
-                    if let Some(receiver) = self.fibers[fiber_idx].frames.last().unwrap().receiver {
-                        if let Some(id) = self.receiver_instance_gc_id(receiver) {
-                            if let GcObject::Instance(inst) = self.heap.get_mut(id) {
-                                inst.variables.borrow_mut().insert(name, val);
-                            }
+                    if self.assign_function_scope(fiber_idx, &name, val) {
+                        continue 'quantum;
+                    }
+                    let instance = self.fibers[fiber_idx].frames.last().unwrap().receiver
+                        .and_then(|receiver| self.receiver_instance_gc_id(receiver));
+                    let declared = instance.is_some_and(|id| {
+                        matches!(self.heap.get(id), GcObject::Instance(inst) if inst.variables.borrow().contains_key(&name))
+                    });
+                    let function = &self.fibers[fiber_idx].frames.last().unwrap().function;
+                    if instance.is_none() && function.kind != crate::types::FunctionKind::Lambda
+                        && !self.has_global_function(&name) && self.get_global(&name).is_some() {
+                        self.insert_global(name, val);
+                    } else if instance.is_none() && function.kind == crate::types::FunctionKind::ComponentBody && function.captured_scopes.is_empty() {
+                        self.insert_global(name, val);
+                    } else if !declared && function.arity as usize == function.params.len() + 1
+                        && !(function.kind == crate::types::FunctionKind::ComponentBody && function.captured_scopes.is_empty()) {
+                        let scope = self.local_scope(fiber_idx).as_gc_id().unwrap();
+                        self.struct_set(scope, &name, val);
+                    } else if let Some(id) = instance {
+                        if let GcObject::Instance(inst) = self.heap.get_mut(id) {
+                            inst.variables.borrow_mut().insert(name, val);
                         }
                     } else {
-                        self.fibers[fiber_idx]
-                            .variables
-                            .borrow_mut()
-                            .insert(name, val);
+                        self.fibers[fiber_idx].variables.borrow_mut().insert(name, val);
                     }
                 }
 
@@ -4983,6 +5648,19 @@ impl VM {
                 op::DUP => {
                     let val = *self.fibers[fiber_idx].stack.last().unwrap();
                     self.fibers[fiber_idx].stack.push(val);
+                }
+                op::DUP_BELOW => {
+                    let stack = &mut self.fibers[fiber_idx].stack;
+                    let len = stack.len();
+                    let val = stack[len - 1 - op0 as usize];
+                    stack.insert(len - op0 as usize, val);
+                }
+                op::CTOR_FINISH => {
+                    let stack = &mut self.fibers[fiber_idx].stack;
+                    let result = stack.pop().unwrap();
+                    if !result.is_null() {
+                        *stack.last_mut().unwrap() = result;
+                    }
                 }
                 op::SWAP => {
                     let b = self.fibers[fiber_idx].stack.pop().unwrap();
@@ -5104,9 +5782,6 @@ impl VM {
                 }
                 op::STRUCT => {
                     let count = op0;
-                    let mut shape_id = self.shapes.get_root();
-                    let mut props = Vec::with_capacity(count as usize);
-
                     let mut kv_pairs = Vec::with_capacity(count as usize);
                     for _ in 0..count {
                         let value = self.fibers[fiber_idx].stack.pop().unwrap();
@@ -5116,23 +5791,20 @@ impl VM {
                         kv_pairs.push((key_id, value));
                     }
                     kv_pairs.reverse();
-
-                    for (key_id, value) in kv_pairs {
-                        shape_id = self.shapes.transition(shape_id, key_id);
-                        props.push(value);
-                    }
-
-                    let id = self.heap.alloc(GcObject::Struct(BxStruct {
-                        shape_id,
-                        properties: props,
-                        case_sensitive: false,
-                        ordered: false,
-                    }));
-                    self.fibers[fiber_idx].stack.push(BxValue::new_ptr(id));
+                    let value = self.literal_struct(&kv_pairs);
+                    self.fibers[fiber_idx].stack.push(value);
                 }
                 op::INDEX | op::SAFE_INDEX => {
                     let index_val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
+                    if self.class_reference_target(base_val).is_some() {
+                        match self.class_reference_member(base_val, &self.to_string(index_val)) {
+                            Ok(value) => self.fibers[fiber_idx].stack.push(value),
+                            Err(_) if opcode == op::SAFE_INDEX => self.fibers[fiber_idx].stack.push(BxValue::new_null()),
+                            Err(error) => vm_throw!("{}", error),
+                        }
+                        continue 'quantum;
+                    }
                     if let Some(id) = base_val.as_gc_id() {
                         #[cfg(all(target_arch = "wasm32", feature = "js"))]
                         if let GcObject::JsValue(js) = self.heap.get(id) {
@@ -5230,9 +5902,21 @@ impl VM {
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let index_val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let base_val = match self.class_reference_assignment_target(base_val, &self.to_string(index_val)) {
+                        Ok(value) => value,
+                        Err(error) => vm_throw!("{}", error),
+                    };
 
                     if let Some(id) = base_val.as_gc_id() {
                         let index_string = self.to_string(index_val);
+                        if self.struct_assignment_hooks.contains_key(&id) {
+                            flush_ip!();
+                            match self.assign_struct(id, &index_string, val) {
+                                Ok(()) => self.fibers[fiber_idx].stack.push(val),
+                                Err(error) => self.throw_error(fiber_idx, &error)?,
+                            }
+                            frame_changed = true; continue 'quantum;
+                        }
                         let key_id = if !index_val.is_number() && !index_val.is_int() {
                             Some(self.struct_key_id(id, &index_string))
                         } else {
@@ -5323,7 +6007,12 @@ impl VM {
                                 self.fibers[fiber_idx].stack.push(val);
                             }
                             GcObject::NativeObject(object) => {
-                                object.borrow_mut().set_property(&index_string, val);
+                                if object.borrow().is_readonly() {
+                                    flush_ip!(); self.throw_error(fiber_idx, "Native object is read-only")?;
+                                    frame_changed = true; continue 'quantum;
+                                }
+                                let object = object.clone();
+                                self.native_object_set(&object, &index_string, val);
                                 self.fibers[fiber_idx].stack.push(val);
                             }
                             _ => {
@@ -5342,8 +6031,22 @@ impl VM {
                 }
                 op::MEMBER => {
                     let idx = op0;
+                    let base = *self.fibers[fiber_idx].stack.last().unwrap();
+                    if let Some(value) = self.cached_member_value(fiber_idx, ip_at_start, base) {
+                        *self.fibers[fiber_idx].stack.last_mut().unwrap() = value;
+                        flush_ip!();
+                        continue 'quantum;
+                    }
                     let name_id = self.read_intern_id(fiber_idx, idx as usize)?;
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
+                    if self.class_reference_target(base_val).is_some() {
+                        let name = self.interner.resolve(name_id).to_owned();
+                        match self.class_reference_member(base_val, &name) {
+                            Ok(value) => self.fibers[fiber_idx].stack.push(value),
+                            Err(error) => vm_throw!("{}", error),
+                        }
+                        continue 'quantum;
+                    }
 
                     if let Some(id) = base_val.as_gc_id() {
                         #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -5413,40 +6116,13 @@ impl VM {
                                 let shape_id = s.shape_id;
                                 let properties_ptr = &s.properties as *const Vec<BxValue>;
 
-                                let ic = {
-                                    let fiber = &self.fibers[fiber_idx];
-                                    let frame = fiber.frames.last().unwrap();
-                                    let chunk = frame.chunk.borrow();
-                                    chunk.cache_get(ip_at_start)
+                                let key_id = if s.case_sensitive {
+                                    let mut name = self.read_string_constant(fiber_idx, idx as usize)?;
+                                    self.interner.get_exact_id(name.as_flat_str())
+                                } else {
+                                    Some(name_id)
                                 };
-
-                                match ic {
-                                    Some(IcEntry::Monomorphic {
-                                        shape_id: cached_shape,
-                                        index,
-                                    }) => {
-                                        if cached_shape == shape_id as usize {
-                                            let val = unsafe { &*properties_ptr }[index as usize];
-                                            self.fibers[fiber_idx].stack.push(val);
-                                            flush_ip!();
-                                            continue 'quantum;
-                                        }
-                                    }
-                                    Some(IcEntry::Polymorphic { entries, count }) => {
-                                        for i in 0..count {
-                                            if entries[i].0 == shape_id as usize {
-                                                let val = unsafe { &*properties_ptr }[entries[i].1];
-                                                self.fibers[fiber_idx].stack.push(val);
-                                                flush_ip!();
-                                                continue 'quantum;
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
-
-                                let key_name = self.interner.resolve(name_id).to_string();
-                                if let Some(idx) = self.struct_key_lookup_id(id, &key_name)
+                                if let Some(idx) = key_id
                                     .and_then(|key_id| self.shapes.get_index(shape_id, key_id))
                                 {
                                     {
@@ -5467,39 +6143,6 @@ impl VM {
                             GcObject::Instance(inst) => {
                                 let shape_id = inst.shape_id;
                                 let properties_ptr = &inst.properties as *const Vec<BxValue>;
-                                let class = Rc::clone(&inst.class);
-
-                                let ic = {
-                                    let fiber = &self.fibers[fiber_idx];
-                                    let frame = fiber.frames.last().unwrap();
-                                    let chunk = frame.chunk.borrow();
-                                    chunk.cache_get(ip_at_start)
-                                };
-
-                                match ic {
-                                    Some(IcEntry::Monomorphic {
-                                        shape_id: cached_shape,
-                                        index,
-                                    }) => {
-                                        if cached_shape == shape_id as usize {
-                                            let val = unsafe { &*properties_ptr }[index as usize];
-                                            self.fibers[fiber_idx].stack.push(val);
-                                            flush_ip!();
-                                            continue 'quantum;
-                                        }
-                                    }
-                                    Some(IcEntry::Polymorphic { entries, count }) => {
-                                        for i in 0..count {
-                                            if entries[i].0 == shape_id as usize {
-                                                let val = unsafe { &*properties_ptr }[entries[i].1];
-                                                self.fibers[fiber_idx].stack.push(val);
-                                                flush_ip!();
-                                                continue 'quantum;
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
 
                                 if let Some(idx) = self.shapes.get_index(shape_id, name_id) {
                                     {
@@ -5515,15 +6158,28 @@ impl VM {
                                     self.fibers[fiber_idx].stack.push(val);
                                 } else {
                                     let name = self.interner.resolve(name_id).to_string();
-                                    if let Some(method) =
-                                        self.resolve_method(Rc::clone(&class), &name)
+                                    if let Ok(value) = self.method_reference(base_val, &name) {
+                                        self.fibers[fiber_idx].stack.push(value);
+                                    } else if let Some(getter) = Self::accessor_method_name("get", &name)
+                                        .filter(|getter| self.instance_has_method(base_val, getter))
                                     {
-                                        let m_id =
-                                            self.heap.alloc(GcObject::CompiledFunction(method));
-                                        self.fibers[fiber_idx].stack.push(BxValue::new_ptr(m_id));
+                                        // BoxLang invokeImplicitAccessor: `obj.name` calls `getName()`.
+                                        flush_ip!();
+                                        match self.call_method_value(base_val, &getter, Vec::new()) {
+                                            Ok(value) => self.fibers[fiber_idx].stack.push(value),
+                                            Err(error) => self.throw_error(fiber_idx, &error.to_string())?,
+                                        }
+                                        frame_changed = true; continue 'quantum;
                                     } else {
                                         self.fibers[fiber_idx].stack.push(BxValue::new_null());
                                     }
+                                }
+                            }
+                            GcObject::Class(_) => {
+                                let name = self.interner.resolve(name_id).to_string();
+                                match self.method_reference(base_val, &name) {
+                                    Ok(value) => self.fibers[fiber_idx].stack.push(value),
+                                    Err(error) => vm_throw!("{}", error),
                                 }
                             }
                             GcObject::NativeObject(obj) => {
@@ -5533,7 +6189,8 @@ impl VM {
                                 let is_query = obj.borrow().query_columns().is_some();
                                 #[cfg(target_arch = "wasm32")]
                                 let is_query = false;
-                                let property = obj.borrow().get_property(&name);
+                                let obj = obj.clone();
+                                let property = self.native_object_get(&obj, &name);
                                 let val = if !property.is_null() {
                                     property
                                 } else if is_query {
@@ -5568,6 +6225,10 @@ impl VM {
                     let name_id = self.read_intern_id(fiber_idx, idx as usize)?;
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let base_val = match self.class_reference_assignment_target(base_val, self.interner.resolve(name_id)) {
+                        Ok(value) => value,
+                        Err(error) => vm_throw!("{}", error),
+                    };
 
                     if let Some(id) = base_val.as_gc_id() {
                         #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -5687,12 +6348,38 @@ impl VM {
                             }
                         }
 
+                        if self.struct_assignment_hooks.contains_key(&id) {
+                            let name = self.read_string_constant(fiber_idx, idx as usize)?.to_string();
+                            flush_ip!();
+                            match self.assign_struct(id, &name, val) {
+                                Ok(()) => self.fibers[fiber_idx].stack.push(val),
+                                Err(error) => self.throw_error(fiber_idx, &error)?,
+                            }
+                            frame_changed = true; continue 'quantum;
+                        }
                         let struct_name_id = if matches!(self.heap.get_opt(id), Some(GcObject::Struct(_))) {
-                            let name = self.interner.resolve(name_id).to_string();
-                            Some(self.struct_key_id(id, &name))
+                            let mut name = self.read_string_constant(fiber_idx, idx as usize)?;
+                            Some(self.struct_key_id(id, name.as_flat_str()))
                         } else {
                             None
                         };
+
+                        // BoxLang invokeImplicitAccessor: `obj.name = v` calls `setName( v )` unless `name` is a field.
+                        if let Some(GcObject::Instance(inst)) = self.heap.get_opt(id) {
+                            if self.shapes.get_index(inst.shape_id, name_id).is_none() {
+                                let name = self.interner.resolve(name_id).to_string();
+                                if let Some(setter) = Self::accessor_method_name("set", &name)
+                                    .filter(|setter| self.instance_has_method(base_val, setter))
+                                {
+                                    flush_ip!();
+                                    match self.call_method_value(base_val, &setter, vec![val]) {
+                                        Ok(_) => self.fibers[fiber_idx].stack.push(val),
+                                        Err(error) => self.throw_error(fiber_idx, &error.to_string())?,
+                                    }
+                                    frame_changed = true; continue 'quantum;
+                                }
+                            }
+                        }
 
                         match self.heap.get_mut(id) {
                             GcObject::Struct(s) => {
@@ -5801,7 +6488,12 @@ impl VM {
                             GcObject::NativeObject(obj) => {
                                 let name =
                                     self.interner.resolve(name_id).to_string().to_lowercase();
-                                obj.borrow_mut().set_property(&name, val);
+                                if obj.borrow().is_readonly() {
+                                    flush_ip!(); self.throw_error(fiber_idx, "Native object is read-only")?;
+                                    frame_changed = true; continue 'quantum;
+                                }
+                                let obj = obj.clone();
+                                self.native_object_set(&obj, &name, val);
                                 self.fibers[fiber_idx].stack.push(val);
                             }
                             _ => {
@@ -5824,6 +6516,36 @@ impl VM {
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
 
                     if let Some(id) = base_val.as_gc_id() {
+                        if self.struct_assignment_hooks.contains_key(&id) {
+                            let name = self.read_string_constant(fiber_idx, idx as usize)?.to_string();
+                            let old = self.struct_get(id, &name);
+                            flush_ip!();
+                            match self.cast_value_to_type(old, "numeric").and_then(|old| {
+                                let value = BxValue::new_number(old.as_number() + 1.0);
+                                self.assign_struct(id, &name, value).map(|_| value)
+                            }) {
+                                Ok(value) => self.fibers[fiber_idx].stack.push(value),
+                                Err(error) => self.throw_error(fiber_idx, &error)?,
+                            }
+                            frame_changed = true; continue 'quantum;
+                        }
+                        if let GcObject::NativeObject(object) = self.heap.get(id) {
+                            let object = object.clone();
+                            if object.borrow().native_data("matchbox.variables_scope").is_some() {
+                                let name = self.interner.resolve(name_id).to_string();
+                                let old = self.native_object_get(&object, &name);
+                                if old.is_number() {
+                                    let new = BxValue::new_number(old.as_number() + 1.0);
+                                    self.native_object_set(&object, &name, new);
+                                    self.fibers[fiber_idx].stack.push(new);
+                                } else {
+                                    flush_ip!();
+                                    self.throw_error(fiber_idx, "Increment operand must be a number")?;
+                                    frame_changed = true;
+                                }
+                                continue 'quantum;
+                            }
+                        }
                         match self.heap.get_mut(id) {
                             GcObject::Struct(s) => {
                                 let shape_id = s.shape_id;
@@ -6238,13 +6960,21 @@ impl VM {
                             self.fibers[fiber_idx].stack[class_idx] = instance_val;
 
                             let constructor = class.borrow().constructor.clone();
-                            let sub_chunk = constructor.chunk.clone();
-                            let constant_count = sub_chunk.constants().len();
+                            let sub_chunk = constructor.chunk.execution_chunk();
+                            let constant_count = sub_chunk.borrow().constants().len();
 
                             let frame = CallFrame {
+                                #[cfg(feature = "jit")]
+                                jit_loop_attempted: false,
+                                #[cfg(feature = "jit")]
+                                jit_construct_unsupported: None,
+                                context: None,
                                 function: Rc::new(constructor),
-                                chunk: Rc::new(RefCell::new(sub_chunk)),
+                                chunk: sub_chunk,
                                 ip: 0,
+                                scope_mode: scopes::ScopeMode::Binding,
+                                local_scope: None,
+                                local_names: scopes::SlotBindings::new(),
                                 stack_base: class_idx + 1 + arg_count as usize,
                                 receiver: Some(instance_val),
                                 handlers: Vec::new(),
@@ -6393,7 +7123,9 @@ impl VM {
                             )
                         };
 
-                        if let Some(id) = collection.as_gc_id() {
+                        if let Some(step) = self.query_iteration_step(collection, cursor_val)? {
+                            step
+                        } else if let Some(id) = collection.as_gc_id() {
                             match self.heap.get(id) {
                                 GcObject::Array(arr) => {
                                     if cursor_val < arr.len() {
@@ -6456,7 +7188,7 @@ impl VM {
                                 _ => {
                                     self.throw_error(
                                         fiber_idx,
-                                        "Iteration only supported for arrays and structs",
+                                        "Iteration only supported for arrays, structs, queries and ranges",
                                     )?;
                                     (true, None, None)
                                 }
@@ -6464,7 +7196,7 @@ impl VM {
                         } else {
                             self.throw_error(
                                 fiber_idx,
-                                "Iteration only supported for arrays and structs",
+                                "Iteration only supported for arrays, structs, queries and ranges",
                             )?;
                             (true, None, None)
                         }
@@ -6512,6 +7244,7 @@ impl VM {
                                                             ),
                                                             _ => unreachable!(),
                                                         };
+                                                    self.sync_jit_locals(fiber_idx, false);
                                                     let deopt = unsafe {
                                                         compiled(
                                                             locals_ptr as *mut u64,
@@ -6519,6 +7252,7 @@ impl VM {
                                                             arr_len,
                                                         )
                                                     };
+                                                    self.sync_jit_locals(fiber_idx, true);
                                                     if deopt == 0 {
                                                         ip += offset as usize; // jump past loop
                                                     } else {
@@ -6620,7 +7354,7 @@ impl VM {
                     let slot = op0;
                     let const_idx = next_word!();
                     let offset = next_word!();
-                    let val = unsafe { *locals_ptr.add(slot as usize) };
+                    let val = self.local_value(fiber_idx, slot as usize);
                     let constant = self.read_constant(fiber_idx, const_idx as usize)?;
                     if !self.is_equal(val, constant) {
                         ip += offset as usize;
@@ -6795,6 +7529,12 @@ impl VM {
     }
 
     fn throw_error(&mut self, fiber_idx: usize, msg: &str) -> Result<()> {
+        if let Some((original, root)) = self.native_callback_exception.take() {
+            if original == msg {
+                let value = self.heap.read_retained_value(&root).map_err(anyhow::Error::msg)?;
+                return self.throw_value_internal(fiber_idx, value, true);
+            }
+        }
         #[cfg(target_os = "espidf")]
         eprintln!("[matchbox-vm] throwing ExpressionException: {}", msg);
         self.collect_garbage();
@@ -7013,13 +7753,15 @@ impl VM {
                 let frame = self.fibers[fiber_idx].frames.last_mut().unwrap();
                 frame.pending_completion = Some(PendingCompletion::Return(result));
                 frame.ip = finally_ip;
-                self.fibers[fiber_idx]
-                    .stack
-                    .truncate(handler.saved_stack_len);
+                self.truncate_scope_stack(fiber_idx, handler.saved_stack_len);
                 return Ok(None);
             }
         }
 
+        let result = match self.finish_function_events(fiber_idx, result) {
+            Ok(result) => result,
+            Err(error) => { self.throw_error(fiber_idx, &error)?; return Ok(None); }
+        };
         let fiber = &mut self.fibers[fiber_idx];
         let frame = fiber.frames.pop().unwrap();
         if fiber.frames.is_empty() {
@@ -7042,6 +7784,10 @@ impl VM {
     }
 
     fn throw_value(&mut self, fiber_idx: usize, val: BxValue) -> Result<()> {
+        self.throw_value_internal(fiber_idx, val, false)
+    }
+
+    fn throw_value_internal(&mut self, fiber_idx: usize, val: BxValue, preserve: bool) -> Result<()> {
         let mut source_context = String::new();
 
         // Build full stack trace and source context before unwinding frames
@@ -7056,7 +7802,9 @@ impl VM {
             }
         }
 
-        let val = self.normalize_thrown_value(val, &stack_trace);
+        let val = if preserve && self.is_exception_object(val) { val } else { self.normalize_thrown_value(val, &stack_trace) };
+        let _root = self.heap.retain_value(val).map_err(anyhow::Error::msg)?;
+        let abort = self.abort_signal(val);
 
         while !self.fibers[fiber_idx].frames.is_empty() {
             let frame_idx = self.fibers[fiber_idx].frames.len() - 1;
@@ -7066,16 +7814,14 @@ impl VM {
                 .copied();
 
             if let Some(handler) = handler {
-                if handler.catch_enabled {
+                if handler.catch_enabled && abort.is_none() {
                     let catch_ip = handler.catch_ip.unwrap();
                     let frame = &mut self.fibers[fiber_idx].frames[frame_idx];
                     frame.handlers.last_mut().unwrap().catch_enabled = false;
                     frame.pending_completion = None;
                     frame.ip = catch_ip;
 
-                    self.fibers[fiber_idx]
-                        .stack
-                        .truncate(handler.saved_stack_len);
+                    self.truncate_scope_stack(fiber_idx, handler.saved_stack_len);
                     self.fibers[fiber_idx].stack.push(val);
                     return Ok(());
                 }
@@ -7086,9 +7832,7 @@ impl VM {
                     frame.pending_completion = Some(PendingCompletion::Throw(val));
                     frame.ip = finally_ip;
 
-                    self.fibers[fiber_idx]
-                        .stack
-                        .truncate(handler.saved_stack_len);
+                    self.truncate_scope_stack(fiber_idx, handler.saved_stack_len);
                     return Ok(());
                 }
 
@@ -7098,15 +7842,19 @@ impl VM {
                 continue;
             }
 
+            let event_error = self.fail_function_events(fiber_idx, val).err();
             self.fibers[fiber_idx].frames.pop();
+            if let Some(error) = event_error {
+                return self.throw_error(fiber_idx, &error);
+            }
         }
         let val_str = self.exception_summary(val);
-        bail!(
-            "VM Runtime Error: {}{}\n\nStack trace:\n{}",
-            val_str,
-            source_context,
-            stack_trace
-        );
+        let message = abort.as_ref().map(ToString::to_string).unwrap_or_else(|| format!("VM Runtime Error: {}{}\n\nStack trace:\n{}", val_str, source_context, stack_trace));
+        if self.native_exception_depth > 0 {
+            self.native_callback_exception = Some((message.clone(), _root));
+        }
+        if let Some(abort) = abort { return Err(abort.into()); }
+        bail!(message);
     }
 
     pub fn call_function(
@@ -7127,20 +7875,17 @@ impl VM {
         args: Vec<BxValue>,
         _chunk: Option<Rc<RefCell<Chunk>>>,
     ) -> Result<BxValue> {
+        self.call_function_value_named(func, args, None)
+    }
+
+    pub fn call_function_value_named(&mut self, func: BxValue, args: Vec<BxValue>, names: Option<Vec<String>>) -> Result<BxValue> {
         if let Some(id) = func.as_gc_id() {
             match self.heap.get(id) {
                 GcObject::CompiledFunction(f) => {
                     let f = Rc::clone(f);
-                    if args.len() < f.min_arity as usize || args.len() > f.arity as usize {
-                        anyhow::bail!(
-                            "Expected {}-{} arguments but got {}",
-                            f.min_arity,
-                            f.arity,
-                            args.len()
-                        );
-                    }
-                    let _future = self.enqueue_function_call(func, f, args, 0, None);
-                    let fiber_idx = self.fibers.len() - 1;
+                    let _future = self.enqueue_function_call(func, f, args, 0, None, names);
+                    let mut fiber_idx = self.fibers.len() - 1;
+                    let nested_future = self.fibers[fiber_idx].future_id;
                     let previous_fiber_idx = self.current_fiber_idx;
                     self.current_fiber_idx = Some(fiber_idx);
                     // Loop until the fiber completes — this is a synchronous blocking call.
@@ -7149,7 +7894,21 @@ impl VM {
                             .run_fiber(fiber_idx, Some(Instant::now() + Duration::from_millis(2)))
                         {
                             Ok(Some(val)) => break Ok(val),
-                            Ok(None) => continue, // timeslice expired, keep running
+                            Ok(None) => {
+                                // The callback waits in `future.get()`: let the other fibers
+                                // progress, or the producer never runs. A plain timeslice expiry
+                                // just resumes the callback.
+                                if std::mem::take(&mut self.fibers[fiber_idx].blocked_on_future) {
+                                    if let Err(e) = self.run_other_fibers() {
+                                        break Err(e);
+                                    }
+                                }
+                                match self.fibers.iter().position(|fiber| fiber.future_id == nested_future) {
+                                    Some(idx) => fiber_idx = idx,
+                                    None => break Err(anyhow::anyhow!("Callback fiber disappeared while waiting")),
+                                }
+                                self.current_fiber_idx = Some(fiber_idx);
+                            }
                             Err(e) => break Err(e),
                         }
                     };
@@ -7157,11 +7916,23 @@ impl VM {
                     let _ = self.fibers.swap_remove(fiber_idx);
                     result
                 }
+                GcObject::NativeCallback(callback) => {
+                    let callback = callback.clone();
+                    let args = if let Some(names) = names {
+                        Self::reorder_callback_arguments(args, names, &callback.parameters).map_err(anyhow::Error::msg)?
+                    } else { args };
+                    self.invoke_callback(&callback, &args).map_err(anyhow::Error::msg)
+                }
                 GcObject::NativeFunction(f) => {
                     let f = *f;
+                    let args = if let Some(names) = names {
+                        let name = self.native_global_name(func);
+                        self.reorder_native_arguments(args, names, name.as_deref())
+                    } else { args };
+                    let previous_gc = self.gc_suspended;
                     self.gc_suspended = true;
-                    let res = f(self, &args).map_err(|e| anyhow::anyhow!(e));
-                    self.gc_suspended = false;
+                    let res = self.native_exception_scope(|vm| f(vm, &args)).map_err(|e| anyhow::anyhow!(e));
+                    self.gc_suspended = previous_gc;
                     res
                 }
                 #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -7194,6 +7965,12 @@ impl VM {
         name: &str,
         args: Vec<BxValue>,
     ) -> Result<BxValue> {
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        if let Some((member, receiver)) = self.registered_member(receiver, name) {
+            let function = self.heap.read_retained_value(&member.function).map_err(anyhow::Error::msg)?;
+            let (args, names) = member.arguments(receiver, args, None)?;
+            return self.call_function_value_named(function, args, names);
+        }
         let id = receiver
             .as_gc_id()
             .ok_or_else(|| anyhow::anyhow!("Value is not an object instance"))?;
@@ -7205,26 +7982,14 @@ impl VM {
                     .native_object_call_method(id, &method_name, &args)
                     .map_err(|e| anyhow::anyhow!(e));
             }
+            GcObject::Class(_) => self.call_method_value_named(receiver, name, args, vec![]),
             GcObject::Instance(inst) => {
                 let class = Rc::clone(&inst.class);
                 if let Some(func) = self.resolve_method(class, &method_name) {
-                    let mut final_args = args;
-                    for _ in 0..(func.arity as usize).saturating_sub(final_args.len()) {
-                        final_args.push(BxValue::new_null());
-                    }
-                    if final_args.len() < func.min_arity as usize
-                        || final_args.len() > func.arity as usize
-                    {
-                        anyhow::bail!(
-                            "Expected {}-{} arguments but got {}",
-                            func.min_arity,
-                            func.arity,
-                            final_args.len()
-                        );
-                    }
+                    let final_args = self.function_arguments(args, None, &func);
 
-                    let sub_chunk = func.chunk.clone();
-                    let constant_count = sub_chunk.constants().len();
+                    let sub_chunk = func.chunk.execution_chunk();
+                    let constant_count = sub_chunk.borrow().constants().len();
                     let future_id = self.future_new().as_gc_id().unwrap();
                     let fiber = BxFiber {
                         stack: {
@@ -7234,9 +7999,17 @@ impl VM {
                             stack
                         },
                         frames: vec![CallFrame {
+                            scope_mode: scopes::ScopeMode::Binding,
+                            #[cfg(feature = "jit")]
+                            jit_loop_attempted: false,
+                            #[cfg(feature = "jit")]
+                            jit_construct_unsupported: None,
+                            context: None,
                             function: func.clone(),
-                            chunk: Rc::new(RefCell::new(sub_chunk)),
+                            chunk: sub_chunk,
                             ip: 0,
+                            local_scope: None,
+                            local_names: scopes::SlotBindings::new(),
                             stack_base: 1,
                             receiver: Some(receiver),
                             handlers: Vec::new(),
@@ -7247,6 +8020,9 @@ impl VM {
                         future_id,
                         wait_until: None,
                         yield_requested: false,
+            running: false,
+            blocked_on_future: false,
+            finished: false,
                         priority: 0,
                         root_stack: Vec::new(),
                     };
@@ -7276,6 +8052,35 @@ impl VM {
         }
     }
 
+    fn method_reference(&mut self, receiver: BxValue, name: &str) -> Result<BxValue> {
+        let id = receiver.as_gc_id().context("Value is not a class or instance")?;
+        let (class, static_only) = match self.heap.get(id) {
+            GcObject::Instance(instance) => (instance.class.clone(), false),
+            GcObject::Class(class) => (class.clone(), true),
+            _ => bail!("Value is not a class or instance"),
+        };
+        let method = self.resolve_method(class, name).with_context(|| format!("Method {name} not found"))?;
+        if static_only && !method.modifiers.is_static { bail!("Non-static method {name} requires an instance"); }
+        let mut method = (*method).clone();
+        method.captured_receiver = Some(receiver);
+        Ok(BxValue::new_ptr(self.heap.alloc(GcObject::CompiledFunction(Rc::new(method)))))
+    }
+
+    pub fn call_method_value_named(&mut self, receiver: BxValue, name: &str, args: Vec<BxValue>, names: Vec<String>) -> Result<BxValue> {
+        if self.class_reference_target(receiver).is_some() {
+            if names.iter().any(|name| !name.is_empty()) {
+                bail!("{}", if name.eq_ignore_ascii_case("init") { "Cannot use named arguments on a Java constructor." } else { "Methods on Java objects cannot be called with named arguments" });
+            }
+            return self.call_method_value(receiver, name, args);
+        }
+        if matches!(receiver.as_gc_id().and_then(|id| self.heap.get_opt(id)), Some(GcObject::NativeObject(_))) {
+            if names.iter().any(|name| !name.is_empty()) { bail!("Named native object method calls through this host API are not supported"); }
+            return self.call_method_value(receiver, name, args);
+        }
+        let value = self.method_reference(receiver, name)?;
+        self.call_function_value_named(value, args, Some(names))
+    }
+
     pub fn instance_class_name(&self, receiver: BxValue) -> Result<String> {
         let id = receiver
             .as_gc_id()
@@ -7292,17 +8097,17 @@ impl VM {
         class_name: &str,
         args: Vec<BxValue>,
     ) -> Result<BxValue> {
-        let class_val = self
-            .get_global(class_name)
-            .ok_or_else(|| anyhow::anyhow!("Class {} not found", class_name))?;
-        let id = class_val
-            .as_gc_id()
-            .ok_or_else(|| anyhow::anyhow!("Global {} is not a class", class_name))?;
+        let class_val = self.get_global(class_name).with_context(|| format!("Class {class_name} not found"))?;
+        self.construct_class_value(class_val, args)
+    }
 
+    fn construct_class_value(&mut self, class_val: BxValue, args: Vec<BxValue>) -> Result<BxValue> {
+        let id = class_val.as_gc_id().context("Value is not a BoxLang class")?;
         let class = match self.heap.get(id) {
             GcObject::Class(class) => Rc::clone(class),
-            _ => anyhow::bail!("Global {} is not a class", class_name),
+            _ => bail!("Value is not a BoxLang class"),
         };
+        let class_name = class.borrow().name.clone();
 
         let variables_scope = Rc::new(RefCell::new(HashMap::new()));
         let inst_id = self.heap.alloc(GcObject::Instance(BxInstance {
@@ -7312,10 +8117,11 @@ impl VM {
             variables: variables_scope,
         }));
         let instance_val = BxValue::new_ptr(inst_id);
+        if class.borrow().modifiers.is_abstract { bail!("Cannot instantiate abstract class {class_name}"); }
 
         let constructor = class.borrow().constructor.clone();
-        let sub_chunk = constructor.chunk.clone();
-        let constant_count = sub_chunk.constants().len();
+        let sub_chunk = constructor.chunk.execution_chunk();
+        let constant_count = sub_chunk.borrow().constants().len();
         let future_id = self.future_new().as_gc_id().unwrap();
         let fiber = BxFiber {
             stack: {
@@ -7325,9 +8131,17 @@ impl VM {
                 stack
             },
             frames: vec![CallFrame {
+                #[cfg(feature = "jit")]
+                jit_loop_attempted: false,
+                #[cfg(feature = "jit")]
+                jit_construct_unsupported: None,
+                context: None,
                 function: Rc::new(constructor),
-                chunk: Rc::new(RefCell::new(sub_chunk)),
+                chunk: sub_chunk,
                 ip: 0,
+                scope_mode: scopes::ScopeMode::Binding,
+                local_scope: None,
+                local_names: scopes::SlotBindings::new(),
                 stack_base: 1,
                 receiver: Some(instance_val),
                 handlers: Vec::new(),
@@ -7338,11 +8152,15 @@ impl VM {
             future_id,
             wait_until: None,
             yield_requested: false,
+            running: false,
+            blocked_on_future: false,
+            finished: false,
             priority: 0,
             root_stack: Vec::new(),
         };
         self.fibers.push(fiber);
         let fiber_idx = self.fibers.len() - 1;
+        let previous_fiber_idx = self.current_fiber_idx;
         self.current_fiber_idx = Some(fiber_idx);
         let result = loop {
             match self.run_fiber(fiber_idx, Some(Instant::now() + Duration::from_millis(2))) {
@@ -7351,8 +8169,8 @@ impl VM {
                 Err(e) => break Err(e),
             }
         };
-        self.current_fiber_idx = None;
-        let _ = self.fibers.pop();
+        self.current_fiber_idx = previous_fiber_idx;
+        self.fibers.swap_remove(fiber_idx);
         result
     }
 
@@ -7380,6 +8198,76 @@ impl VM {
             variables: variables_scope,
         }));
         Ok(BxValue::new_ptr(inst_id))
+    }
+
+    pub fn instance_variable(&self, receiver: BxValue, name: &str) -> Option<BxValue> {
+        match self.heap.get_opt(receiver.as_gc_id()?)? {
+            GcObject::Instance(instance) => instance.variables.borrow().get(&name.to_lowercase()).copied(),
+            _ => None,
+        }
+    }
+
+    pub fn set_instance_variable(&mut self, receiver: BxValue, name: &str, value: BxValue) -> Result<()> {
+        let id = receiver.as_gc_id().ok_or_else(|| anyhow::anyhow!("Value is not an object instance"))?;
+        match self.heap.get_mut(id) {
+            GcObject::Instance(instance) => { instance.variables.borrow_mut().insert(name.to_lowercase(), value); Ok(()) }
+            _ => bail!("Value is not an object instance"),
+        }
+    }
+
+    pub fn instance_property(&self, receiver: BxValue, name: &str) -> Option<BxValue> {
+        let GcObject::Instance(instance) = self.heap.get_opt(receiver.as_gc_id()?)? else { return None; };
+        let index = self.shapes.get_index(instance.shape_id, self.interner.get_id(name)?)?;
+        instance.properties.get(index as usize).copied()
+    }
+
+    /// `class` and its ancestors, nearest first.
+    fn class_chain(&self, class: &Rc<RefCell<BxClass>>) -> Vec<Rc<RefCell<BxClass>>> {
+        let mut chain = vec![Rc::clone(class)];
+        loop {
+            let parent = chain.last().and_then(|current| {
+                let extends = current.borrow().extends.clone()?;
+                let id = self.get_global(&extends)?.as_gc_id()?;
+                match self.heap.get(id) {
+                    GcObject::Class(parent) => Some(Rc::clone(parent)),
+                    _ => None,
+                }
+            });
+            match parent {
+                Some(parent) if !chain.iter().any(|seen| Rc::ptr_eq(seen, &parent)) => chain.push(parent),
+                _ => return chain,
+            }
+        }
+    }
+
+    /// Private methods are callable from code running inside the class or a related class
+    /// (the caller's receiver is an instance of `class`, a subclass, or an ancestor of it).
+    fn caller_inside_class(&self, fiber_idx: usize, class: &Rc<RefCell<BxClass>>) -> bool {
+        let Some(receiver) = self.fibers[fiber_idx].frames.last().and_then(|frame| frame.receiver) else {
+            return false;
+        };
+        let Some(caller_class) = self.receiver_instance_gc_id(receiver).and_then(|id| match self.heap.get(id) {
+            GcObject::Instance(instance) => Some(Rc::clone(&instance.class)),
+            _ => None,
+        }) else {
+            return false;
+        };
+        self.class_chain(&caller_class).iter().any(|c| Rc::ptr_eq(c, class))
+            || self.class_chain(class).iter().any(|c| Rc::ptr_eq(c, &caller_class))
+    }
+
+    /// `get`/`set` + capitalized property name, e.g. ("get", "title") -> "getTitle".
+    fn accessor_method_name(prefix: &str, name: &str) -> Option<String> {
+        let mut chars = name.chars();
+        let first = chars.next()?;
+        Some(format!("{prefix}{}{}", first.to_uppercase(), chars.as_str()))
+    }
+
+    pub fn instance_has_method(&self, receiver: BxValue, name: &str) -> bool {
+        match receiver.as_gc_id().and_then(|id| self.heap.get_opt(id)) {
+            Some(GcObject::Instance(instance)) => self.resolve_method(instance.class.clone(), name).is_some(),
+            _ => false,
+        }
     }
 
     pub fn instance_variables_json(&self, receiver: BxValue) -> Result<serde_json::Value> {
@@ -7461,39 +8349,20 @@ impl VM {
         }
     }
 
-    fn reorder_arguments(
-        &self,
-        args: Vec<BxValue>,
-        names: Vec<String>,
-        params: &[String],
-    ) -> Vec<BxValue> {
-        // Compiled functions reserve one extra local for the implicit `arguments` value.
-        let mut final_args = vec![BxValue::new_null(); params.len() + 1];
-        let mut positional_args = Vec::new();
-        let mut named_args = Vec::new();
-
-        for (i, arg_val) in args.into_iter().enumerate() {
-            if i < names.len() && !names[i].is_empty() {
-                named_args.push((names[i].to_lowercase(), arg_val));
-            } else {
-                positional_args.push(arg_val);
-            }
+    fn reorder_callback_arguments(args: Vec<BxValue>, names: Vec<String>, params: &[String]) -> Result<Vec<BxValue>, String> {
+        if args.len() > params.len() { return Err("Too many native arguments".into()); }
+        let mut values = vec![BxValue::new_null(); params.len()];
+        let mut assigned = vec![false; params.len()];
+        let mut position = 0;
+        for (index, value) in args.into_iter().enumerate() {
+            let name = names.get(index).map(String::as_str).unwrap_or("");
+            let slot = if name.is_empty() { let slot = position; position += 1; slot } else {
+                params.iter().position(|p| p.eq_ignore_ascii_case(name)).ok_or_else(|| format!("Unknown native argument: {name}"))?
+            };
+            if slot >= params.len() || assigned[slot] { return Err("Duplicate or excessive native argument".into()); }
+            assigned[slot] = true; values[slot] = value;
         }
-
-        // 1. Fill positional args
-        for (i, arg_val) in positional_args.into_iter().enumerate() {
-            if i < final_args.len() {
-                final_args[i] = arg_val;
-            }
-        }
-
-        // 2. Fill named args
-        for (name, arg_val) in named_args {
-            if let Some(param_idx) = params.iter().position(|p| p.to_lowercase() == name) {
-                final_args[param_idx] = arg_val;
-            }
-        }
-        final_args
+        Ok(values)
     }
 
     fn native_global_name(&self, value: BxValue) -> Option<String> {
@@ -7514,8 +8383,13 @@ impl VM {
         };
 
         let params: Vec<&str> = match function_name.to_ascii_lowercase().as_str() {
-            "dateformat" | "datetimeformat" => vec!["date", "format", "timezone", "locale"],
-            "timeformat" => vec!["date", "format", "timezone"],
+            "arrayeach" | "arraymap" | "arrayfilter" | "arraysome" | "arrayevery" | "arraynone" => {
+                vec!["array", "callback", "parallel", "maxthreads", "virtual"]
+            }
+            "arrayreduce" => vec!["array", "callback", "initialvalue"],
+            "boxannounce" => vec!["state", "data", "poolname"],
+            "dateformat" | "datetimeformat" | "timeformat" => vec!["date", "format", "timezone", "locale"],
+            "createdatetime" | "createdate" => vec!["year", "month", "day", "hour", "minute", "second", "millisecond", "timezone"],
             "parsedatetime" => vec!["date", "format", "timezone", "locale"],
             "gettoken" => vec!["list", "position", "delimiter"],
             "listavg" => vec!["list", "delimiter"],
@@ -7590,6 +8464,7 @@ impl VM {
                 "multicharacterdelimiter",
                 "offset",
             ],
+            "createobject" => vec!["type", "classname", "properties", "externalonly", "classloader"],
             "structkeytranslate" => vec!["struct", "deep", "retainkeys"],
             "stringbuildernew" => vec!["value", "capacity"],
             "setnew" => vec!["type", "values", "casesensitive", "issynchronized"],
@@ -7597,7 +8472,8 @@ impl VM {
             "getlocaledisplayname" | "getlocaleinfo" => vec!["locale", "dsplocale"],
             "asyncallapply" => vec!["items", "mapper", "timeout", "timeunit"],
             "threadnew" => vec!["runnable", "name", "virtual"],
-            "boxast" => vec!["source", "returntype"],
+            "boxast" => vec!["source", "filepath", "returntype", "sourcetype", "recover", "includetokens"],
+            "boxastvisit" => vec!["tree", "visitor", "state"],
             "runthreadincontext" => vec!["context", "callback"],
             "lock" => vec!["name", "timeout", "type"],
             "compress" => vec![
@@ -7709,20 +8585,7 @@ impl VM {
                     args.reverse();
                     // Don't pop function yet, it's used as marker
 
-                    let final_args = if let Some(names_list) = names {
-                        self.reorder_arguments(args, names_list, &func.params)
-                    } else {
-                        let mut a = args;
-                        if (func.arity as usize) > arg_count {
-                            for _ in 0..(func.arity as usize - arg_count) {
-                                a.push(BxValue::new_null());
-                            }
-                        } else if arg_count > (func.arity as usize) {
-                            // Trim extra arguments if function doesn't support varargs (MatchBox doesn't yet)
-                            a.truncate(func.arity as usize);
-                        }
-                        a
-                    };
+                    let final_args = self.function_arguments(args, names.as_deref(), &func);
                     // Stack: ... [func] [arg1] [arg2] ...
                     // Function is already at len() - 1 - arg_count.
                     // We popped args, now we push final_args back.
@@ -7730,81 +8593,22 @@ impl VM {
                         self.fibers[fiber_idx].stack.push(arg);
                     }
 
-                    // ── Tier-4 hot function fast-path ─────────────────────────
-                    #[cfg(feature = "jit")]
-                    {
-                        let compiled_opt = if let Some(ref jit) = self.jit {
-                            let fn_id = Rc::as_ptr(&func) as usize;
-                            jit.get_compiled_fn(fn_id)
-                        } else {
-                            None
-                        };
-
-                        let compiled = if compiled_opt.is_none() {
-                            if let Some(ref mut jit) = self.jit {
-                                let fn_id = Rc::as_ptr(&func) as usize;
-                                let code = func.chunk.code().as_slice();
-                                let consts = func.chunk.constants().as_slice();
-                                jit.profile_fn(fn_id, id, code, consts, func.arity)
-                            } else {
-                                None
-                            }
-                        } else {
-                            compiled_opt
-                        };
-
-                        // Set thread-local pointer so compiled callees can resolve other
-                        // compiled functions via jit_resolve_fn without passing extra state.
-                        if let Some(ref jit) = self.jit {
-                            crate::vm::jit::set_compiled_fns_ptr(
-                                &jit.compiled_fns_by_gcid as *const _,
-                            );
-                        }
-
-                        if let Some(compiled_fn) = compiled {
-                            let stack_base =
-                                self.fibers[fiber_idx].stack.len() - func.arity as usize;
-                            // Reserve extra space for additional locals the function may use
-                            self.fibers[fiber_idx].stack.reserve(64);
-                            let locals_raw = unsafe {
-                                self.fibers[fiber_idx].stack.as_mut_ptr().add(stack_base)
-                                    as *mut u64
-                            };
-                            let heap_raw = &self.heap as *const _ as *const std::ffi::c_void;
-                            let mut ret_bits: u64 = 0;
-
-                            let status =
-                                unsafe { compiled_fn(locals_raw, heap_raw, &mut ret_bits) };
-
-                            if status == 0 {
-                                // Success: remove the function object + args, push return value
-                                let func_slot = stack_base - 1;
-                                self.fibers[fiber_idx].stack.truncate(func_slot);
-                                self.fibers[fiber_idx]
-                                    .stack
-                                    .push(unsafe { std::mem::transmute::<u64, BxValue>(ret_bits) });
-                                return Ok(());
-                            }
-                            // status == 1 → deopt: fall through to normal frame creation
-                            eprintln!(
-                                "[JIT] Tier-4 deopt fn_id=0x{:x}",
-                                Rc::as_ptr(&func) as usize
-                            );
-                            if let Some(ref mut jit) = self.jit {
-                                jit.inc_fn_deopt(Rc::as_ptr(&func) as usize);
-                            }
-                        }
-                    }
-                    // ── End Tier-4 ────────────────────────────────────────────
-
-                    let sub_chunk = func.chunk.clone();
-                    let constant_count = sub_chunk.constants().len();
+                    let sub_chunk = func.chunk.execution_chunk();
+                    let constant_count = sub_chunk.borrow().constants().len();
                     let mut frame = CallFrame {
+                        #[cfg(feature = "jit")]
+                        jit_loop_attempted: false,
+                        #[cfg(feature = "jit")]
+                        jit_construct_unsupported: None,
+                        context: None,
                         function: Rc::clone(&func),
-                        chunk: Rc::new(RefCell::new(sub_chunk)),
+                        chunk: sub_chunk,
                         ip: 0,
+                        local_scope: None,
+                        scope_mode: scopes::ScopeMode::Binding,
+                        local_names: scopes::SlotBindings::new(),
                         stack_base: 0,
-                        receiver: self.fibers[fiber_idx].frames.last().unwrap().receiver,
+                        receiver: func.captured_receiver,
                         handlers: Vec::new(),
                         pending_completion: None,
                         promoted_constants: vec![None; constant_count],
@@ -7814,6 +8618,22 @@ impl VM {
                     self.fibers[fiber_idx].frames.push(frame);
                     Ok(())
                 }
+                GcObject::NativeCallback(callback) => {
+                    let callback = callback.clone();
+                    let start = self.fibers[fiber_idx].stack.len() - arg_count;
+                    let mut args: Vec<_> = self.fibers[fiber_idx].stack.drain(start..).collect();
+                    if let Some(names) = names {
+                        args = match Self::reorder_callback_arguments(args, names, &callback.parameters) {
+                            Ok(args) => args,
+                            Err(error) => return self.throw_error(fiber_idx, &error),
+                        };
+                    }
+                    self.fibers[fiber_idx].stack.pop();
+                    match self.invoke_callback(&callback, &args) {
+                        Ok(value) => { self.fibers[fiber_idx].stack.push(value); Ok(()) }
+                        Err(error) => self.throw_error(fiber_idx, &error),
+                    }
+                }
                 GcObject::NativeFunction(func) => {
                     let func = *func;
                     let mut args = Vec::with_capacity(arg_count);
@@ -7821,13 +8641,13 @@ impl VM {
                         args.push(self.fibers[fiber_idx].stack.pop().unwrap());
                     }
                     args.reverse();
-                    let native_name = self.native_global_name(func_val);
                     if let Some(names) = names {
+                        let native_name = self.native_global_name(func_val);
                         args = self.reorder_native_arguments(args, names, native_name.as_deref());
                     }
                     self.fibers[fiber_idx].stack.pop(); // Pop the function object
 
-                    match func(self, &args) {
+                    match self.native_exception_scope(|vm| func(vm, &args)) {
                         Ok(val) => {
                             self.fibers[fiber_idx].stack.push(val);
                             Ok(())
@@ -7927,6 +8747,30 @@ impl VM {
     ) -> Result<()> {
         let receiver_idx = self.fibers[fiber_idx].stack.len() - 1 - arg_count as usize;
         let receiver_val = self.fibers[fiber_idx].stack[receiver_idx];
+        if self.class_reference_target(receiver_val).is_some() {
+            let args = self.fibers[fiber_idx].stack[receiver_idx + 1..].to_vec();
+            let result = self.call_method_value_named(receiver_val, &name, args, names.unwrap_or_default());
+            self.fibers[fiber_idx].stack.truncate(receiver_idx);
+            match result {
+                Ok(value) => self.fibers[fiber_idx].stack.push(value),
+                Err(error) => return self.throw_error(fiber_idx, &error.to_string()),
+            }
+            return Ok(());
+        }
+
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        if let Some((member, member_receiver)) = self.registered_member(receiver_val, &name) {
+            let args = self.fibers[fiber_idx].stack.drain(receiver_idx + 1..).collect();
+            let (args, names) = match member.arguments(member_receiver, args, names) {
+                Ok(args) => args,
+                Err(error) => return self.throw_error(fiber_idx, &error.to_string()),
+            };
+            let function = self.heap.read_retained_value(&member.function).map_err(anyhow::Error::msg)?;
+            self.fibers[fiber_idx].stack[receiver_idx] = function;
+            let count = args.len();
+            self.fibers[fiber_idx].stack.extend(args);
+            return self.execute_call(fiber_idx, count, names);
+        }
 
         if let Some(id) = receiver_val.as_gc_id() {
             #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -7952,6 +8796,7 @@ impl VM {
                                 let fiber = &mut self.fibers[fiber_idx];
                                 fiber.frames.last_mut().unwrap().ip = ip_at_start;
                                 fiber.yield_requested = true;
+                                fiber.blocked_on_future = true;
                                 return Ok(());
                             }
                             FutureStatus::Completed => {
@@ -8001,6 +8846,14 @@ impl VM {
             }
 
             match self.heap.get(id) {
+                GcObject::Class(_) => {
+                    let method = match self.method_reference(receiver_val, &name) {
+                        Ok(method) => method,
+                        Err(error) => return self.throw_error(fiber_idx, &error.to_string()),
+                    };
+                    self.fibers[fiber_idx].stack[receiver_idx] = method;
+                    return self.execute_call(fiber_idx, arg_count, names);
+                }
                 GcObject::Struct(_) => {
                     let method_val = self.struct_get(id, &name);
                     if let Some(method_id) = method_val.as_gc_id() {
@@ -8013,23 +8866,23 @@ impl VM {
                             args.reverse();
                             // Keep the receiver as the frame marker so returning from a
                             // nested method call does not remove the caller's function.
-                            let final_args = if let Some(names_list) = names {
-                                self.reorder_arguments(args, names_list, &function.params)
-                            } else {
-                                let mut final_args = args;
-                                while final_args.len() < function.arity as usize {
-                                    final_args.push(BxValue::new_null());
-                                }
-                                final_args
-                            };
+                            let final_args = self.function_arguments(args, names.as_deref(), &function);
                             self.fibers[fiber_idx].stack.extend(final_args);
-                            let sub_chunk = function.chunk.clone();
-                            let constant_count = sub_chunk.constants().len();
+                            let sub_chunk = function.chunk.execution_chunk();
+                            let constant_count = sub_chunk.borrow().constants().len();
                             let stack_base = self.fibers[fiber_idx].stack.len() - function.arity as usize;
                             self.fibers[fiber_idx].frames.push(CallFrame {
+                                #[cfg(feature = "jit")]
+                                jit_loop_attempted: false,
+                                #[cfg(feature = "jit")]
+                                jit_construct_unsupported: None,
+                                context: None,
                                 function,
-                                chunk: Rc::new(RefCell::new(sub_chunk)),
+                                chunk: sub_chunk,
                                 ip: 0,
+                                scope_mode: scopes::ScopeMode::Binding,
+                                local_scope: None,
+                                local_names: scopes::SlotBindings::new(),
                                 stack_base,
                                 receiver: Some(receiver_val),
                                 handlers: Vec::new(),
@@ -8055,6 +8908,7 @@ impl VM {
                                 let fiber = &mut self.fibers[fiber_idx];
                                 fiber.frames.last_mut().unwrap().ip = ip_at_start;
                                 fiber.yield_requested = true;
+                                fiber.blocked_on_future = true;
                                 return Ok(());
                             }
                             FutureStatus::Completed => {
@@ -8083,14 +8937,13 @@ impl VM {
                     args.reverse();
                     self.fibers[fiber_idx].stack.pop(); // receiver
 
-                    let mut obj_borrow = obj.borrow_mut();
-                    match obj_borrow.call_method(self, id, &name, &args) {
+                    drop(obj);
+                    match self.native_object_call_method(id, &name, &args) {
                         Ok(res) => {
                             self.fibers[fiber_idx].stack.push(res);
                             return Ok(());
                         }
                         Err(e) => {
-                            drop(obj_borrow);
                             return self.throw_error(fiber_idx, &e);
                         }
                     }
@@ -8183,6 +9036,18 @@ impl VM {
                         method
                     };
 
+                    if let Some(func) = &method {
+                        if func.modifiers.access.as_deref().is_some_and(|a| a.eq_ignore_ascii_case("private"))
+                            && !self.caller_inside_class(fiber_idx, &class)
+                        {
+                            let class_name = class.borrow().name.clone();
+                            return self.throw_error(
+                                fiber_idx,
+                                &format!("The function [{name}] in class [{class_name}] is private and can only be called from within its class"),
+                            );
+                        }
+                    }
+
                     if let Some(func) = method {
                         let mut args = Vec::with_capacity(arg_count);
                         for _ in 0..arg_count {
@@ -8192,15 +9057,7 @@ impl VM {
                         // Pop receiver, but we'll push it back as the first element of stack for the frame
                         self.fibers[fiber_idx].stack.pop();
 
-                        let final_args = if let Some(names_list) = names {
-                            self.reorder_arguments(args, names_list, &func.params)
-                        } else {
-                            let mut a = args;
-                            for _ in 0..(func.arity as usize - arg_count) {
-                                a.push(BxValue::new_null());
-                            }
-                            a
-                        };
+                        let final_args = self.function_arguments(args, names.as_deref(), &func);
 
                         // Receiver should be available to the frame. In Matchbox, we often put it in CallFrame.receiver.
                         // But local variables slot 0 might also be receiver in some conventions.
@@ -8211,13 +9068,21 @@ impl VM {
                             self.fibers[fiber_idx].stack.push(arg);
                         }
 
-                        let sub_chunk = func.chunk.clone();
-                        let constant_count = sub_chunk.constants().len();
+                        let sub_chunk = func.chunk.execution_chunk();
+                        let constant_count = sub_chunk.borrow().constants().len();
                         let stack_base = self.fibers[fiber_idx].stack.len() - func.arity as usize;
                         let frame = CallFrame {
+                            scope_mode: scopes::ScopeMode::Binding,
+                            #[cfg(feature = "jit")]
+                            jit_loop_attempted: false,
+                            #[cfg(feature = "jit")]
+                            jit_construct_unsupported: None,
+                            context: None,
                             function: func.clone(),
-                            chunk: Rc::new(RefCell::new(sub_chunk)),
+                            chunk: sub_chunk,
                             ip: 0,
+                            local_scope: None,
+                            local_names: scopes::SlotBindings::new(),
                             stack_base,
                             receiver: Some(receiver_val),
                             handlers: Vec::new(),
@@ -8238,17 +9103,23 @@ impl VM {
                         let args_array_id = self.heap.alloc(GcObject::Array(original_args));
                         let name_id = self.heap.alloc(GcObject::String(BoxString::new(&name)));
 
-                        self.fibers[fiber_idx].stack.push(receiver_val); // receiver at base
-                        self.fibers[fiber_idx].stack.push(BxValue::new_ptr(name_id));
-                        self.fibers[fiber_idx]
-                            .stack
-                            .push(BxValue::new_ptr(args_array_id));
+                        let final_args = self.function_arguments(vec![BxValue::new_ptr(name_id), BxValue::new_ptr(args_array_id)], None, &on_missing);
+                        self.fibers[fiber_idx].stack.push(receiver_val);
+                        self.fibers[fiber_idx].stack.extend(final_args);
 
-                        let sub_chunk = on_missing.chunk.clone();
-                        let constant_count = sub_chunk.constants().len();
+                        let sub_chunk = on_missing.chunk.execution_chunk();
+                        let constant_count = sub_chunk.borrow().constants().len();
                         let mut frame = CallFrame {
+                            #[cfg(feature = "jit")]
+                            jit_loop_attempted: false,
+                            #[cfg(feature = "jit")]
+                            jit_construct_unsupported: None,
+                            context: None,
+                            local_scope: None,
+                            scope_mode: scopes::ScopeMode::Binding,
+                            local_names: scopes::SlotBindings::new(),
                             function: on_missing.clone(),
-                            chunk: Rc::new(RefCell::new(sub_chunk)),
+                            chunk: sub_chunk,
                             ip: 0,
                             stack_base: self.fibers[fiber_idx].stack.len() - 2,
                             receiver: Some(receiver_val),
@@ -8257,9 +9128,6 @@ impl VM {
                             promoted_constants: vec![None; constant_count],
                         };
 
-                        for _ in 0..(on_missing.arity - 2) {
-                            self.fibers[fiber_idx].stack.push(BxValue::new_null());
-                        }
                         frame.stack_base =
                             self.fibers[fiber_idx].stack.len() - on_missing.arity as usize;
 
@@ -8318,6 +9186,7 @@ impl VM {
                                 }
                             }
                             self.fibers[fiber_idx].yield_requested = true;
+                            self.fibers[fiber_idx].blocked_on_future = true;
                             return Ok(());
                         }
                         FutureStatus::Completed => {
@@ -8339,6 +9208,18 @@ impl VM {
         if let Some(bif_val) = self.get_global(&bif_name) {
             if let Some(bif_id) = bif_val.as_gc_id() {
                 match self.heap.get(bif_id) {
+                    GcObject::NativeCallback(callback) => {
+                        let callback = callback.clone();
+                        let start = self.fibers[fiber_idx].stack.len() - arg_count;
+                        let args: Vec<_> = self.fibers[fiber_idx].stack.drain(start..).collect();
+                        self.fibers[fiber_idx].stack.pop();
+                        let mut final_args = vec![receiver];
+                        final_args.extend(args);
+                        match self.invoke_callback(&callback, &final_args) {
+                            Ok(value) => { self.fibers[fiber_idx].stack.push(value); return Ok(()); }
+                            Err(error) => return self.throw_error(fiber_idx, &error),
+                        }
+                    }
                     GcObject::NativeFunction(bif) => {
                         let bif = *bif;
                         let mut args = Vec::with_capacity(arg_count + 1);
@@ -8351,7 +9232,7 @@ impl VM {
                         let mut final_args = vec![receiver];
                         final_args.extend(args);
 
-                        match bif(self, &final_args) {
+                        match self.native_exception_scope(|vm| bif(vm, &final_args)) {
                             Ok(res) => {
                                 self.fibers[fiber_idx].stack.push(res);
                                 return Ok(());
@@ -8378,10 +9259,26 @@ impl VM {
                 }
             }
         }
-        self.throw_error(fiber_idx, &format!("BIF {} not found.", bif_name))
+        let hint = crate::bifs::required_feature(&bif_name.to_ascii_lowercase())
+            .map(|feature| format!(" It requires the `{feature}` build feature."))
+            .unwrap_or_default();
+        self.throw_error(fiber_idx, &format!("BIF {} not found.{}", bif_name, hint))
     }
 
     fn read_constant(&mut self, fiber_idx: usize, idx: usize) -> Result<BxValue> {
+        let closure = {
+            let frame = self.fibers[fiber_idx].frames.last().unwrap();
+            let chunk = frame.chunk.borrow();
+            match &chunk.constants()[idx] {
+                Constant::CompiledFunction(function) if matches!(function.kind, crate::types::FunctionKind::Closure | crate::types::FunctionKind::ComponentBody) => Some(function.clone()),
+                _ => None,
+            }
+        };
+        if let Some(mut function) = closure {
+            function.captured_receiver = self.fibers[fiber_idx].frames.last().unwrap().receiver;
+            function.captured_scopes = self.capture_scopes(fiber_idx);
+            return Ok(self.promote_constant(Constant::CompiledFunction(function))?);
+        }
         let val = {
             let fiber = &self.fibers[fiber_idx];
             let frame = fiber.frames.last().unwrap();
@@ -8440,38 +9337,83 @@ impl VM {
             }
             Constant::CompiledFunction(f) => {
                 let mut f = f;
-                if f.captured_receiver.is_none() {
+                // Function metadata may originate in another VM; indices/shape
+                // guards belong to this VM, never to the reusable program.
+                f.chunk = f.chunk.clone_without_runtime_caches();
+                if f.kind != crate::types::FunctionKind::Lambda && f.captured_receiver.is_none() {
                     f.captured_receiver = self.current_receiver();
                 }
                 let id = self.gc_alloc(GcObject::CompiledFunction(Rc::new(f)))?;
                 Ok(BxValue::new_ptr(id))
             }
-            Constant::Class(c) => {
+            Constant::Class(mut c) => {
+                c.constructor.chunk = c.constructor.chunk.clone_without_runtime_caches();
+                for (_, function) in &mut c.methods {
+                    function.chunk = function.chunk.clone_without_runtime_caches();
+                }
                 let id = self.gc_alloc(GcObject::Class(Rc::new(RefCell::new(c))))?;
                 Ok(BxValue::new_ptr(id))
             }
-            Constant::Interface(i) => {
+            Constant::Interface(mut i) => {
+                for (_, function) in &mut i.methods {
+                    if let Some(function) = function {
+                        function.chunk = function.chunk.clone_without_runtime_caches();
+                    }
+                }
                 let id = self.gc_alloc(GcObject::Interface(Rc::new(RefCell::new(i))))?;
                 Ok(BxValue::new_ptr(id))
             }
         }
     }
 
-    fn read_string_constant(&mut self, fiber_idx: usize, idx: usize) -> Result<String> {
+    /// Operand names are immutable metadata, not per-frame boxed string values.
+    fn read_string_constant(&mut self, fiber_idx: usize, idx: usize) -> Result<BoxString> {
+        {
+            let frame = self.fibers[fiber_idx].frames.last().unwrap();
+            let chunk = frame.chunk.borrow();
+            if let Constant::String(name) = &chunk.constants()[idx] {
+                return Ok(name.clone());
+            }
+        }
+        // Preserve the existing malformed-operand error path.
         let val = self.read_constant(fiber_idx, idx)?;
         if let Some(id) = val.as_gc_id() {
             if let GcObject::String(s) = self.heap.get(id) {
-                return Ok(s.to_string());
+                return Ok(s.clone());
             }
         }
         bail!("Constant at index {} is not a string: {:?}", idx, val)
     }
 
-    /// Read a string constant, intern it, and return the InternId.
-    /// Since InternId is Copy (u32), the borrow on self is released.
+    /// Only ordinary field storage can use the existing shape/index cache.
+    fn cached_member_value(&self, fiber: usize, ip: usize, base: BxValue) -> Option<BxValue> {
+        let (shape, properties) = match self.heap.get_opt(base.as_gc_id()?)? {
+            GcObject::Struct(record) => (record.shape_id, &record.properties),
+            GcObject::Instance(instance) => (instance.shape_id, &instance.properties),
+            _ => return None,
+        };
+        let frame = self.fibers[fiber].frames.last()?;
+        let entry = frame.chunk.borrow().cache_get(ip)?;
+        let index = match entry {
+            IcEntry::Monomorphic { shape_id, index } if shape_id == shape as usize => index,
+            IcEntry::Polymorphic { entries, count } => entries[..count].iter()
+                .find_map(|&(shape_id, index)| (shape_id == shape as usize).then_some(index))?,
+            _ => return None,
+        };
+        properties.get(index).copied()
+    }
+
+    /// Identifier operands are immutable metadata, not per-frame GC values.
     fn read_intern_id(&mut self, fiber_idx: usize, idx: usize) -> Result<u32> {
-        let s = self.read_string_constant(fiber_idx, idx)?;
-        Ok(self.interner.intern(&s))
+        let mut name = {
+            let frame = self.fibers[fiber_idx].frames.last().unwrap();
+            let chunk = frame.chunk.borrow();
+            match &chunk.constants()[idx] {
+                Constant::String(name) => name.clone(),
+                other => bail!("Constant at index {} is not a string: {:?}", idx, other),
+            }
+        };
+        Ok(self.interner.intern(name.as_flat_str()))
     }
 
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -8604,7 +9546,7 @@ impl VM {
                     })
                     .into()
                 }
-                GcObject::CompiledFunction(_) | GcObject::NativeFunction(_) => {
+                GcObject::CompiledFunction(_) | GcObject::NativeFunction(_) | GcObject::NativeCallback(_) => {
                     #[cfg(all(target_arch = "wasm32", feature = "js"))]
                     {
                         let id = *self.next_callback_id.borrow();
@@ -8684,6 +9626,12 @@ impl VM {
                     roots.push(*recv);
                 }
                 roots.extend(frame.promoted_constants.iter().flatten().copied());
+                roots.extend(frame.local_scope);
+                roots.extend(frame.context);
+                roots.extend(frame.function.captured_scopes.iter().copied());
+                if let Some(PendingCompletion::Return(value) | PendingCompletion::Throw(value)) = frame.pending_completion {
+                    roots.push(value);
+                }
             }
             roots.push(BxValue::new_ptr(fiber.future_id));
         }
@@ -8691,6 +9639,7 @@ impl VM {
         roots.extend(self.global_values.iter().cloned());
         roots.extend(self.script_variables.borrow().values().copied());
         roots.extend(self.soap_clients.values().copied());
+        roots.extend(self.function_events.values().copied());
         #[cfg(all(target_arch = "wasm32", feature = "js"))]
         roots.extend(self.callback_registry.borrow().values().cloned());
         for completion in &self.native_completions {
@@ -8893,12 +9842,12 @@ pub fn _matchbox_invoke_callback(
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
-fn wasm_instance_prop_get(vm: &mut VM, base_val: BxValue, name: &str) -> BxValue {
+fn wasm_instance_prop_get(vm: &mut VM, base_val: BxValue, name: &str) -> Result<BxValue> {
     let Some(id) = base_val.as_gc_id() else {
-        return BxValue::new_null();
+        return Ok(BxValue::new_null());
     };
 
-    match vm.heap.get(id) {
+    Ok(match vm.heap.get(id) {
         GcObject::Struct(_) => vm.struct_get(id, name),
         GcObject::Instance(inst) => {
             let name_id = vm.interner.intern(name);
@@ -8909,13 +9858,17 @@ fn wasm_instance_prop_get(vm: &mut VM, base_val: BxValue, name: &str) -> BxValue
                     .unwrap_or_else(BxValue::new_null)
             } else if let Some(method) = vm.resolve_method(Rc::clone(&inst.class), name) {
                 BxValue::new_ptr(vm.heap.alloc(GcObject::CompiledFunction(method)))
+            } else if let Some(getter) = VM::accessor_method_name("get", name)
+                .filter(|getter| vm.instance_has_method(base_val, getter))
+            {
+                return vm.call_method_value(base_val, &getter, Vec::new());
             } else {
                 BxValue::new_null()
             }
         }
-        GcObject::NativeObject(obj) => obj.borrow().get_property(&name.to_lowercase()),
+        GcObject::NativeObject(obj) => vm.native_object_get(obj, &name.to_lowercase()),
         _ => BxValue::new_null(),
-    }
+    })
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -8928,7 +9881,7 @@ fn wasm_instance_keys(vm: &mut VM, base_val: BxValue) -> Vec<String> {
         GcObject::Struct(_) => vm.struct_key_array(id),
         GcObject::Instance(inst) => {
             let shape = &vm.shapes.shapes[inst.shape_id as usize];
-            let mut keys = vec![String::new(); shape.fields.len()];
+            let mut keys = vec![String::new(); shape.fields.size()];
             for (&fid, &fidx) in &shape.fields {
                 keys[fidx as usize] = vm.interner.resolve(fid).to_string();
             }
@@ -8938,8 +9891,15 @@ fn wasm_instance_keys(vm: &mut VM, base_val: BxValue) -> Vec<String> {
             loop {
                 let class_ref = current_class.borrow();
 
-                for (name, _) in &class_ref.methods {
+                for (name, method) in &class_ref.methods {
                     let lowered = name.to_lowercase();
+                    if let Some(property) = lowered.strip_prefix("get")
+                        .filter(|property| !property.is_empty() && method.params.is_empty())
+                    {
+                        if seen.insert(property.to_string()) {
+                            keys.push(property.to_string());
+                        }
+                    }
                     if seen.insert(lowered) {
                         keys.push(name.clone());
                     }
@@ -8979,10 +9939,20 @@ fn wasm_instance_keys(vm: &mut VM, base_val: BxValue) -> Vec<String> {
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
-fn wasm_instance_prop_set(vm: &mut VM, base_val: BxValue, name: &str, val: BxValue) {
+fn wasm_instance_prop_set(vm: &mut VM, base_val: BxValue, name: &str, val: BxValue) -> Result<()> {
     let Some(id) = base_val.as_gc_id() else {
-        return;
+        return Ok(());
     };
+    if let GcObject::Instance(inst) = vm.heap.get(id) {
+        let field = vm.interner.get_id(name).and_then(|key| vm.shapes.get_index(inst.shape_id, key));
+        if field.is_none()
+            && let Some(setter) = VM::accessor_method_name("set", name)
+                .filter(|setter| vm.instance_has_method(base_val, setter))
+        {
+            vm.call_method_value(base_val, &setter, vec![val])?;
+            return Ok(());
+        }
+    }
 
     match vm.heap.get_mut(id) {
         GcObject::Struct(_) => vm.struct_set(id, name, val),
@@ -9000,6 +9970,7 @@ fn wasm_instance_prop_set(vm: &mut VM, base_val: BxValue, name: &str, val: BxVal
         GcObject::NativeObject(obj) => obj.borrow_mut().set_property(&name.to_lowercase(), val),
         _ => {}
     }
+    Ok(())
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -9012,11 +9983,12 @@ pub fn _matchbox_pump_vm(vm_ptr: usize) -> Result<(), JsValue> {
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 #[wasm_bindgen]
-pub fn _matchbox_get_instance_prop(vm_ptr: usize, gc_id: u32, name: &str) -> JsValue {
+pub fn _matchbox_get_instance_prop(vm_ptr: usize, gc_id: u32, name: &str) -> Result<JsValue, JsValue> {
     let vm = unsafe { &mut *(vm_ptr as *mut VM) };
     let base_val = BxValue::new_ptr(gc_id as usize);
-    let val = wasm_instance_prop_get(vm, base_val, name);
-    vm.bx_to_js(&val)
+    let val = wasm_instance_prop_get(vm, base_val, name)
+        .map_err(|error| js_error_value(&error.to_string()))?;
+    Ok(vm.bx_to_js(&val))
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -9034,16 +10006,31 @@ pub fn _matchbox_get_instance_keys(vm_ptr: usize, gc_id: u32) -> js_sys::Array {
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
 #[wasm_bindgen]
-pub fn _matchbox_set_instance_prop(vm_ptr: usize, gc_id: u32, name: &str, val: JsValue) {
+pub fn _matchbox_set_instance_prop(vm_ptr: usize, gc_id: u32, name: &str, val: JsValue) -> Result<(), JsValue> {
     let vm = unsafe { &mut *(vm_ptr as *mut VM) };
     let base_val = BxValue::new_ptr(gc_id as usize);
     let bx_val = vm.js_to_bx(val);
-    wasm_instance_prop_set(vm, base_val, name, bx_val);
+    wasm_instance_prop_set(vm, base_val, name, bx_val)
+        .map_err(|error| js_error_value(&error.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wait_until_instant_waits_at_least_the_requested_time() {
+        let start = Instant::now();
+        wait_until_instant(start + Duration::from_millis(30));
+        assert!(start.elapsed() >= Duration::from_millis(30));
+    }
+
+    #[test]
+    fn wait_until_instant_returns_immediately_for_a_past_deadline() {
+        let start = Instant::now();
+        wait_until_instant(start);
+        assert!(start.elapsed() < Duration::from_millis(200));
+    }
 
     #[test]
     fn runtime_error_out_of_memory_display() {
