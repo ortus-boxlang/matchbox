@@ -1,5 +1,5 @@
 //! Shared function scopes. Closures retain the declaring structs, not stack snapshots.
-use super::{VM, gc::GcObject};
+use super::{BxFiber, VM, gc::{GcObject, Heap}, intern::StringInterner, shape::ShapeRegistry};
 use crate::types::{BxVM, BxValue};
 
 #[derive(Clone, Copy)]
@@ -125,20 +125,11 @@ impl VM {
     }
 
     pub(super) fn expose_frame_scopes(&mut self, fiber: usize) {
-        // Permanent transition: keep live dictionaries and the existing deletion fallback.
-        // Do not copy aliased dictionary values back into stack fallback slots here.
-        if let Some(frame) = self.fibers[fiber].frames.last_mut() {
-            frame.scope_mode = ScopeMode::Shared;
-        }
+        self.fibers[fiber].expose_frame_scopes();
     }
 
     pub(super) fn arguments_scope(&self, fiber: usize) -> Option<BxValue> {
-        let frame = self.fibers[fiber].frames.last()?;
-        if frame.function.kind == crate::types::FunctionKind::ComponentBody {
-            return frame.function.captured_scopes.get(1).copied();
-        }
-        (frame.function.arity as usize == frame.function.params.len() + 1)
-            .then(|| self.fibers[fiber].stack[frame.stack_base + frame.function.params.len()])
+        self.fibers[fiber].arguments_scope()
     }
 
     pub(super) fn local_scope(&mut self, fiber: usize) -> BxValue {
@@ -180,152 +171,16 @@ impl VM {
             .insert(slot, ScopeBinding::new(key, true));
     }
 
-    fn slot_binding(&mut self, fiber: usize, slot: usize) -> Option<(usize, ScopeBinding)> {
-        let frame = self.fibers[fiber].frames.last().unwrap();
-        if let Some(binding) = frame.local_names.get(&slot).copied() {
-            let scope = if binding.local {
-                frame.local_scope?
-            } else {
-                self.arguments_scope(fiber)?
-            };
-            return Some((scope.as_gc_id()?, binding));
-        }
-        let name = frame.function.params.get(slot)?;
-        let scope = self.arguments_scope(fiber)?.as_gc_id()?;
-        // Read misses must not intern a name or upgrade its visible spelling.
-        let key = self.struct_key_lookup_id(scope, name)?;
-        let binding = ScopeBinding::new(key, false);
-        self.fibers[fiber]
-            .frames
-            .last_mut()
-            .unwrap()
-            .local_names
-            .insert(slot, binding);
-        Some((scope, binding))
-    }
-
-    fn binding_index(
-        &mut self,
-        fiber: usize,
-        slot: usize,
-        scope: usize,
-        binding: ScopeBinding,
-    ) -> Option<u32> {
-        let GcObject::Struct(record) = self.heap.get(scope) else {
-            return None;
-        };
-        if binding.shape == Some(record.shape_id) {
-            return binding.index;
-        }
-        let shape = record.shape_id;
-        let index = self.shapes.get_index(shape, binding.key);
-        let cached = self.fibers[fiber]
-            .frames
-            .last_mut()
-            .unwrap()
-            .local_names
-            .get_mut(&slot)
-            .unwrap();
-        cached.shape = Some(shape);
-        cached.index = index;
-        index
-    }
-
     #[inline(always)]
     pub(super) fn local_value(&mut self, fiber: usize, slot: usize) -> BxValue {
-        let frame = self.fibers[fiber].frames.last().unwrap();
-        if frame.scope_mode == ScopeMode::Unbound {
-            return self.fibers[fiber].stack[frame.stack_base + slot];
-        }
-        if frame.scope_mode == ScopeMode::Stack && slot == frame.function.params.len() {
-            // The compiler prologue stays dictionary-authoritative in Binding mode.
-            // A body read of its implicit arguments slot is a real scope exposure.
-            self.expose_frame_scopes(fiber);
-        }
-        let frame = self.fibers[fiber].frames.last().unwrap();
-        if frame.scope_mode == ScopeMode::Stack {
-            return self.fibers[fiber].stack[frame.stack_base + slot];
-        }
-        if frame.function.kind == crate::types::FunctionKind::ComponentBody
-            && slot == frame.function.params.len()
-            && let Some(arguments) = self.arguments_scope(fiber)
-        {
-            return arguments;
-        }
-        let value = self.slot_binding(fiber, slot).and_then(|(scope, binding)| {
-            let index = self.binding_index(fiber, slot, scope, binding)?;
-            let GcObject::Struct(record) = self.heap.get(scope) else {
-                return None;
-            };
-            record.properties.get(index as usize).copied()
-        });
-        if let Some(value) = value {
-            return value;
-        }
-        let frame = self.fibers[fiber].frames.last().unwrap();
-        self.fibers[fiber].stack[frame.stack_base + slot]
+        self.fibers[fiber].local_value(slot, &self.heap, &self.shapes, &self.interner)
     }
 
     #[inline(always)]
     pub(super) fn set_local_value(&mut self, fiber: usize, slot: usize, value: BxValue) {
-        let frame = self.fibers[fiber].frames.last().unwrap();
-        if frame.scope_mode == ScopeMode::Unbound {
-            let base = frame.stack_base;
-            self.fibers[fiber].stack[base + slot] = value;
-            return;
-        }
-        let binding = self.slot_binding(fiber, slot).or_else(|| {
-            let name = self.fibers[fiber]
-                .frames
-                .last()?
-                .function
-                .params
-                .get(slot)?
-                .clone();
-            let scope = self.arguments_scope(fiber)?.as_gc_id()?;
-            let key = self.struct_key_id(scope, &name);
-            let mut binding = ScopeBinding::new(key, false);
-            binding.write_ready = true;
-            self.fibers[fiber]
-                .frames
-                .last_mut()?
-                .local_names
-                .insert(slot, binding);
-            Some((scope, binding))
-        });
-        if let Some((scope, mut binding)) = binding {
-            if !binding.write_ready {
-                let name = self.fibers[fiber].frames.last().unwrap().function.params[slot].clone();
-                binding.key = self.struct_key_id(scope, &name);
-                binding.write_ready = true;
-                *self.fibers[fiber]
-                    .frames
-                    .last_mut()
-                    .unwrap()
-                    .local_names
-                    .get_mut(&slot)
-                    .unwrap() = binding;
-            }
-            if let Some(index) = self.binding_index(fiber, slot, scope, binding) {
-                // get_mut retains the ordinary GC write barrier; never cache values.
-                if let GcObject::Struct(record) = self.heap.get_mut(scope) {
-                    record.properties[index as usize] = value;
-                }
-            } else {
-                let name = self.interner.resolve(binding.key).to_owned();
-                self.struct_set(scope, &name, value);
-                self.fibers[fiber]
-                    .frames
-                    .last_mut()
-                    .unwrap()
-                    .local_names
-                    .get_mut(&slot)
-                    .unwrap()
-                    .shape = None;
-            }
-        }
-        let base = self.fibers[fiber].frames.last().unwrap().stack_base;
-        self.fibers[fiber].stack[base + slot] = value;
+        self.fibers[fiber].set_local_value(
+            slot, value, &mut self.heap, &mut self.shapes, &mut self.interner,
+        );
     }
 
     #[cfg(feature = "jit")]
@@ -429,6 +284,146 @@ impl VM {
                 .copied(),
         );
         scopes
+    }
+}
+
+// One authoritative local resolver for both whole-VM callers and a short-lived
+// dispatch borrow. Explicit fields prevent a local access from borrowing the VM
+// again; they do not detach the fiber or move its GC roots out of VM::fibers.
+impl BxFiber {
+    fn expose_frame_scopes(&mut self) {
+        // Permanent transition: keep live dictionaries and the deletion fallback.
+        // Do not copy aliased dictionary values back into stack fallback slots.
+        if let Some(frame) = self.frames.last_mut() {
+            frame.scope_mode = ScopeMode::Shared;
+        }
+    }
+
+    fn arguments_scope(&self) -> Option<BxValue> {
+        let frame = self.frames.last()?;
+        if frame.function.kind == crate::types::FunctionKind::ComponentBody {
+            return frame.function.captured_scopes.get(1).copied();
+        }
+        (frame.function.arity as usize == frame.function.params.len() + 1)
+            .then(|| self.stack[frame.stack_base + frame.function.params.len()])
+    }
+
+    fn slot_binding(
+        &mut self, slot: usize, heap: &Heap, interner: &StringInterner,
+    ) -> Option<(usize, ScopeBinding)> {
+        let frame = self.frames.last().unwrap();
+        if let Some(binding) = frame.local_names.get(&slot).copied() {
+            let scope = if binding.local {
+                frame.local_scope?
+            } else {
+                self.arguments_scope()?
+            };
+            return Some((scope.as_gc_id()?, binding));
+        }
+        let name = frame.function.params.get(slot)?;
+        let scope = self.arguments_scope()?.as_gc_id()?;
+        // Read misses must not intern a name or upgrade its visible spelling.
+        let key = VM::struct_key_lookup_id_in(heap, interner, scope, name)?;
+        let binding = ScopeBinding::new(key, false);
+        self.frames.last_mut().unwrap().local_names.insert(slot, binding);
+        Some((scope, binding))
+    }
+
+    fn binding_index(
+        &mut self, slot: usize, scope: usize, binding: ScopeBinding,
+        heap: &Heap, shapes: &ShapeRegistry,
+    ) -> Option<u32> {
+        let GcObject::Struct(record) = heap.get(scope) else {
+            return None;
+        };
+        if binding.shape == Some(record.shape_id) {
+            return binding.index;
+        }
+        let shape = record.shape_id;
+        let index = shapes.get_index(shape, binding.key);
+        let cached = self.frames.last_mut().unwrap().local_names.get_mut(&slot).unwrap();
+        cached.shape = Some(shape);
+        cached.index = index;
+        index
+    }
+
+    #[inline(always)]
+    pub(super) fn local_value(
+        &mut self, slot: usize, heap: &Heap, shapes: &ShapeRegistry, interner: &StringInterner,
+    ) -> BxValue {
+        let frame = self.frames.last().unwrap();
+        if frame.scope_mode == ScopeMode::Unbound {
+            return self.stack[frame.stack_base + slot];
+        }
+        if frame.scope_mode == ScopeMode::Stack && slot == frame.function.params.len() {
+            // A body read of implicit arguments is a real scope exposure. The
+            // compiler prologue stays dictionary-authoritative in Binding mode.
+            self.expose_frame_scopes();
+        }
+        let frame = self.frames.last().unwrap();
+        if frame.scope_mode == ScopeMode::Stack {
+            return self.stack[frame.stack_base + slot];
+        }
+        if frame.function.kind == crate::types::FunctionKind::ComponentBody
+            && slot == frame.function.params.len()
+            && let Some(arguments) = self.arguments_scope()
+        {
+            return arguments;
+        }
+        let value = self.slot_binding(slot, heap, interner).and_then(|(scope, binding)| {
+            let index = self.binding_index(slot, scope, binding, heap, shapes)?;
+            let GcObject::Struct(record) = heap.get(scope) else {
+                return None;
+            };
+            record.properties.get(index as usize).copied()
+        });
+        if let Some(value) = value {
+            return value;
+        }
+        let frame = self.frames.last().unwrap();
+        self.stack[frame.stack_base + slot]
+    }
+
+    #[inline(always)]
+    pub(super) fn set_local_value(
+        &mut self, slot: usize, value: BxValue, heap: &mut Heap,
+        shapes: &mut ShapeRegistry, interner: &mut StringInterner,
+    ) {
+        let frame = self.frames.last().unwrap();
+        if frame.scope_mode == ScopeMode::Unbound {
+            let base = frame.stack_base;
+            self.stack[base + slot] = value;
+            return;
+        }
+        let binding = self.slot_binding(slot, heap, interner).or_else(|| {
+            let name = self.frames.last()?.function.params.get(slot)?.clone();
+            let scope = self.arguments_scope()?.as_gc_id()?;
+            let key = VM::struct_key_id_in(heap, interner, scope, &name);
+            let mut binding = ScopeBinding::new(key, false);
+            binding.write_ready = true;
+            self.frames.last_mut()?.local_names.insert(slot, binding);
+            Some((scope, binding))
+        });
+        if let Some((scope, mut binding)) = binding {
+            if !binding.write_ready {
+                let name = self.frames.last().unwrap().function.params[slot].clone();
+                binding.key = VM::struct_key_id_in(heap, interner, scope, &name);
+                binding.write_ready = true;
+                *self.frames.last_mut().unwrap().local_names.get_mut(&slot).unwrap() = binding;
+            }
+            if let Some(index) = self.binding_index(slot, scope, binding, heap, shapes) {
+                // get_mut retains the ordinary GC write barrier; never cache values.
+                if let GcObject::Struct(record) = heap.get_mut(scope) {
+                    record.properties[index as usize] = value;
+                }
+            } else {
+                let name = interner.resolve(binding.key).to_owned();
+                VM::struct_set_and_key_in(heap, shapes, interner, scope, &name, value);
+                self.frames.last_mut().unwrap().local_names.get_mut(&slot).unwrap().shape = None;
+            }
+        }
+        let base = self.frames.last().unwrap().stack_base;
+        self.stack[base + slot] = value;
     }
 }
 
