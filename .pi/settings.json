@@ -1,0 +1,6 @@
+{
+  "$schema": "https://pi.dev/schemas/settings.schema.json",
+  "packages": [
+    "npm:pi-autoresearch@1.9.0"
+  ]
+}

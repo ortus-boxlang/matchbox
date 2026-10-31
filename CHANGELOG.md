@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-22
+
 ### Added
 - **Routed host helpers**: `app.every()` schedules bounded, coalesced callbacks; strict `getHTTPContent(true,true)` preserves JSON key casing and rejects duplicate/trailing documents; `getHTTPHeaderCount()` exposes repeated fields; `web.secureEquals()` provides timing-safe token comparison.
 - **Native routed application lifetime**: Installed modules and HTTP/WebSocket state persist in one thread-owned runtime. `app.worker(script[, onComplete])` runs bounded, single-flight BoxLang jobs in a separate module-aware VM and publishes JSON results without blocking HTTP. Routed middleware authorizes WebSocket requests before upgrade; body, connection, frame and outbound queues are bounded.

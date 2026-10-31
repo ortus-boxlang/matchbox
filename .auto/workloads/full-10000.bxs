@@ -1,0 +1,12 @@
+function add(a,b) { return a+b; }
+function batch(n) {
+    var sum=0;
+    for (var i=0; i<n; i++) { var x=i; x+=2; var y=add(x,3); sum+=y; }
+    return sum;
+}
+println("PRIMED");
+for (var w=0; w<100; w++) { batch(1000); sleep(1); }
+println("__ICOUNT_START__");
+var result=batch(10000);
+println("__ICOUNT_END__");
+println(result);

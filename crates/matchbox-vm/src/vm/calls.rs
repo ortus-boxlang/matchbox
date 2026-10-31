@@ -4,6 +4,27 @@ use crate::types::{BxCompiledFunction, BxVM, BxValue};
 use std::rc::Rc;
 
 impl VM {
+    pub(super) fn stack_function_arguments(
+        &mut self,
+        fiber: usize,
+        start: usize,
+        function: &BxCompiledFunction,
+    ) {
+        let scope = self.struct_new();
+        let count = self.fibers[fiber].stack.len() - start;
+        for index in 0..count {
+            let value = self.fibers[fiber].stack[start + index];
+            if let Some(name) = function.params.get(index) {
+                self.struct_set(scope, name, value);
+            } else {
+                self.struct_set(scope, &(index + 1).to_string(), value);
+            }
+        }
+        let stack = &mut self.fibers[fiber].stack;
+        stack.resize(start + function.params.len(), BxValue::new_null());
+        stack.push(BxValue::new_ptr(scope));
+    }
+
     pub(super) fn function_arguments(
         &mut self,
         args: Vec<BxValue>,
@@ -15,6 +36,20 @@ impl VM {
             let mut args = args;
             args.resize(function.arity as usize, BxValue::new_null());
             return args;
+        }
+        if names.is_none() && function.bif.is_none() {
+            let scope = self.struct_new();
+            for (index, &value) in args.iter().enumerate() {
+                if let Some(name) = function.params.get(index) {
+                    self.struct_set(scope, name, value);
+                } else {
+                    self.struct_set(scope, &(index + 1).to_string(), value);
+                }
+            }
+            let mut values = args;
+            values.resize(function.params.len() + 1, BxValue::new_null());
+            values[function.params.len()] = BxValue::new_ptr(scope);
+            return values;
         }
         let mut values = vec![BxValue::new_null(); function.params.len() + 1];
         let scope = self.struct_new();

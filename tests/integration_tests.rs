@@ -93,6 +93,7 @@ script_test!(string_interpolation, "string_interpolation.bxs");
 script_test!(structs, "structs.bxs");
 script_test!(top_level_return, "top_level_return.bxs");
 script_test!(vm_basic, "vm_basic.bxs");
+script_test!(vm_expression_composition, "vm_expression_composition.bxs");
 script_test!(vm_classes, "vm_classes.bxs");
 script_test!(vm_datetime_format, "vm_datetime_format.bxs");
 script_test!(vm_member_increment, "vm_member_increment.bxs");
@@ -177,6 +178,41 @@ fn vm_locals_survive_stack_reallocation() {
     )
     .expect("locals should remain valid after stack growth");
 }
+#[test]
+fn vm_active_context_survives_nested_yields_and_owner_growth() {
+    let mut source = String::from("function grow(depth, seed) {\n");
+    // Grow the value stack in every recursive frame, not just one giant frame.
+    for index in 0..320 {
+        source.push_str(&format!("var padding{index} = {index};\n"));
+    }
+    source.push_str(r#"
+        var result = 0;
+        if (depth > 0) {
+            result = grow(depth - 1, seed) + 1;
+        } else {
+            var pending = [];
+            for (var task = 0; task < 64; task++) {
+                pending.append(runAsync(() => 7));
+            }
+            var nested = [1, 2].map(a => [10, 20].map(b => runAsync(() => a + b).get()).toList());
+            assert nested.toList("|") == "11,21|12,22";
+            assert pending.map(f => f.get()).toList() == arrayToList(arrayMap(pending, f => 7));
+            result = seed + pending.len();
+        }
+        assert padding0 == 0 && padding255 == 255 && padding319 == 319;
+        return result;
+    }
+    assert grow(24, 3) == 91;
+    "#);
+    let directory = tempfile::tempdir().expect("create active-context source directory");
+    let path = directory.path().join("active_context_relocation.bxs");
+    fs::write(&path, source).expect("write active-context relocation script");
+    process_file(
+        &path, false, None, Vec::new(), false, false, false, None, &[],
+        false, None, false, false, false,
+    ).expect("frame/stack locals must survive nested callbacks and yielding producer fibers");
+}
+
 script_test!(vm_if, "vm_if.bxs");
 script_test!(vm_loop, "vm_loop.bxs");
 script_test!(vm_struct_assign, "vm_struct_assign.bxs");

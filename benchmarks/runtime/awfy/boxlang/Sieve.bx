@@ -1,0 +1,32 @@
+// Faithful BoxLang port of AWFY's sieve.js, revision recorded in manifest.json.
+// Copyright (c) 2015-2016 Stefan Marr <git@stefan-marr.de>
+// SPDX-License-Identifier: MIT
+// Full notice: ../LICENSES/SOM-MIT.txt
+class extends="awfy.boxlang.Benchmark" {
+    function sieve(flags, size) {
+        var primeCount = 0;
+        for (var i = 2; i <= size; i = i + 1) {
+            // BoxLang arrays are one-based; upstream JavaScript uses flags[i - 1].
+            if (flags[i]) {
+                primeCount = primeCount + 1;
+                var k = i + i;
+                while (k <= size) {
+                    flags[k] = false;
+                    k = k + i;
+                }
+            }
+        }
+        return primeCount;
+    }
+
+    function benchmark() {
+        var flags = [];
+        // Equivalent to new Array(5000).fill(true), not an algorithm shortcut.
+        arraySet(flags, 1, 5000, true);
+        return sieve(flags, 5000);
+    }
+
+    function verifyResult(result) {
+        return result == 669;
+    }
+}
