@@ -3410,19 +3410,13 @@ impl VM {
     }
 
     pub fn interpret(&mut self, chunk: Chunk) -> Result<BxValue> {
-        // Script programs may be reused by independent VMs. Only functions
-        // already promoted into this VM share their invocation caches.
-        let mut chunk = chunk.clone_without_runtime_caches();
-        chunk.ensure_caches();
-        let chunk_for_func = chunk.clone();
-        let chunk_rc = Rc::new(RefCell::new(chunk));
-        self.interpret_chunk_shared(chunk_for_func, chunk_rc)
+        self.interpret_chunk_borrowed(&chunk)
     }
 
     pub fn interpret_chunk_borrowed(&mut self, chunk: &Chunk) -> Result<BxValue> {
-        // Borrowed execution path used by host tests. It still creates a
-        // fresh Chunk wrapper so the caller's runtime caches are not mutated,
-        // but the immutable program data is shared via Arc.
+        // Script entries own their execution caches, separate from pseudo-root
+        // metadata and the reusable source program. Promoted user functions
+        // retain their shared invocation caches.
         let mut route_chunk = chunk.fresh_route_chunk();
         route_chunk.ensure_caches();
         let chunk_rc = Rc::new(RefCell::new(route_chunk));
