@@ -582,6 +582,8 @@ pub struct VM {
     native_future_tx: Sender<NativeFutureMessage>,
     native_future_rx: Receiver<NativeFutureMessage>,
     pending_native_futures: HashMap<usize, usize>,
+    #[cfg(test)]
+    composition_probe: Option<composition_tests::Probe>,
     #[cfg(feature = "debugger")]
     debug_run: Option<DebugRunState>,
     #[cfg(feature = "jit")]
@@ -2609,6 +2611,8 @@ impl VM {
             native_future_tx,
             native_future_rx,
             pending_native_futures: HashMap::new(),
+            #[cfg(test)]
+            composition_probe: None,
             #[cfg(feature = "debugger")]
             debug_run: None,
             #[cfg(feature = "jit")]
@@ -4303,6 +4307,10 @@ impl VM {
         // to avoid the ~20–50ns syscall cost on every loop iteration.
         // Skipped entirely (Option::None fast path) when only one fiber is running.
         let mut safe_point_count: u32 = 0;
+        #[cfg(test)]
+        if let Some(probe) = &self.composition_probe {
+            safe_point_count = probe.initial_counter;
+        }
         let trace = std::env::var("BX_TRACE").is_ok();
 
         // JIT profiling state — tracked per run_fiber call to avoid per-iteration
@@ -4906,6 +4914,92 @@ impl VM {
                 // --- Basic Hot Opcodes ---
                 op::GET_LOCAL => {
                     let val = fiber.local_value(op0 as usize, &self.heap, &self.shapes, &self.interner);
+                    #[cfg(feature = "debugger")]
+                    let debug_inactive = self.debug_run.is_none();
+                    #[cfg(not(feature = "debugger"))]
+                    let debug_inactive = true;
+
+                    // Compose only a mutation-free interval. With both VM-owned
+                    // queues empty, the next two headers would not drain the
+                    // channel even if a sender arrives. Collection cannot become
+                    // due without a heap mutation. Keep interrupt observations;
+                    // tracing/debug stepping and every uncertified case use the
+                    // original instruction stream and rooted stack states.
+                    if val.is_float() && !trace && debug_inactive
+                        && self.pending_native_futures.is_empty()
+                        && self.native_completions.is_empty()
+                        && !self.heap.should_collect()
+                    {
+                        let literal = {
+                            let frame = fiber.frames.last().unwrap();
+                            if let Ok(chunk) = frame.chunk.try_borrow() {
+                                let code = chunk.code();
+                                if code.as_ptr() == code_ptr && code.len() == code_len
+                                    && let Some(words) = code.get(ip..).and_then(|tail| tail.get(..2))
+                                    && words[0] & 0xff == op::CONSTANT as u32
+                                    && words[1] == op::ADD as u32
+                                {
+                                    let index = (words[0] >> 8) as usize;
+                                    // A populated slot alone is not a capture
+                                    // certificate. Inspect the current constant;
+                                    // a changed/capturing slot must still go
+                                    // through read_constant's authority.
+                                    if matches!(chunk.constants().get(index), Some(Constant::Number(_))) {
+                                        frame.promoted_constants.get(index).copied().flatten()
+                                            .filter(|value| value.is_float())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                // Do not introduce an earlier borrow/index error.
+                                None
+                            }
+                        };
+                        if let Some(literal) = literal {
+                            let interrupted = INTERRUPT_REQUESTED.load(Ordering::Relaxed);
+                            #[cfg(test)]
+                            let interrupted = interrupted || self.composition_probe.as_mut()
+                                .is_some_and(|probe| probe.interrupt(1));
+                            if interrupted {
+                                fiber.stack.push(val);
+                                safe_point_count = safe_point_count.wrapping_add(1);
+                                ip += 1; // original CONSTANT has been fetched
+                                #[cfg(test)]
+                                if let Some(probe) = &mut self.composition_probe {
+                                    probe.record(1, ip, safe_point_count, &fiber.stack);
+                                }
+                                vm_throw!("Force Quit (Ctrl+C)");
+                            }
+                            let interrupted = INTERRUPT_REQUESTED.load(Ordering::Relaxed);
+                            #[cfg(test)]
+                            let interrupted = interrupted || self.composition_probe.as_mut()
+                                .is_some_and(|probe| probe.interrupt(2));
+                            if interrupted {
+                                fiber.stack.push(val);
+                                fiber.stack.push(literal);
+                                safe_point_count = safe_point_count.wrapping_add(2);
+                                ip += 2; // original ADD has been fetched
+                                #[cfg(test)]
+                                if let Some(probe) = &mut self.composition_probe {
+                                    probe.record(2, ip, safe_point_count, &fiber.stack);
+                                }
+                                vm_throw!("Force Quit (Ctrl+C)");
+                            }
+                            // These logical ticks preserve GC/backedge phase;
+                            // they do not substitute for an unproved observer.
+                            safe_point_count = safe_point_count.wrapping_add(2);
+                            ip += 2;
+                            fiber.stack.push(BxValue::new_number(val.as_number() + literal.as_number()));
+                            #[cfg(test)]
+                            if let Some(probe) = &mut self.composition_probe {
+                                probe.record(0, ip, safe_point_count, &fiber.stack);
+                            }
+                            continue 'quantum;
+                        }
+                    }
                     fiber.stack.push(val);
                 }
                 op::SET_LOCAL => {
@@ -10023,6 +10117,9 @@ pub fn _matchbox_set_instance_prop(vm_ptr: usize, gc_id: u32, name: &str, val: J
     wasm_instance_prop_set(vm, base_val, name, bx_val)
         .map_err(|error| js_error_value(&error.to_string()))
 }
+
+#[cfg(test)]
+mod composition_tests;
 
 #[cfg(test)]
 mod tests {
