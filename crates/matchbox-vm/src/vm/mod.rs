@@ -5996,23 +5996,39 @@ impl VM {
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let index_val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
-                    let base_val = match self.class_reference_assignment_target(base_val, &self.to_string(index_val)) {
-                        Ok(value) => value,
-                        Err(error) => vm_throw!("{}", error),
+                    // Only unobserved numeric stores into actual arrays can omit property
+                    // conversion. A host may retag a watched Struct as an Array, so the
+                    // current object type alone does not establish the absence of a hook.
+                    let direct_array = index_val.is_number()
+                        && base_val.as_gc_id().is_some_and(|id| {
+                            matches!(self.heap.get_opt(id), Some(GcObject::Array(_)))
+                                && !self.struct_assignment_hooks.contains_key(&id)
+                        });
+                    let base_val = if direct_array {
+                        base_val
+                    } else {
+                        match self.class_reference_assignment_target(base_val, &self.to_string(index_val)) {
+                            Ok(value) => value,
+                            Err(error) => vm_throw!("{}", error),
+                        }
                     };
 
                     if let Some(id) = base_val.as_gc_id() {
-                        let index_string = self.to_string(index_val);
-                        if self.struct_assignment_hooks.contains_key(&id) {
+                        // Keep one authoritative array mutation arm below. Other receivers
+                        // retain conversion before observer lookup, including reentrant keys.
+                        let index_string = (!direct_array).then(|| self.to_string(index_val));
+                        if let Some(index_string) = index_string.as_deref()
+                            && self.struct_assignment_hooks.contains_key(&id)
+                        {
                             flush_ip!();
-                            match self.assign_struct(id, &index_string, val) {
+                            match self.assign_struct(id, index_string, val) {
                                 Ok(()) => self.fibers[fiber_idx].stack.push(val),
                                 Err(error) => self.throw_error(fiber_idx, &error)?,
                             }
                             frame_changed = true; continue 'quantum;
                         }
                         let key_id = if !index_val.is_number() && !index_val.is_int() {
-                            Some(self.struct_key_id(id, &index_string))
+                            Some(self.struct_key_id(id, index_string.as_deref().expect("Indexed property requires a name")))
                         } else {
                             None
                         };
@@ -6106,7 +6122,7 @@ impl VM {
                                     frame_changed = true; continue 'quantum;
                                 }
                                 let object = object.clone();
-                                self.native_object_set(&object, &index_string, val);
+                                self.native_object_set(&object, index_string.as_deref().expect("Indexed property requires a name"), val);
                                 self.fibers[fiber_idx].stack.push(val);
                             }
                             _ => {

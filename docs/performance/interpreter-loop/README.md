@@ -6,7 +6,7 @@ The user subsequently approved committing this investigation and merging the ful
 
 This is an architectural investigation, NOT another autoresearch campaign. The previous campaign is exhausted and remains frozen. No implementation changes, new measurements, build-profile changes, installs or diagnostic builds are authorized merely by these documents.
 
-## Current follow-up: measured B1, C3 and G1
+## Current follow-up: measured B1, C3, G1 and S1
 
 A separately authorized 2026-10-30/31 follow-up refreshed both runtimes' instructions and separate loop timing, verified a current conditional native ledger, and compared two replacement designs. **One B1 candidate is implemented, contract-tested, statically native-verified and retained for review: 21.77% fewer scoped retired instructions, closing 25.31% of the fresh Node gap.** Separate unprofiled loop timing measured 122 → 85 ms median in three samples. The earlier Unbound result below remains historical evidence, not the current full cost ledger. B1 implementation/tests are committed as `57b6f18d0ad2ace67557cadccbb1b4daa5292219`. The user separately authorized committing the investigation documents and merging this validated stack into local `develop`. Repository finalization preserves the existing unpushed history and original measured binaries; it is not another optimization run or authorization to push.
 
@@ -25,9 +25,16 @@ A separately authorized 2026-10-30/31 follow-up refreshed both runtimes' instruc
 - [G1 implementation/native validation and frozen pre-outcome P2](23-g1-implementation-validation.md) — preserved pre-outcome record; **1030 test passes; static cycle1093 →973**, main733 unchanged, helpers360 →240; net120/cycle compiled transfer, one extra48-byte entry allocation request
 - [G1 scoped instruction outcome and prediction reconciliation](24-g1-instruction-result.md) — fresh C3 **1092997584 →G1 972997418**, saving120000166/**10.98%**, closing14.31%of remaining Node gap;166above frozen ordinary120million point remains causally unassigned
 - [G1 separate timing result and retention decision](25-g1-timing-result.md) — fresh C3 **77 →G1 67ms** loop median, **12.99% less /1.149×**; separate whole-process82.43 →72.79ms; short three-sample results exploratory; candidate retained unchanged; implementation/tests subsequently committed as `73008fe` by separate approval
+- [S1 numeric array-store validation, scoped instruction result and reconciliation](26-s1-numeric-array-store-result.md) — unchanged class-based Sieve5000, fresh G1 **85,090,606 → S1 67,666,891**, **20.48% fewer retired USER instructions**; 1,056 test passes / 29 existing ignores; no elapsed-time or default-JIT claim
 - Historical handoffs: [header-only fiber reuse](next-candidates/header-fiber-reuse.md), [promoted constants](next-candidates/promoted-constants.md), [global-cache ownership/access](next-candidates/global-cache.md) — use report22, not old baseline totals, for current cache pricing
 
 These scopes overlap and may subsume one another. Handoffs do not authorize implementation, renewed debugger/profiling budgets, measurements or an automatic sequence of experiments. Fresh/raw evidence remains in the identified dedicated worktree's ignored packets; documents alone do not transfer it.
+
+## Latest completion: S1 Sieve numeric array stores
+
+The separately authorized direct Sieve investigation is complete: [S1's report](26-s1-numeric-array-store-result.md) records one general numeric/live/unhooked-array routing candidate, preserving a single setter, GC barrier, observer/coercion ordering and normal interpreter epilogue. Three fresh processes per artifact, each with one verified warmup and one measured unchanged Sieve5000 invocation, yield **17,423,715 fewer scoped retired user-space instructions / 20.48%**. All results are 669 and all six counters are unscaled/valid. Frozen P1/P2 remain unchanged; **7,925,725** beyond P2's conservative priced-subset case remains unallocated, not attributed to GC/noise or treated as a revised forecast. No elapsed-time, normal CLI/default-JIT or cross-runtime comparison was performed.
+
+Exact tested/built/measured product and contract bytes are committed as **`534cee4958434dac2fe8e1e3ebbce3a8daec4ab7`**, parent existing local G1 merge `fa55653`. The user separately authorized committing this report/index and a local `--no-ff` merge into `develop`. The ignored `benchmarks/instructions/results/s1-repository-finalization-20261031T212337Z/` packet records actual source/docs/merge identities and preservation checks. No new build/tests/measurements, incoming-server adoption, history rewrite, push or cleanup belongs to finalization. Existing binaries keep their dirty-source build identity; a commit does not rebuild them. Raw evidence remains local/ignored and does not travel with these documents. The G1/C3 sections below are preserved historical records, not Sieve's current denominator or permission for another campaign.
 
 ## Read in order
 
@@ -53,7 +60,7 @@ The current agent has no subagent-dispatch tool, so the initial code audits were
 
 Use no additional worktrees for read-only inspection. If diagnostic source changes or a symbolized rebuild become necessary, create ONE dedicated diagnostic worktree and separate build directory, document its exact commands and binary hashes, and never replace the retained reference artifact. Separate worktrees do not isolate CPU resources.
 
-## Immediate next action
+## Previous C3/G1 completion record
 
 Read the [C3 scoped instruction result](21-c3-instruction-result.md). The separately authorized nine-process hardware phase now measures **329,995,835 fewer instructions /23.19%** than fresh B1, with all checksums and27 per-thread counters valid. This is4,165 less saving than the frozen330-million P2 prediction; the signed batch-residual change remains causally unassigned. Original P1/P2 and prior separate timing remain preserved. C3 implementation/tests were already committed as `ecc9074` and merged locally by prior explicit approval; the count-closure phase itself changed no product source/build/ref.
 
