@@ -347,6 +347,27 @@ impl BxFiber {
         index
     }
 
+    // Reuse binding metadata, never a cached value or a scope-privacy assumption.
+    // Misses leave binding creation/refresh and stack fallback to the resolver below.
+    fn cached_binding_value(&self, slot: usize, heap: &Heap) -> Option<BxValue> {
+        let frame = self.frames.last()?;
+        let binding = frame.local_names.get(&slot)?;
+        let shape = binding.shape?;
+        let index = binding.index?;
+        let scope = if binding.local {
+            frame.local_scope?
+        } else {
+            self.arguments_scope()?
+        };
+        let GcObject::Struct(record) = heap.get_opt(scope.as_gc_id()?)? else {
+            return None;
+        };
+        if record.shape_id != shape {
+            return None;
+        }
+        record.properties.get(index as usize).copied()
+    }
+
     #[inline(always)]
     pub(super) fn local_value(
         &mut self, slot: usize, heap: &Heap, shapes: &ShapeRegistry, interner: &StringInterner,
@@ -369,6 +390,9 @@ impl BxFiber {
             && let Some(arguments) = self.arguments_scope()
         {
             return arguments;
+        }
+        if let Some(value) = self.cached_binding_value(slot, heap) {
+            return value;
         }
         let value = self.slot_binding(slot, heap, interner).and_then(|(scope, binding)| {
             let index = self.binding_index(slot, scope, binding, heap, shapes)?;
@@ -429,3 +453,5 @@ impl BxFiber {
 
 #[cfg(test)]
 mod unbound_tests;
+#[cfg(test)]
+mod binding_read_tests;
