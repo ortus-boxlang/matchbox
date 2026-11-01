@@ -48,7 +48,8 @@ fn arguments_fixture(name: &str, key: &str, case_sensitive: bool) -> VM {
 }
 
 fn hit(vm: &VM, slot: usize) -> Option<BxValue> {
-    vm.fibers[0].cached_binding_value(slot, &vm.heap)
+    let fiber = &vm.fibers[0];
+    fiber.frames.last()?.cached_binding_value(slot, &fiber.stack, &vm.heap)
 }
 
 fn local(vm: &mut VM) -> usize {
@@ -358,4 +359,116 @@ fn dispatch_composition_consumes_current_dictionary_number_and_changed_type() {
     vm.fibers[0].stack.truncate(2);
     vm.run_fiber_inner(0, None).unwrap();
     assert_eq!(vm.to_string(*vm.fibers[0].stack.last().unwrap()), "word2");
+}
+
+#[test]
+fn frame_relative_arguments_wrapper_keeps_no_frame_absence() {
+    let mut vm = fixture();
+    vm.fibers[0].frames.clear();
+    assert_eq!(vm.fibers[0].arguments_scope(), None);
+    assert_eq!(vm.arguments_scope(0), None);
+    assert_eq!(hit(&vm, 0), None);
+}
+
+#[test]
+fn frame_relative_arguments_checks_arity_before_stack_and_reads_current_slot() {
+    let mut vm = fixture();
+    let frame = &mut vm.fibers[0].frames[0];
+    let function = Rc::make_mut(&mut frame.function);
+    function.params = vec!["value".into()];
+    function.arity = 1;
+    frame.stack_base = usize::MAX;
+    vm.fibers[0].stack.clear();
+    assert_eq!(vm.arguments_scope(0), None);
+    vm.fibers[0].frames[0].stack_base = 1;
+    Rc::make_mut(&mut vm.fibers[0].frames[0].function).arity = 2;
+    vm.fibers[0].stack = vec![BxValue::new_int(91), BxValue::new_int(2), BxValue::new_null()];
+    assert_eq!(vm.arguments_scope(0), Some(BxValue::new_null()));
+    vm.fibers[0].stack[2] = BxValue::new_int(53);
+    assert_eq!(vm.arguments_scope(0), Some(BxValue::new_int(53)));
+}
+
+#[test]
+fn frame_relative_component_arguments_never_fall_through_to_ordinary_stack() {
+    let mut vm = arguments_fixture("value", "value", false);
+    let local = BxValue::new_ptr(vm.struct_new());
+    let captured = BxValue::new_ptr(vm.struct_new());
+    let function = Rc::make_mut(&mut vm.fibers[0].frames[0].function);
+    function.kind = FunctionKind::ComponentBody;
+    function.captured_scopes = vec![local, captured];
+    // Ordinary arity and a populated stack would select a different object.
+    assert_ne!(captured, vm.fibers[0].stack[2]);
+    assert_eq!(vm.arguments_scope(0), Some(captured));
+    Rc::make_mut(&mut vm.fibers[0].frames[0].function).captured_scopes.truncate(1);
+    assert_eq!(vm.arguments_scope(0), None);
+    Rc::make_mut(&mut vm.fibers[0].frames[0].function).captured_scopes.push(BxValue::new_null());
+    vm.fibers[0].frames[0].stack_base = usize::MAX;
+    vm.fibers[0].stack.clear();
+    assert_eq!(vm.arguments_scope(0), Some(BxValue::new_null()));
+}
+
+#[test]
+fn frame_relative_malformed_ordinary_stack_keeps_panic_and_vm_is_discarded() {
+    for overflow in [false, true] {
+        let mut vm = arguments_fixture("value", "value", false);
+        if overflow {
+            vm.fibers[0].frames[0].stack_base = usize::MAX;
+        } else {
+            vm.fibers[0].stack.clear();
+        }
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vm.arguments_scope(0))).is_err());
+        // No promise to resume an intentionally malformed host VM after panic.
+    }
+}
+
+#[test]
+fn frame_relative_argument_reads_follow_current_nested_frame_after_relocation_return() {
+    let mut vm = arguments_fixture("value", "value", false);
+    let outer_args = vm.arguments_scope(0).unwrap();
+    assert_eq!(vm.local_value(0, 0).as_number(), 7.0);
+    let child_args = vm.struct_new();
+    vm.struct_set(child_args, "value", BxValue::new_number(59.0));
+    let base = vm.fibers[0].stack.len();
+    let child = CallFrame {
+        function: Rc::clone(&vm.fibers[0].frames[0].function),
+        chunk: Rc::new(RefCell::new(Chunk::default())), ip: 0, stack_base: base,
+        receiver: None, handlers: Vec::new(), pending_completion: None,
+        promoted_constants: Vec::new(), local_scope: None, context: None,
+        local_names: SlotBindings::new(), scope_mode: ScopeMode::Binding,
+        #[cfg(feature = "jit")]
+        jit_loop_attempted: false,
+        #[cfg(feature = "jit")]
+        jit_construct_unsupported: None,
+    };
+    vm.fibers[0].stack.extend([BxValue::new_number(2.0), BxValue::new_ptr(child_args)]);
+    vm.fibers[0].frames.push(child);
+    assert_eq!(vm.local_value(0, 0).as_number(), 59.0);
+    vm.struct_set(outer_args.as_gc_id().unwrap(), "value", BxValue::new_number(61.0));
+    vm.fibers[0].frames.reserve(64);
+    vm.fibers[0].stack.reserve(4096);
+    vm.fibers.reserve(64);
+    vm.collect_garbage_now();
+    assert_eq!(vm.arguments_scope(0), Some(BxValue::new_ptr(child_args)));
+    assert_eq!(hit(&vm, 0).unwrap().as_number(), 59.0);
+    vm.fibers[0].frames.pop();
+    vm.fibers[0].stack.truncate(base);
+    assert_eq!(vm.arguments_scope(0), Some(outer_args));
+    assert_eq!(hit(&vm, 0).unwrap().as_number(), 61.0);
+    assert_eq!(vm.local_value(0, 0).as_number(), 61.0);
+}
+
+#[test]
+fn frame_relative_hit_uses_post_exposure_mode_and_live_dictionary() {
+    let mut vm = arguments_fixture("value", "value", false);
+    vm.bind_local(0, 1, "shadow");
+    let args = vm.arguments_scope(0).unwrap();
+    assert_eq!(vm.local_value(0, 1), args);
+    let scope = vm.local_scope(0).as_gc_id().unwrap();
+    vm.struct_set(scope, "shadow", BxValue::new_number(67.0));
+    // Direct mode-priority fixture, not a new Stack admission capability.
+    vm.fibers[0].frames[0].scope_mode = ScopeMode::Stack;
+    assert_eq!(vm.local_value(0, 1).as_number(), 67.0);
+    assert!(vm.fibers[0].frames[0].scope_mode == ScopeMode::Shared);
+    assert_eq!(hit(&vm, 1).unwrap().as_number(), 67.0);
+    assert_eq!(vm.fibers[0].stack[2], args);
 }

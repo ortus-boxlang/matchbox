@@ -1,5 +1,5 @@
 //! Shared function scopes. Closures retain the declaring structs, not stack snapshots.
-use super::{BxFiber, VM, gc::{GcObject, Heap}, intern::StringInterner, shape::ShapeRegistry};
+use super::{BxFiber, CallFrame, VM, gc::{GcObject, Heap}, intern::StringInterner, shape::ShapeRegistry};
 use crate::types::{BxVM, BxValue};
 
 #[derive(Clone, Copy)]
@@ -287,6 +287,38 @@ impl VM {
     }
 }
 
+impl CallFrame {
+    #[inline(always)]
+    fn arguments_scope(&self, stack: &[BxValue]) -> Option<BxValue> {
+        if self.function.kind == crate::types::FunctionKind::ComponentBody {
+            return self.function.captured_scopes.get(1).copied();
+        }
+        (self.function.arity as usize == self.function.params.len() + 1)
+            .then(|| stack[self.stack_base + self.function.params.len()])
+    }
+
+    // Only a current, short frame/stack borrow: metadata locates the live value,
+    // never a cached value, scope identity or pointer surviving this read.
+    #[inline(always)]
+    fn cached_binding_value(&self, slot: usize, stack: &[BxValue], heap: &Heap) -> Option<BxValue> {
+        let binding = self.local_names.get(&slot)?;
+        let shape = binding.shape?;
+        let index = binding.index?;
+        let scope = if binding.local {
+            self.local_scope?
+        } else {
+            self.arguments_scope(stack)?
+        };
+        let GcObject::Struct(record) = heap.get_opt(scope.as_gc_id()?)? else {
+            return None;
+        };
+        if record.shape_id != shape {
+            return None;
+        }
+        record.properties.get(index as usize).copied()
+    }
+}
+
 // One authoritative local resolver for both whole-VM callers and a short-lived
 // dispatch borrow. Explicit fields prevent a local access from borrowing the VM
 // again; they do not detach the fiber or move its GC roots out of VM::fibers.
@@ -300,12 +332,7 @@ impl BxFiber {
     }
 
     fn arguments_scope(&self) -> Option<BxValue> {
-        let frame = self.frames.last()?;
-        if frame.function.kind == crate::types::FunctionKind::ComponentBody {
-            return frame.function.captured_scopes.get(1).copied();
-        }
-        (frame.function.arity as usize == frame.function.params.len() + 1)
-            .then(|| self.stack[frame.stack_base + frame.function.params.len()])
+        self.frames.last()?.arguments_scope(&self.stack)
     }
 
     fn slot_binding(
@@ -347,27 +374,6 @@ impl BxFiber {
         index
     }
 
-    // Reuse binding metadata, never a cached value or a scope-privacy assumption.
-    // Misses leave binding creation/refresh and stack fallback to the resolver below.
-    fn cached_binding_value(&self, slot: usize, heap: &Heap) -> Option<BxValue> {
-        let frame = self.frames.last()?;
-        let binding = frame.local_names.get(&slot)?;
-        let shape = binding.shape?;
-        let index = binding.index?;
-        let scope = if binding.local {
-            frame.local_scope?
-        } else {
-            self.arguments_scope()?
-        };
-        let GcObject::Struct(record) = heap.get_opt(scope.as_gc_id()?)? else {
-            return None;
-        };
-        if record.shape_id != shape {
-            return None;
-        }
-        record.properties.get(index as usize).copied()
-    }
-
     #[inline(always)]
     pub(super) fn local_value(
         &mut self, slot: usize, heap: &Heap, shapes: &ShapeRegistry, interner: &StringInterner,
@@ -391,7 +397,7 @@ impl BxFiber {
         {
             return arguments;
         }
-        if let Some(value) = self.cached_binding_value(slot, heap) {
+        if let Some(value) = frame.cached_binding_value(slot, &self.stack, heap) {
             return value;
         }
         let value = self.slot_binding(slot, heap, interner).and_then(|(scope, binding)| {
