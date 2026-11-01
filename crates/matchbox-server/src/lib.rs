@@ -1,28 +1,28 @@
 mod app_server;
 mod application;
 mod application_runtime;
-mod template_cache;
-mod web_context;
 mod cookies;
-mod sessions;
 #[cfg(not(target_family = "wasm"))]
 pub mod multipart;
-#[cfg(not(target_family = "wasm"))]
-mod uploads;
+mod sessions;
 #[cfg(not(target_family = "wasm"))]
 pub mod static_files;
+mod template_cache;
+#[cfg(not(target_family = "wasm"))]
+mod uploads;
+mod web_context;
 pub mod webroot_core;
 mod websocket;
 #[cfg(test)]
 mod websocket_tests;
 
 use axum::{
-    Router,
-    body::{Body, to_bytes},
+    body::{to_bytes, Body},
     extract::{ConnectInfo, State},
-    http::{HeaderMap, Method, Request, StatusCode, header},
+    http::{header, HeaderMap, Method, Request, StatusCode},
     response::IntoResponse,
     routing::{any, get},
+    Router,
 };
 use clap::Parser as ClapParser;
 use matchbox_compiler::{compiler::Compiler, parser};
@@ -32,14 +32,17 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use tokio::fs;
 use webroot_core::{
     EmbeddedAssetPackage, EmbeddedAssetStore, FileSystemAssetStore, WebrootConfig, WebrootContext,
     WebrootEngine, WebrootRequest, WebrootResponse,
 };
-use websocket::{WebSocketRuntimeHandle, websocket_handler, websocket_runtime_main};
+use websocket::{websocket_handler, websocket_runtime_main, WebSocketRuntimeHandle};
+
+// Installed-module compilation needs the CLI main-thread stack budget, not Rust's 2 MiB thread default.
+pub(crate) const VM_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct RequestData {
@@ -51,6 +54,7 @@ pub struct RequestData {
     pub query: HashMap<String, String>,
     pub cookies: HashMap<String, String>,
     pub headers: HashMap<String, String>,
+    pub header_counts: HashMap<String, usize>,
     pub body: Vec<u8>,
     pub full_url: String,
 }
@@ -100,6 +104,15 @@ pub fn request_data_from_parts(
         query: query_map,
         cookies: cookie_map,
         headers: header_map,
+        header_counts: headers
+            .keys()
+            .map(|name| {
+                (
+                    name.as_str().to_lowercase(),
+                    headers.get_all(name).iter().count(),
+                )
+            })
+            .collect(),
         body,
         full_url,
     }
@@ -158,6 +171,13 @@ pub fn bx_to_json(vm: &dyn BxVM, value: BxValue) -> Result<JsonValue, String> {
 }
 
 pub fn json_to_bx(vm: &mut dyn BxVM, value: &JsonValue) -> Result<BxValue, String> {
+    json_to_bx_with_keys(vm, value, false)
+}
+pub(crate) fn json_to_bx_with_keys(
+    vm: &mut dyn BxVM,
+    value: &JsonValue,
+    preserve_keys: bool,
+) -> Result<BxValue, String> {
     match value {
         JsonValue::Null => Ok(BxValue::new_null()),
         JsonValue::Bool(val) => Ok(BxValue::new_bool(*val)),
@@ -174,16 +194,22 @@ pub fn json_to_bx(vm: &mut dyn BxVM, value: &JsonValue) -> Result<BxValue, Strin
         JsonValue::String(val) => Ok(BxValue::new_ptr(vm.string_new(val.clone()))),
         JsonValue::Array(values) => {
             let id = vm.array_new();
+            let _root = vm.retain_value(BxValue::new_ptr(id))?;
             for value in values {
-                let bx = json_to_bx(vm, value)?;
+                let bx = json_to_bx_with_keys(vm, value, preserve_keys)?;
                 vm.array_push(id, bx);
             }
             Ok(BxValue::new_ptr(id))
         }
         JsonValue::Object(values) => {
-            let id = vm.struct_new();
+            let id = if preserve_keys {
+                vm.struct_new_with_options(&["casesensitive".into()])
+            } else {
+                vm.struct_new()
+            };
+            let _root = vm.retain_value(BxValue::new_ptr(id))?;
             for (key, value) in values {
-                let bx = json_to_bx(vm, value)?;
+                let bx = json_to_bx_with_keys(vm, value, preserve_keys)?;
                 vm.struct_set(id, key, bx);
             }
             Ok(BxValue::new_ptr(id))
@@ -396,7 +422,13 @@ pub async fn run_server(args: Args) {
     tracing_subscriber::fmt::init();
 
     if let Some(app_path) = &args.app {
-        if let Err(err) = app_server::run_script_server(Path::new(app_path)).await {
+        if let Err(err) = app_server::run_script_server_with_options(
+            Path::new(app_path),
+            None,
+            args.config.as_ref().map(PathBuf::from),
+        )
+        .await
+        {
             eprintln!("Error: {}", err);
         }
         return;
@@ -446,11 +478,15 @@ pub async fn run_server(args: Args) {
                     });
 
                     if let Some(chunk) = chunk {
-                        let (commands_tx, commands_rx) = mpsc::channel();
-                        let runtime = Arc::new(WebSocketRuntimeHandle {
-                            uri: ws_config.uri.clone(),
-                            commands: commands_tx,
-                        });
+                        let (commands_tx, commands_rx) = mpsc::sync_channel(32);
+                        let runtime = Arc::new(WebSocketRuntimeHandle::new(
+                            ws_config.uri.clone(),
+                            move |command| {
+                                commands_tx
+                                    .send(command)
+                                    .map_err(|_| "WebSocket runtime stopped".to_string())
+                            },
+                        ));
                         let config_clone = ws_config.clone();
                         thread::Builder::new()
                             .name("matchbox-websocket-runtime".to_string())
@@ -579,7 +615,9 @@ async fn handler(
         body,
         ..Default::default()
     };
-    if multipart::parse(&mut request).await.is_err() {return StatusCode::BAD_REQUEST.into_response();}
+    if multipart::parse(&mut request).await.is_err() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     match tokio::task::spawn_blocking(move || state.engine.handle_with_context(request, context))
         .await
     {
@@ -814,7 +852,8 @@ mod tests {
             .handle(WebrootRequest {
                 method: "GET".to_string(),
                 path: "/missing".to_string(),
-                form_arrays: Default::default(), uploads: Default::default(),
+                form_arrays: Default::default(),
+                uploads: Default::default(),
                 query: Default::default(),
                 form: Default::default(),
                 headers: Default::default(),

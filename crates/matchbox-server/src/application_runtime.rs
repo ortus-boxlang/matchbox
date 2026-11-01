@@ -132,6 +132,7 @@ impl WebrootRuntime {
             let thread =
                 std::thread::Builder::new()
                     .name("matchbox-web-application".into())
+                    .stack_size(crate::VM_THREAD_STACK_SIZE)
                     .spawn(move || {
                         let mut runtime = ApplicationRuntime::new();
                         let startup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
