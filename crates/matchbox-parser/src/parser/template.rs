@@ -3,8 +3,18 @@ use crate::tokenizer::*;
 use anyhow::Result;
 
 pub fn parse_template(source: &str, filename: Option<&str>) -> Result<Vec<Statement>> {
-    let lexed = lex_template(source);
-    match TemplateParser::new(source, lexed.tokens(), filename).parse() {
+    parse_template_with_prefix(source, filename, "bx:")
+}
+
+/// Parse a template whose components use `tag_prefix`: `"bx:"` for BoxLang
+/// (`<bx:set>`), `"cf"` for CFML (`<cfset>`). Both produce the same AST.
+pub fn parse_template_with_prefix(
+    source: &str,
+    filename: Option<&str>,
+    tag_prefix: &'static str,
+) -> Result<Vec<Statement>> {
+    let lexed = lex_template_with_prefix(source, tag_prefix);
+    match TemplateParser::new(source, lexed.tokens(), filename, tag_prefix).parse() {
         Ok(stmts) => Ok(stmts),
         Err(err) => {
             // Attach source text so snippet rendering can show the offending
@@ -27,16 +37,23 @@ struct TemplateParser<'a> {
     pos: usize,
     pending: Vec<Statement>,
     filename: Option<&'a str>,
+    tag_prefix: &'static str,
 }
 
 impl<'a> TemplateParser<'a> {
-    fn new(source: &'a str, tokens: &'a [SyntaxToken], filename: Option<&'a str>) -> Self {
+    fn new(
+        source: &'a str,
+        tokens: &'a [SyntaxToken],
+        filename: Option<&'a str>,
+        tag_prefix: &'static str,
+    ) -> Self {
         Self {
             source,
             tokens,
             pos: 0,
             pending: Vec::new(),
             filename,
+            tag_prefix,
         }
     }
 
@@ -46,6 +63,12 @@ impl<'a> TemplateParser<'a> {
 
     fn peek_lexeme(&self) -> Option<&str> {
         self.tokens.get(self.pos).map(|t| &self.source[t.span.start..t.span.end])
+    }
+
+    /// The token under the cursor lowercased, for comparing component names:
+    /// tags are case-insensitive (`<CFSET>`, `<BX:IF>`), as in BoxLang JVM.
+    fn peek_component_name(&self) -> String {
+        self.peek_lexeme().unwrap_or("").to_ascii_lowercase()
     }
 
     /// Line number of the token under the cursor, falling back to the last
@@ -111,7 +134,16 @@ impl<'a> TemplateParser<'a> {
             }
             Some(TokenKind::ComponentName) => {
                 if self.is_closing_tag() { anyhow::bail!("Unexpected closing component tag: {}", self.peek_lexeme().unwrap_or("")); }
-                let name = self.advance_lexeme().unwrap_or_default();
+                let span = self.tokens[self.pos].span;
+                let name = self.advance_lexeme().unwrap_or_default().to_ascii_lowercase();
+                if self.tag_prefix == "cf" && (name.starts_with("x_") || name.starts_with('_')) {
+                    return Err(crate::parser::ParseError::new(
+                        self.filename,
+                        span,
+                        format!("CF custom tags are not supported: <cf{name}>"),
+                    )
+                    .into());
+                }
                 self.parse_component(&name)
             }
             Some(TokenKind::InterpStart) => {
@@ -383,7 +415,7 @@ impl<'a> TemplateParser<'a> {
 
         // Check for elseif or else
         if self.peek_kind() == Some(TokenKind::ComponentName) {
-            let next_name = self.peek_lexeme().unwrap_or("");
+            let next_name = self.peek_component_name();
             if next_name == "elseif" {
                 self.pos += 1;
                 let elseif_stmt = self.parse_if_tag()?;
@@ -398,7 +430,7 @@ impl<'a> TemplateParser<'a> {
 
         // Skip closing </bx:if> if present
         if self.peek_kind() == Some(TokenKind::ComponentName) {
-            let name = self.peek_lexeme().unwrap_or("");
+            let name = self.peek_component_name();
             if name == "if" {
                 self.pos += 1;
                 self.skip_to_close();
@@ -420,7 +452,8 @@ impl<'a> TemplateParser<'a> {
         loop {
             if let Some(statement) = self.pending.pop() { stmts.push(statement); continue; }
             if self.peek_kind() == Some(TokenKind::ComponentName) {
-                let name = self.peek_lexeme().unwrap_or("");
+                let name = self.peek_component_name();
+                let name = name.as_str();
                 if end_tags.iter().any(|end| end.eq_ignore_ascii_case(name)) && (self.is_closing_tag() || matches!(name, "elseif" | "else" | "catch" | "finally" | "case" | "defaultcase")) { break; }
                 if self.is_closing_tag() { anyhow::bail!("Unexpected closing component tag: {name}"); }
             }
@@ -562,7 +595,7 @@ impl<'a> TemplateParser<'a> {
         // Handle catch blocks
         loop {
             if self.peek_kind() == Some(TokenKind::ComponentName) {
-                let name = self.peek_lexeme().unwrap_or("");
+                let name = self.peek_component_name();
                 if name == "catch" {
                     self.pos += 1;
                     self.skip_to_close();
@@ -812,5 +845,105 @@ mod tests {
     fn parse_if_elseif_else() {
         let ast = parse_template("<bx:if x GT 10>big<bx:elseif x GT 5>med<bx:else>small</bx:if>", None).unwrap();
         assert_eq!(ast.len(), 1);
+    }
+
+        // ---- CF parsing (issue #45): "same tree" tests ----
+
+    #[test]
+    fn cf_tags_parse_exactly_like_bx_tags() {
+        let cases = [
+            ("<cfset x = 10>", "<bx:set x = 10>"),
+            ("<cfset x = 1 />", "<bx:set x = 1 />"),
+            (
+                "<cfif x GT 5>big<cfelseif x GT 2>med<cfelse>small</cfif>",
+                "<bx:if x GT 5>big<bx:elseif x GT 2>med<bx:else>small</bx:if>",
+            ),
+            (
+                "<cfoutput>Hi #name#</cfoutput>",
+                "<bx:output>Hi #name#</bx:output>",
+            ),
+            (
+                "<cfscript>var x = 1;</cfscript>after",
+                "<bx:script>var x = 1;</bx:script>after",
+            ),
+            ("<!--- note --->text", "<!--- note --->text"),
+            (
+                "<cfloop array=\"#items#\" item=\"it\">x</cfloop>",
+                "<bx:loop array=\"#items#\" item=\"it\">x</bx:loop>",
+            ),
+            (
+                "<div class=\"cfx\"><cfset y = 2></div>",
+                "<div class=\"cfx\"><bx:set y = 2></div>",
+            ),
+            (
+                "<cftry>a<cfcatch>b</cfcatch></cftry>",
+                "<bx:try>a<bx:catch>b</bx:catch></bx:try>",
+            ),
+            (
+                "<cfinclude template=\"x.cfm\">",
+                "<bx:include template=\"x.cfm\">",
+            ),
+            (
+                "<cfswitch expression=\"#x#\"><cfcase value=\"1\">one</cfcase><cfdefaultcase>other</cfdefaultcase></cfswitch>",
+                "<bx:switch expression=\"#x#\"><bx:case value=\"1\">one</bx:case><bx:defaultcase>other</bx:defaultcase></bx:switch>",
+            ),
+        ];
+        for (cf, bx) in cases {
+            let cf_ast = parse_template_with_prefix(cf, None, "cf").unwrap();
+            let bx_ast = parse_template(bx, None).unwrap();
+            assert_eq!(cf_ast, bx_ast, "CF source: {cf}");
+        }
+    }
+
+    #[test]
+    fn cf_tags_are_case_insensitive() {
+        let cases = [
+            ("<CFSET x = 10>", "<bx:set x = 10>"),
+            (
+                "<CFIF x GT 5>big<CFELSE>small</CFIF>",
+                "<bx:if x GT 5>big<bx:else>small</bx:if>",
+            ),
+            (
+                "<CFOutput>Hi #name#</CFOutput>",
+                "<bx:output>Hi #name#</bx:output>",
+            ),
+            (
+                "<CFSCRIPT>var x = 1;</CFSCRIPT>after",
+                "<bx:script>var x = 1;</bx:script>after",
+            ),
+        ];
+        for (cf, bx) in cases {
+            let cf_ast = parse_template_with_prefix(cf, None, "cf").unwrap();
+            let bx_ast = parse_template(bx, None).unwrap();
+            assert_eq!(cf_ast, bx_ast, "CF source: {cf}");
+        }
+    }
+
+    #[test]
+    fn bx_tags_are_case_insensitive() {
+        let upper = parse_template("<BX:SET x = 10><BX:IF x GT 5>big</BX:IF>", None).unwrap();
+        let lower = parse_template("<bx:set x = 10><bx:if x GT 5>big</bx:if>", None).unwrap();
+        assert_eq!(upper, lower);
+    }
+
+    #[test]
+    fn bx_tags_are_plain_text_in_cf_templates() {
+        let ast = parse_template_with_prefix("<bx:set x = 1>", None, "cf").unwrap();
+        assert!(!ast.is_empty());
+        assert!(
+            ast.iter()
+                .all(|s| matches!(s.kind, StatementKind::BufferOutput(_)))
+        );
+    }
+
+    #[test]
+    fn cf_custom_tags_report_a_clear_error() {
+        for src in ["<cfx_mytag name=\"a\">", "<cf_mytag>", "<CFX_MyTag>"] {
+            let err = parse_template_with_prefix(src, Some("page.cfm"), "cf").unwrap_err();
+            assert!(
+                err.to_string().contains("CF custom tags are not supported"),
+                "source: {src}, error: {err}"
+            );
+        }
     }
 }

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **ColdFusion Parsing**: Added a CF parsing module that runs `.cfm` tag templates, `.cfc` components and `.cfs` scripts by parsing them into the same AST as BoxLang. See [ColdFusion (CFML)](docs/cfml.md).
+
 ## [0.12.0] - 2026-10-22
 
 ### Added

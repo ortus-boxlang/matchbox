@@ -39,6 +39,7 @@ Welcome to the MatchBox documentation. MatchBox is a native Rust implementation 
 | [HTTP Requests](http.md) | Native HTTP requests, deadlines, proxy bypass, IPv4-only probes, and downloads. |
 | [HTML Encoding](html-encoding.md) | `encodeForHTML()` and `htmlEditFormat()` for showing untrusted text safely in HTML. |
 | [Differences from BoxLang (JVM)](differences-from-boxlang.md) | What is and isn't supported compared to the main BoxLang runtime. |
+| [ColdFusion (CFML)](cfml.md) | Running `.cfm`, `.cfc` and `.cfs` files, and which CF constructs are supported. |
 | [Developer Guide](developer_guide.md) | Low-level architecture notes, tutorials, and CLI reference. |
 
 ---
