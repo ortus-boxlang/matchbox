@@ -11,6 +11,14 @@ use matchbox_compiler::{
 };
 use std::{fs, path::Path};
 
+/// True when both paths name the same file (relative or absolute spellings of one path included).
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 /// Global mappings first, application mappings after them (later entries win).
 pub fn collect(source_path: &Path) -> Result<Vec<Mapping>> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
@@ -27,7 +35,7 @@ pub fn collect(source_path: &Path) -> Result<Vec<Mapping>> {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| cwd.clone());
     let application = dir.join("Application.bx");
-    if application.is_file() && application != source_path {
+    if application.is_file() && !same_file(&application, source_path) {
         all.extend(from_application(&application)?);
     }
     Ok(all)
@@ -67,6 +75,11 @@ fn expand_placeholders(value: &serde_json::Value, user_dir: &str) -> serde_json:
 /// `this.mappings`. Relative paths resolve against the directory of the Application.bx.
 pub fn from_application(file: &Path) -> Result<Vec<Mapping>> {
     let source = fs::read_to_string(file)?;
+    // The pseudo-constructor runs again at run time (as in BoxLang, once per run), so do not run it a
+    // second time just to find mappings it cannot declare.
+    if !source.to_ascii_lowercase().contains("mappings") {
+        return Ok(Vec::new());
+    }
     let mut statements = parser::parse(&source, file.to_str())
         .map_err(|e| anyhow::anyhow!("Parse Error in {}: {e}", file.display()))?;
     for statement in statements.iter_mut() {
@@ -143,7 +156,7 @@ pub fn wrap_with_application(
         _ => std::env::current_dir()?,
     };
     let application_file = dir.join("Application.bx");
-    if !application_file.is_file() || application_file == source_path {
+    if !application_file.is_file() || same_file(&application_file, source_path) {
         return Ok(program);
     }
     let source = fs::read_to_string(&application_file)?;
@@ -177,18 +190,21 @@ pub fn wrap_with_application(
 __bxApp = __bxAppNew( "__BxApplication" );
 __bxAppNamed = false;
 try {{ __bxAppNamed = len( __bxApp.name ) > 0; }} catch ( any e ) {{ }}
-__bxAppProceed = true;
-if ( __bxAppNamed ) {{ __bxAppProceed = __bxAppHook( __bxApp, "onApplicationStart", [], true ); }}
 try {{
-    if ( __bxAppProceed && __bxAppHook( __bxApp, "onRequestStart", [ "{target}" ], true ) ) {{
-        __bxBody();
+    try {{
+        __bxAppProceed = true;
+        if ( __bxAppNamed ) {{ __bxAppProceed = __bxAppHook( __bxApp, "onApplicationStart", [], true ); }}
+        if ( __bxAppProceed && __bxAppHook( __bxApp, "onRequestStart", [ "{target}" ], true ) ) {{
+            __bxBody();
+        }}
+    }} catch ( any __bxError ) {{
+        if ( !__bxAppHook( __bxApp, "onError", [ __bxError, "" ], false ) ) {{ rethrow; }}
+    }} finally {{
+        __bxAppHook( __bxApp, "onRequestEnd", [], true );
     }}
-}} catch ( any __bxError ) {{
-    if ( !__bxAppHook( __bxApp, "onError", [ __bxError, "" ], false ) ) {{ rethrow; }}
 }} finally {{
-    __bxAppHook( __bxApp, "onRequestEnd", [], true );
+    if ( __bxAppNamed ) {{ __bxAppHook( __bxApp, "onApplicationEnd", [ application ], true ); }}
 }}
-if ( __bxAppNamed ) {{ __bxAppHook( __bxApp, "onApplicationEnd", [ application ], true ); }}
 "#
     );
     let mut generated = parser::parse(&lifecycle, application_file.to_str())
@@ -204,7 +220,7 @@ if ( __bxAppNamed ) {{ __bxAppHook( __bxApp, "onApplicationEnd", [ application ]
                 | ast::StatementKind::FunctionDecl { .. }
         )
     });
-    let mut body = Some(body);
+    let mut body = Some(keep_script_variables_global(body));
     for statement in generated.iter_mut() {
         if splice_body(statement, &mut body) {
             break;
@@ -222,6 +238,7 @@ if ( __bxAppNamed ) {{ __bxAppHook( __bxApp, "onApplicationEnd", [ application ]
 
 /// Replaces the `__bxBody();` placeholder statement with the program body.
 fn splice_body(statement: &mut ast::Statement, body: &mut Option<Vec<ast::Statement>>) -> bool {
+    /// Replaces the placeholder found directly in `list`, or inside a nested `if` / `try` of it.
     fn in_list(list: &mut Vec<ast::Statement>, body: &mut Option<Vec<ast::Statement>>) -> bool {
         if let Some(at) = list.iter().position(is_placeholder) {
             if let Some(statements) = body.take() {
@@ -240,6 +257,31 @@ fn splice_body(statement: &mut ast::Statement, body: &mut Option<Vec<ast::Statem
     }
 }
 
+/// True for the generated `__bxBody();` statement that marks where the program body goes.
 fn is_placeholder(statement: &ast::Statement) -> bool {
     matches!(&statement.kind, ast::StatementKind::Expression(expr) if format!("{expr:?}").contains("__bxBody"))
+}
+
+/// A script-level `var x = 1` is a global, but inside the guarded block it would become a block local that
+/// functions and hooks outside the block cannot see. Top-level declarations become plain assignments,
+/// which stay global at any depth.
+fn keep_script_variables_global(statements: Vec<ast::Statement>) -> Vec<ast::Statement> {
+    statements
+        .into_iter()
+        .map(|mut statement| {
+            if let ast::StatementKind::VariableDecl { name, value } = statement.kind.clone() {
+                let line = value.line;
+                statement.kind = ast::StatementKind::Expression(ast::Expression {
+                    kind: ast::ExpressionKind::Assignment {
+                        target: ast::AssignmentTarget::Identifier(name),
+                        value: Box::new(value),
+                    },
+                    line,
+                    span: None,
+                    incomplete: false,
+                });
+            }
+            statement
+        })
+        .collect()
 }
