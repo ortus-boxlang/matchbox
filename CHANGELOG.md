@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Tree-shaking ignored class files**: a built-in (prelude) function used only inside a class or interface file loaded with `new`, `import` or `extends` was removed from the program (`Variable 'arraysort' not found` at run time), because tree-shaking looked at the entry file alone. The files a program loads are now part of the analysis.
 - `break` and `continue` inside a `for ( x in list )` loop pop the loop's item (and index) slot like a normal iteration does. Before, a `break` in a for-in loop leaked that slot, and the next loop in the same function failed with `Internal VM error: iterator cursor is not a number`.
+- Program output to a closed pipe (`matchbox script.bxs | head -1`, a native binary piped into `grep -q`) ends the process quietly with exit code 0 instead of panicking with `failed printing to stdout: Broken pipe`.
 
 ## [0.12.0] - 2026-10-22
 
