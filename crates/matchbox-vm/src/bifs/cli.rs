@@ -144,6 +144,39 @@ pub fn run_class_main(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     vm.call_method_by_value(instance, "main", vec![BxValue::new_ptr(array_id)], chunk)
 }
 
+/// `__bxAppNew( className )`: instance of the Application class, `init()` not called.
+#[cfg(feature = "bif-cli")]
+pub fn app_new(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    let name = args.first().map(|a| vm.to_string(*a)).unwrap_or_default();
+    let class = vm.resolve_class_reference(&name)?;
+    vm.construct_class_without_init(class)
+}
+
+/// `__bxAppHook( app, hookName, [args], default )`: calls the Application listener method when it
+/// has one. A missing method, or a null result, gives `default` (`true` lets the run continue).
+#[cfg(feature = "bif-cli")]
+pub fn app_hook(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 4 {
+        return Err("__bxAppHook() expects (app, hook, args, default)".to_string());
+    }
+    let (app, default) = (args[0], args[3]);
+    let hook = vm.to_string(args[1]);
+    if !vm.has_method_by_value(app, &hook) {
+        return Ok(default);
+    }
+    let mut call_args = Vec::new();
+    if let Some(array_id) = args[2].as_gc_id() {
+        for index in 0..vm.array_len(array_id) {
+            call_args.push(vm.array_get(array_id, index));
+        }
+    }
+    let chunk = vm
+        .current_chunk()
+        .ok_or_else(|| "No chunk is executing".to_string())?;
+    let result = vm.call_method_by_value(app, &hook, call_args, chunk)?;
+    Ok(if result.is_null() { default } else { result })
+}
+
 #[cfg(feature = "bif-cli")]
 pub fn cli_read(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() >= 1 {

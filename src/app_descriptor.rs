@@ -116,3 +116,124 @@ fn evaluate(file: &Path, statements: &[ast::Statement], source: &str) -> Result<
     }
     Ok(found)
 }
+
+/// Runs the program inside the lifecycle of the `Application.bx` next to it, like `boxlang` does for
+/// scripts and classes (docs: Application.bx, "Multi-Runtime Support"):
+///
+/// `onApplicationStart` once (only when `this.name` is set; `false` stops the run), `onRequestStart(
+/// targetPage )` (`false` stops the run), the program, `onError( exception, "" )` for an uncaught
+/// error (`true` means handled, otherwise the error propagates), `onRequestEnd()` always, and
+/// `onApplicationEnd( application )` at the end. `onRequest` is not used for scripts. Session
+/// hooks never fire in the CLI. The class is created without calling `init()`.
+///
+/// There is no `application` scope in MatchBox yet, so a plain struct named `application` is
+/// created for the run. Declarations (`import`, `class`, `function`) stay outside the guarded
+/// block so they are available to the hooks.
+pub fn wrap_with_application(
+    program: Vec<ast::Statement>,
+    source_path: &Path,
+) -> Result<Vec<ast::Statement>> {
+    let dir = match source_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::env::current_dir()?,
+    };
+    let application_file = dir.join("Application.bx");
+    if !application_file.is_file() || application_file == source_path {
+        return Ok(program);
+    }
+    let source = fs::read_to_string(&application_file)?;
+    let mut application = parser::parse(&source, application_file.to_str())
+        .map_err(|e| anyhow::anyhow!("Parse Error in {}: {e}", application_file.display()))?;
+    let mut has_class = false;
+    for statement in application.iter_mut() {
+        if let ast::StatementKind::ClassDecl { name, .. } = &mut statement.kind {
+            if name.is_empty() {
+                *name = "Application".to_string();
+            }
+            has_class = true;
+            // the generated code below creates it as "Application"
+            *name = "Application".to_string();
+            break;
+        }
+    }
+    if !has_class {
+        return Ok(program);
+    }
+
+    let absolute = if source_path.is_absolute() {
+        source_path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(source_path)
+    };
+    let target = absolute.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let lifecycle = format!(
+        r#"application = {{}};
+__bxApp = __bxAppNew( "Application" );
+__bxAppNamed = false;
+try {{ __bxAppNamed = len( __bxApp.name ) > 0; }} catch ( any e ) {{ }}
+__bxAppProceed = true;
+if ( __bxAppNamed ) {{ __bxAppProceed = __bxAppHook( __bxApp, "onApplicationStart", [], true ); }}
+try {{
+    if ( __bxAppProceed && __bxAppHook( __bxApp, "onRequestStart", [ "{target}" ], true ) ) {{
+        __bxBody();
+    }}
+}} catch ( any __bxError ) {{
+    if ( !__bxAppHook( __bxApp, "onError", [ __bxError, "" ], false ) ) {{ rethrow; }}
+}} finally {{
+    __bxAppHook( __bxApp, "onRequestEnd", [], true );
+}}
+if ( __bxAppNamed ) {{ __bxAppHook( __bxApp, "onApplicationEnd", [ application ], true ); }}
+"#
+    );
+    let mut generated = parser::parse(&lifecycle, application_file.to_str())
+        .map_err(|e| anyhow::anyhow!("Parse Error: {e}"))?;
+
+    // Declarations stay outside the guarded block, everything else runs inside it.
+    let (declarations, body): (Vec<_>, Vec<_>) = program.into_iter().partition(|s| {
+        matches!(
+            s.kind,
+            ast::StatementKind::Import { .. }
+                | ast::StatementKind::ClassDecl { .. }
+                | ast::StatementKind::InterfaceDecl { .. }
+                | ast::StatementKind::FunctionDecl { .. }
+        )
+    });
+    let mut body = Some(body);
+    for statement in generated.iter_mut() {
+        if splice_body(statement, &mut body) {
+            break;
+        }
+    }
+    if body.is_some() {
+        anyhow::bail!("Internal error: lifecycle placeholder not found");
+    }
+
+    let mut all = application;
+    all.extend(declarations);
+    all.extend(generated);
+    Ok(all)
+}
+
+/// Replaces the `__bxBody();` placeholder statement with the program body.
+fn splice_body(statement: &mut ast::Statement, body: &mut Option<Vec<ast::Statement>>) -> bool {
+    fn in_list(list: &mut Vec<ast::Statement>, body: &mut Option<Vec<ast::Statement>>) -> bool {
+        if let Some(at) = list.iter().position(is_placeholder) {
+            if let Some(statements) = body.take() {
+                list.splice(at..=at, statements);
+            }
+            return true;
+        }
+        list.iter_mut().any(|s| splice_body(s, body))
+    }
+    match &mut statement.kind {
+        ast::StatementKind::If { then_branch, else_branch, .. } => {
+            in_list(then_branch, body) || else_branch.as_mut().is_some_and(|e| in_list(e, body))
+        }
+        ast::StatementKind::TryCatch { try_branch, .. } => in_list(try_branch, body),
+        _ => false,
+    }
+}
+
+fn is_placeholder(statement: &ast::Statement) -> bool {
+    matches!(&statement.kind, ast::StatementKind::Expression(expr) if format!("{expr:?}").contains("__bxBody"))
+}

@@ -1659,6 +1659,10 @@ impl BxVM for VM {
         self.instance_has_method(receiver, name) || self.resolve_member_method(&receiver, name).is_some() || matches!(receiver.as_gc_id().and_then(|id| self.heap.get_opt(id)), Some(GcObject::NativeObject(object)) if object.borrow().has_method(name))
     }
 
+    fn construct_class_without_init(&mut self, class: BxValue) -> Result<BxValue, String> {
+        self.construct_class_value(class, vec![]).map_err(|error| error.to_string())
+    }
+
     fn resolve_class_reference(&mut self, name: &str) -> Result<BxValue, String> {
         VM::resolve_class_reference(self, name).map_err(|error| error.to_string())
     }
