@@ -4,6 +4,7 @@
 
 use std::{fs, path::PathBuf, process::Command};
 
+/// Creates a fresh project directory under the temp dir with the given `(relative path, body)` files.
 fn project(name: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("matchbox-mappings-{}-{}", std::process::id(), name));
     let _ = fs::remove_dir_all(&dir);
@@ -15,6 +16,7 @@ fn project(name: &str, files: &[(&str, &str)]) -> PathBuf {
     dir
 }
 
+/// Runs the `matchbox` binary with `dir` as the working directory; returns (success, stdout, stderr).
 fn run_in(dir: &PathBuf, args: &[&str]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_matchbox"))
         .current_dir(dir)
@@ -161,4 +163,57 @@ fn an_unknown_class_through_a_missing_mapping_still_fails_clearly() {
     let (ok, _, err) = run_in(&dir, &["main.bxs"]);
     assert!(!ok);
     assert!(err.contains("Source file not found"), "{err}");
+}
+
+#[test]
+fn global_mappings_are_available_while_the_application_bx_is_read() {
+    // the Application.bx pseudo-constructor itself uses a class that only boxlang.json maps
+    let dir = project(
+        "global-first",
+        &[
+            ("elsewhere/Greeter.bx", GREETER),
+            ("boxlang.json", r#"{ "mappings": { "/shared": "${user-dir}/elsewhere" } }"#),
+            (
+                "Application.bx",
+                r#"class { this.greeting = ( new shared.Greeter() ).hi(); this.mappings = { "/app": "." }; }"#,
+            ),
+            ("main.bxs", "println( \"ok\" );"),
+        ],
+    );
+    let (ok, out, err) = run_in(&dir, &["main.bxs"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("ok"), "{out}");
+}
+
+#[test]
+fn a_relative_mapping_path_in_application_bx_resolves_beside_the_file() {
+    let dir = project(
+        "relative-path",
+        &[
+            ("lib/Greeter.bx", GREETER),
+            ("Application.bx", r#"class { this.mappings = { "/shared": "./lib" }; }"#),
+            ("main.bxs", MAIN),
+        ],
+    );
+    let main = dir.join("main.bxs");
+    // built and run from another directory with an absolute entry path
+    let (ok, out, err) = run_in(&std::env::temp_dir(), &[main.to_str().unwrap()]);
+    assert!(ok, "{err}");
+    assert!(out.contains("hi from the mapping"), "{out}");
+}
+
+#[test]
+fn a_native_binary_reports_the_template_path_of_its_source_wherever_it_runs() {
+    let dir = project(
+        "template-path",
+        &[("main.bxs", "println( \"path=\" & getCurrentTemplatePath() );")],
+    );
+    let bin = dir.join("app");
+    // built from a relative path, run from another directory
+    let (ok, _, err) = run_in(&dir, &["--target", "native", "--output", bin.to_str().unwrap(), "main.bxs"]);
+    assert!(ok, "{err}");
+    let output = Command::new(&bin).current_dir(std::env::temp_dir()).output().unwrap();
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(out.contains(&format!("path={}", dir.join("main.bxs").display())), "{out}");
 }

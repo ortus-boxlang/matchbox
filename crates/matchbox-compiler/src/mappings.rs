@@ -20,6 +20,7 @@ pub struct Mapping {
 }
 
 impl Mapping {
+    /// A mapping with its name normalized (leading and trailing slash).
     pub fn new(name: &str, path: impl Into<PathBuf>, external: bool) -> Self {
         Mapping {
             name: clean_name(name),
@@ -65,6 +66,12 @@ pub fn from_json(name: &str, value: &serde_json::Value, base: &Path) -> Result<M
         _ => return Err(format!("Mapping [{name}]: expected a path or a struct")),
     };
     let path = PathBuf::from(path);
+    // `normalize` is lexical: an unmatched `..` would be dropped from a relative base, so make it absolute first
+    let base = if base.is_absolute() {
+        base.to_path_buf()
+    } else {
+        std::env::current_dir().map(|cwd| cwd.join(base)).unwrap_or_else(|_| base.to_path_buf())
+    };
     let absolute = if path.is_absolute() { path } else { base.join(path) };
     Ok(Mapping::new(name, normalize(&absolute), external))
 }
@@ -99,6 +106,7 @@ pub fn set_mappings(mappings: Vec<Mapping>) {
     MAPPINGS.with(|m| *m.borrow_mut() = merged);
 }
 
+/// The mappings active on this thread (see [`set_mappings`]).
 pub fn current_mappings() -> Vec<Mapping> {
     MAPPINGS.with(|m| m.borrow().clone())
 }
@@ -147,6 +155,13 @@ mod tests {
         let m = from_json("internal", &serde_json::json!({"path": "/abs/in", "external": false}), base).unwrap();
         assert_eq!((m.name.as_str(), m.path.as_path(), m.external), ("/internal/", Path::new("/abs/in"), false));
         assert!(from_json("x", &serde_json::json!({"external": true}), base).is_err());
+    }
+
+    #[test]
+    fn a_relative_base_keeps_its_parent_steps() {
+        let cwd = std::env::current_dir().unwrap();
+        let m = from_json("x", &serde_json::json!("../../shared"), Path::new("project")).unwrap();
+        assert_eq!(m.path, normalize(&cwd.join("project").join("../../shared")));
     }
 
     #[test]

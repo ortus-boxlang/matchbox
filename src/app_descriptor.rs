@@ -19,6 +19,8 @@ pub fn collect(source_path: &Path) -> Result<Vec<Mapping>> {
     if config.is_file() {
         all.extend(from_boxlang_json(&config, &cwd)?);
     }
+    // The Application.bx runs while its mappings are being read, and it may use the global ones.
+    mappings::set_mappings(all.clone());
     let dir = source_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -48,6 +50,7 @@ pub fn from_boxlang_json(file: &Path, user_dir: &Path) -> Result<Vec<Mapping>> {
     Ok(found)
 }
 
+/// Replaces `${user-dir}` in every string of a boxlang.json value (recursively through structs).
 fn expand_placeholders(value: &serde_json::Value, user_dir: &str) -> serde_json::Value {
     match value {
         serde_json::Value::String(s) => serde_json::Value::String(s.replace("${user-dir}", user_dir)),
@@ -84,6 +87,8 @@ pub fn from_application(file: &Path) -> Result<Vec<Mapping>> {
     Ok(Vec::new())
 }
 
+/// Compiles and runs the generated program that instantiates the Application class and serializes
+/// `this.mappings` to JSON, then turns that JSON into mappings relative to the Application.bx directory.
 fn evaluate(file: &Path, statements: &[ast::Statement], source: &str) -> Result<Vec<Mapping>> {
     use matchbox_vm::types::BxVM;
     let chunk = matchbox_compiler::compile_with_treeshaking(

@@ -1876,8 +1876,10 @@ fn process_file_with_args(
 
         // Module BIFs and settings are installed at runtime, never baked by executing hooks.
         let extra_preludes: Vec<String> = Vec::new();
+        let absolute_source = std::path::absolute(source_path).unwrap_or_else(|_| source_path.to_path_buf());
         let mut chunk = matchbox_compiler::compile_with_treeshaking(
-            source_path.to_str().unwrap_or("unknown"),
+            // absolute, so a binary built from a relative path knows its template wherever it runs
+            absolute_source.to_str().unwrap_or("unknown"),
             &ast,
             &source,
             keep_symbols,

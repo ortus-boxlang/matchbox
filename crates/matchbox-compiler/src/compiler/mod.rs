@@ -3247,7 +3247,16 @@ impl Compiler {
             && (path.to_ascii_lowercase().starts_with("bxmodules.") || self.resolve_source_file(path).is_err())
     }
 
+    /// Finds the file for a dotted class path. The path is made absolute here, at compile time, so a
+    /// native binary reports the same template path (`getCurrentTemplatePath()`) wherever it is run.
     fn resolve_source_file(&self, dotted_path: &str) -> Result<PathBuf> {
+        let found = self.find_source_file(dotted_path)?;
+        Ok(std::path::absolute(&found).unwrap_or(found))
+    }
+
+    /// The lookup behind [`Self::resolve_source_file`]: working directory, sibling of the current file,
+    /// mappings, then the entry script's directory. The result may be relative.
+    fn find_source_file(&self, dotted_path: &str) -> Result<PathBuf> {
         self.source_dependencies.store(true, Ordering::Relaxed);
         let base_path = Path::new(&dotted_path.replace('.', "/")).to_path_buf();
 
