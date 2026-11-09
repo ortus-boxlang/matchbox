@@ -1,4 +1,4 @@
 class Animal {
-  function init( name ) { this.name = name; return this; }
+  function init( name = "Anon" ) { this.name = name; return this; }
   function hello() { return "I am " & this.name; }
 }
