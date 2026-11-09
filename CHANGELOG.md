@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Native Fusion works with a prebuilt MatchBox. The generated build used to point `matchbox_vm` at `CARGO_MANIFEST_DIR/crates/matchbox-vm`, the source path of the machine that built MatchBox, so an `mvm`-installed release failed with `failed to read .../crates/matchbox-vm/Cargo.toml`. The `matchbox_vm` crate and the crates it depends on (and the workspace `Cargo.lock`) are now embedded in the `matchbox` binary at build time and written into the fusion build directory.
+- Native Fusion programs get the same built-ins as a regular native build. The generated fusion project depended on `matchbox_vm` with no features, so a fusion binary had no `bif-io`, `bif-cli`, `bif-crypto` or `bif-http` (`CLIGetArgs()` was not callable, file I/O was missing). It now enables the features this MatchBox was built with, chosen the way `build.rs` chooses them for the matching runner stub (WASM targets leave out `bif-zip` and `jit`; ESP32 takes none). A fusion build without module programs also never recorded the command line, so `CLIGetArgs()` returned no arguments; it now does, like the other runner.
 
 ## [0.12.0] - 2026-10-22
 
