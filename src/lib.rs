@@ -1,4 +1,7 @@
 use matchbox_compiler::{ast, compiler, parser};
+
+#[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+mod app_descriptor;
 use matchbox_utility::enable_logging;
 use matchbox_vm::{Chunk, types, vm};
 
@@ -1814,6 +1817,9 @@ fn process_file_with_args(
         if orig_target == Some("esp32") {
             validate_esp32_target(&ast, esp32_web)?;
         }
+        // Mappings (boxlang.json, Application.bx) apply to every class path resolved while compiling.
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        matchbox_compiler::mappings::set_mappings(app_descriptor::collect(source_path)?);
         // Discover modules from matchbox.toml (in CWD) and any --module flags.
         let cwd = std::env::current_dir()
             .unwrap_or_else(|_| source_path.parent().unwrap_or(Path::new(".")).to_path_buf());
