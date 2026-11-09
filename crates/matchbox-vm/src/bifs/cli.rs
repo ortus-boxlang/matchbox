@@ -148,7 +148,11 @@ pub fn run_class_main(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
 #[cfg(feature = "bif-cli")]
 pub fn app_new(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     let name = args.first().map(|a| vm.to_string(*a)).unwrap_or_default();
-    let class = vm.resolve_class_reference(&name)?;
+    // The program defines the class as a global (see the Application.bx lifecycle in the front end).
+    let class = vm
+        .get_global_value(&name)
+        .or_else(|| vm.get_global_value(&name.to_lowercase()))
+        .ok_or_else(|| format!("Class not found: {name}"))?;
     vm.construct_class_without_init(class)
 }
 
