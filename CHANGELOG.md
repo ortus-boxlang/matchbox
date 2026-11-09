@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Tree-shaking ignored class files**: a built-in (prelude) function used only inside a class or interface file loaded with `new`, `import` or `extends` was removed from the program (`Variable 'arraysort' not found` at run time), because tree-shaking looked at the entry file alone. The files a program loads are now part of the analysis.
+
 ## [0.12.0] - 2026-10-22
 
 ### Added
