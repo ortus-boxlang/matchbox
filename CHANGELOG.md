@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `break` and `continue` inside a `for ( x in list )` loop pop the loop's item (and index) slot like a normal iteration does. Before, a `break` in a for-in loop leaked that slot, and the next loop in the same function failed with `Internal VM error: iterator cursor is not a number`.
+
 ## [0.12.0] - 2026-10-22
 
 ### Added

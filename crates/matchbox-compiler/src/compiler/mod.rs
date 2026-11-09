@@ -1499,6 +1499,10 @@ impl Compiler {
                     stmt.line as u32,
                 );
 
+                // `break` and `continue` pop everything above the cursor, including the item (and index)
+                // slots of this loop, so record the local count before they are added.
+                let loop_locals_base = self.locals.len();
+
                 // Script-level loop variables live in the `variables` scope (shared with closures,
                 // readable and writable by the body); the stack slot only carries the iteration value.
                 let script_scope = !self.is_function && !self.is_class;
@@ -1519,20 +1523,22 @@ impl Compiler {
                 self.continue_patches.push(Vec::new());
                 self.break_patches.push(Vec::new());
                 self.jump_targets.push((self.pending_label.take(), true));
-                self.loop_locals.push(self.locals.len());
+                self.loop_locals.push(loop_locals_base);
                 for stmt in body {
                     self.compile_statement(stmt, false)?;
                 }
                 let loop_local_count = self.loop_locals.last().copied().unwrap_or(0);
                 self.loop_locals.pop();
 
-                // Pop any locals declared inside the loop body before looping back.
+                // Pop the locals declared inside the body and the item (and index) slots before looping
+                // back. `continue` and `break` pop the same slots before they jump, so every path reaches
+                // the next iteration (or the loop exit) with only the collection and the cursor left.
                 while self.locals.len() > loop_local_count {
                     self.chunk.emit0(op::POP, stmt.line as u32);
                     self.locals.pop();
                 }
 
-                // Patch continue jumps to land here (before loop-var pops)
+                // Patch continue jumps to land here (the loop variables are already popped)
                 let continue_target = self.chunk.code.len();
                 if let Some(patches) = self.continue_patches.pop() {
                     for idx in patches {
@@ -1540,13 +1546,6 @@ impl Compiler {
                         self.chunk.code[idx] = op::JUMP as u32 | ((offset as u32) << 8);
                     }
                 }
-
-                if index.is_some() {
-                    self.chunk.emit0(op::POP, stmt.line as u32);
-                    self.locals.pop();
-                }
-                self.chunk.emit0(op::POP, stmt.line as u32);
-                self.locals.pop();
 
                 let loop_end = self.chunk.code.len();
                 let offset = loop_end - loop_start + 1;
