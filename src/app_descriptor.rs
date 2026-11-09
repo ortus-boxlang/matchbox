@@ -151,8 +151,9 @@ pub fn wrap_with_application(
                 *name = "Application".to_string();
             }
             has_class = true;
-            // the generated code below creates it as "Application"
-            *name = "Application".to_string();
+            // Globals are case insensitive and the program gets an `application` struct, so the
+            // class cannot keep the name `Application`.
+            *name = "__BxApplication".to_string();
             break;
         }
     }
@@ -168,7 +169,7 @@ pub fn wrap_with_application(
     let target = absolute.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
     let lifecycle = format!(
         r#"application = {{}};
-__bxApp = __bxAppNew( "Application" );
+__bxApp = __bxAppNew( "__BxApplication" );
 __bxAppNamed = false;
 try {{ __bxAppNamed = len( __bxApp.name ) > 0; }} catch ( any e ) {{ }}
 __bxAppProceed = true;
