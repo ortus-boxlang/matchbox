@@ -811,6 +811,35 @@ fn test_cross_file_inheritance_from_entry_directory() {
 }
 
 #[test]
+fn test_inheritance_cycle_across_files_is_an_error_not_a_crash() {
+    let dir = std::env::temp_dir().join(format!("matchbox-cycle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("models")).unwrap();
+    std::fs::write(dir.join("models/A.bx"), "import models.B;\nclass A extends=\"B\" { }").unwrap();
+    std::fs::write(dir.join("models/B.bx"), "import models.A;\nclass B extends=\"A\" { }").unwrap();
+    std::fs::write(dir.join("main.bxs"), "import models.A;\nx = new models.A();\n").unwrap();
+
+    let result = process_file(
+        &dir.join("main.bxs"),
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    );
+    let error = result.expect_err("a cycle must be rejected").to_string();
+    assert!(error.contains("Circular inheritance"), "{error}");
+}
+
+#[test]
 fn test_vm_modules() {
     let script_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
