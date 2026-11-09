@@ -41,6 +41,7 @@ pub fn take_loaded_sources() -> Vec<Vec<Statement>> {
     LOADED_SOURCES.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }
 
+/// Remembers the AST of a class or interface file the compiler just loaded (see [`take_loaded_sources`]).
 fn record_loaded_source(ast: &[Statement]) {
     LOADED_SOURCES.with(|l| l.borrow_mut().push(ast.to_vec()));
 }
