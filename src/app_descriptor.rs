@@ -73,7 +73,7 @@ pub fn from_application(file: &Path) -> Result<Vec<Mapping>> {
             }
             let class_name = name.clone();
             let tail = format!(
-                "__bxApp = new {class_name}();\n__bxMappings = \"{{}}\";\ntry {{ __bxMappings = serializeJSON( __bxApp.mappings ); }} catch ( any e ) {{ }}\n"
+                "function __bxReadMappings( app ) {{ try {{ return serializeJSON( app.mappings ); }} catch ( any e ) {{ return \"{{}}\"; }} }}\n__bxReadMappings( new {class_name}() );\n"
             );
             let mut extra = parser::parse(&tail, file.to_str())
                 .map_err(|e| anyhow::anyhow!("Parse Error: {e}"))?;
@@ -97,13 +97,10 @@ fn evaluate(file: &Path, statements: &[ast::Statement], source: &str) -> Result<
         &[],
     )?;
     let mut vm = matchbox_vm::vm::VM::new_with_args(Vec::new());
-    vm.interpret(chunk)
+    // The last statement of the program is the call that returns the mappings as JSON.
+    let value = vm
+        .interpret(chunk)
         .with_context(|| format!("Error while reading mappings from {}", file.display()))?;
-    let value = BxVM::get_global_value(&vm, "__bxMappings")
-        .or_else(|| BxVM::get_global_value(&vm, "__bxmappings"));
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
     let text = BxVM::to_string(&mut vm, value);
     let json: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     let base = file.parent().unwrap_or(Path::new("."));
