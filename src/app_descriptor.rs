@@ -19,6 +19,8 @@ pub fn collect(source_path: &Path) -> Result<Vec<Mapping>> {
     if config.is_file() {
         all.extend(from_boxlang_json(&config, &cwd)?);
     }
+    // The Application.bx runs while its mappings are being read, and it may use the global ones.
+    mappings::set_mappings(all.clone());
     let dir = source_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
