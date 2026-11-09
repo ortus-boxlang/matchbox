@@ -20,6 +20,7 @@ pub struct Mapping {
 }
 
 impl Mapping {
+    /// A mapping with its name normalized (leading and trailing slash).
     pub fn new(name: &str, path: impl Into<PathBuf>, external: bool) -> Self {
         Mapping {
             name: clean_name(name),
@@ -105,6 +106,7 @@ pub fn set_mappings(mappings: Vec<Mapping>) {
     MAPPINGS.with(|m| *m.borrow_mut() = merged);
 }
 
+/// The mappings active on this thread (see [`set_mappings`]).
 pub fn current_mappings() -> Vec<Mapping> {
     MAPPINGS.with(|m| m.borrow().clone())
 }
