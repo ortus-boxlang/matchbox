@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Classes in other files**: `import models.Dog` and `new models.Dog()` looked for `models/Dog.bx[s]` relative to the working directory only, so a project built from any other directory failed with `Source file not found`. Dotted class and interface paths now also resolve against the directory of the entry script.
+- **Cross-file inheritance**: a class whose `extends` parent lives in another file was bundled without its parent, so the VM could not find it (`Method init not found`, missing inherited methods). The parent chain is now loaded and defined before the child, at any depth.
+
 ## [0.12.0] - 2026-10-22
 
 ### Added
