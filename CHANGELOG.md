@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native Fusion programs get the same built-ins as a regular native build. The generated fusion project depended on `matchbox_vm` with no features, so a fusion binary had no `bif-io`, `bif-cli`, `bif-crypto` or `bif-http` (`CLIGetArgs()` was not callable, file I/O was missing). It now enables the features this MatchBox was built with, chosen the way `build.rs` chooses them for the matching runner stub (WASM targets leave out `bif-zip` and `jit`; ESP32 takes none). A fusion build without module programs also never recorded the command line, so `CLIGetArgs()` returned no arguments; it now does, like the other runner.
 - **Classes in other files**: `import models.Dog` and `new models.Dog()` looked for `models/Dog.bx[s]` relative to the working directory only, so a project built from any other directory failed with `Source file not found`. Dotted class and interface paths now also resolve against the directory of the entry script.
 - **Cross-file inheritance**: a class whose `extends` parent lives in another file was bundled without its parent, so the VM could not find it (`Method init not found`, missing inherited methods). The parent chain is now loaded and defined before the child, at any depth.
+### Added
+- **Class as the program**: `matchbox Task.bx a b` (and a native build of `Task.bx`) instantiates the class and calls `main( args )`, like `boxlang Task.bx`. `args` is the array of the raw command line arguments after the file name (`["hola", "--many", "options=test"]`); `cliGetArgs()` works inside as usual. A class without `main` fails with `Class [X] does not have a main method to execute.`. A nameless `class { }` takes the file name.
 
 ## [0.12.0] - 2026-10-22
 
