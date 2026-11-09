@@ -3418,10 +3418,16 @@ impl Compiler {
                                     chain.clear();
                                 }
                             });
-                            if let Ok(parent_val) = loaded {
-                                self.pending_parent_defs
-                                    .append(&mut sub_compiler.pending_parent_defs);
-                                self.pending_parent_defs.push((parent, parent_val));
+                            match loaded {
+                                Ok(parent_val) => {
+                                    self.pending_parent_defs
+                                        .append(&mut sub_compiler.pending_parent_defs);
+                                    self.pending_parent_defs.push((parent, parent_val));
+                                }
+                                // a cycle further up the chain is a real error; other failures
+                                // (a parent that is not a file, a module class) are left to run time
+                                Err(error) if error.to_string().starts_with("Circular inheritance") => return Err(error),
+                                Err(_) => {}
                             }
                         }
                     }
