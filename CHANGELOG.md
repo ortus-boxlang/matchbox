@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Program output to a closed pipe (`matchbox script.bxs | head -1`, a native binary piped into `grep -q`) ends the process quietly with exit code 0 instead of panicking with `failed printing to stdout: Broken pipe`.
+
 ## [0.12.0] - 2026-10-22
 
 ### Added
