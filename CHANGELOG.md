@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `break` and `continue` inside a `for ( x in list )` loop pop the loop's item (and index) slot like a normal iteration does. Before, a `break` in a for-in loop leaked that slot, and the next loop in the same function failed with `Internal VM error: iterator cursor is not a number`.
 - Program output to a closed pipe (`matchbox script.bxs | head -1`, a native binary piped into `grep -q`) ends the process quietly with exit code 0 instead of panicking with `failed printing to stdout: Broken pipe`.
 - `variables.name( args )` calls a function stored in the `variables` scope (script level or inside a class) instead of failing with `Method name not found on variables scope`.
+- `var` declarations inside a `switch` case no longer shift the stack slots of the cases after them. Entering a later case used to read slots that did not exist: wrong values, or a Rust panic (`index out of bounds` in `bind_local`) that ended the process with exit code 101. A `switch` that ran its `default` body, or matched no case, left the switch value on the stack; that is fixed too.
 
 ## [0.12.0] - 2026-10-22
 
