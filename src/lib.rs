@@ -2295,13 +2295,22 @@ fn produce_fusion_artifact(
 
     // 1. Generate Cargo.toml. The SDK crates come from the binary itself, not from the source tree this
     // MatchBox was built in, so a prebuilt (mvm-installed) MatchBox can build Native Fusion programs.
+    // A native module may already name `matchbox_vm` by path (a source checkout). Cargo cannot link two
+    // sources of the same crate, so the runner then uses the module's copy; otherwise it uses the SDK
+    // embedded in this binary, and a `[patch]` keeps modules that name a published version on it.
     let sdk_dir = build_dir.join("sdk");
-    fusion_sdk::write_to(&sdk_dir)?;
-    let vm_path = sdk_dir
-        .join("crates")
-        .join("matchbox-vm")
-        .to_string_lossy()
-        .replace('\\', "/");
+    let module_vm = fusion_module_vm_path(&modules)?;
+    let vm_path = match &module_vm {
+        Some(path) => path.to_string_lossy().replace('\\', "/"),
+        None => {
+            fusion_sdk::write_to(&sdk_dir)?;
+            sdk_dir
+                .join("crates")
+                .join("matchbox-vm")
+                .to_string_lossy()
+                .replace('\\', "/")
+        }
+    };
 
     let mut extra_dep_lines = String::new();
     for module in modules.iter().filter(|m| m.has_native) {
@@ -2361,6 +2370,22 @@ anyhow = "1.0"
 {native_dep_lines}
 "#
     );
+
+    if module_vm.is_none() && modules.iter().any(|m| m.has_native) {
+        let sdk_crates = sdk_dir.join("crates");
+        cargo_toml.push_str("\n[patch.crates-io]\n");
+        for (package, dir) in [
+            ("matchbox_vm", "matchbox-vm"),
+            ("matchbox-macros", "matchbox-macros"),
+            ("matchbox-parser", "matchbox-parser"),
+            ("matchbox-plugin-sdk", "matchbox-plugin-sdk"),
+        ] {
+            cargo_toml.push_str(&format!(
+                "{package} = {{ path = \"{}\" }}\n",
+                sdk_crates.join(dir).to_string_lossy().replace('\\', "/")
+            ));
+        }
+    }
 
     if is_esp32 {
         cargo_toml.push_str("esp-idf-svc = { version = \"0.52\", features = [\"binstart\", \"critical-section\", \"embassy-time-driver\"] }\n");
@@ -2838,6 +2863,45 @@ fn inline_toml(value: &toml::Value) -> String {
 }
 
 /// Extract the `[package] name` value from a `Cargo.toml` file.
+/// The `matchbox_vm` source the native source modules of a Fusion build already depend on by path.
+/// `Ok(None)` when no module names it by path. Two modules naming different checkouts is an error: one
+/// project cannot link two copies of the VM.
+fn fusion_module_vm_path(modules: &[modules::ModuleInfo]) -> Result<Option<PathBuf>> {
+    let mut found: Option<PathBuf> = None;
+    for module in modules.iter().filter(|m| m.has_native) {
+        let cargo_toml = module.path.join("matchbox").join("Cargo.toml");
+        let Some(path) = module_vm_path(&cargo_toml)? else { continue };
+        match &found {
+            Some(existing) if existing != &path => bail!(
+                "Native modules depend on different copies of matchbox_vm: {} and {}",
+                existing.display(),
+                path.display()
+            ),
+            _ => found = Some(path),
+        }
+    }
+    Ok(found)
+}
+
+/// The directory a native module's Cargo.toml gives for `matchbox_vm` as a `path` dependency, made
+/// absolute and canonical; `None` when the crate is not a path dependency (or has no manifest).
+fn module_vm_path(cargo_toml_path: &Path) -> Result<Option<PathBuf>> {
+    let Ok(text) = fs::read_to_string(cargo_toml_path) else { return Ok(None) };
+    let manifest: toml::Value = text
+        .parse()
+        .with_context(|| format!("Invalid {}", cargo_toml_path.display()))?;
+    let dependency = manifest
+        .get("dependencies")
+        .and_then(|d| d.get("matchbox_vm").or_else(|| d.get("matchbox-vm")));
+    let Some(path) = dependency.and_then(|d| d.get("path")).and_then(|p| p.as_str()) else {
+        return Ok(None);
+    };
+    let base = cargo_toml_path.parent().unwrap_or(Path::new("."));
+    let joined = base.join(path);
+    Ok(Some(fs::canonicalize(&joined).unwrap_or(joined)))
+}
+
+/// Reads the package name from a Cargo.toml.
 fn read_crate_name(cargo_toml_path: &Path) -> Result<String> {
     let text = fs::read_to_string(cargo_toml_path)?;
     for line in text.lines() {
@@ -3645,6 +3709,32 @@ mod tests {
             .execute("SELECT 1 AS val", &[]).unwrap();
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0][0], matchbox_vm::datasource::traits::SqlValue::Int(1));
+    }
+
+    #[test]
+    fn a_module_naming_matchbox_vm_by_path_decides_the_vm_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let vm = dir.path().join("checkout/crates/matchbox-vm");
+        fs::create_dir_all(&vm).unwrap();
+        let module = dir.path().join("mod/matchbox");
+        fs::create_dir_all(&module).unwrap();
+        fs::write(
+            module.join("Cargo.toml"),
+            "[package]\nname = \"m\"\nversion = \"0.1.0\"\n\n[dependencies]\nmatchbox_vm = { path = \"../../checkout/crates/matchbox-vm\" }\n",
+        )
+        .unwrap();
+        assert_eq!(module_vm_path(&module.join("Cargo.toml")).unwrap(), Some(fs::canonicalize(&vm).unwrap()));
+    }
+
+    #[test]
+    fn a_module_naming_a_published_version_or_nothing_leaves_the_sdk_in_charge() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo_toml = dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, "[package]\nname = \"m\"\nversion = \"0.1.0\"\n\n[dependencies]\nmatchbox_vm = \"0.12\"\n").unwrap();
+        assert_eq!(module_vm_path(&cargo_toml).unwrap(), None);
+        fs::write(&cargo_toml, "[package]\nname = \"m\"\nversion = \"0.1.0\"\n").unwrap();
+        assert_eq!(module_vm_path(&cargo_toml).unwrap(), None);
+        assert_eq!(module_vm_path(&dir.path().join("missing.toml")).unwrap(), None);
     }
 
     #[test]
