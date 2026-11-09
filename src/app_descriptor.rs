@@ -103,11 +103,9 @@ fn evaluate(file: &Path, statements: &[ast::Statement], source: &str) -> Result<
     let value = BxVM::get_global_value(&vm, "__bxMappings")
         .or_else(|| BxVM::get_global_value(&vm, "__bxmappings"));
     let Some(value) = value else {
-        eprintln!("DEBUG no global");
         return Ok(Vec::new());
     };
     let text = BxVM::to_string(&mut vm, value);
-    eprintln!("DEBUG mappings json: {text}");
     let json: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     let base = file.parent().unwrap_or(Path::new("."));
     let mut found = Vec::new();

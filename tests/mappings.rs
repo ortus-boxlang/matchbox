@@ -44,7 +44,7 @@ fn application_bx_mappings_resolve_new_and_import() {
                 "Application.bx",
                 r#"class {
                     this.name = "t";
-                    this.mappings[ "/shared" ] = getDirectoryFromPath( getCurrentTemplatePath() ) & "lib";
+                    this.mappings = { "/shared": getDirectoryFromPath( getCurrentTemplatePath() ) & "lib" };
                 }"#,
             ),
             ("main.bxs", MAIN),
@@ -100,7 +100,7 @@ fn application_mappings_override_global_ones() {
             ("boxlang.json", r#"{ "mappings": { "/shared": "${user-dir}/global" } }"#),
             (
                 "Application.bx",
-                r#"class { this.mappings[ "/shared" ] = getDirectoryFromPath( getCurrentTemplatePath() ) & "app"; }"#,
+                r#"class { this.mappings = { "/shared": getDirectoryFromPath( getCurrentTemplatePath() ) & "app" }; }"#,
             ),
             ("main.bxs", "import shared.Greeter;\nprintln( ( new Greeter() ).hi() );\n"),
         ],
@@ -118,7 +118,7 @@ fn a_native_binary_carries_the_mapped_classes() {
             ("lib/Greeter.bx", GREETER),
             (
                 "Application.bx",
-                r#"class { this.mappings[ "/shared" ] = getDirectoryFromPath( getCurrentTemplatePath() ) & "lib"; }"#,
+                r#"class { this.mappings = { "/shared": getDirectoryFromPath( getCurrentTemplatePath() ) & "lib" }; }"#,
             ),
             ("main.bxs", MAIN),
         ],
@@ -143,7 +143,7 @@ fn mappings_work_when_building_from_another_directory() {
             ("lib/Greeter.bx", GREETER),
             (
                 "Application.bx",
-                r#"class { this.mappings[ "/shared" ] = getDirectoryFromPath( getCurrentTemplatePath() ) & "lib"; }"#,
+                r#"class { this.mappings = { "/shared": getDirectoryFromPath( getCurrentTemplatePath() ) & "lib" }; }"#,
             ),
             ("main.bxs", MAIN),
         ],
