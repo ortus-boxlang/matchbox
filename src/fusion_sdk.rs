@@ -23,6 +23,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    /// The crate directory names (under `crates/`) that the embedded SDK contains.
     fn embedded_crates() -> BTreeSet<String> {
         SDK_FILES
             .iter()
@@ -32,7 +33,9 @@ mod tests {
             .collect()
     }
 
+    /// Every `path = "..."` dependency declared in a crate manifest, across the dependency tables.
     fn path_dependencies(manifest: &toml::Value) -> Vec<String> {
+        /// Collects the `path` of each dependency in one dependency table.
         fn from_table(table: Option<&toml::Value>, out: &mut Vec<String>) {
             if let Some(deps) = table.and_then(|t| t.as_table()) {
                 for dep in deps.values() {

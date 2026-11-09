@@ -36,6 +36,8 @@ fn path_is_newer_than(path: &Path, reference: SystemTime) -> bool {
 /// `src/fusion_sdk.rs` has a test that fails if this list stops being closed over path dependencies.
 const FUSION_SDK_CRATES: &[&str] = &["matchbox-vm", "matchbox-macros", "matchbox-parser", "matchbox-plugin-sdk"];
 
+/// Walks `dir` recursively and appends `(relative path, absolute path)` for every file the SDK embeds,
+/// skipping `target`, `tests`, `benches` and `examples`. Entries are sorted so the embedded set is stable.
 fn collect_sdk_files(dir: &Path, rel: &Path, out: &mut Vec<(String, std::path::PathBuf)>) {
     let mut entries: Vec<_> = fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("Failed to read {}: {e}", dir.display()))
