@@ -73,7 +73,7 @@ pub fn from_application(file: &Path) -> Result<Vec<Mapping>> {
             }
             let class_name = name.clone();
             let tail = format!(
-                "function __bxReadMappings( app ) {{ try {{ return serializeJSON( app.mappings ); }} catch ( any e ) {{ return \"{{}}\"; }} }}\n__bxMappings = __bxReadMappings( new {class_name}() );\n"
+                "function __bxReadMappings( app ) {{ try {{ return serializeJSON( app.mappings ); }} catch ( any e ) {{ return \"{{}}\"; }} }}\n__bxMappings = __bxReadMappings( __bxAppNew( \"{class_name}\" ) );\n"
             );
             let mut extra = parser::parse(&tail, file.to_str())
                 .map_err(|e| anyhow::anyhow!("Parse Error: {e}"))?;
