@@ -3233,6 +3233,8 @@ impl Compiler {
         Ok(std::path::absolute(&found).unwrap_or(found))
     }
 
+    /// The lookup behind [`Self::resolve_source_file`]: working directory, sibling of the current file,
+    /// mappings, then the entry script's directory. The result may be relative.
     fn find_source_file(&self, dotted_path: &str) -> Result<PathBuf> {
         self.source_dependencies.store(true, Ordering::Relaxed);
         let base_path = Path::new(&dotted_path.replace('.', "/")).to_path_buf();
