@@ -782,6 +782,35 @@ fn test_multi_file() {
 }
 
 #[test]
+fn test_cross_file_inheritance_from_entry_directory() {
+    // The working directory during `cargo test` is the crate root, which has no `models/`
+    // folder: the classes must be found next to the entry script.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("class_project")
+        .join("main.bxs");
+
+    process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
 fn test_vm_modules() {
     let script_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
