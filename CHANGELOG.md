@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Native Fusion works with a prebuilt MatchBox. The generated build used to point `matchbox_vm` at `CARGO_MANIFEST_DIR/crates/matchbox-vm`, the source path of the machine that built MatchBox, so an `mvm`-installed release failed with `failed to read .../crates/matchbox-vm/Cargo.toml`. The `matchbox_vm` crate and the crates it depends on (and the workspace `Cargo.lock`) are now embedded in the `matchbox` binary at build time and written into the fusion build directory.
+
 ## [0.12.0] - 2026-10-22
 
 ### Added

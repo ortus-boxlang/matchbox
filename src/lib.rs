@@ -33,6 +33,7 @@ static FUSION_BUILD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 mod browser;
 mod embedded;
+mod fusion_sdk;
 use matchbox_modules::discovery as modules;
 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
 use matchbox_modules::programs as module_programs;
@@ -2292,8 +2293,15 @@ fn produce_fusion_artifact(
     let is_wasm = target == "wasm" || target == "js";
     let is_wasi = target == "wasi";
 
-    // 1. Generate Cargo.toml
-    let vm_path = concat!(env!("CARGO_MANIFEST_DIR"), "/crates/matchbox-vm").replace('\\', "/");
+    // 1. Generate Cargo.toml. The SDK crates come from the binary itself, not from the source tree this
+    // MatchBox was built in, so a prebuilt (mvm-installed) MatchBox can build Native Fusion programs.
+    let sdk_dir = build_dir.join("sdk");
+    fusion_sdk::write_to(&sdk_dir)?;
+    let vm_path = sdk_dir
+        .join("crates")
+        .join("matchbox-vm")
+        .to_string_lossy()
+        .replace('\\', "/");
 
     let mut extra_dep_lines = String::new();
     for module in modules.iter().filter(|m| m.has_native) {
@@ -2454,10 +2462,7 @@ strip = false
     }
 
     fs::write(build_dir.join("Cargo.toml"), cargo_toml)?;
-    let workspace_lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock");
-    if workspace_lock.exists() {
-        fs::copy(workspace_lock, build_dir.join("Cargo.lock"))?;
-    }
+    fs::write(build_dir.join("Cargo.lock"), fusion_sdk::CARGO_LOCK)?;
 
     // 2. Prepare user modules
     let mut mod_decls = String::new();
