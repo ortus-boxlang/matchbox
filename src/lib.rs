@@ -4122,7 +4122,10 @@ mod fusion_feature_tests {
     #[test]
     fn esp32_takes_no_desktop_built_ins() {
         assert!(fusion_vm_features("esp32").is_empty());
+    }
+}
 
+#[cfg(test)]
 mod panic_report_tests {
     use super::panic_report;
 
