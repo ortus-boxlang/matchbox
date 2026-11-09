@@ -52,6 +52,9 @@ pub struct Compiler {
     /// relative to the working directory are resolved against it, so a project builds the same
     /// from any directory.
     pub root_dir: Option<PathBuf>,
+    /// Mappings (`/models` -> directory) from boxlang.json and Application.bx, set per thread by
+    /// the front end. Searched after the working directory and sibling lookups.
+    mappings: Vec<crate::mappings::Mapping>,
     /// Parent classes of classes loaded from other files, to be defined as globals before the
     /// child class is used (the VM resolves `extends` by global name).
     pending_parent_defs: Vec<(String, Constant)>,
@@ -86,6 +89,7 @@ impl Compiler {
             catch_exception_slots: Vec::new(),
             class_methods: HashSet::new(),
             root_dir: source_dir.clone(),
+            mappings: crate::mappings::current_mappings(),
             pending_parent_defs: Vec::new(),
             source_dir,
             class_has_init_map: HashMap::new(),
@@ -116,6 +120,7 @@ impl Compiler {
             catch_exception_slots: Vec::new(),
             class_methods: HashSet::new(),
             root_dir: source_dir.clone(),
+            mappings: crate::mappings::current_mappings(),
             pending_parent_defs: Vec::new(),
             source_dir,
             class_has_init_map: HashMap::new(),
@@ -3238,6 +3243,18 @@ impl Compiler {
                 if rel_bx.exists() {
                     return Ok(rel_bx);
                 }
+            }
+        }
+
+        // Mappings (BoxLang order: relative path, then mappings).
+        for base in crate::mappings::candidates(&self.mappings, dotted_path) {
+            let with_bxs = base.with_extension("bxs");
+            if with_bxs.exists() {
+                return Ok(with_bxs);
+            }
+            let with_bx = base.with_extension("bx");
+            if with_bx.exists() {
+                return Ok(with_bx);
             }
         }
 

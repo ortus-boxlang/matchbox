@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Mappings**: virtual paths such as `/models` that point to a directory, declared the way BoxLang on the JVM does: `this.mappings` in an `Application.bx` next to the program, or `mappings` in a `boxlang.json` in the working directory (`"shared": "${user-dir}/lib"`, or `{ "path": ..., "external": false }`). Application mappings override the global ones. Names get a leading and trailing slash. They resolve `new`, `import` and `extends` for class files, are read when the program is compiled, and the classes found through them are compiled in, so a native binary carries them. Not in this change: `createObject` through a mapping, `bx:application`, and mappings added at run time.
+- `getCurrentTemplatePath()` returns the absolute path of the file whose code is running (it always returned an empty string).
+
 ### Fixed
 - Native Fusion works with a prebuilt MatchBox. The generated build used to point `matchbox_vm` at `CARGO_MANIFEST_DIR/crates/matchbox-vm`, the source path of the machine that built MatchBox, so an `mvm`-installed release failed with `failed to read .../crates/matchbox-vm/Cargo.toml`. The `matchbox_vm` crate and the crates it depends on (and the workspace `Cargo.lock`) are now embedded in the `matchbox` binary at build time and written into the fusion build directory.
 - Native Fusion programs get the same built-ins as a regular native build. The generated fusion project depended on `matchbox_vm` with no features, so a fusion binary had no `bif-io`, `bif-cli`, `bif-crypto` or `bif-http` (`CLIGetArgs()` was not callable, file I/O was missing). It now enables the features this MatchBox was built with, chosen the way `build.rs` chooses them for the matching runner stub (WASM targets leave out `bif-zip` and `jit`; ESP32 takes none). A fusion build without module programs also never recorded the command line, so `CLIGetArgs()` returned no arguments; it now does, like the other runner.
