@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Program output to a closed pipe (`matchbox script.bxs | head -1`, a native binary piped into `grep -q`) ends the process quietly with exit code 0 instead of panicking with `failed printing to stdout: Broken pipe`.
 - `variables.name( args )` calls a function stored in the `variables` scope (script level or inside a class) instead of failing with `Method name not found on variables scope`.
 - `var` declarations inside a `switch` case no longer shift the stack slots of the cases after them. Entering a later case used to read slots that did not exist: wrong values, or a Rust panic (`index out of bounds` in `bind_local`) that ended the process with exit code 101. A `switch` that ran its `default` body, or matched no case, left the switch value on the stack; that is fixed too.
+- A panic prints `matchbox: internal error: <message>` and its location to stderr (and a backtrace with `RUST_BACKTRACE=1`). It used to write the details to `panic_debug.txt` in the current directory and print nothing, so a crash looked like a silent exit with code 101.
 
 ## [0.12.0] - 2026-10-22
 
