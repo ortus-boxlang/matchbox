@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `var` declarations inside a `switch` case no longer shift the stack slots of the cases after them. Entering a later case used to read slots that did not exist: wrong values, or a Rust panic (`index out of bounds` in `bind_local`) that ended the process with exit code 101. A `switch` that ran its `default` body, or matched no case, left the switch value on the stack; that is fixed too.
+
 ## [0.12.0] - 2026-10-22
 
 ### Added

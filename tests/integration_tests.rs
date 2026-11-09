@@ -318,6 +318,7 @@ script_test!(vm_qoq_query_execute, "vm_qoq_query_execute.bxs");
 #[cfg(feature = "qoq")]
 script_test!(vm_qoq_join, "vm_qoq_join.bxs");
 script_test!(vm_encode_for_html, "vm_encode_for_html.bxs");
+script_test!(vm_switch_case_locals, "vm_switch_case_locals.bxs");
 
 #[test]
 #[cfg(feature = "bif-tui")]
