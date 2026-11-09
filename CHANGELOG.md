@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `variables.name( args )` calls a function stored in the `variables` scope (script level or inside a class) instead of failing with `Method name not found on variables scope`.
+
 ## [0.12.0] - 2026-10-22
 
 ### Added

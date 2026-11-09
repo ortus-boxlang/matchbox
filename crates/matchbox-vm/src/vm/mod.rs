@@ -1644,7 +1644,16 @@ impl BxVM for VM {
         };
 
         let delegated = obj_rc.borrow().delegated_callback(name);
-        let res = if let Some(callback) = delegated {
+        // `variables.name( args )`: the scope is a native object, so a function stored in it is called here
+        // (script-level `variables` reads the VM globals, an instance's `variables` reads its own map).
+        let stored = if obj_rc.borrow().native_data("matchbox.variables_scope").is_some() {
+            Some(self.native_object_get(&obj_rc, name)).filter(|value| !value.is_null())
+        } else {
+            None
+        };
+        let res = if let Some(function) = stored {
+            self.call_function_value_named(function, args.to_vec(), None).map_err(|error| error.to_string())
+        } else if let Some(callback) = delegated {
             let mut values = vec![BxValue::new_ptr(id)];
             values.extend_from_slice(args);
             self.invoke_callback(&callback, &values)
