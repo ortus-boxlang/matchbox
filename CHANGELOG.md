@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Class as the program**: `matchbox Task.bx a b` (and a native build of `Task.bx`) instantiates the class and calls `main( args )`, like `boxlang Task.bx`. `args` is the array of the raw command line arguments after the file name (`["hola", "--many", "options=test"]`); `cliGetArgs()` works inside as usual. A class without `main` fails with `Class [X] does not have a main method to execute.`. A nameless `class { }` takes the file name.
+
 ## [0.12.0] - 2026-10-22
 
 ### Added

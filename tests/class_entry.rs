@@ -43,7 +43,7 @@ fn main_receives_the_raw_arguments_after_the_file() {
     assert!(ok, "{err}");
     // docs: boxlang task.bx hola --many options=test -> [ hola, --many, options=test ]
     assert!(out.contains(r#"args=["hola","--many","options=test"]"#), "{out}");
-    assert!(out.contains(r#""positionals":["hola"]"#), "{out}");
+    assert!(out.contains(r#""positionals":["hola","options=test"]"#) && out.contains(r#""many":true"#), "{out}");
 }
 
 #[test]
