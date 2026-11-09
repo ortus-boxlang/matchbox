@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A panic prints `matchbox: internal error: <message>` and its location to stderr (and a backtrace with `RUST_BACKTRACE=1`). It used to write the details to `panic_debug.txt` in the current directory and print nothing, so a crash looked like a silent exit with code 101.
+
 ## [0.12.0] - 2026-10-22
 
 ### Added

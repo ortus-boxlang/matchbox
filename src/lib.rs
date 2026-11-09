@@ -766,11 +766,41 @@ impl BoxLangVM {
     }
 }
 
-pub fn run() -> Result<()> {
+/// Text printed to stderr for a panic: an `internal error` line with the message and location, then the
+/// backtrace when one was captured.
+fn panic_report(message: &str, location: &str, backtrace: Option<&str>) -> String {
+    match backtrace {
+        Some(trace) => format!("matchbox: internal error: {message}\n  at {location}\n{trace}\n"),
+        None => format!(
+            "matchbox: internal error: {message}\n  at {location}\nSet RUST_BACKTRACE=1 for a backtrace and please report this at https://github.com/ortus-boxlang/matchbox/issues\n"
+        ),
+    }
+}
+
+/// Makes a panic visible: the message and location go to stderr (with a backtrace when `RUST_BACKTRACE` is
+/// set), and the process still ends with the usual panic exit code 101. It used to write the details to a
+/// `panic_debug.txt` file in the current directory and print nothing, so a crash looked like a silent exit.
+fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        let backtrace = std::backtrace::Backtrace::force_capture();
-        let _ = std::fs::write("panic_debug.txt", format!("{:#?}\n\n{backtrace}", info));
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|text| text.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "(no message)".to_string());
+        let location = info
+            .location()
+            .map(|place| format!("{}:{}:{}", place.file(), place.line(), place.column()))
+            .unwrap_or_else(|| "(unknown location)".to_string());
+        let trace = std::env::var_os("RUST_BACKTRACE")
+            .filter(|value| value != "0")
+            .map(|_| std::backtrace::Backtrace::force_capture().to_string());
+        eprint!("{}", panic_report(&message, &location, trace.as_deref()));
     }));
+}
+
+pub fn run() -> Result<()> {
+    install_panic_hook();
     // 1. Check for WASM custom section first
     #[cfg(target_arch = "wasm32")]
     if let Ok(chunk) = load_wasm_custom_section() {
@@ -3896,5 +3926,24 @@ mod cli_tests {
     fn no_arguments_means_repl() {
         let cli = parse(&[]).unwrap();
         assert!(cli.file.is_none() && cli.script_args.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod panic_report_tests {
+    use super::panic_report;
+
+    #[test]
+    fn the_report_names_the_message_and_the_location() {
+        let text = panic_report("index out of bounds", "crates/x.rs:10:5", None);
+        assert!(text.starts_with("matchbox: internal error: index out of bounds\n"));
+        assert!(text.contains("at crates/x.rs:10:5"));
+        assert!(text.contains("RUST_BACKTRACE=1"));
+    }
+
+    #[test]
+    fn a_captured_backtrace_is_printed_instead_of_the_hint() {
+        let text = panic_report("boom", "a.rs:1:1", Some("  0: frame"));
+        assert!(text.contains("0: frame") && !text.contains("Set RUST_BACKTRACE"));
     }
 }
