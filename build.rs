@@ -119,6 +119,10 @@ fn main() {
         .filter(|feature| *feature != "bif-zip")
         .collect();
 
+    // Native Fusion builds get the same built-ins as the runner stubs above (see `fusion_vm_features`).
+    println!("cargo:rustc-env=MATCHBOX_FUSION_NATIVE_FEATURES={}", native_features.join(","));
+    println!("cargo:rustc-env=MATCHBOX_FUSION_WASM_FEATURES={}", wasm_features.join(","));
+
     // Helper closure to build and copy a stub
     let build_stub = |target: Option<&str>,
                       dest_name: &str,
