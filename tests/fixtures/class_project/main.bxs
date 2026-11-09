@@ -7,6 +7,8 @@ function expect( actual, expected, label ) {
 }
 import models.Dog;
 import models.Puppy;
+d0 = new models.Dog();
+expect( d0.hello(), "I am Anon", "inherited init is called without arguments" );
 d = new models.Dog( "Rex" );
 expect( d.hello(), "I am Rex", "inherited method" );
 expect( d.bark(), "Rex says woof", "own method" );

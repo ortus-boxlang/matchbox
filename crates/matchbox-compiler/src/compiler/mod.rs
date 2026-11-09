@@ -41,8 +41,14 @@ pub fn take_loaded_sources() -> Vec<Vec<Statement>> {
     LOADED_SOURCES.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }
 
+/// Remembers the AST of a class or interface file the compiler just loaded (see [`take_loaded_sources`]).
 fn record_loaded_source(ast: &[Statement]) {
     LOADED_SOURCES.with(|l| l.borrow_mut().push(ast.to_vec()));
+}
+
+thread_local! {
+    /// Class files whose `extends` parent is being loaded right now, to reject inheritance cycles.
+    static PARENT_CHAIN: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 pub struct Compiler {
@@ -1700,6 +1706,10 @@ impl Compiler {
                             .methods
                             .iter()
                             .any(|(n, _)| n.eq_ignore_ascii_case("init"))
+                            // parents loaded from other files are not in this chunk yet
+                            || self.pending_parent_defs.iter().any(|(_, parent)| {
+                                matches!(parent, Constant::Class(p) if p.methods.iter().any(|(n, _)| n.eq_ignore_ascii_case("init")))
+                            })
                             || cls
                                 .extends
                                 .as_deref()
@@ -3420,10 +3430,44 @@ impl Compiler {
                             .get(&parent)
                             .map(|path| path.trim_start_matches("bx:").to_string())
                             .unwrap_or_else(|| original_extends.clone().unwrap_or_else(|| parent.clone()));
-                        if let Ok(parent_val) = sub_compiler.load_class_from_path(&parent_path) {
-                            self.pending_parent_defs
-                                .append(&mut sub_compiler.pending_parent_defs);
-                            self.pending_parent_defs.push((parent, parent_val));
+                        if let Ok(parent_file) = sub_compiler.resolve_source_file(&parent_path) {
+                            let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                            let (this_file, parent_file) = (canonical(&file_path), canonical(&parent_file));
+                            let cycle = PARENT_CHAIN.with(|chain| {
+                                let mut chain = chain.borrow_mut();
+                                if chain.is_empty() {
+                                    chain.push(this_file.clone());
+                                }
+                                if chain.contains(&parent_file) {
+                                    true
+                                } else {
+                                    chain.push(parent_file.clone());
+                                    false
+                                }
+                            });
+                            if cycle {
+                                PARENT_CHAIN.with(|chain| chain.borrow_mut().clear());
+                                bail!("Circular inheritance: {} extends {}, which extends it back", file_path.display(), parent_file.display());
+                            }
+                            let loaded = sub_compiler.load_class_from_path(&parent_path);
+                            PARENT_CHAIN.with(|chain| {
+                                let mut chain = chain.borrow_mut();
+                                chain.pop();
+                                if chain.len() == 1 {
+                                    chain.clear();
+                                }
+                            });
+                            match loaded {
+                                Ok(parent_val) => {
+                                    self.pending_parent_defs
+                                        .append(&mut sub_compiler.pending_parent_defs);
+                                    self.pending_parent_defs.push((parent, parent_val));
+                                }
+                                // a cycle further up the chain is a real error; other failures
+                                // (a parent that is not a file, a module class) are left to run time
+                                Err(error) if error.to_string().starts_with("Circular inheritance") => return Err(error),
+                                Err(_) => {}
+                            }
                         }
                     }
                 }
