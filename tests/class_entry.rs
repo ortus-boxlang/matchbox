@@ -3,6 +3,7 @@
 
 use std::{fs, path::PathBuf, process::Command};
 
+/// Creates a fresh project directory under the temp dir with the given `(file name, body)` files.
 fn project(files: &[(&str, &str)]) -> PathBuf {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -17,6 +18,7 @@ fn project(files: &[(&str, &str)]) -> PathBuf {
     dir
 }
 
+/// Runs the `matchbox` binary with `args`; returns (success, stdout, stderr).
 fn run(args: &[&str]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_matchbox")).args(args).output().unwrap();
     (
