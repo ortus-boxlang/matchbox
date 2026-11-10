@@ -1,4 +1,7 @@
 use matchbox_compiler::{ast, compiler, parser};
+
+#[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+mod app_descriptor;
 use matchbox_utility::enable_logging;
 use matchbox_vm::{Chunk, types, vm};
 
@@ -1851,6 +1854,9 @@ fn process_file_with_args(
         if orig_target == Some("esp32") {
             validate_esp32_target(&ast, esp32_web)?;
         }
+        // Mappings (boxlang.json, Application.bx) apply to every class path resolved while compiling.
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        matchbox_compiler::mappings::set_mappings(app_descriptor::collect(source_path)?);
         // Discover modules from matchbox.toml (in CWD) and any --module flags.
         let cwd = std::env::current_dir()
             .unwrap_or_else(|_| source_path.parent().unwrap_or(Path::new(".")).to_path_buf());
@@ -1864,8 +1870,10 @@ fn process_file_with_args(
 
         // Module BIFs and settings are installed at runtime, never baked by executing hooks.
         let extra_preludes: Vec<String> = Vec::new();
+        let absolute_source = std::path::absolute(source_path).unwrap_or_else(|_| source_path.to_path_buf());
         let mut chunk = matchbox_compiler::compile_with_treeshaking(
-            source_path.to_str().unwrap_or("unknown"),
+            // absolute, so a binary built from a relative path knows its template wherever it runs
+            absolute_source.to_str().unwrap_or("unknown"),
             &ast,
             &source,
             keep_symbols,

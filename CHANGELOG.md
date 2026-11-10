@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Mappings**: virtual paths such as `/models` that point to a directory, declared the way BoxLang on the JVM does: `this.mappings` in an `Application.bx` next to the program, or `mappings` in a `boxlang.json` in the working directory (`"shared": "${user-dir}/lib"`, or `{ "path": ..., "external": false }`). Application mappings override the global ones. Names get a leading and trailing slash. They resolve `new`, `import` and `extends` for class files, are read when the program is compiled, and the classes found through them are compiled in, so a native binary carries them. Not in this change: `createObject` through a mapping, `bx:application`, and mappings added at run time.
+- `getCurrentTemplatePath()` returns the absolute path of the file whose code is running (it always returned an empty string).
 - **Class as the program**: `matchbox Task.bx a b` (and a native build of `Task.bx`) instantiates the class and calls `main( args )`, like `boxlang Task.bx`. `args` is the array of the raw command line arguments after the file name (`["hola", "--many", "options=test"]`); `cliGetArgs()` works inside as usual. A class without `main` fails with `Class [X] does not have a main method to execute.`. A nameless `class { }` takes the file name.
 ### Fixed
 - **Classes in other files**: `import models.Dog` and `new models.Dog()` looked for `models/Dog.bx[s]` relative to the working directory only, so a project built from any other directory failed with `Source file not found`. Dotted class and interface paths now also resolve against the directory of the entry script.
