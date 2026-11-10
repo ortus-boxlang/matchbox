@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- The struct built-ins accept the `variables` scope. `structKeyExists( variables, key )`, `structGet`, `structKeyArray` and `structCount` returned false, null or an empty result (or raised) because `variables` is a scope object rather than a struct. In a class they now read the instance's variables; at script level `structKeyExists` and `structGet` read the script variables (`structKeyArray` and `structCount` of the script scope are not supported yet because its store is the VM globals, which also hold the built-ins).
 - Native Fusion programs get the same built-ins as a regular native build. The generated fusion project depended on `matchbox_vm` with no features, so a fusion binary had no `bif-io`, `bif-cli`, `bif-crypto` or `bif-http` (`CLIGetArgs()` was not callable, file I/O was missing). It now enables the features this MatchBox was built with, chosen the way `build.rs` chooses them for the matching runner stub (WASM targets leave out `bif-zip` and `jit`; ESP32 takes none). A fusion build without module programs also never recorded the command line, so `CLIGetArgs()` returned no arguments; it now does, like the other runner.
 
 ## [0.12.0] - 2026-10-22
