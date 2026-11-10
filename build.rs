@@ -164,6 +164,12 @@ fn main() {
     if env::var("CARGO_FEATURE_JIT").is_ok() {
         native_features.push("jit");
     }
+    // The terminal UI classes are a runner feature, not a `matchbox_vm` one (so Native Fusion, which maps these
+    // names onto `matchbox_vm` features, does not see it), and they need a real terminal: desktop runners only.
+    let mut native_stub_features = native_features.clone();
+    if env::var("CARGO_FEATURE_BIF_TUI").is_ok() {
+        native_stub_features.push("bif-tui");
+    }
 
     // ZIP's native C codecs require a C sysroot and are not available in
     // WASM/WASI runners. Enabling desktop ZIP must not remove the web runner.
@@ -568,7 +574,7 @@ fn main() {
                 src,
                 target,
                 &mut stubs_rs_content,
-                &native_features,
+                &native_stub_features,
             );
             if target == host {
                 if available {
@@ -597,7 +603,7 @@ fn main() {
             native_src_name,
             "host",
             &mut stubs_rs_content,
-            &native_features,
+            &native_stub_features,
         );
         if available {
             stubs_rs_content.push_str(&format!(
