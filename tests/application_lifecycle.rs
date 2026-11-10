@@ -32,7 +32,7 @@ fn lines(out: &str) -> Vec<&str> {
 const FULL: &str = r#"class {
     this.name = "demo";
     function onApplicationStart() { application.greeting = "hello"; println( "app start" ); return true; }
-    function onRequestStart( targetPage ) { println( "request start " & listLast( targetPage, "/" ) ); return true; }
+    function onRequestStart( targetPage ) { println( "request start " & listLast( targetPage, "/\\" ) ); return true; }
     function onRequestEnd() { println( "request end" ); }
     function onApplicationEnd( applicationScope ) { println( "app end " & applicationScope.greeting ); }
 }"#;

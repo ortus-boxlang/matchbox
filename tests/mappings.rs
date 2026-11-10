@@ -215,5 +215,5 @@ fn a_native_binary_reports_the_template_path_of_its_source_wherever_it_runs() {
     let output = Command::new(&bin).current_dir(std::env::temp_dir()).output().unwrap();
     let out = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(out.contains(&format!("path={}", dir.join("main.bxs").display())), "{out}");
+    assert!(out.contains(&format!("path={}", dir.join("main.bxs").canonicalize().unwrap().display())), "{out}");
 }
