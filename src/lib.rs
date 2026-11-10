@@ -2328,6 +2328,15 @@ fn fusion_vm_features(target: &str) -> Vec<&'static str> {
     }
 }
 
+fn fusion_cargo_path(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    if let Some(unc) = path.strip_prefix("//?/UNC/") {
+        format!("//{unc}")
+    } else {
+        path.strip_prefix("//?/").unwrap_or(&path).to_string()
+    }
+}
+
 fn produce_fusion_artifact(
     chunk: &Chunk,
     source_path: &Path,
@@ -2399,22 +2408,17 @@ fn produce_fusion_artifact(
     let sdk_dir = build_dir.join("sdk");
     let module_vm = fusion_module_vm_path(&modules)?;
     let vm_path = match &module_vm {
-        Some(path) => path.to_string_lossy().replace('\\', "/"),
+        Some(path) => fusion_cargo_path(path),
         None => {
             fusion_sdk::write_to(&sdk_dir)?;
-            sdk_dir
-                .join("crates")
-                .join("matchbox-vm")
-                .to_string_lossy()
-                .replace('\\', "/")
+            fusion_cargo_path(&sdk_dir.join("crates").join("matchbox-vm"))
         }
     };
 
     let mut extra_dep_lines = String::new();
     for module in modules.iter().filter(|m| m.has_native) {
         let dep_path = module.path.join("matchbox");
-        let dep_str = dep_path.to_str().unwrap_or("").replace('\\', "/");
-        let dep_str = dep_str.strip_prefix("//?/").unwrap_or(&dep_str);
+        let dep_str = fusion_cargo_path(&dep_path);
         let cargo_toml_path = dep_path.join("Cargo.toml");
         let crate_name = read_crate_name(&cargo_toml_path)?;
         let rust_name = crate_name.replace('-', "_");
@@ -2481,7 +2485,7 @@ anyhow = "1.0"
         ] {
             cargo_toml.push_str(&format!(
                 "{package} = {{ path = \"{}\" }}\n",
-                sdk_crates.join(dir).to_string_lossy().replace('\\', "/")
+                fusion_cargo_path(&sdk_crates.join(dir))
             ));
         }
     }
@@ -2937,7 +2941,7 @@ fn read_native_dependencies(native_dir: &Path, reserved: &[&str]) -> Result<Stri
         let mut spec = spec.clone();
         if let Some(path) = spec.get("path").and_then(|p| p.as_str()).map(PathBuf::from) {
             if path.is_relative() {
-                let absolute = native_dir.join(path).to_string_lossy().replace('\\', "/");
+                let absolute = fusion_cargo_path(&native_dir.join(path));
                 spec.as_table_mut().unwrap().insert("path".into(), toml::Value::String(absolute));
             }
         }
@@ -3810,6 +3814,18 @@ mod tests {
             .execute("SELECT 1 AS val", &[]).unwrap();
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0][0], matchbox_vm::datasource::traits::SqlValue::Int(1));
+    }
+
+    #[test]
+    fn fusion_cargo_paths_remove_windows_verbatim_prefixes() {
+        for (path, expected) in [
+            (r"\\?\D:\checkout\matchbox-vm", "D:/checkout/matchbox-vm"),
+            (r"\\?\UNC\server\share\matchbox-vm", "//server/share/matchbox-vm"),
+            (r"C:\checkout\matchbox-vm", "C:/checkout/matchbox-vm"),
+            ("/checkout/matchbox-vm", "/checkout/matchbox-vm"),
+        ] {
+            assert_eq!(fusion_cargo_path(Path::new(path)), expected);
+        }
     }
 
     #[test]
