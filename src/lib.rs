@@ -1767,6 +1767,37 @@ pub fn process_file(
     )
 }
 
+/// A class file given as the program (`matchbox Task.bx a b`) is run by calling its `main( args )`
+/// method, as `boxlang Task.bx` does. Appends `new <Class>()` and the `main` call to the program.
+/// A nameless class takes the file name, like classes loaded through `new`.
+fn append_class_entry(mut ast: Vec<ast::Statement>, source_path: &Path) -> Result<Vec<ast::Statement>> {
+    let stem = source_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Entry")
+        .to_string();
+    let mut class_name = None;
+    for statement in ast.iter_mut() {
+        if let ast::StatementKind::ClassDecl { name, .. } = &mut statement.kind {
+            if name.is_empty() {
+                *name = stem.clone();
+            }
+            class_name = Some(name.clone());
+            break;
+        }
+    }
+    let Some(class_name) = class_name else {
+        return Ok(ast);
+    };
+    let call = format!(
+        "__bxEntry = new {class_name}();\n__bxRunClassMain( __bxEntry, \"{class_name}\" );\n"
+    );
+    let mut extra = parser::parse(&call, source_path.to_str())
+        .map_err(|e| anyhow::anyhow!("Parse Error: {e}"))?;
+    ast.append(&mut extra);
+    Ok(ast)
+}
+
 fn process_file_with_args(
     source_path: &Path,
     is_build: bool,
@@ -1811,6 +1842,11 @@ fn process_file_with_args(
         } else {
             parser::parse(&source, source_path.to_str())
                 .map_err(|e| anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e))?
+        };
+        let ast = if matches!(ext, "bx" | "cfc") && matches!(orig_target, None | Some("native")) {
+            append_class_entry(ast, source_path)?
+        } else {
+            ast
         };
         if orig_target == Some("esp32") {
             validate_esp32_target(&ast, esp32_web)?;
