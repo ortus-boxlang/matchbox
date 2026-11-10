@@ -125,7 +125,7 @@ const GATED: &[(&str, &[&str])] = &[
     ]),
     ("bif-cli", &[
         "cliclear", "cliconfirm", "cliexit", "cligetargs", "cliisterminal", "cliread",
-        "clireadkey", "clireadpassword", "cliselect", "exit", "__bxrunclassmain",
+        "clireadkey", "clireadpassword", "cliselect", "exit", "__bxrunclassmain", "__bxappnew", "__bxapphook",
     ]),
     ("bif-io", &[
         "contractpath", "createtempdirectory", "createtempfile", "directorycopy", "directorycreate", "directorydelete",
@@ -669,6 +669,8 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
             "__bxrunclassmain".to_string(),
             cli::run_class_main as BxNativeFunction,
         );
+        bifs.insert("__bxappnew".to_string(), cli::app_new as BxNativeFunction);
+        bifs.insert("__bxapphook".to_string(), cli::app_hook as BxNativeFunction);
         bifs.insert("cliread".to_string(), cli::cli_read as BxNativeFunction);
         bifs.insert(
             "cliisterminal".to_string(),

@@ -1851,6 +1851,12 @@ fn process_file_with_args(
         } else {
             ast
         };
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        let ast = if matches!(ext, "bx" | "bxs" | "cfc") && matches!(orig_target, None | Some("native")) {
+            app_descriptor::wrap_with_application(ast, source_path)?
+        } else {
+            ast
+        };
         if orig_target == Some("esp32") {
             validate_esp32_target(&ast, esp32_web)?;
         }
