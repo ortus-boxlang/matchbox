@@ -28,6 +28,24 @@ struct Local {
 thread_local! {
     /// Class files whose `extends` parent is being loaded right now, to reject inheritance cycles.
     static PARENT_CHAIN: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// ASTs of the class and interface files loaded while compiling (`new`, `import`, `extends`).
+    /// Tree-shaking needs them: a prelude function used only inside such a file must be kept.
+    static LOADED_SOURCES: std::cell::RefCell<Vec<Vec<Statement>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Forgets the files recorded so far on this thread.
+pub fn clear_loaded_sources() {
+    LOADED_SOURCES.with(|l| l.borrow_mut().clear());
+}
+
+/// The ASTs of the class and interface files loaded since [`clear_loaded_sources`].
+pub fn take_loaded_sources() -> Vec<Vec<Statement>> {
+    LOADED_SOURCES.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+
+/// Remembers the AST of a class or interface file the compiler just loaded (see [`take_loaded_sources`]).
+fn record_loaded_source(ast: &[Statement]) {
+    LOADED_SOURCES.with(|l| l.borrow_mut().push(ast.to_vec()));
 }
 
 pub struct Compiler {
@@ -3362,6 +3380,7 @@ impl Compiler {
 
         let filename = file_path.to_str().unwrap_or(class_path);
         Self::infer_class_name_from_filename(&mut ast, filename);
+        record_loaded_source(&ast);
         let mut sub_compiler = Compiler::with_chunk(Chunk::new(filename));
         sub_compiler.imports = self.imports.clone();
         sub_compiler.runtime_module_classes = self.runtime_module_classes;
@@ -3471,6 +3490,7 @@ impl Compiler {
         let ast = crate::parser::parse(&source, file_path.to_str())
             .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", iface_path, e))?;
 
+        record_loaded_source(&ast);
         let filename = file_path.to_str().unwrap_or(iface_path);
         let mut sub_compiler = Compiler::with_chunk(Chunk::new(filename));
         sub_compiler.imports = self.imports.clone();
