@@ -7,7 +7,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::mpsc;
     use std::thread;
-    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::mpsc::channel;
 
     #[test]
     fn test_websocket_runtime_echo() {
@@ -39,7 +39,7 @@ mod tests {
             websocket_runtime_main(chunk, config, cmd_rx, None).unwrap();
         });
 
-        let (out_tx, mut out_rx) = unbounded_channel();
+        let (out_tx, mut out_rx) = channel(16);
         let connection_id = "test-conn".to_string();
 
         // Connect
@@ -55,6 +55,7 @@ mod tests {
                     query: HashMap::new(),
                     cookies: HashMap::new(),
                     headers: HashMap::new(),
+                    header_counts: HashMap::new(),
                     body: Vec::new(),
                     full_url: "http://localhost/ws".to_string(),
                 },
@@ -118,8 +119,8 @@ mod tests {
             websocket_runtime_main(chunk, config, cmd_rx, None).unwrap();
         });
 
-        let (out1_tx, mut out1_rx) = unbounded_channel();
-        let (out2_tx, mut out2_rx) = unbounded_channel();
+        let (out1_tx, mut out1_rx) = channel(16);
+        let (out2_tx, mut out2_rx) = channel(16);
 
         let req = RequestData {
             method: "GET".to_string(),
@@ -130,6 +131,7 @@ mod tests {
             query: HashMap::new(),
             cookies: HashMap::new(),
             headers: HashMap::new(),
+            header_counts: HashMap::new(),
             body: Vec::new(),
             full_url: "http://localhost/ws".to_string(),
         };
@@ -179,10 +181,14 @@ mod tests {
         use tokio_tungstenite::tungstenite::Message;
 
         let (cmd_tx, _cmd_rx) = mpsc::channel();
-        let runtime = Arc::new(WebSocketRuntimeHandle {
-            uri: "/ws".to_string(),
-            commands: cmd_tx,
-        });
+        let runtime = Arc::new(WebSocketRuntimeHandle::new(
+            "/ws".to_string(),
+            move |command| {
+                cmd_tx
+                    .send(command)
+                    .map_err(|_| "test runtime stopped".to_string())
+            },
+        ));
 
         let mut router = Router::new();
         router = router.route(

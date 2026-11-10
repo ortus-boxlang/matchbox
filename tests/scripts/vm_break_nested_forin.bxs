@@ -1,0 +1,105 @@
+// `break` and `continue` inside for-in loops must leave the stack as the normal loop exit does:
+// before the fix the item slot leaked and the next loop failed with "iterator cursor is not a number".
+function check( label, got, want ) {
+    if ( got != want ) throw( "FAIL " & label & ": got [" & got & "] wanted [" & want & "]" );
+}
+
+function breakThenLoop() {
+    var out = [];
+    for ( var a in [ 1, 2 ] ) {
+        for ( var b in [ 10, 20, 30 ] ) {
+            if ( b == 20 ) break;
+            out.append( a & ":" & b );
+        }
+        for ( var c in [ 7 ] ) out.append( "c" & c );
+    }
+    return out.toList( "," );
+}
+check( "break then another loop", breakThenLoop(), "1:10,c7,2:10,c7" );
+
+function continueNested() {
+    var out = [];
+    for ( var a in [ 1, 2 ] ) {
+        for ( var b in [ 10, 20, 30 ] ) {
+            if ( b == 20 ) continue;
+            out.append( a & ":" & b );
+        }
+    }
+    return out.toList( "," );
+}
+check( "continue in a nested loop", continueNested(), "1:10,1:30,2:10,2:30" );
+
+function withIndex() {
+    var out = [];
+    for ( var v, i in [ "a", "b", "c" ] ) {
+        for ( var w, j in [ "x", "y", "z" ] ) {
+            if ( j == 2 ) break;
+            out.append( v & w );
+        }
+        if ( i == 2 ) break;
+    }
+    var after = "kept";
+    return out.toList( "," ) & "|" & after;
+}
+check( "break with item and index", withIndex(), "ax,bx|kept" );
+
+function labeled() {
+    var out = [];
+    outer: for ( var a in [ 1, 2, 3 ] ) {
+        for ( var b in [ 1, 2, 3 ] ) {
+            if ( b == 2 ) continue outer;
+            if ( a == 3 ) break outer;
+            out.append( a & b );
+        }
+    }
+    var tail = [];
+    for ( var t in [ 9 ] ) tail.append( t );
+    return out.toList( "," ) & "|" & tail.toList( "," );
+}
+check( "labeled continue and break", labeled(), "11,21|9" );
+
+function insideSwitch() {
+    var out = [];
+    for ( var a in [ "x", "y", "z" ] ) {
+        switch ( a ) {
+            case "y":
+                var inCase = 1;
+                break;
+            default:
+                for ( var q in [ 1, 2 ] ) {
+                    if ( q == 2 ) break;
+                    out.append( a & q );
+                }
+        }
+        if ( a == "y" ) continue;
+    }
+    for ( var k in [ "end" ] ) out.append( k );
+    return out.toList( "," );
+}
+check( "break in a loop inside a switch inside a loop", insideSwitch(), "x1,z1,end" );
+
+function insideWhile() {
+    var n = 0; var out = [];
+    while ( n < 2 ) {
+        n++;
+        for ( var a in [ 1, 2, 3 ] ) {
+            if ( a == 2 ) break;
+            out.append( n & a );
+        }
+    }
+    for ( var z in [ "z" ] ) out.append( z );
+    return out.toList( "," );
+}
+check( "break in a for-in inside a while", insideWhile(), "11,21,z" );
+
+// the same at script level
+scriptOut = [];
+for ( a in [ 1, 2 ] ) {
+    for ( b in [ 10, 20, 30 ] ) {
+        if ( b == 20 ) break;
+        scriptOut.append( a & ":" & b );
+    }
+    for ( c in [ 7 ] ) scriptOut.append( "c" & c );
+}
+check( "script level", scriptOut.toList( "," ), "1:10,c7,2:10,c7" );
+println( "nested for-in break ok" );

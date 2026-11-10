@@ -1,0 +1,46 @@
+// General compiled local-plus-literal expressions, warmed in the same frame.
+// No checksum benchmark, special source shape, new opcode or numeric-only API.
+function offsets(start) {
+    var left = start;
+    var values = [];
+    for (var n = 0; n < 20; n++) {
+        values.append(left + 2);
+        left = left + 3;
+    }
+    return values;
+}
+var values = offsets(5);
+assert values.len() == 20;
+assert values[1] == 7;
+assert values[20] == 64;
+
+// Capturing/exposing the frame must not bypass the dictionary-backed authority.
+function capturedOffsets() {
+    var left = 5;
+    var readLeft = () => left;
+    var values = [];
+    for (var n = 0; n < 12; n++) {
+        left = n;
+        values.append(left + 2);
+        assert left == readLeft();
+    }
+    return values;
+}
+values = capturedOffsets();
+assert values[1] == 2;
+assert values[12] == 13;
+
+// A callback/nested frame inside the loop cannot lend a stale frame/cache view.
+function nestedOffsets() {
+    var left = 3;
+    var total = 0;
+    for (var n = 0; n < 8; n++) {
+        var mapped = [left].map((value) => value + 2);
+        total = total + mapped[1];
+        total = total + (left + 2);
+        left = left + 1;
+    }
+    return total;
+}
+assert nestedOffsets() == 136;
+println("expression composition contracts passed");

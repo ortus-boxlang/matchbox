@@ -1,4 +1,7 @@
 use matchbox_compiler::{ast, compiler, parser};
+
+#[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+mod app_descriptor;
 use matchbox_utility::enable_logging;
 use matchbox_vm::{Chunk, types, vm};
 
@@ -33,6 +36,7 @@ static FUSION_BUILD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 mod browser;
 mod embedded;
+mod fusion_sdk;
 use matchbox_modules::discovery as modules;
 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
 use matchbox_modules::programs as module_programs;
@@ -1766,6 +1770,37 @@ pub fn process_file(
     )
 }
 
+/// A class file given as the program (`matchbox Task.bx a b`) is run by calling its `main( args )`
+/// method, as `boxlang Task.bx` does. Appends `new <Class>()` and the `main` call to the program.
+/// A nameless class takes the file name, like classes loaded through `new`.
+fn append_class_entry(mut ast: Vec<ast::Statement>, source_path: &Path) -> Result<Vec<ast::Statement>> {
+    let stem = source_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Entry")
+        .to_string();
+    let mut class_name = None;
+    for statement in ast.iter_mut() {
+        if let ast::StatementKind::ClassDecl { name, .. } = &mut statement.kind {
+            if name.is_empty() {
+                *name = stem.clone();
+            }
+            class_name = Some(name.clone());
+            break;
+        }
+    }
+    let Some(class_name) = class_name else {
+        return Ok(ast);
+    };
+    let call = format!(
+        "__bxEntry = new {class_name}();\n__bxRunClassMain( __bxEntry, \"{class_name}\" );\n"
+    );
+    let mut extra = parser::parse(&call, source_path.to_str())
+        .map_err(|e| anyhow::anyhow!("Parse Error: {e}"))?;
+    ast.append(&mut extra);
+    Ok(ast)
+}
+
 fn process_file_with_args(
     source_path: &Path,
     is_build: bool,
@@ -1811,9 +1846,23 @@ fn process_file_with_args(
             parser::parse(&source, source_path.to_str())
                 .map_err(|e| anyhow::anyhow!("{} {}", "Parse Error:".red().bold(), e))?
         };
+        let ast = if matches!(ext, "bx" | "cfc") && matches!(orig_target, None | Some("native")) {
+            append_class_entry(ast, source_path)?
+        } else {
+            ast
+        };
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        let ast = if matches!(ext, "bx" | "bxs" | "cfc") && matches!(orig_target, None | Some("native")) {
+            app_descriptor::wrap_with_application(ast, source_path)?
+        } else {
+            ast
+        };
         if orig_target == Some("esp32") {
             validate_esp32_target(&ast, esp32_web)?;
         }
+        // Mappings (boxlang.json, Application.bx) apply to every class path resolved while compiling.
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        matchbox_compiler::mappings::set_mappings(app_descriptor::collect(source_path)?);
         // Discover modules from matchbox.toml (in CWD) and any --module flags.
         let cwd = std::env::current_dir()
             .unwrap_or_else(|_| source_path.parent().unwrap_or(Path::new(".")).to_path_buf());
@@ -1827,8 +1876,10 @@ fn process_file_with_args(
 
         // Module BIFs and settings are installed at runtime, never baked by executing hooks.
         let extra_preludes: Vec<String> = Vec::new();
+        let absolute_source = std::path::absolute(source_path).unwrap_or_else(|_| source_path.to_path_buf());
         let mut chunk = matchbox_compiler::compile_with_treeshaking(
-            source_path.to_str().unwrap_or("unknown"),
+            // absolute, so a binary built from a relative path knows its template wherever it runs
+            absolute_source.to_str().unwrap_or("unknown"),
             &ast,
             &source,
             keep_symbols,
@@ -2229,6 +2280,24 @@ fn produce_native_binary(
     Ok(())
 }
 
+/// `matchbox_vm` features for a Native Fusion build: the built-ins this MatchBox was built with, chosen the
+/// same way `build.rs` chooses them for the matching runner stub. Without them a fusion program has no
+/// `bif-io`, `bif-cli` (`CLIGetArgs`), `bif-crypto` or `bif-http`.
+fn fusion_vm_features(target: &str) -> Vec<&'static str> {
+    let list = |features: &'static str| features.split(',').filter(|f| !f.is_empty()).collect::<Vec<_>>();
+    match target {
+        // The ESP32 build has its own dependency set and takes none of the desktop built-ins.
+        "esp32" => Vec::new(),
+        "js" => {
+            let mut features = vec!["js"];
+            features.extend(list(env!("MATCHBOX_FUSION_WASM_FEATURES")));
+            features
+        }
+        "wasm" | "wasi" => list(env!("MATCHBOX_FUSION_WASM_FEATURES")),
+        _ => list(env!("MATCHBOX_FUSION_NATIVE_FEATURES")),
+    }
+}
+
 fn produce_fusion_artifact(
     chunk: &Chunk,
     source_path: &Path,
@@ -2292,8 +2361,24 @@ fn produce_fusion_artifact(
     let is_wasm = target == "wasm" || target == "js";
     let is_wasi = target == "wasi";
 
-    // 1. Generate Cargo.toml
-    let vm_path = concat!(env!("CARGO_MANIFEST_DIR"), "/crates/matchbox-vm").replace('\\', "/");
+    // 1. Generate Cargo.toml. The SDK crates come from the binary itself, not from the source tree this
+    // MatchBox was built in, so a prebuilt (mvm-installed) MatchBox can build Native Fusion programs.
+    // A native module may already name `matchbox_vm` by path (a source checkout). Cargo cannot link two
+    // sources of the same crate, so the runner then uses the module's copy; otherwise it uses the SDK
+    // embedded in this binary, and a `[patch]` keeps modules that name a published version on it.
+    let sdk_dir = build_dir.join("sdk");
+    let module_vm = fusion_module_vm_path(&modules)?;
+    let vm_path = match &module_vm {
+        Some(path) => path.to_string_lossy().replace('\\', "/"),
+        None => {
+            fusion_sdk::write_to(&sdk_dir)?;
+            sdk_dir
+                .join("crates")
+                .join("matchbox-vm")
+                .to_string_lossy()
+                .replace('\\', "/")
+        }
+    };
 
     let mut extra_dep_lines = String::new();
     for module in modules.iter().filter(|m| m.has_native) {
@@ -2309,14 +2394,15 @@ fn produce_fusion_artifact(
         ));
     }
 
-    let vm_dependency = if target == "js" {
-        format!(
-            "matchbox_vm = {{ path = \"{}\", features = [\"js\"] }}",
-            vm_path
-        )
-    } else {
-        format!("matchbox_vm = {{ path = \"{}\" }}", vm_path)
-    };
+    let vm_features = fusion_vm_features(target)
+        .iter()
+        .map(|feature| format!("\"{feature}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let vm_dependency = format!(
+        "matchbox_vm = {{ path = \"{}\", features = [{}] }}",
+        vm_path, vm_features
+    );
 
     let native_dep_lines = read_native_dependencies(
         native_dir,
@@ -2353,6 +2439,22 @@ anyhow = "1.0"
 {native_dep_lines}
 "#
     );
+
+    if module_vm.is_none() && modules.iter().any(|m| m.has_native) {
+        let sdk_crates = sdk_dir.join("crates");
+        cargo_toml.push_str("\n[patch.crates-io]\n");
+        for (package, dir) in [
+            ("matchbox_vm", "matchbox-vm"),
+            ("matchbox-macros", "matchbox-macros"),
+            ("matchbox-parser", "matchbox-parser"),
+            ("matchbox-plugin-sdk", "matchbox-plugin-sdk"),
+        ] {
+            cargo_toml.push_str(&format!(
+                "{package} = {{ path = \"{}\" }}\n",
+                sdk_crates.join(dir).to_string_lossy().replace('\\', "/")
+            ));
+        }
+    }
 
     if is_esp32 {
         cargo_toml.push_str("esp-idf-svc = { version = \"0.52\", features = [\"binstart\", \"critical-section\", \"embassy-time-driver\"] }\n");
@@ -2454,10 +2556,7 @@ strip = false
     }
 
     fs::write(build_dir.join("Cargo.toml"), cargo_toml)?;
-    let workspace_lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock");
-    if workspace_lock.exists() {
-        fs::copy(workspace_lock, build_dir.join("Cargo.lock"))?;
-    }
+    fs::write(build_dir.join("Cargo.lock"), fusion_sdk::CARGO_LOCK)?;
 
     // 2. Prepare user modules
     let mut mod_decls = String::new();
@@ -2584,6 +2683,8 @@ fn run_interpreted() -> anyhow::Result<()> {{
     let mut chunk: Chunk = postcard::from_bytes(&bytecode)?;
     chunk.reconstruct_functions();
     let mut vm = VM::new_with_bifs(bifs, classes);
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+    vm.set_cli_args(std::env::args().collect());
     vm.interpret(chunk)?;
     Ok(())
 }}
@@ -2833,6 +2934,45 @@ fn inline_toml(value: &toml::Value) -> String {
 }
 
 /// Extract the `[package] name` value from a `Cargo.toml` file.
+/// The `matchbox_vm` source the native source modules of a Fusion build already depend on by path.
+/// `Ok(None)` when no module names it by path. Two modules naming different checkouts is an error: one
+/// project cannot link two copies of the VM.
+fn fusion_module_vm_path(modules: &[modules::ModuleInfo]) -> Result<Option<PathBuf>> {
+    let mut found: Option<PathBuf> = None;
+    for module in modules.iter().filter(|m| m.has_native) {
+        let cargo_toml = module.path.join("matchbox").join("Cargo.toml");
+        let Some(path) = module_vm_path(&cargo_toml)? else { continue };
+        match &found {
+            Some(existing) if existing != &path => bail!(
+                "Native modules depend on different copies of matchbox_vm: {} and {}",
+                existing.display(),
+                path.display()
+            ),
+            _ => found = Some(path),
+        }
+    }
+    Ok(found)
+}
+
+/// The directory a native module's Cargo.toml gives for `matchbox_vm` as a `path` dependency, made
+/// absolute and canonical; `None` when the crate is not a path dependency (or has no manifest).
+fn module_vm_path(cargo_toml_path: &Path) -> Result<Option<PathBuf>> {
+    let Ok(text) = fs::read_to_string(cargo_toml_path) else { return Ok(None) };
+    let manifest: toml::Value = text
+        .parse()
+        .with_context(|| format!("Invalid {}", cargo_toml_path.display()))?;
+    let dependency = manifest
+        .get("dependencies")
+        .and_then(|d| d.get("matchbox_vm").or_else(|| d.get("matchbox-vm")));
+    let Some(path) = dependency.and_then(|d| d.get("path")).and_then(|p| p.as_str()) else {
+        return Ok(None);
+    };
+    let base = cargo_toml_path.parent().unwrap_or(Path::new("."));
+    let joined = base.join(path);
+    Ok(Some(fs::canonicalize(&joined).unwrap_or(joined)))
+}
+
+/// Reads the package name from a Cargo.toml.
 fn read_crate_name(cargo_toml_path: &Path) -> Result<String> {
     let text = fs::read_to_string(cargo_toml_path)?;
     for line in text.lines() {
@@ -3643,6 +3783,32 @@ mod tests {
     }
 
     #[test]
+    fn a_module_naming_matchbox_vm_by_path_decides_the_vm_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let vm = dir.path().join("checkout/crates/matchbox-vm");
+        fs::create_dir_all(&vm).unwrap();
+        let module = dir.path().join("mod/matchbox");
+        fs::create_dir_all(&module).unwrap();
+        fs::write(
+            module.join("Cargo.toml"),
+            "[package]\nname = \"m\"\nversion = \"0.1.0\"\n\n[dependencies]\nmatchbox_vm = { path = \"../../checkout/crates/matchbox-vm\" }\n",
+        )
+        .unwrap();
+        assert_eq!(module_vm_path(&module.join("Cargo.toml")).unwrap(), Some(fs::canonicalize(&vm).unwrap()));
+    }
+
+    #[test]
+    fn a_module_naming_a_published_version_or_nothing_leaves_the_sdk_in_charge() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo_toml = dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, "[package]\nname = \"m\"\nversion = \"0.1.0\"\n\n[dependencies]\nmatchbox_vm = \"0.12\"\n").unwrap();
+        assert_eq!(module_vm_path(&cargo_toml).unwrap(), None);
+        fs::write(&cargo_toml, "[package]\nname = \"m\"\nversion = \"0.1.0\"\n").unwrap();
+        assert_eq!(module_vm_path(&cargo_toml).unwrap(), None);
+        assert_eq!(module_vm_path(&dir.path().join("missing.toml")).unwrap(), None);
+    }
+
+    #[test]
     fn native_manifest_dependencies_become_fusion_dependency_lines() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
@@ -3896,5 +4062,35 @@ mod cli_tests {
     fn no_arguments_means_repl() {
         let cli = parse(&[]).unwrap();
         assert!(cli.file.is_none() && cli.script_args.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod fusion_feature_tests {
+    use super::fusion_vm_features;
+
+    #[test]
+    fn native_fusion_gets_the_runner_built_ins() {
+        let features = fusion_vm_features("native");
+        assert_eq!(features.contains(&"bif-io"), cfg!(feature = "bif-io"), "{features:?}");
+        assert_eq!(features.contains(&"bif-cli"), cfg!(feature = "bif-cli"), "{features:?}");
+        assert_eq!(features.contains(&"bif-crypto"), cfg!(feature = "bif-crypto"), "{features:?}");
+        assert_eq!(features.contains(&"bif-http"), cfg!(feature = "bif-http"), "{features:?}");
+    }
+
+    #[test]
+    fn web_targets_never_get_desktop_only_features() {
+        for target in ["js", "wasm", "wasi"] {
+            let features = fusion_vm_features(target);
+            assert!(!features.contains(&"bif-zip"), "{target}: {features:?}");
+            assert!(!features.contains(&"jit"), "{target}: {features:?}");
+        }
+        assert!(fusion_vm_features("js").contains(&"js"));
+        assert!(!fusion_vm_features("wasm").contains(&"js"));
+    }
+
+    #[test]
+    fn esp32_takes_no_desktop_built_ins() {
+        assert!(fusion_vm_features("esp32").is_empty());
     }
 }

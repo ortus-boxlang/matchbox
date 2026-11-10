@@ -311,6 +311,7 @@ pub(crate) fn resolve_js_property(target: &JsValue, name: &str) -> JsValue {
 #[derive(Debug)]
 struct VariablesScopeProxy {
     variables: Rc<RefCell<HashMap<String, BxValue>>>,
+    owner: Option<GcId>,
     /// Script-level `variables`: the VM globals are the real store (a bare `x` is `variables.x`).
     script: bool,
 }
@@ -346,6 +347,9 @@ impl BxNativeObject for VariablesScopeProxy {
     }
 
     fn trace(&self, tracer: &mut dyn Tracer) {
+        if let Some(owner) = self.owner {
+            tracer.mark(&BxValue::new_ptr(owner));
+        }
         for value in self.variables.borrow().values() {
             tracer.mark(value);
         }
@@ -582,6 +586,8 @@ pub struct VM {
     native_future_tx: Sender<NativeFutureMessage>,
     native_future_rx: Receiver<NativeFutureMessage>,
     pending_native_futures: HashMap<usize, usize>,
+    #[cfg(test)]
+    composition_probe: Option<composition_tests::Probe>,
     #[cfg(feature = "debugger")]
     debug_run: Option<DebugRunState>,
     #[cfg(feature = "jit")]
@@ -788,6 +794,10 @@ impl BxVM for VM {
             GcObject::String(s) => s.len(),
             GcObject::Bytes(bytes) => bytes.len(),
             GcObject::DateTime(_) => 26,
+            GcObject::NativeObject(_) => match self.variables_scope_of(id) {
+                Some((variables, false)) => variables.borrow().len(),
+                _ => 0,
+            },
             _ => 0,
         }
     }
@@ -1315,6 +1325,9 @@ impl BxVM for VM {
     }
 
     fn struct_len(&self, id: usize) -> usize {
+        if let Some((variables, false)) = self.variables_scope_of(id) {
+            return variables.borrow().len();
+        }
         if let GcObject::Struct(s) = self.heap.get(id) {
             s.properties.len()
         } else {
@@ -1360,6 +1373,9 @@ impl BxVM for VM {
     fn struct_assign(&mut self, id: usize, key: &str, value: BxValue) -> Result<(), String> { self.assign_struct(id, key, value) }
 
     fn struct_get(&self, id: usize, key: &str) -> BxValue {
+        if let Some((variables, script)) = self.variables_scope_of(id) {
+            return self.variables_scope_get(&variables, script, key);
+        }
         let key_id = self.struct_key_lookup_id(id, key).unwrap_or(u32::MAX);
         if let GcObject::Struct(s) = self.heap.get(id) {
             if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
@@ -1401,6 +1417,9 @@ impl BxVM for VM {
     }
 
     fn struct_key_exists(&self, id: usize, key: &str) -> bool {
+        if let Some((variables, script)) = self.variables_scope_of(id) {
+            return !self.variables_scope_get(&variables, script, key).is_null();
+        }
         let key_id = self.struct_key_lookup_id(id, key).unwrap_or(u32::MAX);
         if let GcObject::Struct(s) = self.heap.get(id) {
             return self.shapes.get_index(s.shape_id, key_id).is_some();
@@ -1409,6 +1428,9 @@ impl BxVM for VM {
     }
 
     fn struct_key_array(&self, id: usize) -> Vec<String> {
+        if let Some((variables, false)) = self.variables_scope_of(id) {
+            return variables.borrow().keys().cloned().collect();
+        }
         if let GcObject::Struct(s) = self.heap.get(id) {
             let shape = &self.shapes.shapes[s.shape_id as usize];
             let mut keys = vec![String::new(); shape.fields.size()];
@@ -1651,6 +1673,11 @@ impl BxVM for VM {
 
     fn has_method_by_value(&self, receiver: BxValue, name: &str) -> bool {
         self.instance_has_method(receiver, name) || self.resolve_member_method(&receiver, name).is_some() || matches!(receiver.as_gc_id().and_then(|id| self.heap.get_opt(id)), Some(GcObject::NativeObject(object)) if object.borrow().has_method(name))
+    }
+
+    /// Creates the instance and runs its pseudo-constructor but never `init()` (see the trait method).
+    fn construct_class_without_init(&mut self, class: BxValue) -> Result<BxValue, String> {
+        self.construct_class_value(class, vec![]).map_err(|error| error.to_string())
     }
 
     fn resolve_class_reference(&mut self, name: &str) -> Result<BxValue, String> {
@@ -1900,7 +1927,7 @@ impl BxVM for VM {
         if let Some(ref mut buffer) = self.output_buffer {
             buffer.push_str(s);
         } else {
-            print!("{}", s);
+            crate::stdout::write_stdout(s, false);
         }
     }
 
@@ -1946,6 +1973,26 @@ impl BxVM for VM {
 }
 
 impl VM {
+    /// The store behind a `variables` scope value: a class instance's variables map, or (script = true) the script
+    /// scope, whose real store is the VM globals. `None` when the value is not a `variables` scope.
+    fn variables_scope_of(&self, id: usize) -> Option<(Rc<RefCell<HashMap<String, BxValue>>>, bool)> {
+        if let GcObject::NativeObject(object) = self.heap.get(id) {
+            let pointer = object.borrow().native_data("matchbox.variables_scope")?;
+            let proxy = unsafe { &*(pointer as *const VariablesScopeProxy) };
+            return Some((Rc::clone(&proxy.variables), proxy.script));
+        }
+        None
+    }
+
+    /// One key of a `variables` scope (null when absent), so the struct built-ins treat the scope like a struct.
+    fn variables_scope_get(&self, variables: &Rc<RefCell<HashMap<String, BxValue>>>, script: bool, key: &str) -> BxValue {
+        let key = key.to_lowercase();
+        if script {
+            return self.get_global(&key).unwrap_or_else(BxValue::new_null);
+        }
+        variables.borrow().get(&key).copied().unwrap_or_else(BxValue::new_null)
+    }
+
     /// Property read on a native object. The script-level `variables` scope is the VM globals.
     fn native_object_get(&self, object: &Rc<RefCell<dyn BxNativeObject>>, name: &str) -> BxValue {
         if object.borrow().native_data("matchbox.script_variables").is_some() {
@@ -1962,6 +2009,12 @@ impl VM {
             self.insert_global(name.to_lowercase(), value);
             return;
         }
+        let owner = object.borrow().native_data("matchbox.variables_scope")
+            .and_then(|pointer| unsafe { (*(pointer as *const VariablesScopeProxy)).owner });
+        if let Some(owner) = owner {
+            // The proxy mutates an Rc map; dirty its instance for the incremental collector.
+            let _ = self.heap.get_mut(owner);
+        }
         object.borrow_mut().set_property(name, value);
     }
 
@@ -1977,7 +2030,9 @@ impl VM {
             } else if let Some(id) = self.receiver_instance_gc_id(receiver) {
                 if name == "variables" {
                     if let GcObject::Instance(inst) = self.heap.get(id) {
-                        let proxy = VariablesScopeProxy { variables: Rc::clone(&inst.variables), script: false };
+                        let proxy = VariablesScopeProxy {
+                            variables: Rc::clone(&inst.variables), script: false, owner: Some(id),
+                        };
                         found = Some(BxValue::new_ptr(self.heap.alloc(
                             GcObject::NativeObject(Rc::new(RefCell::new(proxy))),
                         )));
@@ -1991,7 +2046,9 @@ impl VM {
             }
         }
         if found.is_none() && !lambda && name == "variables" {
-            let proxy = VariablesScopeProxy { variables: Rc::clone(&self.fibers[fiber].variables), script: true };
+            let proxy = VariablesScopeProxy {
+                variables: Rc::clone(&self.fibers[fiber].variables), script: true, owner: None,
+            };
             found = Some(BxValue::new_ptr(self.heap.alloc(
                 GcObject::NativeObject(Rc::new(RefCell::new(proxy))),
             )));
@@ -2004,12 +2061,19 @@ impl VM {
 
     /// Keep the write barrier and spelling rules in one path; bindings reuse its key.
     fn struct_set_and_key(&mut self, id: usize, key: &str, val: BxValue) -> u32 {
-        let key_id = self.struct_key_id(id, key);
-        if let GcObject::Struct(s) = self.heap.get_mut(id) {
-            if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
+        Self::struct_set_and_key_in(&mut self.heap, &mut self.shapes, &mut self.interner, id, key, val)
+    }
+
+    fn struct_set_and_key_in(
+        heap: &mut Heap, shapes: &mut ShapeRegistry, interner: &mut StringInterner,
+        id: usize, key: &str, val: BxValue,
+    ) -> u32 {
+        let key_id = Self::struct_key_id_in(heap, interner, id, key);
+        if let GcObject::Struct(s) = heap.get_mut(id) {
+            if let Some(idx) = shapes.get_index(s.shape_id, key_id) {
                 s.properties[idx as usize] = val;
             } else {
-                s.shape_id = self.shapes.transition(s.shape_id, key_id);
+                s.shape_id = shapes.transition(s.shape_id, key_id);
                 s.properties.push(val);
             }
         }
@@ -2017,20 +2081,28 @@ impl VM {
     }
 
     fn struct_key_id(&mut self, id: usize, key: &str) -> u32 {
-        let case_sensitive = matches!(self.heap.get_opt(id), Some(GcObject::Struct(s)) if s.case_sensitive);
+        Self::struct_key_id_in(&self.heap, &mut self.interner, id, key)
+    }
+
+    fn struct_key_id_in(heap: &Heap, interner: &mut StringInterner, id: usize, key: &str) -> u32 {
+        let case_sensitive = matches!(heap.get_opt(id), Some(GcObject::Struct(s)) if s.case_sensitive);
         if case_sensitive {
-            self.interner.intern_case_sensitive(key)
+            interner.intern_case_sensitive(key)
         } else {
-            self.interner.intern(key)
+            interner.intern(key)
         }
     }
 
     fn struct_key_lookup_id(&self, id: usize, key: &str) -> Option<u32> {
-        let case_sensitive = matches!(self.heap.get_opt(id), Some(GcObject::Struct(s)) if s.case_sensitive);
+        Self::struct_key_lookup_id_in(&self.heap, &self.interner, id, key)
+    }
+
+    fn struct_key_lookup_id_in(heap: &Heap, interner: &StringInterner, id: usize, key: &str) -> Option<u32> {
+        let case_sensitive = matches!(heap.get_opt(id), Some(GcObject::Struct(s)) if s.case_sensitive);
         if case_sensitive {
-            self.interner.get_exact_id(key)
+            interner.get_exact_id(key)
         } else {
-            self.interner.get_id(key)
+            interner.get_id(key)
         }
     }
 
@@ -2365,10 +2437,14 @@ impl VM {
     }
 
     fn numeric_value(&self, val: BxValue) -> Option<f64> {
+        Self::numeric_value_in(&self.heap, val)
+    }
+
+    fn numeric_value_in(heap: &Heap, val: BxValue) -> Option<f64> {
         if val.is_number() {
             Some(val.as_number())
         } else if let Some(id) = val.as_gc_id() {
-            match self.heap.get(id) {
+            match heap.get(id) {
                 GcObject::String(s) => s.to_string().trim().parse::<f64>().ok(),
                 _ => None,
             }
@@ -2590,6 +2666,8 @@ impl VM {
             native_future_tx,
             native_future_rx,
             pending_native_futures: HashMap::new(),
+            #[cfg(test)]
+            composition_probe: None,
             #[cfg(feature = "debugger")]
             debug_run: None,
             #[cfg(feature = "jit")]
@@ -3387,19 +3465,13 @@ impl VM {
     }
 
     pub fn interpret(&mut self, chunk: Chunk) -> Result<BxValue> {
-        // Script programs may be reused by independent VMs. Only functions
-        // already promoted into this VM share their invocation caches.
-        let mut chunk = chunk.clone_without_runtime_caches();
-        chunk.ensure_caches();
-        let chunk_for_func = chunk.clone();
-        let chunk_rc = Rc::new(RefCell::new(chunk));
-        self.interpret_chunk_shared(chunk_for_func, chunk_rc)
+        self.interpret_chunk_borrowed(&chunk)
     }
 
     pub fn interpret_chunk_borrowed(&mut self, chunk: &Chunk) -> Result<BxValue> {
-        // Borrowed execution path used by host tests. It still creates a
-        // fresh Chunk wrapper so the caller's runtime caches are not mutated,
-        // but the immutable program data is shared via Arc.
+        // Script entries own their execution caches, separate from pseudo-root
+        // metadata and the reusable source program. Promoted user functions
+        // retain their shared invocation caches.
         let mut route_chunk = chunk.fresh_route_chunk();
         route_chunk.ensure_caches();
         let chunk_rc = Rc::new(RefCell::new(route_chunk));
@@ -4242,6 +4314,10 @@ impl VM {
         fiber_idx: usize,
         timeslice_end: Option<Instant>,
     ) -> Result<Option<BxValue>> {
+        // Host-driven synchronous callbacks must honor sleep just like the main scheduler.
+        if let Some(until) = self.fibers[fiber_idx].wait_until.take() {
+            wait_until_instant(until);
+        }
         let future_id = self.fibers[fiber_idx].future_id;
         self.fibers[fiber_idx].running = true;
         let result = self.run_fiber_inner(fiber_idx, timeslice_end);
@@ -4279,17 +4355,15 @@ impl VM {
         let mut stack_base: usize = 0;
         let mut code_ptr: *const u32 = std::ptr::null();
         let mut code_len: usize = 0;
-        let mut promoted_ptr: *mut Vec<Option<BxValue>> = std::ptr::null_mut();
-        // Pointer to the base of the current frame's locals on the value stack.
-        // Refreshed before every dispatch because any preceding opcode may have
-        // reallocated the stack Vec.
-        #[cfg(feature = "jit")]
-        let mut locals_ptr: *mut BxValue;
         // Counter used to throttle Instant::now() at safe points.
         // We only call the (expensive) system clock every 1024 backward branches
         // to avoid the ~20–50ns syscall cost on every loop iteration.
         // Skipped entirely (Option::None fast path) when only one fiber is running.
         let mut safe_point_count: u32 = 0;
+        #[cfg(test)]
+        if let Some(probe) = &self.composition_probe {
+            safe_point_count = probe.initial_counter;
+        }
         let trace = std::env::var("BX_TRACE").is_ok();
 
         // JIT profiling state — tracked per run_fiber call to avoid per-iteration
@@ -4314,15 +4388,20 @@ impl VM {
         let mut jit_iter_active: Option<(usize, jit::ArrayIterJitFn)> = None;
 
         'quantum: loop {
-            self.drain_native_completions();
+            if !self.pending_native_futures.is_empty() || !self.native_completions.is_empty() {
+                self.drain_native_completions();
+            }
             if fiber_idx >= self.fibers.len() {
                 return Ok(None);
             }
-            if self.fibers[fiber_idx].frames.is_empty() {
+            // A checked view for this dispatch only. It stays rooted in VM::fibers
+            // and ends before whole-VM callbacks, cold reloads or the next drain.
+            let mut fiber = &mut self.fibers[fiber_idx];
+            if fiber.frames.is_empty() {
                 return Ok(Some(BxValue::new_null()));
             }
-            if self.fibers[fiber_idx].yield_requested {
-                self.fibers[fiber_idx].yield_requested = false;
+            if fiber.yield_requested {
+                fiber.yield_requested = false;
                 return Ok(None);
             }
 
@@ -4330,6 +4409,7 @@ impl VM {
             // In tight loops `frame_changed` stays false — this block never runs.
             if frame_changed {
                 frame_changed = false;
+                self.prepare_unbound_frame(fiber_idx);
                 ip = self.fibers[fiber_idx].frames.last().unwrap().ip;
                 stack_base = self.fibers[fiber_idx].frames.last().unwrap().stack_base;
                 if ip == 0 {
@@ -4342,26 +4422,14 @@ impl VM {
                     code_ptr = chunk.code().as_ptr();
                     code_len = chunk.code().len();
                 }
-                promoted_ptr = &mut self.fibers[fiber_idx]
-                    .frames
-                    .last_mut()
-                    .unwrap()
-                    .promoted_constants as *mut _;
-                // Reserve headroom to avoid reallocating the stack for ordinary
-                // expression temporaries. locals_ptr is still refreshed below.
+                // Reserve headroom for ordinary expression temporaries, never as
+                // a lifetime guarantee. JIT stack pointers are derived at invocation.
                 self.fibers[fiber_idx].stack.reserve(256);
+                fiber = &mut self.fibers[fiber_idx];
             }
 
             if ip >= code_len {
                 return Ok(Some(BxValue::new_null()));
-            }
-
-            // Any preceding opcode may grow and reallocate the value stack. Refresh
-            // the frame-local base before every dispatch rather than relying on fixed
-            // reserve headroom to keep a raw Vec pointer valid.
-            #[cfg(feature = "jit")]
-            unsafe {
-                locals_ptr = self.fibers[fiber_idx].stack.as_mut_ptr().add(stack_base);
             }
 
             // Periodic GC check: on ESP32 (and elsewhere), long-running fibers in tight
@@ -4371,7 +4439,7 @@ impl VM {
             // to avoid checking every single iteration.
             safe_point_count = safe_point_count.wrapping_add(1);
             if !self.gc_suspended && (safe_point_count & 1023 == 0 || self.heap.should_collect_promptly()) && self.heap.should_collect() {
-                self.fibers[fiber_idx].frames.last_mut().unwrap().ip = ip;
+                fiber.frames.last_mut().unwrap().ip = ip;
                 return Ok(None);
             }
 
@@ -4408,6 +4476,11 @@ impl VM {
                 }
             }
 
+            // Debug inspection borrows the whole VM; never carry the active view
+            // across it. The non-debugger build has no extra acquisition here.
+            #[cfg(feature = "debugger")]
+            let fiber = &mut self.fibers[fiber_idx];
+
             // SAFETY: ip < code_len; pointer is valid for the Rc<Chunk> lifetime.
             let word0 = unsafe { *code_ptr.add(ip) };
             let ip_at_start = ip;
@@ -4422,7 +4495,7 @@ impl VM {
             let op0 = word0 >> 8;
 
             if trace {
-                let stack = &self.fibers[fiber_idx].stack;
+                let stack = &fiber.stack;
                 let stack_display: Vec<String> = stack
                     .iter()
                     .map(|v| {
@@ -4492,11 +4565,11 @@ impl VM {
                 // --- Hot Loop / Specialized Opcodes ---
                 op::INC_LOCAL => {
                     let slot = op0;
-                    let val = self.local_value(fiber_idx, slot as usize);
+                    let val = fiber.local_value(slot as usize, &self.heap, &self.shapes, &self.interner);
                     if val.is_number() {
-                        self.set_local_value(fiber_idx, slot as usize, BxValue::new_number(val.as_number() + 1.0));
+                        fiber.set_local_value(slot as usize, BxValue::new_number(val.as_number() + 1.0), &mut self.heap, &mut self.shapes, &mut self.interner);
                     } else if val.is_int() {
-                        self.set_local_value(fiber_idx, slot as usize, BxValue::new_int(val.as_int() + 1));
+                        fiber.set_local_value(slot as usize, BxValue::new_int(val.as_int() + 1), &mut self.heap, &mut self.shapes, &mut self.interner);
                     } else {
                         flush_ip!();
                         self.throw_error(fiber_idx, "Increment operand must be a number")?;
@@ -4508,10 +4581,10 @@ impl VM {
                     let slot = op0;
                     let const_idx = next_word!();
                     let offset = next_word!();
-                    let val = self.local_value(fiber_idx, slot as usize);
+                    let val = fiber.local_value(slot as usize, &self.heap, &self.shapes, &self.interner);
                     let limit: BxValue = {
-                        let already =
-                            unsafe { (&*promoted_ptr).get(const_idx as usize).copied().flatten() };
+                        let already = fiber.frames.last().unwrap().promoted_constants
+                            .get(const_idx as usize).copied().flatten();
                         if let Some(v) = already {
                             v
                         } else {
@@ -4546,7 +4619,7 @@ impl VM {
                     let slot = op0;
                     let const_idx = next_word!();
                     let offset = next_word!();
-                    let val = self.local_value(fiber_idx, slot as usize);
+                    let val = fiber.local_value(slot as usize, &self.heap, &self.shapes, &self.interner);
                     let next_val = if val.is_int() {
                         BxValue::new_int(val.as_int() + 1)
                     } else if val.is_number() {
@@ -4554,13 +4627,12 @@ impl VM {
                     } else {
                         vm_throw!("For loop variable must be a number");
                     };
-                    self.set_local_value(fiber_idx, slot as usize, next_val);
-                    // Hot-path: read the loop-limit constant without a RefCell borrow.
-                    // SAFETY: single-threaded VM; the code_ptr borrow has already dropped;
-                    // no concurrent mutable access to promoted_constants is possible here.
+                    fiber.set_local_value(slot as usize, next_val, &mut self.heap, &mut self.shapes, &mut self.interner);
+                    // The current checked frame owns this cache. Do not keep a raw
+                    // promoted-vector pointer across mutable fiber reborrows/reloads.
                     let limit: BxValue = {
-                        let already =
-                            unsafe { (&*promoted_ptr).get(const_idx as usize).copied().flatten() };
+                        let already = fiber.frames.last().unwrap().promoted_constants
+                            .get(const_idx as usize).copied().flatten();
                         if let Some(v) = already {
                             v
                         } else {
@@ -4652,7 +4724,8 @@ impl VM {
                                             self.sync_jit_locals(fiber_idx, false);
                                             let deopt = unsafe {
                                                 compiled(
-                                                    locals_ptr as *mut u64,
+                                                    // Derive after sync: it may grow/reborrow the stack.
+                                                    self.fibers[fiber_idx].stack.as_mut_ptr().add(stack_base) as *mut u64,
                                                     &self.heap as *const _
                                                         as *const std::ffi::c_void,
                                                 )
@@ -4893,16 +4966,102 @@ impl VM {
 
                 // --- Basic Hot Opcodes ---
                 op::GET_LOCAL => {
-                    let val = self.local_value(fiber_idx, op0 as usize);
-                    self.fibers[fiber_idx].stack.push(val);
+                    let val = fiber.local_value(op0 as usize, &self.heap, &self.shapes, &self.interner);
+                    #[cfg(feature = "debugger")]
+                    let debug_inactive = self.debug_run.is_none();
+                    #[cfg(not(feature = "debugger"))]
+                    let debug_inactive = true;
+
+                    // Compose only a mutation-free interval. With both VM-owned
+                    // queues empty, the next two headers would not drain the
+                    // channel even if a sender arrives. Collection cannot become
+                    // due without a heap mutation. Keep interrupt observations;
+                    // tracing/debug stepping and every uncertified case use the
+                    // original instruction stream and rooted stack states.
+                    if val.is_float() && !trace && debug_inactive
+                        && self.pending_native_futures.is_empty()
+                        && self.native_completions.is_empty()
+                        && !self.heap.should_collect()
+                    {
+                        let literal = {
+                            let frame = fiber.frames.last().unwrap();
+                            if let Ok(chunk) = frame.chunk.try_borrow() {
+                                let code = chunk.code();
+                                if code.as_ptr() == code_ptr && code.len() == code_len
+                                    && let Some(words) = code.get(ip..).and_then(|tail| tail.get(..2))
+                                    && words[0] & 0xff == op::CONSTANT as u32
+                                    && words[1] == op::ADD as u32
+                                {
+                                    let index = (words[0] >> 8) as usize;
+                                    // A populated slot alone is not a capture
+                                    // certificate. Inspect the current constant;
+                                    // a changed/capturing slot must still go
+                                    // through read_constant's authority.
+                                    if matches!(chunk.constants().get(index), Some(Constant::Number(_))) {
+                                        frame.promoted_constants.get(index).copied().flatten()
+                                            .filter(|value| value.is_float())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                // Do not introduce an earlier borrow/index error.
+                                None
+                            }
+                        };
+                        if let Some(literal) = literal {
+                            let interrupted = INTERRUPT_REQUESTED.load(Ordering::Relaxed);
+                            #[cfg(test)]
+                            let interrupted = interrupted || self.composition_probe.as_mut()
+                                .is_some_and(|probe| probe.interrupt(1));
+                            if interrupted {
+                                fiber.stack.push(val);
+                                safe_point_count = safe_point_count.wrapping_add(1);
+                                ip += 1; // original CONSTANT has been fetched
+                                #[cfg(test)]
+                                if let Some(probe) = &mut self.composition_probe {
+                                    probe.record(1, ip, safe_point_count, &fiber.stack);
+                                }
+                                vm_throw!("Force Quit (Ctrl+C)");
+                            }
+                            let interrupted = INTERRUPT_REQUESTED.load(Ordering::Relaxed);
+                            #[cfg(test)]
+                            let interrupted = interrupted || self.composition_probe.as_mut()
+                                .is_some_and(|probe| probe.interrupt(2));
+                            if interrupted {
+                                fiber.stack.push(val);
+                                fiber.stack.push(literal);
+                                safe_point_count = safe_point_count.wrapping_add(2);
+                                ip += 2; // original ADD has been fetched
+                                #[cfg(test)]
+                                if let Some(probe) = &mut self.composition_probe {
+                                    probe.record(2, ip, safe_point_count, &fiber.stack);
+                                }
+                                vm_throw!("Force Quit (Ctrl+C)");
+                            }
+                            // These logical ticks preserve GC/backedge phase;
+                            // they do not substitute for an unproved observer.
+                            safe_point_count = safe_point_count.wrapping_add(2);
+                            ip += 2;
+                            fiber.stack.push(BxValue::new_number(val.as_number() + literal.as_number()));
+                            #[cfg(test)]
+                            if let Some(probe) = &mut self.composition_probe {
+                                probe.record(0, ip, safe_point_count, &fiber.stack);
+                            }
+                            continue 'quantum;
+                        }
+                    }
+                    fiber.stack.push(val);
                 }
                 op::SET_LOCAL => {
-                    let val = *self.fibers[fiber_idx].stack.last().unwrap();
-                    self.set_local_value(fiber_idx, op0 as usize, val);
+                    let val = *fiber.stack.last().unwrap();
+                    fiber.set_local_value(op0 as usize, val, &mut self.heap, &mut self.shapes, &mut self.interner);
                 }
                 op::SET_LOCAL_POP => {
-                    let val = self.fibers[fiber_idx].stack.pop().unwrap();
-                    self.set_local_value(fiber_idx, op0 as usize, val);
+                    let val = fiber.stack.pop().unwrap();
+                    fiber.set_local_value(op0 as usize, val, &mut self.heap, &mut self.shapes, &mut self.interner);
                 }
                 op::FUNCTION_ENTER => {
                     self.enter_frame_scopes(fiber_idx);
@@ -4951,39 +5110,33 @@ impl VM {
                         .push(BxValue::new_number(a.as_number() + b.as_number()));
                 }
                 op::ADD => {
-                    let b = self.fibers[fiber_idx].stack.pop().unwrap();
-                    let a = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let b = fiber.stack.pop().unwrap();
+                    let a = fiber.stack.pop().unwrap();
 
-                    let array_union = match (a.as_gc_id(), b.as_gc_id()) {
-                        (Some(a_id), Some(b_id)) => {
-                            let (left, right) = match (self.heap.get(a_id), self.heap.get(b_id)) {
-                                (GcObject::Array(left), GcObject::Array(right)) => {
-                                    (Some(left.clone()), Some(right.clone()))
-                                }
-                                _ => (None, None),
-                            };
-                            left.zip(right).map(|(left, right)| {
-                                let mut values = left;
-                                for value in right {
-                                    if !values.iter().any(|existing| self.is_equal(*existing, value)) {
-                                        values.push(value);
-                                    }
-                                }
-                                values
-                            })
-                        }
+                    let arrays = match (a.as_gc_id(), b.as_gc_id()) {
+                        (Some(a_id), Some(b_id)) => match (self.heap.get(a_id), self.heap.get(b_id)) {
+                            (GcObject::Array(left), GcObject::Array(right)) => {
+                                Some((left.clone(), right.clone()))
+                            }
+                            _ => None,
+                        },
                         _ => None,
                     };
 
-                    if let Some(values) = array_union {
+                    if let Some((mut values, right)) = arrays {
+                        // Release the active view before whole-VM equality/coercion,
+                        // then reacquire only on this cold, nonnumeric path.
+                        for value in right {
+                            if !values.iter().any(|existing| self.is_equal(*existing, value)) {
+                                values.push(value);
+                            }
+                        }
                         let id = self.heap.alloc(GcObject::Array(values));
                         self.fibers[fiber_idx].stack.push(BxValue::new_ptr(id));
                     } else if let (Some(na), Some(nb)) =
-                        (self.numeric_value(a), self.numeric_value(b))
+                        (Self::numeric_value_in(&self.heap, a), Self::numeric_value_in(&self.heap, b))
                     {
-                        self.fibers[fiber_idx]
-                            .stack
-                            .push(BxValue::new_number(na + nb));
+                        fiber.stack.push(BxValue::new_number(na + nb));
                     } else {
                         let a_s = self.to_box_string(a);
                         let b_s = self.to_box_string(b);
@@ -5500,7 +5653,7 @@ impl VM {
                 op::GET_GLOBAL => {
                     let idx = op0;
                     let ic = {
-                        let frame = self.fibers[fiber_idx].frames.last().unwrap();
+                        let frame = fiber.frames.last().unwrap();
                         let chunk = frame.chunk.borrow();
                         chunk.cache_get(ip_at_start)
                     };
@@ -5509,7 +5662,7 @@ impl VM {
                         && namespace == self.global_namespace
                     {
                         let val = self.global_values[index];
-                        self.fibers[fiber_idx].stack.push(val);
+                        fiber.stack.push(val);
                     } else {
                         let name_id = self.read_intern_id(fiber_idx, idx as usize)?;
                         if let Some(&global_idx) = self.global_names.get(&name_id) {
@@ -5559,12 +5712,12 @@ impl VM {
                 op::SET_GLOBAL_POP => {
                     let idx = op0;
                     let ic = {
-                        let frame = self.fibers[fiber_idx].frames.last().unwrap();
+                        let frame = fiber.frames.last().unwrap();
                         let chunk = frame.chunk.borrow();
                         chunk.cache_get(ip_at_start)
                     };
 
-                    let val = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let val = fiber.stack.pop().unwrap();
 
                     if let Some(IcEntry::Global { index, namespace }) = ic
                         && namespace == self.global_namespace
@@ -5902,23 +6055,39 @@ impl VM {
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let index_val = self.fibers[fiber_idx].stack.pop().unwrap();
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
-                    let base_val = match self.class_reference_assignment_target(base_val, &self.to_string(index_val)) {
-                        Ok(value) => value,
-                        Err(error) => vm_throw!("{}", error),
+                    // Only unobserved numeric stores into actual arrays can omit property
+                    // conversion. A host may retag a watched Struct as an Array, so the
+                    // current object type alone does not establish the absence of a hook.
+                    let direct_array = index_val.is_number()
+                        && base_val.as_gc_id().is_some_and(|id| {
+                            matches!(self.heap.get_opt(id), Some(GcObject::Array(_)))
+                                && !self.struct_assignment_hooks.contains_key(&id)
+                        });
+                    let base_val = if direct_array {
+                        base_val
+                    } else {
+                        match self.class_reference_assignment_target(base_val, &self.to_string(index_val)) {
+                            Ok(value) => value,
+                            Err(error) => vm_throw!("{}", error),
+                        }
                     };
 
                     if let Some(id) = base_val.as_gc_id() {
-                        let index_string = self.to_string(index_val);
-                        if self.struct_assignment_hooks.contains_key(&id) {
+                        // Keep one authoritative array mutation arm below. Other receivers
+                        // retain conversion before observer lookup, including reentrant keys.
+                        let index_string = (!direct_array).then(|| self.to_string(index_val));
+                        if let Some(index_string) = index_string.as_deref()
+                            && self.struct_assignment_hooks.contains_key(&id)
+                        {
                             flush_ip!();
-                            match self.assign_struct(id, &index_string, val) {
+                            match self.assign_struct(id, index_string, val) {
                                 Ok(()) => self.fibers[fiber_idx].stack.push(val),
                                 Err(error) => self.throw_error(fiber_idx, &error)?,
                             }
                             frame_changed = true; continue 'quantum;
                         }
                         let key_id = if !index_val.is_number() && !index_val.is_int() {
-                            Some(self.struct_key_id(id, &index_string))
+                            Some(self.struct_key_id(id, index_string.as_deref().expect("Indexed property requires a name")))
                         } else {
                             None
                         };
@@ -6012,7 +6181,7 @@ impl VM {
                                     frame_changed = true; continue 'quantum;
                                 }
                                 let object = object.clone();
-                                self.native_object_set(&object, &index_string, val);
+                                self.native_object_set(&object, index_string.as_deref().expect("Indexed property requires a name"), val);
                                 self.fibers[fiber_idx].stack.push(val);
                             }
                             _ => {
@@ -7247,7 +7416,8 @@ impl VM {
                                                     self.sync_jit_locals(fiber_idx, false);
                                                     let deopt = unsafe {
                                                         compiled(
-                                                            locals_ptr as *mut u64,
+                                                            // Never reuse a pointer from before sync/reentry.
+                                                            self.fibers[fiber_idx].stack.as_mut_ptr().add(stack_base) as *mut u64,
                                                             arr_ptr,
                                                             arr_len,
                                                         )
@@ -7406,7 +7576,7 @@ impl VM {
                     if let Some(ref mut buffer) = self.output_buffer {
                         buffer.push_str(&out);
                     } else {
-                        print!("{}", out);
+                        crate::stdout::write_stdout(&out, false);
                     }
                 }
                 op::PRINTLN => {
@@ -7436,7 +7606,7 @@ impl VM {
                             buffer.push_str(&out);
                             buffer.push('\n');
                         } else {
-                            println!("{}", out);
+                            crate::stdout::write_stdout(&out, true);
                         }
                     }
                 }
@@ -7446,7 +7616,7 @@ impl VM {
                     if let Some(ref mut buffer) = self.output_buffer {
                         buffer.push_str(&s);
                     } else {
-                        print!("{s}");
+                        crate::stdout::write_stdout(&s, false);
                     }
                 }
                 op::CONTAINS => {
@@ -8578,19 +8748,22 @@ impl VM {
             match self.heap.get(id) {
                 GcObject::CompiledFunction(func) => {
                     let func = Rc::clone(func);
-                    let mut args = Vec::with_capacity(arg_count);
-                    for _ in 0..arg_count {
-                        args.push(self.fibers[fiber_idx].stack.pop().unwrap());
-                    }
-                    args.reverse();
-                    // Don't pop function yet, it's used as marker
-
-                    let final_args = self.function_arguments(args, names.as_deref(), &func);
-                    // Stack: ... [func] [arg1] [arg2] ...
-                    // Function is already at len() - 1 - arg_count.
-                    // We popped args, now we push final_args back.
-                    for arg in final_args {
-                        self.fibers[fiber_idx].stack.push(arg);
+                    if names.is_none()
+                        && func.bif.is_none()
+                        && func.arity as usize == func.params.len() + 1
+                    {
+                        self.stack_function_arguments(fiber_idx, func_index + 1, &func);
+                    } else {
+                        let mut args = Vec::with_capacity(arg_count);
+                        for _ in 0..arg_count {
+                            args.push(self.fibers[fiber_idx].stack.pop().unwrap());
+                        }
+                        args.reverse();
+                        // Keep the function as the stack marker while binding arguments.
+                        let final_args = self.function_arguments(args, names.as_deref(), &func);
+                        for arg in final_args {
+                            self.fibers[fiber_idx].stack.push(arg);
+                        }
                     }
 
                     let sub_chunk = func.chunk.execution_chunk();
@@ -10013,6 +10186,9 @@ pub fn _matchbox_set_instance_prop(vm_ptr: usize, gc_id: u32, name: &str, val: J
     wasm_instance_prop_set(vm, base_val, name, bx_val)
         .map_err(|error| js_error_value(&error.to_string()))
 }
+
+#[cfg(test)]
+mod composition_tests;
 
 #[cfg(test)]
 mod tests {

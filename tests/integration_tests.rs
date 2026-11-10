@@ -93,6 +93,7 @@ script_test!(string_interpolation, "string_interpolation.bxs");
 script_test!(structs, "structs.bxs");
 script_test!(top_level_return, "top_level_return.bxs");
 script_test!(vm_basic, "vm_basic.bxs");
+script_test!(vm_expression_composition, "vm_expression_composition.bxs");
 script_test!(vm_classes, "vm_classes.bxs");
 script_test!(vm_datetime_format, "vm_datetime_format.bxs");
 script_test!(vm_member_increment, "vm_member_increment.bxs");
@@ -177,6 +178,41 @@ fn vm_locals_survive_stack_reallocation() {
     )
     .expect("locals should remain valid after stack growth");
 }
+#[test]
+fn vm_active_context_survives_nested_yields_and_owner_growth() {
+    let mut source = String::from("function grow(depth, seed) {\n");
+    // Grow the value stack in every recursive frame, not just one giant frame.
+    for index in 0..320 {
+        source.push_str(&format!("var padding{index} = {index};\n"));
+    }
+    source.push_str(r#"
+        var result = 0;
+        if (depth > 0) {
+            result = grow(depth - 1, seed) + 1;
+        } else {
+            var pending = [];
+            for (var task = 0; task < 64; task++) {
+                pending.append(runAsync(() => 7));
+            }
+            var nested = [1, 2].map(a => [10, 20].map(b => runAsync(() => a + b).get()).toList());
+            assert nested.toList("|") == "11,21|12,22";
+            assert pending.map(f => f.get()).toList() == arrayToList(arrayMap(pending, f => 7));
+            result = seed + pending.len();
+        }
+        assert padding0 == 0 && padding255 == 255 && padding319 == 319;
+        return result;
+    }
+    assert grow(24, 3) == 91;
+    "#);
+    let directory = tempfile::tempdir().expect("create active-context source directory");
+    let path = directory.path().join("active_context_relocation.bxs");
+    fs::write(&path, source).expect("write active-context relocation script");
+    process_file(
+        &path, false, None, Vec::new(), false, false, false, None, &[],
+        false, None, false, false, false,
+    ).expect("frame/stack locals must survive nested callbacks and yielding producer fibers");
+}
+
 script_test!(vm_if, "vm_if.bxs");
 script_test!(vm_loop, "vm_loop.bxs");
 script_test!(vm_struct_assign, "vm_struct_assign.bxs");
@@ -241,6 +277,7 @@ script_test!(vm_private_methods, "vm_private_methods.bxs");
 script_test!(vm_class_accessors, "vm_class_accessors.bxs");
 script_test!(vm_class_annotation_names, "vm_class_annotation_names.bxs");
 script_test!(vm_variables_request_scope, "vm_variables_request_scope.bxs");
+script_test!(vm_struct_variables_scope, "vm_struct_variables_scope.bxs");
 script_test!(vm_destructure_rest, "vm_destructure_rest.bxs");
 script_test!(vm_array_slice, "vm_array_slice.bxs");
 script_test!(vm_required_arguments, "vm_required_arguments.bxs");
@@ -282,6 +319,7 @@ script_test!(vm_qoq_query_execute, "vm_qoq_query_execute.bxs");
 #[cfg(feature = "qoq")]
 script_test!(vm_qoq_join, "vm_qoq_join.bxs");
 script_test!(vm_encode_for_html, "vm_encode_for_html.bxs");
+script_test!(vm_break_nested_forin, "vm_break_nested_forin.bxs");
 
 #[test]
 #[cfg(feature = "bif-tui")]
@@ -743,6 +781,64 @@ fn test_multi_file() {
         false,
     )
     .unwrap();
+}
+
+#[test]
+fn test_cross_file_inheritance_from_entry_directory() {
+    // The working directory during `cargo test` is the crate root, which has no `models/`
+    // folder: the classes must be found next to the entry script.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("class_project")
+        .join("main.bxs");
+
+    process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_inheritance_cycle_across_files_is_an_error_not_a_crash() {
+    let dir = std::env::temp_dir().join(format!("matchbox-cycle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("models")).unwrap();
+    std::fs::write(dir.join("models/A.bx"), "import models.B;\nclass A extends=\"B\" { }").unwrap();
+    std::fs::write(dir.join("models/B.bx"), "import models.A;\nclass B extends=\"A\" { }").unwrap();
+    std::fs::write(dir.join("main.bxs"), "import models.A;\nx = new models.A();\n").unwrap();
+
+    let result = process_file(
+        &dir.join("main.bxs"),
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    );
+    let error = result.expect_err("a cycle must be rejected").to_string();
+    assert!(error.contains("Circular inheritance"), "{error}");
 }
 
 #[test]

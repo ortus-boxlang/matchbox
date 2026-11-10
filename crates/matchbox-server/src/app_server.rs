@@ -1,23 +1,21 @@
-use crate::websocket::{
-    WebSocketConfig, WebSocketRuntimeHandle, websocket_handler, websocket_runtime_main,
-};
-use crate::{RequestData, bx_to_json, json_to_bx, request_data_from_parts};
+use crate::websocket::{websocket_handler, WebSocketConfig, WebSocketRuntimeHandle};
+use crate::{bx_to_json, json_to_bx, request_data_from_parts, RequestData};
 use axum::{
-    Router,
-    body::{Body, to_bytes},
+    body::{to_bytes, Body},
     extract::State,
-    http::{Request, Response, StatusCode, header},
+    http::{header, Request, Response, StatusCode},
     response::IntoResponse,
     routing::{any, get},
+    Router,
 };
 use hmac::{Hmac, Mac};
 use matchbox_compiler::{compiler::Compiler, parser};
 use matchbox_vm::{
     types::{BxNativeObject, BxVM, BxValue},
-    vm::{VM, chunk::Chunk},
+    vm::{chunk::Chunk, VM},
 };
 use serde_json::Value as JsonValue;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -33,7 +31,19 @@ use tokio::fs;
 use url::form_urlencoded;
 use uuid::Uuid;
 
+mod runtime;
+mod strict_json;
+#[cfg(not(target_family = "wasm"))]
+mod workers;
+#[cfg(target_family = "wasm")]
+mod workers {
+    #[derive(Debug)]
+    pub(super) struct Worker;
+}
+
 const SESSION_COOKIE_NAME: &str = "MBX_SESSION_ID";
+const MAX_REQUEST_BODY: usize = 16 * 1024;
+const MAX_CONFIGURED_REQUEST_BODY: usize = 16 * 1024 * 1024;
 const DEFAULT_WEBHOOK_REPLAY_TTL_SECONDS: i64 = 3600;
 
 #[derive(Clone)]
@@ -43,6 +53,7 @@ pub struct CompiledScriptApp {
     web_imported: bool,
     session_store: Arc<Mutex<HashMap<String, JsonValue>>>,
     webhook_replay_store: Arc<Mutex<HashMap<String, i64>>>,
+    runtime: Option<Arc<runtime::Runtime>>,
 }
 
 #[derive(Clone)]
@@ -55,6 +66,7 @@ pub struct ScriptServerState {
 pub struct ListenConfig {
     pub host: String,
     pub port: u16,
+    pub max_request_body_bytes: usize,
 }
 
 impl Default for ListenConfig {
@@ -62,6 +74,7 @@ impl Default for ListenConfig {
         Self {
             host: "127.0.0.1".to_string(),
             port: 8080,
+            max_request_body_bytes: MAX_REQUEST_BODY,
         }
     }
 }
@@ -71,6 +84,10 @@ pub struct AppDefinition {
     middleware: Vec<BxValue>,
     routes: Vec<RouteDefinition>,
     websocket: Option<WebSocketConfig>,
+    websocket_listener: Option<BxValue>,
+    job_callbacks: Vec<BxValue>,
+    timers: Vec<(std::time::Duration, BxValue)>,
+    configuring: bool,
     listen: Option<ListenConfig>,
 }
 
@@ -97,6 +114,11 @@ struct WebhookConfig {
 #[derive(Default, Debug)]
 pub struct BuildState {
     pub apps: Vec<Arc<Mutex<AppDefinition>>>,
+    home: Option<PathBuf>,
+    config: Option<PathBuf>,
+    events: std::sync::Weak<mpsc::SyncSender<runtime::Message>>,
+    workers: Vec<Arc<workers::Worker>>,
+    private_paths: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -124,6 +146,8 @@ struct WebNamespace {
 #[derive(Debug)]
 struct ServerAppObject {
     app: Arc<Mutex<AppDefinition>>,
+    build_state: Arc<Mutex<BuildState>>,
+    app_root: PathBuf,
     middleware_namespace: BxValue,
 }
 
@@ -149,12 +173,14 @@ struct WebhookBuilderObject {
 #[derive(Debug)]
 struct AppMiddlewareNamespaceObject {
     app_root: PathBuf,
+    private_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
 struct StaticFilesMiddlewareObject {
     mount: String,
     directory: PathBuf,
+    private_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -178,9 +204,36 @@ struct NextMiddlewareObject {
 }
 
 #[derive(Debug)]
-struct NotFoundHandlerObject;
+struct NotFoundHandlerObject {
+    upgrade: bool,
+}
+
+fn trace_app(app: &AppDefinition, tracer: &mut dyn matchbox_vm::types::Tracer) {
+    for value in app
+        .middleware
+        .iter()
+        .chain(app.job_callbacks.iter())
+        .chain(app.websocket_listener.iter())
+    {
+        tracer.mark(value);
+    }
+    for (_, timer) in &app.timers {
+        tracer.mark(timer);
+    }
+    for route in &app.routes {
+        tracer.mark(&route.handler);
+        for value in &route.middleware {
+            tracer.mark(value);
+        }
+    }
+}
 
 impl BxNativeObject for WebNamespace {
+    fn trace(&self, tracer: &mut dyn matchbox_vm::types::Tracer) {
+        for app in &self.build_state.lock().unwrap().apps {
+            trace_app(&app.lock().unwrap(), tracer);
+        }
+    }
     fn get_property(&self, _name: &str) -> BxValue {
         BxValue::new_null()
     }
@@ -195,20 +248,40 @@ impl BxNativeObject for WebNamespace {
         _args: &[BxValue],
     ) -> Result<BxValue, String> {
         match name.to_lowercase().as_str() {
+            "secureequals" => {
+                if _args.len() != 2 || !_args.iter().all(|value| vm.is_string_value(*value)) {
+                    return Err("secureEquals requires two strings".into());
+                }
+                let a = hmac::digest::CtOutput::<Sha256>::new(Sha256::digest(
+                    vm.to_string(_args[0]).as_bytes(),
+                ));
+                let b = hmac::digest::CtOutput::<Sha256>::new(Sha256::digest(
+                    vm.to_string(_args[1]).as_bytes(),
+                ));
+                Ok(BxValue::new_bool(a == b))
+            }
             "server" => {
                 let app = Arc::new(Mutex::new(AppDefinition {
                     middleware: Vec::new(),
                     routes: Vec::new(),
                     websocket: None,
+                    websocket_listener: None,
+                    job_callbacks: Vec::new(),
+                    timers: Vec::new(),
+                    configuring: true,
                     listen: None,
                 }));
                 self.build_state.lock().unwrap().apps.push(app.clone());
+                let private_paths = self.build_state.lock().unwrap().private_paths.clone();
                 let middleware_id =
                     vm.native_object_new(Rc::new(RefCell::new(AppMiddlewareNamespaceObject {
                         app_root: self.app_root.clone(),
+                        private_paths,
                     })));
                 let object_id = vm.native_object_new(Rc::new(RefCell::new(ServerAppObject {
                     app,
+                    build_state: self.build_state.clone(),
+                    app_root: self.app_root.clone(),
                     middleware_namespace: BxValue::new_ptr(middleware_id),
                 })));
                 Ok(BxValue::new_ptr(object_id))
@@ -219,6 +292,10 @@ impl BxNativeObject for WebNamespace {
 }
 
 impl BxNativeObject for ServerAppObject {
+    fn trace(&self, tracer: &mut dyn matchbox_vm::types::Tracer) {
+        tracer.mark(&self.middleware_namespace);
+        trace_app(&self.app.lock().unwrap(), tracer);
+    }
     fn get_property(&self, name: &str) -> BxValue {
         match name {
             "middleware" => self.middleware_namespace,
@@ -235,7 +312,79 @@ impl BxNativeObject for ServerAppObject {
         name: &str,
         args: &[BxValue],
     ) -> Result<BxValue, String> {
+        if !self.app.lock().unwrap().configuring {
+            return Err("Application configuration is startup-only".into());
+        }
         match name.to_lowercase().as_str() {
+            "every" => {
+                if args.len() != 2 || !vm.value_matches_type_name(args[1], "function") {
+                    return Err(
+                        "every(milliseconds, callback) requires an interval and function".into(),
+                    );
+                }
+                let millis = vm
+                    .to_string(args[0])
+                    .parse::<u64>()
+                    .map_err(|_| "Invalid timer interval")?;
+                if !(100..=86_400_000).contains(&millis)
+                    || self.app.lock().unwrap().timers.len() >= 8
+                {
+                    return Err("Timer interval/limit exceeded".into());
+                }
+                self.app
+                    .lock()
+                    .unwrap()
+                    .timers
+                    .push((std::time::Duration::from_millis(millis), args[1]));
+                Ok(BxValue::new_null())
+            }
+            #[cfg(not(target_family = "wasm"))]
+            "worker" => {
+                if !(1..=2).contains(&args.len()) || !vm.is_string_value(args[0]) {
+                    return Err("worker(scriptPath[, onComplete]) requires a script path".into());
+                }
+                if args.len() == 2 && !vm.value_matches_type_name(args[1], "function") {
+                    return Err("Worker completion must be a function".into());
+                }
+                let build = self.build_state.lock().unwrap();
+                if build.workers.len() >= 8 {
+                    return Err("Application worker limit reached".into());
+                }
+                if build.events.upgrade().is_none() {
+                    return Err("Workers require the native routed runtime".into());
+                }
+                let events = build.events.clone();
+                let callback = if args.len() == 2 {
+                    let mut app = self.app.lock().unwrap();
+                    let index = app.job_callbacks.len();
+                    app.job_callbacks.push(args[1]);
+                    Some(index)
+                } else {
+                    None
+                };
+                let path = self.app_root.join(vm.to_string(args[0]));
+                let worker = workers::Worker::start(
+                    path,
+                    self.app_root.clone(),
+                    build.home.clone(),
+                    build.config.clone(),
+                    Arc::new(move |result| {
+                        if let (Some(index), Some(sender)) = (callback, events.upgrade()) {
+                            let _ = sender.send(runtime::Message::Completed(index, result));
+                        }
+                    }),
+                )
+                .map_err(|e| e.to_string())?;
+                drop(build);
+                self.build_state
+                    .lock()
+                    .unwrap()
+                    .workers
+                    .push(worker.clone());
+                Ok(BxValue::new_ptr(vm.native_object_new(Rc::new(
+                    RefCell::new(workers::WorkerObject(worker)),
+                ))))
+            }
             "get" | "post" | "put" | "patch" | "delete" => {
                 register_route(vm, &self.app, "", name, args)?;
                 Ok(BxValue::new_null())
@@ -277,6 +426,12 @@ impl BxNativeObject for ServerAppObject {
 }
 
 impl BxNativeObject for RouteGroupObject {
+    fn trace(&self, tracer: &mut dyn matchbox_vm::types::Tracer) {
+        trace_app(&self.app.lock().unwrap(), tracer);
+        for value in &self.middleware {
+            tracer.mark(value);
+        }
+    }
     fn get_property(&self, _name: &str) -> BxValue {
         BxValue::new_null()
     }
@@ -290,6 +445,9 @@ impl BxNativeObject for RouteGroupObject {
         name: &str,
         args: &[BxValue],
     ) -> Result<BxValue, String> {
+        if !self.app.lock().unwrap().configuring {
+            return Err("Application configuration is startup-only".into());
+        }
         match name.to_lowercase().as_str() {
             "get" | "post" | "put" | "patch" | "delete" => {
                 register_group_route(vm, self, name, args)?;
@@ -555,6 +713,7 @@ impl BxNativeObject for AppMiddlewareNamespaceObject {
                     vm.native_object_new(Rc::new(RefCell::new(StaticFilesMiddlewareObject {
                         mount,
                         directory: resolved_directory,
+                        private_paths: self.private_paths.clone(),
                     })));
                 Ok(BxValue::new_ptr(middleware_id))
             }
@@ -612,6 +771,13 @@ impl BxNativeObject for StaticFilesMiddlewareObject {
                     }
                     Err(err) => return Err(err),
                 };
+                if self
+                    .private_paths
+                    .iter()
+                    .any(|private| resolved_path.starts_with(private))
+                {
+                    return Err("Not Found".into());
+                }
                 if !resolved_path.is_file() {
                     return vm.native_object_call_method(
                         args[3].as_gc_id().ok_or_else(|| {
@@ -650,6 +816,11 @@ impl BxNativeObject for StaticFilesMiddlewareObject {
 }
 
 impl BxNativeObject for RequestContextObject {
+    fn trace(&self, tracer: &mut dyn matchbox_vm::types::Tracer) {
+        for id in [self.rc_id, self.prc_id, self.session_id] {
+            tracer.mark(&BxValue::new_ptr(id));
+        }
+    }
     fn get_property(&self, _name: &str) -> BxValue {
         BxValue::new_null()
     }
@@ -692,6 +863,15 @@ impl BxNativeObject for RequestContextObject {
             "paramsessionvalue" | "setsessionvalue" => {
                 param_value(vm, self.session_id, args);
                 Ok(BxValue::new_null())
+            }
+            "gethttpheadercount" => {
+                let count = self
+                    .request
+                    .header_counts
+                    .get(&arg_string(vm, args, 0).to_lowercase())
+                    .copied()
+                    .unwrap_or(0);
+                Ok(BxValue::new_int(count as i32))
             }
             "gethttpheader" => {
                 let key = arg_string(vm, args, 0).to_lowercase();
@@ -739,10 +919,15 @@ impl BxNativeObject for RequestContextObject {
             }
             "gethttpcontent" => {
                 let as_json = arg_bool(vm, args, 0);
+                let strict = arg_bool(vm, args, 1);
                 if as_json {
-                    let value: JsonValue = serde_json::from_slice(&self.request.body)
-                        .map_err(|e| format!("Bad Request: Invalid JSON body: {}", e))?;
-                    json_to_bx(vm, &value)
+                    let value: JsonValue = if strict {
+                        strict_json::parse(&self.request.body)
+                    } else {
+                        serde_json::from_slice(&self.request.body)
+                    }
+                    .map_err(|_| "Bad Request: Invalid JSON body".to_string())?;
+                    crate::json_to_bx_with_keys(vm, &value, strict)
                 } else {
                     let text = String::from_utf8(self.request.body.clone())
                         .map_err(|e| format!("Request body is not valid UTF-8: {}", e))?;
@@ -771,7 +956,7 @@ impl BxNativeObject for RequestContextObject {
             }
             "__requestpath" => Ok(BxValue::new_ptr(vm.string_new(self.request.path.clone()))),
             "sethttpheader" => {
-                let name = arg_string(vm, args, 0);
+                let name = arg_string(vm, args, 0).to_ascii_lowercase();
                 let value = arg_string(vm, args, 1);
                 self.response.lock().unwrap().headers.insert(name, value);
                 Ok(BxValue::new_null())
@@ -914,6 +1099,14 @@ impl BxNativeObject for RequestContextObject {
 }
 
 impl BxNativeObject for NextMiddlewareObject {
+    fn trace(&self, tracer: &mut dyn matchbox_vm::types::Tracer) {
+        for value in &self.middleware {
+            tracer.mark(value);
+        }
+        for value in [self.handler, self.event, self.rc, self.prc] {
+            tracer.mark(&value);
+        }
+    }
     fn get_property(&self, _name: &str) -> BxValue {
         BxValue::new_null()
     }
@@ -963,14 +1156,23 @@ impl BxNativeObject for NotFoundHandlerObject {
         _args: &[BxValue],
     ) -> Result<BxValue, String> {
         match name.to_lowercase().as_str() {
+            "__runhandler" if self.upgrade => Ok(BxValue::new_null()),
             "__runhandler" => Err("Not Found".to_string()),
             _ => Err(format!("Method {} not found on not found handler.", name)),
         }
     }
 }
 
-pub async fn run_script_server(script_path: &Path) -> anyhow::Result<()> {
-    let compiled = Arc::new(compile_script_app(script_path).await?);
+pub async fn run_script_server_with_options(
+    script_path: &Path,
+    home: Option<PathBuf>,
+    config: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let compiled = Arc::new(compile_script_app_with_options(script_path, home, config).await?);
+    run_compiled_script_server(compiled).await
+}
+
+async fn run_compiled_script_server(compiled: Arc<CompiledScriptApp>) -> anyhow::Result<()> {
     let listen = load_listen_config(&compiled)?;
     let websocket = load_websocket_runtime(compiled.clone())?;
     let state = Arc::new(ScriptServerState {
@@ -982,8 +1184,33 @@ pub async fn run_script_server(script_path: &Path) -> anyhow::Result<()> {
     println!("MatchBox App Server listening on http://{}", addr);
     println!("App script: {}", state.compiled.path.display());
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router).tcp_nodelay(true).await?;
+    let sockets = state.websocket.clone();
+    let actor = state.compiled.runtime.as_ref().unwrap().clone();
+    axum::serve(listener, router)
+        .tcp_nodelay(true)
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            actor.begin_shutdown();
+            if let Some(sockets) = sockets {
+                sockets.shutdown.send_replace(true);
+            }
+        })
+        .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("register SIGTERM");
+        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 pub fn build_script_router(state: Arc<ScriptServerState>) -> Router {
@@ -1000,8 +1227,12 @@ pub fn build_script_router(state: Arc<ScriptServerState>) -> Router {
         .with_state(state)
 }
 
-pub async fn compile_script_app(script_path: &Path) -> anyhow::Result<CompiledScriptApp> {
-    let path = script_path.to_path_buf();
+pub async fn compile_script_app_with_options(
+    script_path: &Path,
+    home: Option<PathBuf>,
+    config: Option<PathBuf>,
+) -> anyhow::Result<CompiledScriptApp> {
+    let path = stdfs::canonicalize(script_path)?;
     let source = fs::read_to_string(&path).await?;
     let ast = parser::parse(&source, path.to_str())?;
     let web_imported = ast.iter().any(|stmt| {
@@ -1016,83 +1247,55 @@ pub async fn compile_script_app(script_path: &Path) -> anyhow::Result<CompiledSc
         )
     });
     let mut compiler = Compiler::new(&path.to_string_lossy());
-    let chunk = compiler.compile(&ast, &source)?;
-    Ok(CompiledScriptApp {
+    compiler.runtime_module_classes = true;
+    // This is a native namespace, not a deferred module class import.
+    let executable: Vec<_> = ast.into_iter().filter(|stmt| !matches!(&stmt.kind,
+        matchbox_compiler::ast::StatementKind::Import { path, .. } if path.eq_ignore_ascii_case("boxlang.web"))).collect();
+    let chunk = compiler.compile(&executable, &source)?;
+    let mut compiled = CompiledScriptApp {
         path,
         chunk,
         web_imported,
         session_store: Arc::new(Mutex::new(HashMap::new())),
         webhook_replay_store: Arc::new(Mutex::new(HashMap::new())),
-    })
-}
-
-fn instantiate_app_definition(compiled: &CompiledScriptApp) -> anyhow::Result<AppDefinition> {
-    let build_state = Arc::new(Mutex::new(BuildState::default()));
-    let mut vm = VM::new();
-    if compiled.web_imported {
-        install_web_namespace(&mut vm, build_state.clone(), compiled_app_root(compiled));
-    }
-    vm.interpret(compiled.chunk.clone())?;
-    pick_primary_app(&build_state)
+        runtime: None,
+    };
+    compiled.runtime = Some(runtime::Runtime::start(compiled.clone(), home, config)?);
+    Ok(compiled)
 }
 
 pub fn load_listen_config(compiled: &CompiledScriptApp) -> anyhow::Result<ListenConfig> {
-    Ok(instantiate_app_definition(compiled)?
-        .listen
-        .unwrap_or_default())
+    Ok(compiled.runtime.as_ref().unwrap().listen.clone())
 }
 
 fn load_websocket_runtime(
     compiled: Arc<CompiledScriptApp>,
 ) -> anyhow::Result<Option<Arc<WebSocketRuntimeHandle>>> {
-    let app = instantiate_app_definition(&compiled)?;
-    let Some(config) = app.websocket else {
+    let Some(config) = compiled.runtime.as_ref().unwrap().websocket.clone() else {
         return Ok(None);
     };
 
-    let (commands_tx, commands_rx) = mpsc::channel();
-    let runtime = Arc::new(WebSocketRuntimeHandle {
-        uri: config.uri.clone(),
-        commands: commands_tx,
-    });
-    let runtime_compiled = compiled.clone();
-    let runtime_app_root = compiled_app_root(&compiled);
-    thread::Builder::new()
-        .name("matchbox-websocket-runtime".to_string())
-        .spawn(move || {
-            let web_context = if runtime_compiled.web_imported {
-                Some((
-                    Arc::new(Mutex::new(BuildState::default())),
-                    runtime_app_root,
-                ))
-            } else {
-                None
-            };
-            if let Err(err) = websocket_runtime_main(
-                runtime_compiled.chunk.clone(),
-                config,
-                commands_rx,
-                web_context,
-            ) {
-                eprintln!("WebSocket runtime stopped: {}", err);
-            }
-        })?;
-
-    Ok(Some(runtime))
+    let actor = compiled.runtime.as_ref().unwrap().clone();
+    let mut runtime = WebSocketRuntimeHandle::new(config.uri, move |command| actor.socket(command));
+    runtime.authorize = Some(Arc::new(move |request| {
+        dispatch_script_request(&compiled, request).map_err(|e| e.to_string())
+    }));
+    Ok(Some(Arc::new(runtime)))
 }
 
 pub fn dispatch_script_request(
     compiled: &CompiledScriptApp,
+    request: RequestData,
+) -> anyhow::Result<ResponseData> {
+    compiled.runtime.as_ref().unwrap().request(request)
+}
+
+fn dispatch_in_vm(
+    compiled: &CompiledScriptApp,
+    vm: &mut VM,
+    app: &AppDefinition,
     mut request: RequestData,
 ) -> anyhow::Result<ResponseData> {
-    let build_state = Arc::new(Mutex::new(BuildState::default()));
-    let mut vm = VM::new();
-    if compiled.web_imported {
-        install_web_namespace(&mut vm, build_state.clone(), compiled_app_root(compiled));
-    }
-    vm.interpret(compiled.chunk.clone())?;
-
-    let app = pick_primary_app(&build_state)?;
     let matched_route = match_route(&app, &request.method, &request.path);
     let (route, params) = if let Some((route, params)) = matched_route {
         request.matched_route = Some(route.path.clone());
@@ -1122,7 +1325,7 @@ pub fn dispatch_script_request(
     if is_json_body(&request.headers) {
         if let Ok(JsonValue::Object(object)) = serde_json::from_slice::<JsonValue>(&request.body) {
             for (key, value) in object {
-                let bx = json_to_bx(&mut vm, &value).map_err(anyhow::Error::msg)?;
+                let bx = json_to_bx(vm, &value).map_err(anyhow::Error::msg)?;
                 vm.struct_set(rc_id, &key, bx);
             }
         }
@@ -1156,7 +1359,7 @@ pub fn dispatch_script_request(
         .cloned()
     {
         for (key, value) in values {
-            let bx = json_to_bx(&mut vm, &value).map_err(anyhow::Error::msg)?;
+            let bx = json_to_bx(vm, &value).map_err(anyhow::Error::msg)?;
             vm.struct_set(session_id, &key, bx);
         }
     }
@@ -1170,7 +1373,7 @@ pub fn dispatch_script_request(
     }));
     let app_root = compiled_app_root(compiled);
     let event_id = vm.native_object_new(Rc::new(RefCell::new(RequestContextObject {
-        request,
+        request: request.clone(),
         rc_id,
         prc_id,
         session_id,
@@ -1184,11 +1387,16 @@ pub fn dispatch_script_request(
         middleware_chain.extend(route.middleware.clone());
         route.handler
     } else {
-        let not_found_id = vm.native_object_new(Rc::new(RefCell::new(NotFoundHandlerObject)));
+        let upgrade = app
+            .websocket
+            .as_ref()
+            .is_some_and(|socket| socket.uri == request.path && request.method == "GET");
+        let not_found_id =
+            vm.native_object_new(Rc::new(RefCell::new(NotFoundHandlerObject { upgrade })));
         BxValue::new_ptr(not_found_id)
     };
     execute_middleware_chain(
-        &mut vm,
+        vm,
         &middleware_chain,
         0,
         handler,
@@ -1198,7 +1406,7 @@ pub fn dispatch_script_request(
     )
     .map_err(anyhow::Error::msg)?;
 
-    let session_json = bx_to_json(&vm, BxValue::new_ptr(session_id)).map_err(anyhow::Error::msg)?;
+    let session_json = bx_to_json(vm, BxValue::new_ptr(session_id)).map_err(anyhow::Error::msg)?;
     compiled
         .session_store
         .lock()
@@ -1225,12 +1433,13 @@ async fn script_handler(
     request: Request<Body>,
 ) -> impl IntoResponse {
     let (parts, body) = request.into_parts();
-    let body = match to_bytes(body, usize::MAX).await {
+    let limit = state.compiled.runtime.as_ref().unwrap().listen.max_request_body_bytes;
+    let body = match to_bytes(body, limit).await {
         Ok(bytes) => bytes,
-        Err(err) => {
+        Err(_) => {
             return (
-                StatusCode::BAD_REQUEST,
-                format!("Failed to read request body: {}", err),
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Request body exceeds the supported limit",
             )
                 .into_response();
         }
@@ -1243,7 +1452,12 @@ async fn script_handler(
         &parts.headers,
         body.to_vec(),
     );
-    match dispatch_script_request(&state.compiled, request.clone()) {
+    let compiled = state.compiled.clone();
+    let dispatch_request = request.clone();
+    let result =
+        tokio::task::spawn_blocking(move || dispatch_script_request(&compiled, dispatch_request))
+            .await;
+    match result.unwrap_or_else(|_| Err(anyhow::anyhow!("Routed request worker stopped"))) {
         Ok(response) => response_to_http(response),
         Err(err) if err.to_string() == "No route matched" => {
             (StatusCode::NOT_FOUND, "Not Found").into_response()
@@ -1257,6 +1471,11 @@ async fn script_handler(
         Err(err) if err.to_string().contains("Unauthorized:") => {
             error_response(StatusCode::UNAUTHORIZED, &request, err.to_string())
         }
+        Err(err) if err.to_string().contains("Service Unavailable:") => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &request,
+            "Routed runtime is unavailable".into(),
+        ),
         Err(err) if err.to_string().contains("Conflict:") => {
             error_response(StatusCode::CONFLICT, &request, err.to_string())
         }
@@ -1268,7 +1487,7 @@ async fn script_handler(
     }
 }
 
-fn response_to_http(response: ResponseData) -> Response<Body> {
+pub(crate) fn response_to_http(response: ResponseData) -> Response<Body> {
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut builder = Response::builder().status(status);
     for (name, value) in &response.headers {
@@ -1376,8 +1595,10 @@ fn register_websocket_listener(
         .as_gc_id()
         .ok_or_else(|| "enableWebSockets() listener must be an object instance".to_string())?;
     let listener_class = vm.instance_class_name(listener)?;
-    let listener_state = vm.instance_variables_json(listener)?;
-    app.lock().unwrap().websocket = Some(WebSocketConfig {
+    let listener_state = JsonValue::Null;
+    let mut app = app.lock().unwrap();
+    app.websocket_listener = Some(listener);
+    app.websocket = Some(WebSocketConfig {
         uri,
         listener_class,
         listener_state,
@@ -1563,6 +1784,7 @@ fn parse_listen_config(vm: &dyn BxVM, args: &[BxValue]) -> Result<ListenConfig, 
         return Ok(ListenConfig {
             host: "127.0.0.1".to_string(),
             port: first.as_number() as u16,
+            ..ListenConfig::default()
         });
     }
     if vm.is_struct_value(first) {
@@ -1579,7 +1801,24 @@ fn parse_listen_config(vm: &dyn BxVM, args: &[BxValue]) -> Result<ListenConfig, 
         } else {
             8080
         };
-        return Ok(ListenConfig { host, port });
+        let max_request_body_bytes = if vm.struct_key_exists(id, "maxRequestBodyBytes") {
+            let value = vm.struct_get(id, "maxRequestBodyBytes");
+            if !(value.is_number() || value.is_int()) {
+                return Err("listen() maxRequestBodyBytes must be an integer".to_string());
+            }
+            let number = value.as_number();
+            if !number.is_finite()
+                || number.fract() != 0.0
+                || number < 1.0
+                || number > MAX_CONFIGURED_REQUEST_BODY as f64
+            {
+                return Err(format!("listen() maxRequestBodyBytes must be an integer between 1 and {}", MAX_CONFIGURED_REQUEST_BODY));
+            }
+            number as usize
+        } else {
+            MAX_REQUEST_BODY
+        };
+        return Ok(ListenConfig { host, port, max_request_body_bytes });
     }
     Err("listen() expects a port number or config struct".to_string())
 }
@@ -2155,8 +2394,421 @@ mod tests {
     use super::*;
     use axum::http::HeaderMap;
     use futures_util::{SinkExt, StreamExt};
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{sleep, Duration};
     use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+    async fn compile_script_app(path: &Path) -> anyhow::Result<CompiledScriptApp> {
+        super::compile_script_app_with_options(
+            path,
+            Some(path.parent().unwrap().join("isolated-home")),
+            None,
+        )
+        .await
+    }
+    async fn run_script_server(path: &Path) -> anyhow::Result<()> {
+        super::run_compiled_script_server(Arc::new(compile_script_app(path).await?)).await
+    }
+
+    #[tokio::test]
+    async fn routed_security_helpers_preserve_json_keys_headers_and_periodic_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("app.bxs");
+        std::fs::write(&script, r#"
+            import boxlang.web;
+            pollution = { Name : "upper" };
+            state = { ticks : 0 };
+            app = web.server();
+            app.every(100, function() { state.ticks = state.ticks + 1; });
+            app.post("/", function(event,rc,prc) {
+                body = event.getHTTPContent(true,true);
+                event.renderText(jsonSerialize({ keys : structKeyArray(body), value : body["name"], count : event.getHTTPHeaderCount("authorization"), ticks : state.ticks, same : web.secureEquals("secret", "secret"), different : web.secureEquals("Secret", "secret"), joined : arrayToList(["a", "b"], ",") }));
+                event.setHTTPHeader("Content-Type", "application/json");
+            });
+        "#).unwrap();
+        let compiled = compile_script_app(&script).await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.append("authorization", "a".parse().unwrap());
+        headers.append("authorization", "b".parse().unwrap());
+        let incoming = request_data_from_parts(
+            axum::http::Method::POST,
+            "/",
+            None,
+            &headers,
+            br#"{"name":"lower"}"#.to_vec(),
+        );
+        let first = dispatch_script_request(&compiled, incoming.clone()).unwrap();
+        assert_eq!(
+            first
+                .headers
+                .keys()
+                .filter(|key| key.eq_ignore_ascii_case("content-type"))
+                .count(),
+            1
+        );
+        let value: JsonValue = serde_json::from_slice(&first.body).unwrap();
+        assert_eq!(value["keys"], serde_json::json!(["name"]));
+        assert_eq!(value["value"], "lower");
+        assert_eq!(value["count"].as_f64(), Some(2.0));
+        assert_eq!(value["same"], true);
+        assert_eq!(value["different"], false);
+        assert_eq!(value["joined"], "a,b");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let next = dispatch_script_request(&compiled, incoming).unwrap();
+        let next: JsonValue = serde_json::from_slice(&next.body).unwrap();
+        assert!(next["ticks"].as_f64().unwrap() > value["ticks"].as_f64().unwrap());
+    }
+
+    #[tokio::test]
+    async fn routed_class_method_preserves_custom_exception_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("app.bxs");
+        std::fs::write(&script, r#"
+            import boxlang.web;
+            class Failure { function run() { throw(type="agentctl.compute.NotReady", message="private"); } }
+            app = web.server();
+            app.get("/", function(event,rc,prc) {
+                try { new Failure().run(); } catch(error) { event.renderJson({ type : error.type, message : error.message }); }
+            });
+        "#).unwrap();
+        let compiled = compile_script_app(&script).await.unwrap();
+        let response =
+            dispatch_script_request(&compiled, request("GET", "/", None, &[], &[])).unwrap();
+        let value: JsonValue = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(value["type"], "agentctl.compute.NotReady", "{value}");
+    }
+
+    #[tokio::test]
+    async fn routed_class_variables_keep_replacement_values_across_minor_gc() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("app.bxs");
+        std::fs::write(&script, r#"
+            import boxlang.web;
+            class Holder {
+                function init() { variables.data = []; return this; }
+                function replace() { variables.data = [ { value : "retained" } ]; }
+                function json() { return jsonSerialize(variables.data); }
+            }
+            holder = new Holder();
+            app = web.server();
+            app.post("/replace", function(event,rc,prc) { holder.replace(); event.renderText("done"); });
+            app.get("/", function(event,rc,prc) { event.renderText(holder.json()); });
+        "#).unwrap();
+        let compiled = compile_script_app(&script).await.unwrap();
+        for _ in 0..24 {
+            dispatch_script_request(&compiled, request("POST", "/replace", None, &[], &[]))
+                .unwrap();
+            let response =
+                dispatch_script_request(&compiled, request("GET", "/", None, &[], &[])).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<JsonValue>(&response.body).unwrap()[0]["value"],
+                "retained"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn routed_runtime_loads_modules_once_retains_state_and_unloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = dir.path().join("boxlang_modules/counter");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("box.json"),
+            r#"{"name":"counter","version":"1.0.0","boxlang":{"moduleName":"counter"}}"#,
+        )
+        .unwrap();
+        let unloaded = dir.path().join("unloaded");
+        std::fs::write(package.join("ModuleConfig.bx"), format!(r#"class {{ this.mapping = "counter"; function configure() {{ settings = {{}}; }} function onUnload() {{ fileWrite("{}", "done"); }} }}"#, unloaded.display())).unwrap();
+        std::fs::write(package.join("Counter.bx"), "class { variables.value = 0; function next() { variables.value = variables.value + 1; return variables.value; } }").unwrap();
+        let script = dir.path().join("app.bxs");
+        std::fs::write(&script, r#"
+            import boxlang.web;
+            counter = new bxModules.counter.Counter();
+            state = { calls : 0 };
+            app = web.server();
+            app.use(app.middleware.buildStaticFiles("/packages", "boxlang_modules"));
+            app.get("/", function(event, rc, prc) {
+                state.calls = state.calls + 1;
+                event.renderJson({ count : counter.next(), calls : state.calls, active : getModuleInfo("counter").activated });
+            });
+        "#).unwrap();
+        let compiled = compile_script_app(&script).await.unwrap();
+        for expected in 1..=3 {
+            let response =
+                dispatch_script_request(&compiled, request("GET", "/", None, &[], &[])).unwrap();
+            let value: JsonValue = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(value["count"].as_f64(), Some(expected as f64));
+            assert_eq!(value["calls"].as_f64(), Some(expected as f64));
+            assert_eq!(value["active"], true);
+        }
+        let denied = dispatch_script_request(
+            &compiled,
+            request("GET", "/packages/counter/box.json", None, &[], &[]),
+        )
+        .unwrap_err();
+        assert_eq!(denied.to_string(), "Not Found");
+        drop(compiled);
+        assert_eq!(std::fs::read_to_string(unloaded).unwrap(), "done");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn routed_websocket_authorization_precedes_upgrade_and_shares_live_http_state() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("app.bxs");
+        std::fs::write(&script, r#"
+            import boxlang.web;
+            class Listener {
+                function configure(state) { variables.state = state; }
+                function onConnect(channel) { channel.sendJson(variables.state); }
+                function onMessage(message, channel) { variables.state.value = variables.state.value + 1; channel.sendJson(variables.state); }
+                function onClose(channel) {}
+            }
+            state = { value : 0 };
+            app = web.server();
+            app.use(function(event, rc, prc, next) {
+                if (event.getHTTPHeader("authorization", "") != "synthetic" || event.getHTTPHeader("origin", "") != "http://trusted.invalid") {
+                    event.setHTTPStatus(403); event.renderJson({ error : "denied" }); return;
+                }
+                next.run();
+            });
+            app.post("/increment", function(event, rc, prc) { state.value = state.value + 1; event.renderJson(state); });
+            listener = new Listener(); listener.configure(state);
+            app.enableWebSockets("/events", listener);
+        "#).unwrap();
+        let compiled = Arc::new(compile_script_app(&script).await.unwrap());
+        let state = Arc::new(ScriptServerState {
+            compiled: compiled.clone(),
+            websocket: load_websocket_runtime(compiled.clone()).unwrap(),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, build_script_router(state))
+                .await
+                .unwrap();
+        });
+        let url = format!("ws://{address}/events");
+        for (auth, origin) in [
+            ("", "http://trusted.invalid"),
+            ("synthetic", "https://foreign.invalid"),
+        ] {
+            let mut candidate = url.clone().into_client_request().unwrap();
+            candidate
+                .headers_mut()
+                .insert("authorization", auth.parse().unwrap());
+            candidate
+                .headers_mut()
+                .insert("origin", origin.parse().unwrap());
+            match connect_async(candidate).await {
+                Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                    assert_eq!(response.status(), 403)
+                }
+                _ => panic!("unauthorized WebSocket was not rejected before upgrade"),
+            }
+        }
+        let mut candidate = url.into_client_request().unwrap();
+        candidate
+            .headers_mut()
+            .insert("authorization", "synthetic".parse().unwrap());
+        candidate
+            .headers_mut()
+            .insert("origin", "http://trusted.invalid".parse().unwrap());
+        let (mut socket, _) = connect_async(candidate).await.unwrap();
+        let first = socket.next().await.unwrap().unwrap().into_text().unwrap();
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(&first).unwrap()["value"].as_f64(),
+            Some(0.0)
+        );
+        let headers = [
+            ("authorization", "synthetic"),
+            ("origin", "http://trusted.invalid"),
+        ];
+        dispatch_script_request(
+            &compiled,
+            request("POST", "/increment", None, &headers, &[]),
+        )
+        .unwrap();
+        socket
+            .send(Message::Text("increment".into()))
+            .await
+            .unwrap();
+        let next = socket.next().await.unwrap().unwrap().into_text().unwrap();
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(&next).unwrap()["value"].as_f64(),
+            Some(2.0)
+        );
+        let response = dispatch_script_request(
+            &compiled,
+            request("POST", "/increment", None, &headers, &[]),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<JsonValue>(&response.body).unwrap()["value"].as_f64(),
+            Some(3.0)
+        );
+        socket.close(None).await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn routed_shutdown_finishes_accepted_worker_without_replaying_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("app.bxs");
+        let marker = dir.path().join("completed");
+        std::fs::write(dir.path().join("worker.bxs"), format!(r#"function onJob(payload) {{ systemExecute("sh", ["-c", "sleep 0.05"], 3, true); fileWrite("{}", "done"); return true; }}"#, marker.display())).unwrap();
+        std::fs::write(&script, r#"import boxlang.web; app = web.server(); worker = app.worker("worker.bxs"); app.post("/", function(event,rc,prc) { event.renderText(worker.submit({})); });"#).unwrap();
+        let compiled = compile_script_app(&script).await.unwrap();
+        let response =
+            dispatch_script_request(&compiled, request("POST", "/", None, &[], &[])).unwrap();
+        assert!(!response.body.is_empty());
+        drop(compiled);
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "done");
+    }
+
+    #[tokio::test]
+    async fn routed_body_limit_rejects_buffered_and_streamed_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("app.bxs");
+        std::fs::write(&script, r#"import boxlang.web; app = web.server(); app.post("/", function(event,rc,prc) { event.renderText("unexpected"); });"#).unwrap();
+        let compiled = Arc::new(compile_script_app(&script).await.unwrap());
+        let buffered = Body::from(vec![b'x'; MAX_REQUEST_BODY + 1]);
+        let streamed = Body::from_stream(futures_util::stream::iter([
+            Ok::<_, std::io::Error>(vec![b'x'; MAX_REQUEST_BODY]),
+            Ok(vec![b'x'; 1]),
+        ]));
+        for body in [buffered, streamed] {
+            let incoming = Request::builder()
+                .method("POST")
+                .uri("/")
+                .body(body)
+                .unwrap();
+            let response = script_handler(State(app_state(compiled.clone())), incoming)
+                .await
+                .into_response();
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        }
+    }
+
+    #[tokio::test]
+    async fn routed_configurable_body_limit_is_validated_and_applies_to_streams() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("app.bxs");
+        for invalid in ["0", "-1", "1.5", "true", "\"1024\"", "16777217"] {
+            std::fs::write(&script, format!(r#"import boxlang.web; app = web.server(); app.listen({{maxRequestBodyBytes: {invalid}}});"#)).unwrap();
+            assert!(compile_script_app(&script).await.is_err(), "accepted {invalid}");
+        }
+        std::fs::write(&script, r#"import boxlang.web; app = web.server(); app.post("/", function(event,rc,prc) { event.renderText("ok"); }); app.listen({maxRequestBodyBytes: 32768});"#).unwrap();
+        let compiled = Arc::new(compile_script_app(&script).await.unwrap());
+        assert_eq!(load_listen_config(&compiled).unwrap().max_request_body_bytes, 32768);
+        for length in [32768, 32769] {
+            for body in [Body::from(vec![b'x'; length]), Body::from_stream(futures_util::stream::iter([
+                Ok::<_, std::io::Error>(vec![b'x'; length / 2]), Ok(vec![b'x'; length - length / 2]),
+            ]))] {
+                let incoming = Request::builder().method("POST").uri("/").body(body).unwrap();
+                let response = script_handler(State(app_state(compiled.clone())), incoming).await.into_response();
+                assert_eq!(response.status(), if length == 32768 { StatusCode::OK } else { StatusCode::PAYLOAD_TOO_LARGE });
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn background_worker_is_single_flight_and_publishes_without_blocking_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("app.bxs");
+        let module = dir.path().join("boxlang_modules/increment");
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(
+            module.join("box.json"),
+            r#"{"name":"increment","version":"1.0.0","boxlang":{"moduleName":"increment"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            module.join("ModuleConfig.bx"),
+            r#"class { this.mapping="increment"; function configure() { settings={}; } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            module.join("Calculator.bx"),
+            "class { function next(value) { return arguments.value + 1; } }",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("worker.bxs"),
+            r#"
+            calculator = new bxModules.increment.Calculator();
+            function onJob(payload) {
+                sleep(200);
+                if (payload.fail) throw "private diagnostic must not leave worker";
+                return { value : calculator.next(payload.value) };
+            }
+        "#,
+        )
+        .unwrap();
+        std::fs::write(&script, r#"
+            import boxlang.web;
+            app = web.server();
+            state = { completed : false };
+            worker = app.worker("worker.bxs", function(result) { state.completed = true; });
+            app.post("/job", function(event, rc, prc) { event.renderJson({ id : worker.submit({ fail : false, value : 41 }) }); });
+            app.post("/fail", function(event, rc, prc) { state.completed = false; event.renderJson({ id : worker.submit({ fail : true, value : 0 }) }); });
+            app.get("/state", function(event, rc, prc) { event.renderJson({ job : worker.status(), completed : state.completed }); });
+        "#).unwrap();
+        let compiled = compile_script_app(&script).await.unwrap();
+        let started = std::time::Instant::now();
+        let submit =
+            dispatch_script_request(&compiled, request("POST", "/job", None, &[], &[])).unwrap();
+        assert!(
+            !serde_json::from_slice::<JsonValue>(&submit.body).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+        );
+        let overlap =
+            dispatch_script_request(&compiled, request("POST", "/job", None, &[], &[])).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<JsonValue>(&overlap.body).unwrap()["id"],
+            ""
+        );
+        let first =
+            dispatch_script_request(&compiled, request("GET", "/state", None, &[], &[])).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<JsonValue>(&first.body).unwrap()["job"]["status"],
+            "running"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_millis(150));
+        for failing in [false, true] {
+            if failing {
+                dispatch_script_request(&compiled, request("POST", "/fail", None, &[], &[]))
+                    .unwrap();
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                let response =
+                    dispatch_script_request(&compiled, request("GET", "/state", None, &[], &[]))
+                        .unwrap();
+                let state: JsonValue = serde_json::from_slice(&response.body).unwrap();
+                if state["completed"] == true {
+                    assert_eq!(
+                        state["job"]["status"],
+                        if failing { "failed" } else { "succeeded" }
+                    );
+                    if failing {
+                        assert!(!String::from_utf8(response.body)
+                            .unwrap()
+                            .contains("private diagnostic"));
+                    } else {
+                        assert_eq!(state["job"]["result"]["value"].as_f64(), Some(42.0));
+                    }
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker completion was not published"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
 
     fn request(
         method: &str,
@@ -2462,12 +3114,10 @@ mod tests {
             .collect();
         assert_eq!(cookies.len(), 2);
         assert!(cookies.contains(&"theme=dark; Path=/; HttpOnly".to_string()));
-        assert!(
-            cookies
-                .iter()
-                .any(|cookie| cookie.starts_with("MBX_SESSION_ID=")
-                    && cookie.ends_with("; Path=/; HttpOnly"))
-        );
+        assert!(cookies
+            .iter()
+            .any(|cookie| cookie.starts_with("MBX_SESSION_ID=")
+                && cookie.ends_with("; Path=/; HttpOnly")));
     }
 
     #[tokio::test]
@@ -2752,15 +3402,15 @@ mod tests {
 
         let compiled = Arc::new(compile_script_app(&script_path).await.unwrap());
         let listen = load_listen_config(&compiled).unwrap();
-        let app = instantiate_app_definition(&compiled).unwrap();
+        let websocket = &compiled.runtime.as_ref().unwrap().websocket;
 
         assert_eq!(listen.port, 8092);
         assert_eq!(
-            app.websocket.as_ref().map(|runtime| runtime.uri.as_str()),
+            websocket.as_ref().map(|runtime| runtime.uri.as_str()),
             Some("/ws")
         );
         assert_eq!(
-            app.websocket
+            websocket
                 .as_ref()
                 .map(|runtime| runtime.listener_class.as_str()),
             Some("WebSocket")
@@ -2780,8 +3430,11 @@ mod tests {
         )
         .unwrap();
 
-        let compiled = compile_script_app(&script_path).await.unwrap();
-        let err = load_listen_config(&compiled).unwrap_err().to_string();
+        let err = compile_script_app(&script_path)
+            .await
+            .err()
+            .expect("invalid startup must fail before binding")
+            .to_string();
         assert!(
             err.to_lowercase().contains("web") || err.contains("No app was created"),
             "unexpected error: {err}"

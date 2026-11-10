@@ -1,4 +1,11 @@
-# QoQ 1M Row Benchmark
+# MatchBox Benchmarks
+
+- [Cross-runtime performance suite](runtime/README.md): verified AWFY workloads
+  on MatchBox, Node.js and JVM BoxLang, with a standalone Python runner.
+- [Compiler benchmarks](compiler/README.md): separate source-processing workloads.
+- QoQ workloads below: query construction and execution comparisons.
+
+## QoQ 1M Row Benchmark
 
 This benchmark builds a 1,000,000 row in-memory query and then runs `AVG(value)` over it.
 It is intended for comparing MatchBox and BoxLang on the same workload.
@@ -9,7 +16,7 @@ There are two script variants:
 - `qoq_many_small_queries.bxs` for MatchBox
 - `qoq_many_small_queries_boxlang.bxs` for BoxLang
 
-## Run MatchBox
+### Run MatchBox
 
 ```bash
 /usr/bin/time -v cargo run --features qoq -- benchmarks/qoq_avg_1m.bxs
@@ -21,7 +28,7 @@ If you already have a local `matchbox` binary installed:
 /usr/bin/time -v matchbox benchmarks/qoq_avg_1m.bxs
 ```
 
-## Run BoxLang
+### Run BoxLang
 
 ```bash
 /usr/bin/time -v boxlang benchmarks/qoq_avg_1m.bxs
@@ -40,7 +47,7 @@ For a micro benchmark that stresses repeated QoQ execution instead of large-row 
 /usr/bin/time -v boxlang benchmarks/qoq_many_small_queries_boxlang.bxs
 ```
 
-## Notes
+### Notes
 
 - `build ms` is the time to create the 1,000,000 row query.
 - `qoq ms` is the time for the `AVG(value)` QoQ execution.
