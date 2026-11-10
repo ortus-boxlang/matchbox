@@ -1882,12 +1882,13 @@ fn find_bif_internal(
     };
     let haystack = &input[start_byte_idx..];
 
+    // `str::find` returns a byte offset; BoxLang positions count characters.
     let position = if ignore_case {
         let needle = substring.to_lowercase();
         let hay = haystack.to_lowercase();
-        hay.find(&needle).map(|idx| idx + start_idx + 1)
+        hay.find(&needle).map(|idx| hay[..idx].chars().count() + start_idx + 1)
     } else {
-        haystack.find(&substring).map(|idx| idx + start_idx + 1)
+        haystack.find(&substring).map(|idx| haystack[..idx].chars().count() + start_idx + 1)
     };
 
     Ok(BxValue::new_number(position.unwrap_or(0) as f64))
@@ -3054,6 +3055,10 @@ fn len(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
         return Ok(BxValue::new_number(0.0));
     }
     if args[0].is_number() || args[0].is_int() {
+        return Ok(BxValue::new_number(vm.to_string(args[0]).chars().count() as f64));
+    }
+    // A string's length is its characters, not its UTF-8 bytes (get_len counts bytes), so len("é") is 1.
+    if vm.is_string_value(args[0]) {
         return Ok(BxValue::new_number(vm.to_string(args[0]).chars().count() as f64));
     }
     if let Some(id) = args[0].as_gc_id() {

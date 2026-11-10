@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `len()` (and `.len()`) of a string counted UTF-8 bytes, and `find()` / `findNoCase()` returned byte offsets; both now count characters, so `len("é")` is 1 and `find` agrees with `left`, `right` and `mid`. Layout code that pads text with box-drawing or accented characters no longer miscounts (or loops forever).
+
 ### Added
 - **Terminal UI canvas** (`bif-tui`): `fill`, `text`, `gradient` and `border` draw styled text, gradients and bordered boxes in call order, with true-colour support (`#RRGGBB`, `#RGB`, `rgb(r,g,b)`) and an automatic 256-colour fallback when the terminal has no true colour; `render_to_string( width, height )` draws the frame into memory so a UI can be tested without a terminal. `poll_event` now reports key modifiers (`ctrl`, `alt`, `shift`), scroll and resize events; `Ctrl+c` and `Alt+x` arrive under those names (before, the modifier was dropped for characters). Widgets accept the same colours. The API is specified in `docs/tui.md`.
 - **Native programs can use the terminal UI**: the native runner stub includes the TUI classes when MatchBox is built with `bif-tui`. Native Fusion builds are unchanged.
