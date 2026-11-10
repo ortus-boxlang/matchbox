@@ -117,6 +117,33 @@ pub fn cli_get_args(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, Str
     Ok(parsed_arguments_value(vm, &user_args))
 }
 
+/// Runs `main( args )` on the entry class instance, like BoxLang's `boxlang Task.bx a b`.
+/// `args` is an array of the raw command line arguments after the file name.
+/// Compiler-inserted: `__bxRunClassMain( instance, className )`.
+#[cfg(feature = "bif-cli")]
+pub fn run_class_main(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 2 {
+        return Err("__bxRunClassMain() expects (instance, className)".to_string());
+    }
+    let instance = args[0];
+    let class_name = vm.to_string(args[1]);
+    if !vm.has_method_by_value(instance, "main") {
+        return Err(format!(
+            "Class [{class_name}] does not have a main method to execute."
+        ));
+    }
+    let array_id = vm.array_new();
+    // The first entry is the executable.
+    for argument in vm.get_cli_args().into_iter().skip(1) {
+        let value = BxValue::new_ptr(vm.string_new(argument));
+        vm.array_push(array_id, value);
+    }
+    let chunk = vm
+        .current_chunk()
+        .ok_or_else(|| "No chunk is executing".to_string())?;
+    vm.call_method_by_value(instance, "main", vec![BxValue::new_ptr(array_id)], chunk)
+}
+
 #[cfg(feature = "bif-cli")]
 pub fn cli_read(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() >= 1 {

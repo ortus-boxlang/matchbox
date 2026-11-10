@@ -25,6 +25,11 @@ struct Local {
     depth: i32,
 }
 
+thread_local! {
+    /// Class files whose `extends` parent is being loaded right now, to reject inheritance cycles.
+    static PARENT_CHAIN: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub struct Compiler {
     pub chunk: Chunk,
     source_dependencies: Arc<AtomicBool>,
@@ -48,6 +53,16 @@ pub struct Compiler {
     class_methods: HashSet<String>, // Method names of the current class being compiled
     /// Directory to resolve unqualified source paths against (e.g. sibling interfaces).
     pub source_dir: Option<PathBuf>,
+    /// Directory of the entry script. Dotted class paths (`models.Dog`) that are not found
+    /// relative to the working directory are resolved against it, so a project builds the same
+    /// from any directory.
+    pub root_dir: Option<PathBuf>,
+    /// Mappings (`/models` -> directory) from boxlang.json and Application.bx, set per thread by
+    /// the front end. Searched after the working directory and sibling lookups.
+    mappings: Vec<crate::mappings::Mapping>,
+    /// Parent classes of classes loaded from other files, to be defined as globals before the
+    /// child class is used (the VM resolves `extends` by global name).
+    pending_parent_defs: Vec<(String, Constant)>,
     /// Tracks which class names (lowercased) are known to define an init() method.
     /// Propagated to sub-compilers so that `new` expressions in functions/methods
     /// can still determine whether to emit an `init` invocation.
@@ -78,6 +93,9 @@ impl Compiler {
             pending_label: None,
             catch_exception_slots: Vec::new(),
             class_methods: HashSet::new(),
+            root_dir: source_dir.clone(),
+            mappings: crate::mappings::current_mappings(),
+            pending_parent_defs: Vec::new(),
             source_dir,
             class_has_init_map: HashMap::new(),
             current_function_is_static: false,
@@ -106,6 +124,9 @@ impl Compiler {
             pending_label: None,
             catch_exception_slots: Vec::new(),
             class_methods: HashSet::new(),
+            root_dir: source_dir.clone(),
+            mappings: crate::mappings::current_mappings(),
+            pending_parent_defs: Vec::new(),
             source_dir,
             class_has_init_map: HashMap::new(),
             current_function_is_static: false,
@@ -123,6 +144,7 @@ impl Compiler {
         let mut compiler = Self::with_chunk(chunk);
         compiler.source_dependencies = Arc::clone(&self.source_dependencies);
         compiler.class_name = self.class_name.clone();
+        compiler.root_dir = self.root_dir.clone();
         compiler
     }
 
@@ -1662,10 +1684,22 @@ impl Compiler {
                             .methods
                             .iter()
                             .any(|(n, _)| n.eq_ignore_ascii_case("init"))
+                            // parents loaded from other files are not in this chunk yet
+                            || self.pending_parent_defs.iter().any(|(_, parent)| {
+                                matches!(parent, Constant::Class(p) if p.methods.iter().any(|(n, _)| n.eq_ignore_ascii_case("init")))
+                            })
                             || cls
                                 .extends
                                 .as_deref()
                                 .is_some_and(|parent| self.class_chain_has_init(parent, 0));
+                    }
+                    for (parent_name, parent_val) in std::mem::take(&mut self.pending_parent_defs) {
+                        let parent_idx = self.chunk.add_constant(parent_val);
+                        self.chunk.emit1(op::CONSTANT, parent_idx, expr.line);
+                        let name_idx = self
+                            .chunk
+                            .add_constant(Constant::String(BoxString::new(parent_name.as_str())));
+                        self.chunk.emit1(op::DEFINE_GLOBAL, name_idx, expr.line);
                     }
                     let class_idx = self.chunk.add_constant(class_val);
                     self.chunk.emit1(op::CONSTANT, class_idx, expr.line);
@@ -3191,7 +3225,16 @@ impl Compiler {
             && (path.to_ascii_lowercase().starts_with("bxmodules.") || self.resolve_source_file(path).is_err())
     }
 
+    /// Finds the file for a dotted class path. The path is made absolute here, at compile time, so a
+    /// native binary reports the same template path (`getCurrentTemplatePath()`) wherever it is run.
     fn resolve_source_file(&self, dotted_path: &str) -> Result<PathBuf> {
+        let found = self.find_source_file(dotted_path)?;
+        Ok(std::path::absolute(&found).unwrap_or(found))
+    }
+
+    /// The lookup behind [`Self::resolve_source_file`]: working directory, sibling of the current file,
+    /// mappings, then the entry script's directory. The result may be relative.
+    fn find_source_file(&self, dotted_path: &str) -> Result<PathBuf> {
         self.source_dependencies.store(true, Ordering::Relaxed);
         let base_path = Path::new(&dotted_path.replace('.', "/")).to_path_buf();
 
@@ -3217,6 +3260,31 @@ impl Compiler {
                 if rel_bx.exists() {
                     return Ok(rel_bx);
                 }
+            }
+        }
+
+        // Mappings (BoxLang order: relative path, then mappings).
+        for base in crate::mappings::candidates(&self.mappings, dotted_path) {
+            let with_bxs = base.with_extension("bxs");
+            if with_bxs.exists() {
+                return Ok(with_bxs);
+            }
+            let with_bx = base.with_extension("bx");
+            if with_bx.exists() {
+                return Ok(with_bx);
+            }
+        }
+
+        // Not found relative to the working directory: try the entry script's directory.
+        if let Some(ref root) = self.root_dir {
+            let from_root = root.join(&base_path);
+            let rel_bxs = from_root.with_extension("bxs");
+            if rel_bxs.exists() {
+                return Ok(rel_bxs);
+            }
+            let rel_bx = from_root.with_extension("bx");
+            if rel_bx.exists() {
+                return Ok(rel_bx);
             }
         }
 
@@ -3298,6 +3366,7 @@ impl Compiler {
         sub_compiler.imports = self.imports.clone();
         sub_compiler.runtime_module_classes = self.runtime_module_classes;
         sub_compiler.source_dir = file_path.parent().map(|p| p.to_path_buf());
+        sub_compiler.root_dir = self.root_dir.clone();
         sub_compiler.is_class = true;
         sub_compiler.current_line = self.current_line;
         sub_compiler.class_has_init_map = self.class_has_init_map.clone();
@@ -3329,7 +3398,65 @@ impl Compiler {
         self.propagate_js_imports(&sub_imports);
 
         for constant in chunk.constants() {
-            if let Constant::Class(_) = constant {
+            if let Constant::Class(class) = constant {
+                // A parent that lives in another file is not part of this chunk, so the VM would
+                // never find it by name. Load it too and define it before the child.
+                // `extends` is lowercased in the class constant; the file name keeps its case.
+                let original_extends = ast.iter().find_map(|stmt| match &stmt.kind {
+                    StatementKind::ClassDecl { extends: Some(e), .. } => Some(e.clone()),
+                    _ => None,
+                });
+                if let Some(parent) = class.extends.clone() {
+                    let defined_here = chunk.constants().iter().any(|c| {
+                        matches!(c, Constant::Class(other) if other.name.eq_ignore_ascii_case(&parent))
+                    });
+                    if !defined_here {
+                        let parent_path = sub_compiler
+                            .imports
+                            .get(&parent)
+                            .map(|path| path.trim_start_matches("bx:").to_string())
+                            .unwrap_or_else(|| original_extends.clone().unwrap_or_else(|| parent.clone()));
+                        if let Ok(parent_file) = sub_compiler.resolve_source_file(&parent_path) {
+                            let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                            let (this_file, parent_file) = (canonical(&file_path), canonical(&parent_file));
+                            let cycle = PARENT_CHAIN.with(|chain| {
+                                let mut chain = chain.borrow_mut();
+                                if chain.is_empty() {
+                                    chain.push(this_file.clone());
+                                }
+                                if chain.contains(&parent_file) {
+                                    true
+                                } else {
+                                    chain.push(parent_file.clone());
+                                    false
+                                }
+                            });
+                            if cycle {
+                                PARENT_CHAIN.with(|chain| chain.borrow_mut().clear());
+                                bail!("Circular inheritance: {} extends {}, which extends it back", file_path.display(), parent_file.display());
+                            }
+                            let loaded = sub_compiler.load_class_from_path(&parent_path);
+                            PARENT_CHAIN.with(|chain| {
+                                let mut chain = chain.borrow_mut();
+                                chain.pop();
+                                if chain.len() == 1 {
+                                    chain.clear();
+                                }
+                            });
+                            match loaded {
+                                Ok(parent_val) => {
+                                    self.pending_parent_defs
+                                        .append(&mut sub_compiler.pending_parent_defs);
+                                    self.pending_parent_defs.push((parent, parent_val));
+                                }
+                                // a cycle further up the chain is a real error; other failures
+                                // (a parent that is not a file, a module class) are left to run time
+                                Err(error) if error.to_string().starts_with("Circular inheritance") => return Err(error),
+                                Err(_) => {}
+                            }
+                        }
+                    }
+                }
                 return Ok(constant.clone());
             }
         }
@@ -3349,6 +3476,7 @@ impl Compiler {
         sub_compiler.imports = self.imports.clone();
         sub_compiler.runtime_module_classes = self.runtime_module_classes;
         sub_compiler.source_dir = file_path.parent().map(|p| p.to_path_buf());
+        sub_compiler.root_dir = self.root_dir.clone();
         sub_compiler.is_class = true;
         sub_compiler.current_line = self.current_line;
         sub_compiler.class_has_init_map = self.class_has_init_map.clone();
