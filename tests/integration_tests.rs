@@ -378,6 +378,33 @@ fn tui_fluent() {
     }
 }
 #[test]
+#[cfg(feature = "bif-tui")]
+fn tui_canvas() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join("tui_canvas.bxs");
+
+    if let Err(e) = process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    ) {
+        panic!("Script test 'tui_canvas.bxs' failed: {}", e);
+    }
+}
+#[test]
 fn jit_type_guards() {
     // Cranelift JIT requires more stack space than the default 2MB test thread stack.
     // 32MB is needed on Windows/macOS where MSVC/Apple Clang debug builds have larger
