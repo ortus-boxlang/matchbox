@@ -2230,6 +2230,24 @@ fn produce_native_binary(
     Ok(())
 }
 
+/// `matchbox_vm` features for a Native Fusion build: the built-ins this MatchBox was built with, chosen the
+/// same way `build.rs` chooses them for the matching runner stub. Without them a fusion program has no
+/// `bif-io`, `bif-cli` (`CLIGetArgs`), `bif-crypto` or `bif-http`.
+fn fusion_vm_features(target: &str) -> Vec<&'static str> {
+    let list = |features: &'static str| features.split(',').filter(|f| !f.is_empty()).collect::<Vec<_>>();
+    match target {
+        // The ESP32 build has its own dependency set and takes none of the desktop built-ins.
+        "esp32" => Vec::new(),
+        "js" => {
+            let mut features = vec!["js"];
+            features.extend(list(env!("MATCHBOX_FUSION_WASM_FEATURES")));
+            features
+        }
+        "wasm" | "wasi" => list(env!("MATCHBOX_FUSION_WASM_FEATURES")),
+        _ => list(env!("MATCHBOX_FUSION_NATIVE_FEATURES")),
+    }
+}
+
 fn produce_fusion_artifact(
     chunk: &Chunk,
     source_path: &Path,
@@ -2326,14 +2344,15 @@ fn produce_fusion_artifact(
         ));
     }
 
-    let vm_dependency = if target == "js" {
-        format!(
-            "matchbox_vm = {{ path = \"{}\", features = [\"js\"] }}",
-            vm_path
-        )
-    } else {
-        format!("matchbox_vm = {{ path = \"{}\" }}", vm_path)
-    };
+    let vm_features = fusion_vm_features(target)
+        .iter()
+        .map(|feature| format!("\"{feature}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let vm_dependency = format!(
+        "matchbox_vm = {{ path = \"{}\", features = [{}] }}",
+        vm_path, vm_features
+    );
 
     let native_dep_lines = read_native_dependencies(
         native_dir,
@@ -2614,6 +2633,8 @@ fn run_interpreted() -> anyhow::Result<()> {{
     let mut chunk: Chunk = postcard::from_bytes(&bytecode)?;
     chunk.reconstruct_functions();
     let mut vm = VM::new_with_bifs(bifs, classes);
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+    vm.set_cli_args(std::env::args().collect());
     vm.interpret(chunk)?;
     Ok(())
 }}
@@ -3991,5 +4012,35 @@ mod cli_tests {
     fn no_arguments_means_repl() {
         let cli = parse(&[]).unwrap();
         assert!(cli.file.is_none() && cli.script_args.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod fusion_feature_tests {
+    use super::fusion_vm_features;
+
+    #[test]
+    fn native_fusion_gets_the_runner_built_ins() {
+        let features = fusion_vm_features("native");
+        assert_eq!(features.contains(&"bif-io"), cfg!(feature = "bif-io"), "{features:?}");
+        assert_eq!(features.contains(&"bif-cli"), cfg!(feature = "bif-cli"), "{features:?}");
+        assert_eq!(features.contains(&"bif-crypto"), cfg!(feature = "bif-crypto"), "{features:?}");
+        assert_eq!(features.contains(&"bif-http"), cfg!(feature = "bif-http"), "{features:?}");
+    }
+
+    #[test]
+    fn web_targets_never_get_desktop_only_features() {
+        for target in ["js", "wasm", "wasi"] {
+            let features = fusion_vm_features(target);
+            assert!(!features.contains(&"bif-zip"), "{target}: {features:?}");
+            assert!(!features.contains(&"jit"), "{target}: {features:?}");
+        }
+        assert!(fusion_vm_features("js").contains(&"js"));
+        assert!(!fusion_vm_features("wasm").contains(&"js"));
+    }
+
+    #[test]
+    fn esp32_takes_no_desktop_built_ins() {
+        assert!(fusion_vm_features("esp32").is_empty());
     }
 }
