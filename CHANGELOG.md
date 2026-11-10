@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `len()` (and `.len()`) of a string counted UTF-8 bytes, and `find()` / `findNoCase()` returned byte offsets; both now count characters, so `len("é")` is 1 and `find` agrees with `left`, `right` and `mid`. Layout code that pads text with box-drawing or accented characters no longer miscounts (or loops forever).
+
 ### Added
 - **Application.bx for scripts and classes**: an `Application.bx` in the same directory as the program now wraps the run, as in BoxLang on the JVM. `onApplicationStart()` runs once (only when `this.name` is set; `false` stops the run), then `onRequestStart( targetPage )` (`false` stops the run), the program (or the `main( args )` of a class), `onError( exception, "" )` for an uncaught error (`true` means handled, otherwise the error propagates), `onRequestEnd()` always, and `onApplicationEnd( application )` at the end. `onRequest` is not used for scripts and session hooks never fire. The Application class is created without calling `init()`. There is no `application` scope yet: the program gets a plain struct named `application`. Works in the interpreter and in native builds (the class is compiled in).
 - **Mappings**: virtual paths such as `/models` that point to a directory, declared the way BoxLang on the JVM does: `this.mappings` in an `Application.bx` next to the program, or `mappings` in a `boxlang.json` in the working directory (`"shared": "${user-dir}/lib"`, or `{ "path": ..., "external": false }`). Application mappings override the global ones. Names get a leading and trailing slash. They resolve `new`, `import` and `extends` for class files, are read when the program is compiled, and the classes found through them are compiled in, so a native binary carries them. Not in this change: `createObject` through a mapping, `bx:application`, and mappings added at run time.
