@@ -11,12 +11,12 @@ fn a_native_program_can_draw_on_the_tui_canvas() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("app.bxs"),
-        r#"tui = createObject( "rust", "tui.TUI" );
+        r##"tui = createObject( "rust", "tui.TUI" );
 tui.begin_frame();
 tui.border( 0, 0, 12, 3, { border: "rounded", fg: "#51576d", title: "Hi" } );
 tui.gradient( 2, 1, "native", "#00dbff", "#00ff78", { bold: true } );
 println( tui.render_to_string( 12, 3 ) );
-"#,
+"##,
     )
     .unwrap();
     let binary = dir.join("app");
