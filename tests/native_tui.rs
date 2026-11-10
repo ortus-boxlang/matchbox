@@ -1,23 +1,21 @@
-//! A native build made with `bif-tui` has the terminal UI classes: a compiled program can create the app, the
-//! terminal and the widgets (`createObject("rust", "tui.List")` and friends), like `matchbox script.bxs` does.
+//! A native build made with `bif-tui` has the terminal UI classes: a compiled program can create the TUI object and draw on
+//! its canvas (`createObject("rust", "tui.TUI")`), like `matchbox script.bxs` does.
 #![cfg(feature = "bif-tui")]
 
 use std::{fs, process::Command};
 
 #[test]
-fn a_native_program_can_build_terminal_ui_widgets() {
+fn a_native_program_can_draw_on_the_tui_canvas() {
     let dir = std::env::temp_dir().join(format!("matchbox-native-tui-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("app.bxs"),
-        r#"app = createObject( "rust", "tui.App" );
-list = createObject( "rust", "tui.List" ).addItem( "one" ).addItem( "two" ).selected( 1 );
-input = createObject( "rust", "tui.Input" ).prompt( "name: " ).value( "luis" );
-box = createObject( "rust", "tui.VBox" ).add( list ).add( input );
-println( "built=" & ( box.build() > 0 ) );
-app.stop();
-println( "quit=" & app.isQuit() );
+        r#"tui = createObject( "rust", "tui.TUI" );
+tui.begin_frame();
+tui.border( 0, 0, 12, 3, { border: "rounded", fg: "#51576d", title: "Hi" } );
+tui.gradient( 2, 1, "native", "#00dbff", "#00ff78", { bold: true } );
+println( tui.render_to_string( 12, 3 ) );
 "#,
     )
     .unwrap();
@@ -32,7 +30,8 @@ println( "quit=" & app.isQuit() );
     let run = Command::new(&binary).current_dir(&dir).output().unwrap();
     let out = String::from_utf8_lossy(&run.stdout);
     assert!(run.status.success(), "{}{}", out, String::from_utf8_lossy(&run.stderr));
-    assert!(out.contains("built=true"), "{out}");
-    assert!(out.contains("quit=true"), "{out}");
+    assert!(out.contains("╭─ Hi ─────╮"), "{out}");
+    assert!(out.contains("│ native   │"), "{out}");
+    assert!(out.contains("╰──────────╯"), "{out}");
     let _ = fs::remove_dir_all(&dir);
 }
