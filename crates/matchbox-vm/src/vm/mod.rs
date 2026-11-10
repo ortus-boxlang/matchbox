@@ -794,6 +794,10 @@ impl BxVM for VM {
             GcObject::String(s) => s.len(),
             GcObject::Bytes(bytes) => bytes.len(),
             GcObject::DateTime(_) => 26,
+            GcObject::NativeObject(_) => match self.variables_scope_of(id) {
+                Some((variables, false)) => variables.borrow().len(),
+                _ => 0,
+            },
             _ => 0,
         }
     }
@@ -1321,6 +1325,9 @@ impl BxVM for VM {
     }
 
     fn struct_len(&self, id: usize) -> usize {
+        if let Some((variables, false)) = self.variables_scope_of(id) {
+            return variables.borrow().len();
+        }
         if let GcObject::Struct(s) = self.heap.get(id) {
             s.properties.len()
         } else {
@@ -1366,6 +1373,9 @@ impl BxVM for VM {
     fn struct_assign(&mut self, id: usize, key: &str, value: BxValue) -> Result<(), String> { self.assign_struct(id, key, value) }
 
     fn struct_get(&self, id: usize, key: &str) -> BxValue {
+        if let Some((variables, script)) = self.variables_scope_of(id) {
+            return self.variables_scope_get(&variables, script, key);
+        }
         let key_id = self.struct_key_lookup_id(id, key).unwrap_or(u32::MAX);
         if let GcObject::Struct(s) = self.heap.get(id) {
             if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
@@ -1407,6 +1417,9 @@ impl BxVM for VM {
     }
 
     fn struct_key_exists(&self, id: usize, key: &str) -> bool {
+        if let Some((variables, script)) = self.variables_scope_of(id) {
+            return !self.variables_scope_get(&variables, script, key).is_null();
+        }
         let key_id = self.struct_key_lookup_id(id, key).unwrap_or(u32::MAX);
         if let GcObject::Struct(s) = self.heap.get(id) {
             return self.shapes.get_index(s.shape_id, key_id).is_some();
@@ -1415,6 +1428,9 @@ impl BxVM for VM {
     }
 
     fn struct_key_array(&self, id: usize) -> Vec<String> {
+        if let Some((variables, false)) = self.variables_scope_of(id) {
+            return variables.borrow().keys().cloned().collect();
+        }
         if let GcObject::Struct(s) = self.heap.get(id) {
             let shape = &self.shapes.shapes[s.shape_id as usize];
             let mut keys = vec![String::new(); shape.fields.size()];
@@ -1911,7 +1927,7 @@ impl BxVM for VM {
         if let Some(ref mut buffer) = self.output_buffer {
             buffer.push_str(s);
         } else {
-            print!("{}", s);
+            crate::stdout::write_stdout(s, false);
         }
     }
 
@@ -1957,6 +1973,26 @@ impl BxVM for VM {
 }
 
 impl VM {
+    /// The store behind a `variables` scope value: a class instance's variables map, or (script = true) the script
+    /// scope, whose real store is the VM globals. `None` when the value is not a `variables` scope.
+    fn variables_scope_of(&self, id: usize) -> Option<(Rc<RefCell<HashMap<String, BxValue>>>, bool)> {
+        if let GcObject::NativeObject(object) = self.heap.get(id) {
+            let pointer = object.borrow().native_data("matchbox.variables_scope")?;
+            let proxy = unsafe { &*(pointer as *const VariablesScopeProxy) };
+            return Some((Rc::clone(&proxy.variables), proxy.script));
+        }
+        None
+    }
+
+    /// One key of a `variables` scope (null when absent), so the struct built-ins treat the scope like a struct.
+    fn variables_scope_get(&self, variables: &Rc<RefCell<HashMap<String, BxValue>>>, script: bool, key: &str) -> BxValue {
+        let key = key.to_lowercase();
+        if script {
+            return self.get_global(&key).unwrap_or_else(BxValue::new_null);
+        }
+        variables.borrow().get(&key).copied().unwrap_or_else(BxValue::new_null)
+    }
+
     /// Property read on a native object. The script-level `variables` scope is the VM globals.
     fn native_object_get(&self, object: &Rc<RefCell<dyn BxNativeObject>>, name: &str) -> BxValue {
         if object.borrow().native_data("matchbox.script_variables").is_some() {
@@ -7540,7 +7576,7 @@ impl VM {
                     if let Some(ref mut buffer) = self.output_buffer {
                         buffer.push_str(&out);
                     } else {
-                        print!("{}", out);
+                        crate::stdout::write_stdout(&out, false);
                     }
                 }
                 op::PRINTLN => {
@@ -7570,7 +7606,7 @@ impl VM {
                             buffer.push_str(&out);
                             buffer.push('\n');
                         } else {
-                            println!("{}", out);
+                            crate::stdout::write_stdout(&out, true);
                         }
                     }
                 }
@@ -7580,7 +7616,7 @@ impl VM {
                     if let Some(ref mut buffer) = self.output_buffer {
                         buffer.push_str(&s);
                     } else {
-                        print!("{s}");
+                        crate::stdout::write_stdout(&s, false);
                     }
                 }
                 op::CONTAINS => {

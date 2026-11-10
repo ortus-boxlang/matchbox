@@ -277,6 +277,7 @@ script_test!(vm_private_methods, "vm_private_methods.bxs");
 script_test!(vm_class_accessors, "vm_class_accessors.bxs");
 script_test!(vm_class_annotation_names, "vm_class_annotation_names.bxs");
 script_test!(vm_variables_request_scope, "vm_variables_request_scope.bxs");
+script_test!(vm_struct_variables_scope, "vm_struct_variables_scope.bxs");
 script_test!(vm_destructure_rest, "vm_destructure_rest.bxs");
 script_test!(vm_array_slice, "vm_array_slice.bxs");
 script_test!(vm_required_arguments, "vm_required_arguments.bxs");
@@ -318,6 +319,7 @@ script_test!(vm_qoq_query_execute, "vm_qoq_query_execute.bxs");
 #[cfg(feature = "qoq")]
 script_test!(vm_qoq_join, "vm_qoq_join.bxs");
 script_test!(vm_encode_for_html, "vm_encode_for_html.bxs");
+script_test!(vm_break_nested_forin, "vm_break_nested_forin.bxs");
 
 #[test]
 #[cfg(feature = "bif-tui")]
