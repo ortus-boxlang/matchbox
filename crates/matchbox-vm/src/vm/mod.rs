@@ -1906,7 +1906,7 @@ impl BxVM for VM {
         if let Some(ref mut buffer) = self.output_buffer {
             buffer.push_str(s);
         } else {
-            print!("{}", s);
+            crate::stdout::write_stdout(s, false);
         }
     }
 
@@ -7535,7 +7535,7 @@ impl VM {
                     if let Some(ref mut buffer) = self.output_buffer {
                         buffer.push_str(&out);
                     } else {
-                        print!("{}", out);
+                        crate::stdout::write_stdout(&out, false);
                     }
                 }
                 op::PRINTLN => {
@@ -7565,7 +7565,7 @@ impl VM {
                             buffer.push_str(&out);
                             buffer.push('\n');
                         } else {
-                            println!("{}", out);
+                            crate::stdout::write_stdout(&out, true);
                         }
                     }
                 }
@@ -7575,7 +7575,7 @@ impl VM {
                     if let Some(ref mut buffer) = self.output_buffer {
                         buffer.push_str(&s);
                     } else {
-                        print!("{s}");
+                        crate::stdout::write_stdout(&s, false);
                     }
                 }
                 op::CONTAINS => {

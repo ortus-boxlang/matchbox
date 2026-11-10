@@ -1,6 +1,7 @@
 extern crate self as matchbox_vm;
 
 pub mod bifs;
+pub mod stdout;
 #[cfg(all(feature = "qoq", not(target_arch = "wasm32")))]
 pub mod qoq;
 pub mod types;

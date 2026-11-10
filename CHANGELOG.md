@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Program output to a closed pipe (`matchbox script.bxs | head -1`, a native binary piped into `grep -q`) ends the process quietly with exit code 0 instead of panicking with `failed printing to stdout: Broken pipe`.
 ### Added
 - **Mappings**: virtual paths such as `/models` that point to a directory, declared the way BoxLang on the JVM does: `this.mappings` in an `Application.bx` next to the program, or `mappings` in a `boxlang.json` in the working directory (`"shared": "${user-dir}/lib"`, or `{ "path": ..., "external": false }`). Application mappings override the global ones. Names get a leading and trailing slash. They resolve `new`, `import` and `extends` for class files, are read when the program is compiled, and the classes found through them are compiled in, so a native binary carries them. Not in this change: `createObject` through a mapping, `bx:application`, and mappings added at run time.
 - `getCurrentTemplatePath()` returns the absolute path of the file whose code is running (it always returned an empty string).
