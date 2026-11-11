@@ -1257,9 +1257,9 @@ impl Compiler {
                     self.chunk.code[jump_ip] = op::JUMP as u32 | ((offset as u32) << 8);
                 }
 
-                self.end_scope();
-
-                // Patch any break jumps to land at the end of the loop
+                // `break` pops the body's locals but not the loop variable declared in the init clause (it is
+                // still on the stack), so its jumps must land BEFORE `end_scope` emits that pop. Landing after
+                // it leaked one stack slot per `break`, which shifted every later local of the function.
                 let break_target = self.chunk.code.len();
                 self.jump_targets.pop();
                 if let Some(breaks) = self.break_patches.pop() {
@@ -1268,6 +1268,8 @@ impl Compiler {
                         self.chunk.code[idx] = op::JUMP as u32 | ((offset as u32) << 8);
                     }
                 }
+
+                self.end_scope();
 
                 Ok(())
             }
