@@ -1189,10 +1189,18 @@ fn usage_text() -> String {
     let _ = writeln!(out, 
         "  --module <path>     Load a BoxLang module directory (may be specified multiple times)"
     );
-    let _ = writeln!(out, "\nCommands:");
-    let _ = writeln!(out, "  esp32-doctor        Check ESP32 build/flash prerequisites and print fixes");
-    let _ = writeln!(out, "  lambda invoke <path> --event <event.json>");
-    let _ = writeln!(out, 
+
+    //================================================
+    // Document the new --check <file> flag
+    //==============================================
+
+    println!("  --check <file>      Validate BoxLang source syntax (.bxs, .bx, .bxm) without execution");
+    println!("                      (Note: performs syntax checking only; not static type checking or dependency validation)");
+    println!("                      Example: matchbox --check script.bxs");
+    println!("\nCommands:");
+    println!("  esp32-doctor        Check ESP32 build/flash prerequisites and print fixes");
+    println!("  lambda invoke <path> --event <event.json>");
+    println!(
         "  lambda deploy <path> --function <name> --bootstrap <path> [--role <arn>] [--public] [--url]"
     );
     let _ = writeln!(out, "\nOptions must come before the file name; everything after it is passed to the script");

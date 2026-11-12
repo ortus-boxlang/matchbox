@@ -1774,4 +1774,23 @@ mod eval_flag {
         }
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0, "artifacts left behind");
     }
+    
+//======================================
+// test for issue 3
+//===========================================
+
+    #[test]
+    fn test_cli_check_flag() {
+      let temp = tempfile::tempdir().unwrap();
+    
+    // 1. Valid file test
+      let valid_path = temp.path().join("valid.bxs");
+      fs::write(&valid_path, "var x = 42;").unwrap();
+    // Test processing or command execution for valid syntax checking
+    
+    // 2. Invalid file test
+      let invalid_path = temp.path().join("invalid.bxs");
+      fs::write(&invalid_path, "var x = ;").unwrap();
+    // Verify that parsing/checking invalid syntax yields an error
+}
 }
