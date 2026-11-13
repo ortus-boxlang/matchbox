@@ -575,3 +575,136 @@ fn http_results_expose_response_headers() {
     // 6 requests: headers, missing, redirect + final, redirect (not followed), download.
     assert_eq!(server.join().unwrap().len(), 6);
 }
+
+/// Starts a TLS server with a freshly made self signed certificate for 127.0.0.1 using openssl and python.
+/// Returns None when either tool is missing, so the test is skipped there.
+fn self_signed_server() -> Option<(tempfile::TempDir, std::process::Child, u16)> {
+    let directory = tempfile::tempdir().ok()?;
+    let key = directory.path().join("key.pem");
+    let cert = directory.path().join("cert.pem");
+    let made = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "2",
+            "-subj",
+            "/CN=127.0.0.1",
+        ])
+        .args(["-addext", "subjectAltName=IP:127.0.0.1"])
+        .arg("-keyout")
+        .arg(&key)
+        .arg("-out")
+        .arg(&cert)
+        .output()
+        .ok()?;
+    if !made.status.success() {
+        return None;
+    }
+    let port = TcpListener::bind("127.0.0.1:0")
+        .ok()?
+        .local_addr()
+        .ok()?
+        .port();
+    let program = r#"
+import http.server, ssl, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"secure"
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+s = http.server.HTTPServer(("127.0.0.1", int(sys.argv[3])), H)
+c = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); c.load_cert_chain(sys.argv[1], sys.argv[2])
+s.socket = c.wrap_socket(s.socket, server_side=True); s.serve_forever()
+"#;
+    let child = Command::new("python3")
+        .args(["-c", program])
+        .arg(&cert)
+        .arg(&key)
+        .arg(port.to_string())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        if Instant::now() > deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Some((directory, child, port))
+}
+
+#[test]
+fn http_trusts_a_self_signed_certificate_only_when_asked_to() {
+    let Some((_directory, mut server, port)) = self_signed_server() else {
+        eprintln!("skipped: openssl or python3 is missing");
+        return;
+    };
+    let output = run(
+        &format!(
+            r#"
+        url = "https://127.0.0.1:{port}/";
+        refused = false;
+        try {{ http({{ url: url, timeout: 5 }}).get(); }} catch (any e) {{ refused = true; }}
+        if (!refused) throw "an untrusted certificate must be refused by default";
+
+        info = jsonDeserialize(http({{ url: url, certInfo: true, timeout: 5 }}).get());
+        if (info.status != 200) throw "certInfo should still return the response";
+        if (len(info.certificate.sha256) != 64) throw "certInfo should return a sha256 fingerprint";
+
+        ok = jsonDeserialize(http({{ url: url, trustCertificate: info.certificate.sha256, timeout: 5 }}).get());
+        if (ok.status != 200 || ok.body != "secure") throw "a trusted certificate should connect";
+        if (structKeyExists(ok, "certificate")) throw "certificate is only returned for certInfo";
+    "#
+        ),
+        &[],
+    );
+    let _ = server.kill();
+    assert_success(output);
+}
+
+#[test]
+fn http_does_not_trust_a_different_certificate() {
+    let (Some((_a, mut first, first_port)), Some((_b, mut second, second_port))) =
+        (self_signed_server(), self_signed_server())
+    else {
+        eprintln!("skipped: openssl or python3 is missing");
+        return;
+    };
+    let output = run(
+        &format!(
+            r#"
+        info = jsonDeserialize(http({{ url: "https://127.0.0.1:{first_port}/", certInfo: true, timeout: 5 }}).get());
+        rejected = false;
+        try {{
+            http({{ url: "https://127.0.0.1:{second_port}/", trustCertificate: info.certificate.sha256, timeout: 5 }}).get();
+        }} catch (any e) {{ rejected = true; }}
+        if (!rejected) throw "trusting one certificate must not trust another server";
+    "#
+        ),
+        &[],
+    );
+    let _ = first.kill();
+    let _ = second.kill();
+    assert_success(output);
+}
+
+#[test]
+fn http_certificate_options_are_validated_before_any_request() {
+    assert_success(run(
+        r#"
+        function fails(spec) {
+            try { http(spec).get(); return false; } catch (any e) { return true; }
+        }
+        if (!fails({ url: "http://127.0.0.1:1/", certInfo: true })) throw "certInfo needs https";
+        if (!fails({ url: "https://127.0.0.1:1/", certInfo: true, headers: { Authorization: "x" } })) throw "certInfo must refuse headers";
+        if (!fails({ url: "https://127.0.0.1:1/", certInfo: true, body: "password=x" })) throw "certInfo must refuse a body";
+        if (!fails({ url: "https://127.0.0.1:1/", trustCertificate: "not a fingerprint" })) throw "a bad fingerprint must fail";
+        if (!fails({ url: "https://127.0.0.1:1/", certInfo: "yes" })) throw "certInfo must be a boolean";
+    "#,
+        &[],
+    ));
+}

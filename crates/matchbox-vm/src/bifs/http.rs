@@ -16,6 +16,10 @@ struct RequestOptions {
     redirect: bool,
     no_proxy: bool,
     ipv4_only: bool,
+    /// Read the server certificate without trusting it. Used to show a person what they are about to trust.
+    cert_info: bool,
+    /// SHA-256 of the one server certificate to accept (a self signed server). Nothing else is accepted.
+    trust_certificate: Option<[u8; 32]>,
 }
 
 #[cfg(feature = "bif-http")]
@@ -27,6 +31,8 @@ impl Default for RequestOptions {
             redirect: true,
             no_proxy: false,
             ipv4_only: false,
+            cert_info: false,
+            trust_certificate: None,
         }
     }
 }
@@ -65,6 +71,89 @@ fn request_timeout(
         return Err(invalid());
     }
     Ok((seconds != 0.0).then_some(duration))
+}
+
+/// A certificate fingerprint: 64 hex digits, with or without colons, in either case.
+#[cfg(feature = "bif-http")]
+fn request_fingerprint(vm: &dyn BxVM, spec: usize, key: &str) -> Result<Option<[u8; 32]>, String> {
+    if !vm.struct_key_exists(spec, key) {
+        return Ok(None);
+    }
+    let value = vm.struct_get(spec, key);
+    if value.is_null() {
+        return Ok(None);
+    }
+    let text: String = vm
+        .to_string(value)
+        .chars()
+        .filter(|c| *c != ':' && !c.is_whitespace())
+        .collect();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let invalid =
+        || format!("http() option '{key}' must be a SHA-256 fingerprint of 64 hex digits");
+    if text.len() != 64 || !text.is_ascii() {
+        return Err(invalid());
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).map_err(|_| invalid())?;
+    }
+    Ok(Some(out))
+}
+
+/// Accepts exactly one server certificate, identified by its SHA-256 fingerprint. The handshake signature is
+/// still verified, so only a server that holds the matching private key is accepted. The chain and the host
+/// name are not checked, because the fingerprint is the identity.
+#[cfg(all(feature = "bif-http", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+struct PinnedCertificate {
+    fingerprint: [u8; 32],
+    algorithms: rustls::crypto::WebPkiSupportedAlgorithms,
+}
+
+#[cfg(all(feature = "bif-http", not(target_arch = "wasm32")))]
+impl rustls::client::danger::ServerCertVerifier for PinnedCertificate {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        use sha2::{Digest, Sha256};
+        if Sha256::digest(end_entity.as_ref()).as_slice() == self.fingerprint {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(
+                "the server certificate does not match the trusted fingerprint".to_string(),
+            ))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.algorithms.supported_schemes()
+    }
 }
 
 #[cfg(feature = "bif-http")]
@@ -127,6 +216,24 @@ fn send_http(
     }
     if options.ipv4_only {
         builder = builder.local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    }
+    if options.cert_info {
+        // Only to read the certificate: callers cannot attach headers or a body in this mode.
+        builder = builder.danger_accept_invalid_certs(true).tls_info(true);
+    }
+    if let Some(fingerprint) = options.trust_certificate {
+        let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = PinnedCertificate {
+            fingerprint,
+            algorithms: provider.signature_verification_algorithms,
+        };
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| format!("HTTP client configuration failed: {e}"))?
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(verifier))
+            .with_no_client_auth();
+        builder = builder.use_preconfigured_tls(config);
     }
     let client = builder
         .build()
@@ -207,8 +314,31 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
             options.redirect = request_bool(vm, id, "redirect", options.redirect)?;
             options.no_proxy = request_bool(vm, id, "noProxy", options.no_proxy)?;
             options.ipv4_only = request_bool(vm, id, "ipv4Only", options.ipv4_only)?;
+            options.cert_info = request_bool(vm, id, "certInfo", options.cert_info)?;
+            options.trust_certificate = request_fingerprint(vm, id, "trustCertificate")?;
             headers = request_headers(vm, id);
             body = request_body(vm, id);
+            if options.cert_info {
+                if !url.to_ascii_lowercase().starts_with("https://") {
+                    return Err("http() option 'certInfo' needs an https URL".to_string());
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                let has_path = path.is_some();
+                #[cfg(target_arch = "wasm32")]
+                let has_path = false;
+                if !headers.is_empty() || body.is_some() || has_path {
+                    return Err(
+                        "http() option 'certInfo' cannot be combined with headers, body or path, because the server is not verified"
+                            .to_string(),
+                    );
+                }
+                if options.trust_certificate.is_some() {
+                    return Err(
+                        "http() options 'certInfo' and 'trustCertificate' cannot be combined"
+                            .to_string(),
+                    );
+                }
+            }
         } else {
             url = vm.to_string(args[0]);
         }
@@ -242,6 +372,20 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
                 // and the original 3xx when they are disabled, so these are the correct
                 // headers in both cases. Error statuses (4xx/5xx) also reach this point.
                 let response_headers = response_headers(response.headers());
+                let certificate = if options.cert_info {
+                    use sha2::{Digest, Sha256};
+                    response
+                        .extensions()
+                        .get::<reqwest::tls::TlsInfo>()
+                        .and_then(|info| info.peer_certificate())
+                        .map(|der| {
+                            serde_json::json!({
+                                "sha256": Sha256::digest(der).iter().map(|b| format!("{b:02x}")).collect::<String>()
+                            })
+                        })
+                } else {
+                    None
+                };
                 if let Some(p) = path {
                     let mut file =
                         File::create(&p).map_err(|e| format!("Failed to create file: {e}"))?;
@@ -254,13 +398,18 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
                     }))
                 } else {
                     let text = response.text().map_err(request_error)?;
-                    Ok(serde_json::json!({
+                    let mut result = serde_json::json!({
                         "status": status,
                         // Text responses expose the same headers struct as downloads.
                         "headers": response_headers,
                         "file_content": text,
                         "body": text
-                    }))
+                    });
+                    // Only present for certInfo requests, so existing result shapes do not change.
+                    if let Some(certificate) = certificate {
+                        result["certificate"] = certificate;
+                    }
+                    Ok(result)
                 }
             })();
             match result {
