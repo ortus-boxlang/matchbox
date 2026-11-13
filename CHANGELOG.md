@@ -7,9 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- `len()` (and `.len()`) of a string counted UTF-8 bytes, and `find()` / `findNoCase()` returned byte offsets; both now count characters, so `len("é")` is 1 and `find` agrees with `left`, `right` and `mid`. Layout code that pads text with box-drawing or accented characters no longer miscounts (or loops forever).
-
 ### Added
 - **Terminal UI canvas** (`bif-tui`): `fill`, `text`, `gradient` and `border` draw styled text, gradients and bordered boxes in call order, with true-colour support (`#RRGGBB`, `#RGB`, `rgb(r,g,b)`) and an automatic 256-colour fallback when the terminal has no true colour; `render_to_string( width, height )` draws the frame into memory so a UI can be tested without a terminal. `poll_event` now reports key modifiers (`ctrl`, `alt`, `shift`), scroll and resize events; `Ctrl+c` and `Alt+x` arrive under those names (before, the modifier was dropped for characters). Widgets accept the same colours. The API is specified in `docs/tui.md`.
 - **Native programs can use the terminal UI**: the native runner stub includes the TUI classes when MatchBox is built with `bif-tui`. Native Fusion builds are unchanged.
@@ -21,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Class as the program**: `matchbox Task.bx a b` (and a native build of `Task.bx`) instantiates the class and calls `main( args )`, like `boxlang Task.bx`. `args` is the array of the raw command line arguments after the file name (`["hola", "--many", "options=test"]`); `cliGetArgs()` works inside as usual. A class without `main` fails with `Class [X] does not have a main method to execute.`. A nameless `class { }` takes the file name.
 
 ### Fixed
+- `variables.name( args )` calls a function stored in the `variables` scope (script level or inside a class) instead of failing with `Method name not found on variables scope`.
+- `len()` (and `.len()`) of a string counted UTF-8 bytes, and `find()` / `findNoCase()` returned byte offsets; both now count characters, so `len("é")` is 1 and `find` agrees with `left`, `right` and `mid`. Layout code that pads text with box-drawing or accented characters no longer miscounts (or loops forever).
 - **Tree-shaking ignored class files**: a built-in (prelude) function used only inside a class or interface file loaded with `new`, `import` or `extends` was removed from the program (`Variable 'arraysort' not found` at run time), because tree-shaking looked at the entry file alone. The files a program loads are now part of the analysis.
 - `break` and `continue` inside a `for ( x in list )` loop pop the loop's item (and index) slot like a normal iteration does. Before, a `break` in a for-in loop leaked that slot, and the next loop in the same function failed with `Internal VM error: iterator cursor is not a number`.
 - Program output to a closed pipe (`matchbox script.bxs | head -1`, a native binary piped into `grep -q`) ends the process quietly with exit code 0 instead of panicking with `failed printing to stdout: Broken pipe`.
