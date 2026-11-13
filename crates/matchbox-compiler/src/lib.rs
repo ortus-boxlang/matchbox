@@ -1,4 +1,5 @@
 pub mod compiler;
+pub mod mappings;
 pub use matchbox_parser::{ast, cst, inspect, parser, tokenizer};
 #[cfg(all(feature = "qoq", not(target_arch = "wasm32")))]
 pub use matchbox_vm::qoq;
@@ -33,12 +34,27 @@ pub fn compile_with_treeshaking(
         module_prelude_stmts.extend(stmts);
     }
 
+    // Class and interface files are loaded while compiling, so a first compile of the program
+    // finds them; their code has to be tracked too or a prelude function they alone use would be
+    // shaken out (`Variable 'arraysort' not found`).
+    let tracked_ast: Vec<Statement> = if no_shaking {
+        ast.to_vec()
+    } else {
+        compiler::clear_loaded_sources();
+        let _ = compiler::Compiler::new(filename).compile(ast, source);
+        let mut all = ast.to_vec();
+        for loaded in compiler::take_loaded_sources() {
+            all.extend(loaded);
+        }
+        all
+    };
+
     let final_prelude_stmts = if no_std_lib {
         // Built-in prelude excluded, but module bifs are still injected.
         if no_shaking {
             module_prelude_stmts
         } else {
-            tree_shake_stmts(&module_prelude_stmts, ast, extra_keep_symbols)
+            tree_shake_stmts(&module_prelude_stmts, &tracked_ast, extra_keep_symbols)
         }
     } else {
         // Parse the built-in prelude.
@@ -54,7 +70,7 @@ pub fn compile_with_treeshaking(
             // module function's entry overwrites the built-in one in the pool map.
             let mut merged = prelude_ast;
             merged.extend(module_prelude_stmts);
-            tree_shake_stmts(&merged, ast, extra_keep_symbols)
+            tree_shake_stmts(&merged, &tracked_ast, extra_keep_symbols)
         }
     };
 

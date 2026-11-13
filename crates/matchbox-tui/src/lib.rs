@@ -5,6 +5,8 @@ use std::rc::Rc;
 use matchbox_vm::types::{BxNativeFunction, BxVM, BxValue};
 use matchbox_vm::{BxObject, bx_methods};
 
+pub mod canvas;
+pub mod color;
 pub mod rendering_context;
 mod terminal;
 mod widget;
