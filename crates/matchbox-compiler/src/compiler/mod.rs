@@ -199,6 +199,24 @@ impl Compiler {
         })
     }
 
+    /// Compiles the statements of one `case` (or the `default`) of a `switch`.
+    ///
+    /// Control enters the switch at the matching case, so the `var` slots declared by the bodies of the cases
+    /// before it do not exist at run time. Each body therefore owns its locals: they are popped at its end
+    /// (a fall-through into the next case sees a balanced stack) and removed from the compile-time list, so
+    /// the slot numbers of the next body match what is on the stack.
+    fn compile_switch_body(&mut self, body: &[Statement], line: u32) -> Result<()> {
+        let base = self.locals.len();
+        for body_stmt in body {
+            self.compile_statement(body_stmt, false)?;
+        }
+        while self.locals.len() > base {
+            self.chunk.emit0(op::POP, line);
+            self.locals.pop();
+        }
+        Ok(())
+    }
+
     /// Pops the locals declared since the target loop or switch began.
     fn emit_jump_out(&mut self, target: usize, line: u32) {
         let target_local_count = self.loop_locals[target];
@@ -1263,9 +1281,9 @@ impl Compiler {
                     self.chunk.code[jump_ip] = op::JUMP as u32 | ((offset as u32) << 8);
                 }
 
-                self.end_scope();
-
-                // Patch any break jumps to land at the end of the loop
+                // `break` pops the body's locals but not the loop variable declared in the init clause (it is
+                // still on the stack), so its jumps must land BEFORE `end_scope` emits that pop. Landing after
+                // it leaked one stack slot per `break`, which shifted every later local of the function.
                 let break_target = self.chunk.code.len();
                 self.jump_targets.pop();
                 if let Some(breaks) = self.break_patches.pop() {
@@ -1274,6 +1292,8 @@ impl Compiler {
                         self.chunk.code[idx] = op::JUMP as u32 | ((offset as u32) << 8);
                     }
                 }
+
+                self.end_scope();
 
                 Ok(())
             }
@@ -1434,9 +1454,11 @@ impl Compiler {
                 }
 
                 // 3. Generate default case jump
-                let jump_to_default = self.chunk.code.len();
                 // Pop the switch value as we either match default or fall out
                 self.chunk.emit0(op::POP, stmt.line as u32);
+                // The JUMP is patched below; patching the POP instead dropped the pop and left the switch
+                // value on the stack for the default body (and after the switch when no case matched).
+                let jump_to_default = self.chunk.code.len();
                 self.chunk.emit1(op::JUMP, 0, stmt.line as u32);
 
                 // 4. Generate case bodies
@@ -1447,9 +1469,7 @@ impl Compiler {
                     let offset = body_start - jump_to_bodies[i] - 1;
                     self.chunk.code[jump_to_bodies[i]] = op::JUMP as u32 | ((offset as u32) << 8);
 
-                    for body_stmt in &switch_case.body {
-                        self.compile_statement(body_stmt, false)?;
-                    }
+                    self.compile_switch_body(&switch_case.body, stmt.line as u32)?;
                     i += 1;
                 }
 
@@ -1459,9 +1479,7 @@ impl Compiler {
                 self.chunk.code[jump_to_default] = op::JUMP as u32 | ((def_offset as u32) << 8);
 
                 if let Some(def_case) = default_case {
-                    for body_stmt in def_case {
-                        self.compile_statement(body_stmt, false)?;
-                    }
+                    self.compile_switch_body(def_case, stmt.line as u32)?;
                 }
 
                 // Cleanup scope and loop_locals tracking

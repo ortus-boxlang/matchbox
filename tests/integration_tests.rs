@@ -319,9 +319,12 @@ script_test!(vm_qoq_query_execute, "vm_qoq_query_execute.bxs");
 #[cfg(feature = "qoq")]
 script_test!(vm_qoq_join, "vm_qoq_join.bxs");
 script_test!(vm_encode_for_html, "vm_encode_for_html.bxs");
+script_test!(vm_switch_case_locals, "vm_switch_case_locals.bxs");
 script_test!(vm_break_nested_forin, "vm_break_nested_forin.bxs");
+script_test!(vm_for_classic_break, "vm_for_classic_break.bxs");
 script_test!(string_multibyte, "string_multibyte.bxs");
 script_test!(vm_bare_block, "vm_bare_block.bxs");
+script_test!(vm_numeric_text_args, "vm_numeric_text_args.bxs");
 
 #[test]
 #[cfg(feature = "bif-tui")]

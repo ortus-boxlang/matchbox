@@ -1660,7 +1660,16 @@ impl BxVM for VM {
         };
 
         let delegated = obj_rc.borrow().delegated_callback(name);
-        let res = if let Some(callback) = delegated {
+        // `variables.name( args )`: the scope is a native object, so a function stored in it is called here
+        // (script-level `variables` reads the VM globals, an instance's `variables` reads its own map).
+        let stored = if obj_rc.borrow().native_data("matchbox.variables_scope").is_some() {
+            Some(self.native_object_get(&obj_rc, name)).filter(|value| !value.is_null())
+        } else {
+            None
+        };
+        let res = if let Some(function) = stored {
+            self.call_function_value_named(function, args.to_vec(), None).map_err(|error| error.to_string())
+        } else if let Some(callback) = delegated {
             let mut values = vec![BxValue::new_ptr(id)];
             values.extend_from_slice(args);
             self.invoke_callback(&callback, &values)
@@ -8069,7 +8078,15 @@ impl VM {
                                 // progress, or the producer never runs. A plain timeslice expiry
                                 // just resumes the callback.
                                 if std::mem::take(&mut self.fibers[fiber_idx].blocked_on_future) {
-                                    if let Err(e) = self.run_other_fibers() {
+                                    // Our own fiber is not running between slices, so the scheduler would pick it up and
+                                    // finish it, and this loop would then resume a finished fiber and return null. Mark it
+                                    // running while the other fibers progress.
+                                    self.fibers[fiber_idx].running = true;
+                                    let others = self.run_other_fibers();
+                                    if let Some(own) = self.fibers.iter_mut().find(|fiber| fiber.future_id == nested_future) {
+                                        own.running = false;
+                                    }
+                                    if let Err(e) = others {
                                         break Err(e);
                                     }
                                 }
