@@ -3050,7 +3050,8 @@ fn len(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args[0].is_null() {
         return Ok(BxValue::new_number(0.0));
     }
-    if args[0].is_number() || args[0].is_int() {
+    // A simple value is measured as the text it prints as, as BoxLang does: len(false) is 5, len(true) is 4, len(123) is 3.
+    if args[0].is_number() || args[0].is_int() || args[0].is_bool() {
         return Ok(BxValue::new_number(vm.to_string(args[0]).chars().count() as f64));
     }
     // A string's length is its characters, not its UTF-8 bytes (get_len counts bytes), so len("é") is 1.
