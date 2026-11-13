@@ -2834,87 +2834,83 @@ fn replace_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     Ok(BxValue::new_ptr(vm.string_new(result)))
 }
 
-fn round(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+/// A numeric argument: a number, or text that is a number ("60", " 2.5 "), as BoxLang converts it.
+/// Anything else is an error that names the function.
+fn numeric_arg(vm: &mut dyn BxVM, value: BxValue, name: &str) -> Result<f64, String> {
+    if value.is_number() {
+        return Ok(value.as_number());
+    }
+    if vm.is_string_value(value) {
+        if let Ok(parsed) = vm.to_string(value).trim().parse::<f64>() {
+            if parsed.is_finite() {
+                return Ok(parsed);
+            }
+        }
+    }
+    Err(format!("{name}() expects a number"))
+}
+
+fn round(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() || args.len() > 2 {
         return Err("round() expects 1 or 2 arguments".to_string());
     }
-    if args[0].is_number() {
-        let precision = args.get(1).map_or(0, |value| value.as_number() as i32);
-        let factor = 10_f64.powi(precision);
-        Ok(BxValue::new_number((args[0].as_number() * factor).round() / factor))
-    } else {
-        Err("round() expects a number".to_string())
-    }
+    let number = numeric_arg(vm, args[0], "round")?;
+    let precision = match args.get(1) {
+        Some(value) => numeric_arg(vm, *value, "round")? as i32,
+        None => 0,
+    };
+    let factor = 10_f64.powi(precision);
+    Ok(BxValue::new_number((number * factor).round() / factor))
 }
 
-fn floor_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+fn floor_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 {
         return Err("floor() expects exactly 1 argument".to_string());
     }
-    if args[0].is_number() {
-        Ok(BxValue::new_number(args[0].as_number().floor()))
-    } else {
-        Err("floor() expects a number".to_string())
-    }
+    let number = numeric_arg(vm, args[0], "floor")?;
+    Ok(BxValue::new_number(number.floor()))
 }
 
-pub(crate) fn int_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+pub(crate) fn int_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 {
         return Err("int() expects exactly 1 argument".to_string());
     }
-    if args[0].is_number() {
-        Ok(BxValue::new_number(args[0].as_number().trunc()))
-    } else {
-        Err("int() expects a number".to_string())
-    }
+    let number = numeric_arg(vm, args[0], "int")?;
+    Ok(BxValue::new_number(number.trunc()))
 }
 
-fn ceiling_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+fn ceiling_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 {
         return Err("ceiling() expects exactly 1 argument".to_string());
     }
-    if args[0].is_number() {
-        Ok(BxValue::new_number(args[0].as_number().ceil()))
-    } else {
-        Err("ceiling() expects a number".to_string())
-    }
+    let number = numeric_arg(vm, args[0], "ceiling")?;
+    Ok(BxValue::new_number(number.ceil()))
 }
 
-fn abs_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+fn abs_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 {
         return Err("abs() expects exactly 1 argument".to_string());
     }
-    if args[0].is_number() {
-        Ok(BxValue::new_number(args[0].as_number().abs()))
-    } else {
-        Err("abs() expects a number".to_string())
-    }
+    let number = numeric_arg(vm, args[0], "abs")?;
+    Ok(BxValue::new_number(number.abs()))
 }
 
-fn min_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+fn min_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 2 {
         return Err("min() expects exactly 2 arguments".to_string());
     }
-    if args[0].is_number() && args[1].is_number() {
-        Ok(BxValue::new_number(
-            args[0].as_number().min(args[1].as_number()),
-        ))
-    } else {
-        Err("min() expects numbers".to_string())
-    }
+    let first = numeric_arg(vm, args[0], "min")?;
+    let second = numeric_arg(vm, args[1], "min")?;
+    Ok(BxValue::new_number(first.min(second)))
 }
 
-fn max_bif(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+fn max_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 2 {
         return Err("max() expects exactly 2 arguments".to_string());
     }
-    if args[0].is_number() && args[1].is_number() {
-        Ok(BxValue::new_number(
-            args[0].as_number().max(args[1].as_number()),
-        ))
-    } else {
-        Err("max() expects numbers".to_string())
-    }
+    let first = numeric_arg(vm, args[0], "max")?;
+    let second = numeric_arg(vm, args[1], "max")?;
+    Ok(BxValue::new_number(first.max(second)))
 }
 
 fn rand_range(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
