@@ -300,7 +300,7 @@ fn http_ipv4_only_rejects_ipv6_including_redirects() {
             if matches!(
                 error.kind(),
                 std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
-            ) =>
+            ) || error.raw_os_error() == Some(97) /* EAFNOSUPPORT: kernel built without IPv6 */ =>
         {
             eprintln!("IPv6 loopback unavailable; skipping IPv6-only assertions: {error}");
             return;
