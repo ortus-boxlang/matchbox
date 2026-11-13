@@ -1,0 +1,36 @@
+// The TUI canvas: fill, text, gradient and border draw in call order with styles; render_to_string shows the result
+// without a terminal.
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+tui = createObject( "rust", "tui.TUI" );
+tui.begin_frame();
+tui.fill( 0, 0, 20, 3, { bg: "#292c3c" } );
+tui.border( 0, 0, 20, 3, { border: "rounded", fg: "#51576d", bg: "#292c3c", title: "Steps", titleFg: "#00ff78" } );
+tui.text( 2, 1, "hello", { fg: "#c6d0f5", bold: true } );
+tui.gradient( 8, 1, "world", "#00dbff", "#00ff78", {} );
+rows = listToArray( tui.render_to_string( 20, 3 ), chr( 10 ) );
+expect( rows.len(), 3, "three rows" );
+expect( rows[ 1 ], "╭─ Steps ──────────╮", "top border with title" );
+expect( rows[ 2 ], "│ hello world      │", "text and gradient inside the box" );
+expect( rows[ 3 ], "╰──────────────────╯", "bottom border" );
+
+// a new frame starts empty
+tui.begin_frame();
+tui.text( 0, 0, "x", {} );
+expect( tui.render_to_string( 3, 1 ), "x  ", "begin_frame clears the canvas" );
+
+// colours that do not parse are an error, not white
+threw = false;
+try { tui.text( 0, 0, "x", { fg: "chartreuse" } ); } catch ( any e ) { threw = true; }
+expect( threw, true, "an unknown colour throws" );
+threw = false;
+try { tui.gradient( 0, 0, "x", "#00dbff", "nope", {} ); } catch ( any e ) { threw = true; }
+expect( threw, true, "an unknown gradient colour throws" );
+
+// print keeps working and accepts hex colours
+tui.begin_frame();
+tui.print( 1, 0, "ok", "#00ff78", true );
+expect( tui.render_to_string( 4, 1 ), " ok ", "print draws on the canvas" );
+println( "tui canvas ok" );

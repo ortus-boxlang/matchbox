@@ -277,6 +277,7 @@ script_test!(vm_private_methods, "vm_private_methods.bxs");
 script_test!(vm_class_accessors, "vm_class_accessors.bxs");
 script_test!(vm_class_annotation_names, "vm_class_annotation_names.bxs");
 script_test!(vm_variables_request_scope, "vm_variables_request_scope.bxs");
+script_test!(vm_struct_variables_scope, "vm_struct_variables_scope.bxs");
 script_test!(vm_destructure_rest, "vm_destructure_rest.bxs");
 script_test!(vm_array_slice, "vm_array_slice.bxs");
 script_test!(vm_required_arguments, "vm_required_arguments.bxs");
@@ -319,6 +320,8 @@ script_test!(vm_qoq_query_execute, "vm_qoq_query_execute.bxs");
 script_test!(vm_qoq_join, "vm_qoq_join.bxs");
 script_test!(vm_encode_for_html, "vm_encode_for_html.bxs");
 script_test!(vm_switch_case_locals, "vm_switch_case_locals.bxs");
+script_test!(vm_break_nested_forin, "vm_break_nested_forin.bxs");
+script_test!(string_multibyte, "string_multibyte.bxs");
 
 #[test]
 #[cfg(feature = "bif-tui")]
@@ -373,6 +376,33 @@ fn tui_fluent() {
         false,
     ) {
         panic!("Script test 'tui_fluent.bxs' failed: {}", e);
+    }
+}
+#[test]
+#[cfg(feature = "bif-tui")]
+fn tui_canvas() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join("tui_canvas.bxs");
+
+    if let Err(e) = process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    ) {
+        panic!("Script test 'tui_canvas.bxs' failed: {}", e);
     }
 }
 #[test]
@@ -780,6 +810,64 @@ fn test_multi_file() {
         false,
     )
     .unwrap();
+}
+
+#[test]
+fn test_cross_file_inheritance_from_entry_directory() {
+    // The working directory during `cargo test` is the crate root, which has no `models/`
+    // folder: the classes must be found next to the entry script.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("class_project")
+        .join("main.bxs");
+
+    process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_inheritance_cycle_across_files_is_an_error_not_a_crash() {
+    let dir = std::env::temp_dir().join(format!("matchbox-cycle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("models")).unwrap();
+    std::fs::write(dir.join("models/A.bx"), "import models.B;\nclass A extends=\"B\" { }").unwrap();
+    std::fs::write(dir.join("models/B.bx"), "import models.A;\nclass B extends=\"A\" { }").unwrap();
+    std::fs::write(dir.join("main.bxs"), "import models.A;\nx = new models.A();\n").unwrap();
+
+    let result = process_file(
+        &dir.join("main.bxs"),
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    );
+    let error = result.expect_err("a cycle must be rejected").to_string();
+    assert!(error.contains("Circular inheritance"), "{error}");
 }
 
 #[test]
