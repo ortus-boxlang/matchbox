@@ -1,0 +1,17 @@
+// len() of a simple value is the length of the text it prints as, as in BoxLang. A boolean used to throw.
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+expect( len( false ), 5, "len of false" );
+expect( len( true ), 4, "len of true" );
+expect( len( 123 ), 3, "len of an integer" );
+expect( len( 1.5 ), 3, "len of a decimal" );
+expect( len( "" ), 0, "len of an empty string" );
+expect( len( "é" ), 1, "len of text counts characters" );
+expect( len( [ 1, 2 ] ), 2, "len of an array" );
+expect( len( { a: 1 } ), 1, "len of a struct" );
+// a boolean that comes out of a comparison, and one passed in an argument
+function size( value ) { return len( value ); }
+expect( size( 1 == 1 ), 4, "len of a comparison that is true" );
+expect( size( false ), 5, "len of a boolean argument" );
