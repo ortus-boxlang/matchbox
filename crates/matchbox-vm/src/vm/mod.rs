@@ -8078,7 +8078,15 @@ impl VM {
                                 // progress, or the producer never runs. A plain timeslice expiry
                                 // just resumes the callback.
                                 if std::mem::take(&mut self.fibers[fiber_idx].blocked_on_future) {
-                                    if let Err(e) = self.run_other_fibers() {
+                                    // Our own fiber is not running between slices, so the scheduler would pick it up and
+                                    // finish it, and this loop would then resume a finished fiber and return null. Mark it
+                                    // running while the other fibers progress.
+                                    self.fibers[fiber_idx].running = true;
+                                    let others = self.run_other_fibers();
+                                    if let Some(own) = self.fibers.iter_mut().find(|fiber| fiber.future_id == nested_future) {
+                                        own.running = false;
+                                    }
+                                    if let Err(e) = others {
                                         break Err(e);
                                     }
                                 }
