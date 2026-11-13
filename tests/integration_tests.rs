@@ -319,8 +319,10 @@ script_test!(vm_qoq_query_execute, "vm_qoq_query_execute.bxs");
 #[cfg(feature = "qoq")]
 script_test!(vm_qoq_join, "vm_qoq_join.bxs");
 script_test!(vm_encode_for_html, "vm_encode_for_html.bxs");
+script_test!(vm_switch_case_locals, "vm_switch_case_locals.bxs");
 script_test!(vm_break_nested_forin, "vm_break_nested_forin.bxs");
 script_test!(vm_for_classic_break, "vm_for_classic_break.bxs");
+script_test!(string_multibyte, "string_multibyte.bxs");
 
 #[test]
 #[cfg(feature = "bif-tui")]
@@ -375,6 +377,33 @@ fn tui_fluent() {
         false,
     ) {
         panic!("Script test 'tui_fluent.bxs' failed: {}", e);
+    }
+}
+#[test]
+#[cfg(feature = "bif-tui")]
+fn tui_canvas() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("scripts")
+        .join("tui_canvas.bxs");
+
+    if let Err(e) = process_file(
+        &path,
+        false,
+        None,
+        Vec::new(),
+        false,
+        false,
+        false,
+        None,
+        &[],
+        false,
+        None,
+        false,
+        false,
+        false,
+    ) {
+        panic!("Script test 'tui_canvas.bxs' failed: {}", e);
     }
 }
 #[test]
