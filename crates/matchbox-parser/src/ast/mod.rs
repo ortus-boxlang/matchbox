@@ -114,6 +114,8 @@ pub enum StatementKind {
         label: String,
         body: Vec<Statement>,
     },
+    /// A bare `{ ... }` block of statements. BoxLang has no block scope, so it only groups statements.
+    Block(Vec<Statement>),
     Rethrow,
     Assert {
         condition: Expression,

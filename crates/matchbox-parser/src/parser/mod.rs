@@ -476,6 +476,11 @@ impl<'a> Parser<'a> {
             {
                 return self.parse_destructure_assignment(line);
             }
+            Some(TokenKind::LeftBrace) if self.bare_block_ahead() => {
+                self.pos += 1; // {
+                let body = self.parse_block()?;
+                Ok(Statement::new(StatementKind::Block(body), line))
+            }
             Some(_) => {
                 let expr = self.parse_expression()?;
                 // Consume optional semicolon
@@ -1298,6 +1303,33 @@ impl<'a> Parser<'a> {
         }
     }
 
+
+    /// A statement that starts with `{` is a block of statements, as in BoxLang, unless it is a struct literal
+    /// used as an expression: `{ key: value }`, `{ key = value }` or `{ ...spread }` with no `;` of its own.
+    fn bare_block_ahead(&self) -> bool {
+        let mut depth = 0usize;
+        let mut i = self.pos;
+        while let Some(token) = self.tokens.get(i) {
+            match token.kind {
+                TokenKind::LeftBrace | TokenKind::LeftBracket | TokenKind::LeftParen => depth += 1,
+                TokenKind::RightBrace | TokenKind::RightBracket | TokenKind::RightParen => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 { break; }
+                }
+                TokenKind::Semicolon if depth == 1 => return true,
+                _ => {}
+            }
+            i += 1;
+        }
+        match (self.kind(1), self.kind(2)) {
+            (Some(TokenKind::RightBrace), _) | (Some(TokenKind::DotDotDot), _) => false,
+            (Some(TokenKind::Var | TokenKind::If | TokenKind::For | TokenKind::While | TokenKind::Do | TokenKind::Try
+                | TokenKind::Return | TokenKind::Throw | TokenKind::Switch | TokenKind::Break | TokenKind::Continue
+                | TokenKind::Function), _) => true,
+            (Some(TokenKind::Identifier | TokenKind::String | TokenKind::StringStart | TokenKind::Number), Some(TokenKind::Colon | TokenKind::Equal)) => false,
+            _ => true,
+        }
+    }
 
     fn is_destructure_assignment(&self) -> bool {
         let start = self.pos;

@@ -673,6 +673,12 @@ impl Compiler {
                 self.break_patches[target].push(jump_idx);
                 Ok(())
             }
+            StatementKind::Block(body) => {
+                for inner in body {
+                    self.compile_statement(inner, false)?;
+                }
+                Ok(())
+            }
             StatementKind::Labeled { label, body } => {
                 self.pending_label = Some(label.clone());
                 for inner in body {
@@ -3658,6 +3664,7 @@ impl DependencyTracker {
                 }
             }
             StatementKind::Labeled { body, .. } => self.track_statements(body),
+            StatementKind::Block(body) => self.track_statements(body),
             StatementKind::Break(_) | StatementKind::Continue(_) | StatementKind::Rethrow => {}
             StatementKind::Assert { condition, message } => {
                 self.track_expression(condition);

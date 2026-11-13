@@ -262,7 +262,7 @@ fn collect_esp32_unsupported_features_in_stmt(
                 );
             }
         }
-        StatementKind::Labeled { body, .. } => {
+        StatementKind::Labeled { body, .. } | StatementKind::Block(body) => {
             for statement in body {
                 collect_esp32_unsupported_features_in_stmt(
                     statement,

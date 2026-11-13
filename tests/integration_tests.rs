@@ -324,6 +324,7 @@ script_test!(vm_switch_case_locals, "vm_switch_case_locals.bxs");
 script_test!(string_multibyte, "string_multibyte.bxs");
 script_test!(vm_for_classic_break, "vm_for_classic_break.bxs");
 script_test!(vm_numeric_text_args, "vm_numeric_text_args.bxs");
+script_test!(vm_bare_block, "vm_bare_block.bxs");
 
 #[test]
 #[cfg(feature = "bif-tui")]
