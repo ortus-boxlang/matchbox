@@ -1,0 +1,42 @@
+// A bare { ... } block is a group of statements, as in BoxLang. It has no scope of its own.
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+x = 1;
+{
+    x = x + 1;
+    y = 10;
+}
+expect( x, 2, "a bare block runs its statements" );
+expect( y, 10, "a variable set in a block is visible after it" );
+
+function f() {
+    var a = 1;
+    {
+        a = a + 1;
+        var b = 5;
+    }
+    return a + b;
+}
+expect( f(), 7, "a var declared in a block is visible after it" );
+
+{ var inside = 3; if ( inside == 3 ) { z = "ok"; } }
+expect( z, "ok", "blocks nest with other statements" );
+
+total = 0;
+for ( i = 1; i <= 3; i++ ) {
+    {
+        if ( i == 2 ) { continue; }
+        total += i;
+    }
+}
+expect( total, 4, "continue inside a block reaches the loop" );
+
+// Struct literals are unchanged: as a value, and as an expression statement.
+s = { key: "value" };
+expect( s.key, "value", "a struct literal is still a value" );
+{ key: "ignored" };
+{ "quoted": 1, other = 2 };
+{};
+expect( 1, 1, "struct literal statements parse" );
