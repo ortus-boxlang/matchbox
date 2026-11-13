@@ -321,6 +321,7 @@ script_test!(vm_qoq_join, "vm_qoq_join.bxs");
 script_test!(vm_encode_for_html, "vm_encode_for_html.bxs");
 script_test!(vm_break_nested_forin, "vm_break_nested_forin.bxs");
 script_test!(string_multibyte, "string_multibyte.bxs");
+script_test!(vm_bare_block, "vm_bare_block.bxs");
 
 #[test]
 #[cfg(feature = "bif-tui")]
