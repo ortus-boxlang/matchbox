@@ -25,6 +25,29 @@ struct Local {
     depth: i32,
 }
 
+thread_local! {
+    /// Class files whose `extends` parent is being loaded right now, to reject inheritance cycles.
+    static PARENT_CHAIN: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// ASTs of the class and interface files loaded while compiling (`new`, `import`, `extends`).
+    /// Tree-shaking needs them: a prelude function used only inside such a file must be kept.
+    static LOADED_SOURCES: std::cell::RefCell<Vec<Vec<Statement>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Forgets the files recorded so far on this thread.
+pub fn clear_loaded_sources() {
+    LOADED_SOURCES.with(|l| l.borrow_mut().clear());
+}
+
+/// The ASTs of the class and interface files loaded since [`clear_loaded_sources`].
+pub fn take_loaded_sources() -> Vec<Vec<Statement>> {
+    LOADED_SOURCES.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+
+/// Remembers the AST of a class or interface file the compiler just loaded (see [`take_loaded_sources`]).
+fn record_loaded_source(ast: &[Statement]) {
+    LOADED_SOURCES.with(|l| l.borrow_mut().push(ast.to_vec()));
+}
+
 pub struct Compiler {
     pub chunk: Chunk,
     source_dependencies: Arc<AtomicBool>,
@@ -48,6 +71,16 @@ pub struct Compiler {
     class_methods: HashSet<String>, // Method names of the current class being compiled
     /// Directory to resolve unqualified source paths against (e.g. sibling interfaces).
     pub source_dir: Option<PathBuf>,
+    /// Directory of the entry script. Dotted class paths (`models.Dog`) that are not found
+    /// relative to the working directory are resolved against it, so a project builds the same
+    /// from any directory.
+    pub root_dir: Option<PathBuf>,
+    /// Mappings (`/models` -> directory) from boxlang.json and Application.bx, set per thread by
+    /// the front end. Searched after the working directory and sibling lookups.
+    mappings: Vec<crate::mappings::Mapping>,
+    /// Parent classes of classes loaded from other files, to be defined as globals before the
+    /// child class is used (the VM resolves `extends` by global name).
+    pending_parent_defs: Vec<(String, Constant)>,
     /// Tracks which class names (lowercased) are known to define an init() method.
     /// Propagated to sub-compilers so that `new` expressions in functions/methods
     /// can still determine whether to emit an `init` invocation.
@@ -78,6 +111,9 @@ impl Compiler {
             pending_label: None,
             catch_exception_slots: Vec::new(),
             class_methods: HashSet::new(),
+            root_dir: source_dir.clone(),
+            mappings: crate::mappings::current_mappings(),
+            pending_parent_defs: Vec::new(),
             source_dir,
             class_has_init_map: HashMap::new(),
             current_function_is_static: false,
@@ -106,6 +142,9 @@ impl Compiler {
             pending_label: None,
             catch_exception_slots: Vec::new(),
             class_methods: HashSet::new(),
+            root_dir: source_dir.clone(),
+            mappings: crate::mappings::current_mappings(),
+            pending_parent_defs: Vec::new(),
             source_dir,
             class_has_init_map: HashMap::new(),
             current_function_is_static: false,
@@ -123,6 +162,7 @@ impl Compiler {
         let mut compiler = Self::with_chunk(chunk);
         compiler.source_dependencies = Arc::clone(&self.source_dependencies);
         compiler.class_name = self.class_name.clone();
+        compiler.root_dir = self.root_dir.clone();
         compiler
     }
 
@@ -157,6 +197,24 @@ impl Compiler {
             (None, true) => anyhow::anyhow!("'continue' used outside of a loop"),
             (None, false) => anyhow::anyhow!("'break' used outside of a loop or switch"),
         })
+    }
+
+    /// Compiles the statements of one `case` (or the `default`) of a `switch`.
+    ///
+    /// Control enters the switch at the matching case, so the `var` slots declared by the bodies of the cases
+    /// before it do not exist at run time. Each body therefore owns its locals: they are popped at its end
+    /// (a fall-through into the next case sees a balanced stack) and removed from the compile-time list, so
+    /// the slot numbers of the next body match what is on the stack.
+    fn compile_switch_body(&mut self, body: &[Statement], line: u32) -> Result<()> {
+        let base = self.locals.len();
+        for body_stmt in body {
+            self.compile_statement(body_stmt, false)?;
+        }
+        while self.locals.len() > base {
+            self.chunk.emit0(op::POP, line);
+            self.locals.pop();
+        }
+        Ok(())
     }
 
     /// Pops the locals declared since the target loop or switch began.
@@ -1388,9 +1446,11 @@ impl Compiler {
                 }
 
                 // 3. Generate default case jump
-                let jump_to_default = self.chunk.code.len();
                 // Pop the switch value as we either match default or fall out
                 self.chunk.emit0(op::POP, stmt.line as u32);
+                // The JUMP is patched below; patching the POP instead dropped the pop and left the switch
+                // value on the stack for the default body (and after the switch when no case matched).
+                let jump_to_default = self.chunk.code.len();
                 self.chunk.emit1(op::JUMP, 0, stmt.line as u32);
 
                 // 4. Generate case bodies
@@ -1401,9 +1461,7 @@ impl Compiler {
                     let offset = body_start - jump_to_bodies[i] - 1;
                     self.chunk.code[jump_to_bodies[i]] = op::JUMP as u32 | ((offset as u32) << 8);
 
-                    for body_stmt in &switch_case.body {
-                        self.compile_statement(body_stmt, false)?;
-                    }
+                    self.compile_switch_body(&switch_case.body, stmt.line as u32)?;
                     i += 1;
                 }
 
@@ -1413,9 +1471,7 @@ impl Compiler {
                 self.chunk.code[jump_to_default] = op::JUMP as u32 | ((def_offset as u32) << 8);
 
                 if let Some(def_case) = default_case {
-                    for body_stmt in def_case {
-                        self.compile_statement(body_stmt, false)?;
-                    }
+                    self.compile_switch_body(def_case, stmt.line as u32)?;
                 }
 
                 // Cleanup scope and loop_locals tracking
@@ -1499,6 +1555,10 @@ impl Compiler {
                     stmt.line as u32,
                 );
 
+                // `break` and `continue` pop everything above the cursor, including the item (and index)
+                // slots of this loop, so record the local count before they are added.
+                let loop_locals_base = self.locals.len();
+
                 // Script-level loop variables live in the `variables` scope (shared with closures,
                 // readable and writable by the body); the stack slot only carries the iteration value.
                 let script_scope = !self.is_function && !self.is_class;
@@ -1519,20 +1579,22 @@ impl Compiler {
                 self.continue_patches.push(Vec::new());
                 self.break_patches.push(Vec::new());
                 self.jump_targets.push((self.pending_label.take(), true));
-                self.loop_locals.push(self.locals.len());
+                self.loop_locals.push(loop_locals_base);
                 for stmt in body {
                     self.compile_statement(stmt, false)?;
                 }
                 let loop_local_count = self.loop_locals.last().copied().unwrap_or(0);
                 self.loop_locals.pop();
 
-                // Pop any locals declared inside the loop body before looping back.
+                // Pop the locals declared inside the body and the item (and index) slots before looping
+                // back. `continue` and `break` pop the same slots before they jump, so every path reaches
+                // the next iteration (or the loop exit) with only the collection and the cursor left.
                 while self.locals.len() > loop_local_count {
                     self.chunk.emit0(op::POP, stmt.line as u32);
                     self.locals.pop();
                 }
 
-                // Patch continue jumps to land here (before loop-var pops)
+                // Patch continue jumps to land here (the loop variables are already popped)
                 let continue_target = self.chunk.code.len();
                 if let Some(patches) = self.continue_patches.pop() {
                     for idx in patches {
@@ -1540,13 +1602,6 @@ impl Compiler {
                         self.chunk.code[idx] = op::JUMP as u32 | ((offset as u32) << 8);
                     }
                 }
-
-                if index.is_some() {
-                    self.chunk.emit0(op::POP, stmt.line as u32);
-                    self.locals.pop();
-                }
-                self.chunk.emit0(op::POP, stmt.line as u32);
-                self.locals.pop();
 
                 let loop_end = self.chunk.code.len();
                 let offset = loop_end - loop_start + 1;
@@ -1663,10 +1718,22 @@ impl Compiler {
                             .methods
                             .iter()
                             .any(|(n, _)| n.eq_ignore_ascii_case("init"))
+                            // parents loaded from other files are not in this chunk yet
+                            || self.pending_parent_defs.iter().any(|(_, parent)| {
+                                matches!(parent, Constant::Class(p) if p.methods.iter().any(|(n, _)| n.eq_ignore_ascii_case("init")))
+                            })
                             || cls
                                 .extends
                                 .as_deref()
                                 .is_some_and(|parent| self.class_chain_has_init(parent, 0));
+                    }
+                    for (parent_name, parent_val) in std::mem::take(&mut self.pending_parent_defs) {
+                        let parent_idx = self.chunk.add_constant(parent_val);
+                        self.chunk.emit1(op::CONSTANT, parent_idx, expr.line);
+                        let name_idx = self
+                            .chunk
+                            .add_constant(Constant::String(BoxString::new(parent_name.as_str())));
+                        self.chunk.emit1(op::DEFINE_GLOBAL, name_idx, expr.line);
                     }
                     let class_idx = self.chunk.add_constant(class_val);
                     self.chunk.emit1(op::CONSTANT, class_idx, expr.line);
@@ -3192,7 +3259,16 @@ impl Compiler {
             && (path.to_ascii_lowercase().starts_with("bxmodules.") || self.resolve_source_file(path).is_err())
     }
 
+    /// Finds the file for a dotted class path. The path is made absolute here, at compile time, so a
+    /// native binary reports the same template path (`getCurrentTemplatePath()`) wherever it is run.
     fn resolve_source_file(&self, dotted_path: &str) -> Result<PathBuf> {
+        let found = self.find_source_file(dotted_path)?;
+        Ok(std::path::absolute(&found).unwrap_or(found))
+    }
+
+    /// The lookup behind [`Self::resolve_source_file`]: working directory, sibling of the current file,
+    /// mappings, then the entry script's directory. The result may be relative.
+    fn find_source_file(&self, dotted_path: &str) -> Result<PathBuf> {
         self.source_dependencies.store(true, Ordering::Relaxed);
         let base_path = Path::new(&dotted_path.replace('.', "/")).to_path_buf();
 
@@ -3218,6 +3294,31 @@ impl Compiler {
                 if rel_bx.exists() {
                     return Ok(rel_bx);
                 }
+            }
+        }
+
+        // Mappings (BoxLang order: relative path, then mappings).
+        for base in crate::mappings::candidates(&self.mappings, dotted_path) {
+            let with_bxs = base.with_extension("bxs");
+            if with_bxs.exists() {
+                return Ok(with_bxs);
+            }
+            let with_bx = base.with_extension("bx");
+            if with_bx.exists() {
+                return Ok(with_bx);
+            }
+        }
+
+        // Not found relative to the working directory: try the entry script's directory.
+        if let Some(ref root) = self.root_dir {
+            let from_root = root.join(&base_path);
+            let rel_bxs = from_root.with_extension("bxs");
+            if rel_bxs.exists() {
+                return Ok(rel_bxs);
+            }
+            let rel_bx = from_root.with_extension("bx");
+            if rel_bx.exists() {
+                return Ok(rel_bx);
             }
         }
 
@@ -3295,10 +3396,12 @@ impl Compiler {
 
         let filename = file_path.to_str().unwrap_or(class_path);
         Self::infer_class_name_from_filename(&mut ast, filename);
+        record_loaded_source(&ast);
         let mut sub_compiler = Compiler::with_chunk(Chunk::new(filename));
         sub_compiler.imports = self.imports.clone();
         sub_compiler.runtime_module_classes = self.runtime_module_classes;
         sub_compiler.source_dir = file_path.parent().map(|p| p.to_path_buf());
+        sub_compiler.root_dir = self.root_dir.clone();
         sub_compiler.is_class = true;
         sub_compiler.current_line = self.current_line;
         sub_compiler.class_has_init_map = self.class_has_init_map.clone();
@@ -3330,7 +3433,65 @@ impl Compiler {
         self.propagate_js_imports(&sub_imports);
 
         for constant in chunk.constants() {
-            if let Constant::Class(_) = constant {
+            if let Constant::Class(class) = constant {
+                // A parent that lives in another file is not part of this chunk, so the VM would
+                // never find it by name. Load it too and define it before the child.
+                // `extends` is lowercased in the class constant; the file name keeps its case.
+                let original_extends = ast.iter().find_map(|stmt| match &stmt.kind {
+                    StatementKind::ClassDecl { extends: Some(e), .. } => Some(e.clone()),
+                    _ => None,
+                });
+                if let Some(parent) = class.extends.clone() {
+                    let defined_here = chunk.constants().iter().any(|c| {
+                        matches!(c, Constant::Class(other) if other.name.eq_ignore_ascii_case(&parent))
+                    });
+                    if !defined_here {
+                        let parent_path = sub_compiler
+                            .imports
+                            .get(&parent)
+                            .map(|path| path.trim_start_matches("bx:").to_string())
+                            .unwrap_or_else(|| original_extends.clone().unwrap_or_else(|| parent.clone()));
+                        if let Ok(parent_file) = sub_compiler.resolve_source_file(&parent_path) {
+                            let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                            let (this_file, parent_file) = (canonical(&file_path), canonical(&parent_file));
+                            let cycle = PARENT_CHAIN.with(|chain| {
+                                let mut chain = chain.borrow_mut();
+                                if chain.is_empty() {
+                                    chain.push(this_file.clone());
+                                }
+                                if chain.contains(&parent_file) {
+                                    true
+                                } else {
+                                    chain.push(parent_file.clone());
+                                    false
+                                }
+                            });
+                            if cycle {
+                                PARENT_CHAIN.with(|chain| chain.borrow_mut().clear());
+                                bail!("Circular inheritance: {} extends {}, which extends it back", file_path.display(), parent_file.display());
+                            }
+                            let loaded = sub_compiler.load_class_from_path(&parent_path);
+                            PARENT_CHAIN.with(|chain| {
+                                let mut chain = chain.borrow_mut();
+                                chain.pop();
+                                if chain.len() == 1 {
+                                    chain.clear();
+                                }
+                            });
+                            match loaded {
+                                Ok(parent_val) => {
+                                    self.pending_parent_defs
+                                        .append(&mut sub_compiler.pending_parent_defs);
+                                    self.pending_parent_defs.push((parent, parent_val));
+                                }
+                                // a cycle further up the chain is a real error; other failures
+                                // (a parent that is not a file, a module class) are left to run time
+                                Err(error) if error.to_string().starts_with("Circular inheritance") => return Err(error),
+                                Err(_) => {}
+                            }
+                        }
+                    }
+                }
                 return Ok(constant.clone());
             }
         }
@@ -3345,11 +3506,13 @@ impl Compiler {
         let ast = crate::parser::parse(&source, file_path.to_str())
             .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", iface_path, e))?;
 
+        record_loaded_source(&ast);
         let filename = file_path.to_str().unwrap_or(iface_path);
         let mut sub_compiler = Compiler::with_chunk(Chunk::new(filename));
         sub_compiler.imports = self.imports.clone();
         sub_compiler.runtime_module_classes = self.runtime_module_classes;
         sub_compiler.source_dir = file_path.parent().map(|p| p.to_path_buf());
+        sub_compiler.root_dir = self.root_dir.clone();
         sub_compiler.is_class = true;
         sub_compiler.current_line = self.current_line;
         sub_compiler.class_has_init_map = self.class_has_init_map.clone();
