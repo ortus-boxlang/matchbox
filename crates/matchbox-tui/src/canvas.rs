@@ -117,7 +117,7 @@ pub fn render(cmds: &[DrawCmd], buf: &mut Buffer) {
 /// The two stacked pixels of a half-block cell: `▀` has the top pixel as the foreground and the bottom one as the background.
 fn paint_half_blocks(buf: &mut Buffer, x: u16, y: u16, w: u16, h: u16, path: &str, fit: Fit) {
     let Some((key, img)) = imaging::load(path) else { return };
-    let grid = imaging::grid_for(&key, &img, w, h, fit);
+    let Some(grid) = imaging::grid_for(&key, &img, w, h, fit) else { return };
     for cy in 0..h {
         for cx in 0..w {
             let (px, py) = (x as i32 + cx as i32, y as i32 + cy as i32);
@@ -168,12 +168,15 @@ pub fn render_with(cmds: &[DrawCmd], buf: &mut Buffer, mut placements: Option<&m
                 }
             }
             DrawCmd::Image { x, y, w, h, path, fit, protocol } => {
-                if *w == 0 || *h == 0 {
+                if *w == 0 || *h == 0 || *w > imaging::MAX_CELLS || *h > imaging::MAX_CELLS {
                     continue;
                 }
                 match (protocol, placements.as_deref_mut()) {
                     (Protocol::Kitty, Some(list)) => {
-                        if let Some((key, img)) = imaging::load(path) {
+                        // A panic while working out the placement leaves it out; the frame goes on.
+                        let _ = imaging::guard(|| {
+                            imaging::fault_point("place");
+                            let Some((key, img)) = imaging::load(path) else { return };
                             let (cols, rows, dx, dy, crop) = match fit {
                                 Fit::Contain => {
                                     let b = imaging::contain_box(img.width(), img.height(), *w, *h);
@@ -181,15 +184,19 @@ pub fn render_with(cmds: &[DrawCmd], buf: &mut Buffer, mut placements: Option<&m
                                 }
                                 Fit::Cover => (*w, *h, 0, 0, Some(imaging::cover_crop(img.width(), img.height(), *w, *h))),
                             };
+                            let (px, py) = (x.saturating_add(dx), y.saturating_add(dy));
                             // Only the part that is on the screen is placed.
-                            if (*x + dx) < buf.area.width && (*y + dy) < buf.area.height {
-                                let cols = cols.min(buf.area.width - (*x + dx));
-                                let rows = rows.min(buf.area.height - (*y + dy));
-                                list.push(KittyPlacement { key, x: *x + dx, y: *y + dy, cols, rows, crop });
+                            if px < buf.area.width && py < buf.area.height {
+                                let cols = cols.min(buf.area.width - px);
+                                let rows = rows.min(buf.area.height - py);
+                                list.push(KittyPlacement { key, x: px, y: py, cols, rows, crop });
                             }
-                        }
+                        });
                     }
-                    _ => paint_half_blocks(buf, *x, *y, *w, *h, path, *fit),
+                    // A panic while painting leaves the picture out (or half painted); the canvas stays usable.
+                    _ => {
+                        let _ = imaging::guard(|| paint_half_blocks(buf, *x, *y, *w, *h, path, *fit));
+                    }
                 }
             }
             DrawCmd::Border { x, y, w, h, border, style, title, title_style } => {
@@ -444,5 +451,36 @@ mod tests {
         render_with(&cover, &mut buf2, Some(&mut p2));
         assert_eq!(p2[0].crop.is_some(), true);
         assert_eq!((p2[0].cols, p2[0].rows), (4, 2));
+    }
+
+    #[test]
+    fn a_panic_while_drawing_or_placing_a_picture_leaves_it_out_and_the_next_frame_draws() {
+        let path = png("faults.png", &four_rows());
+        let cmds = [image_cmd(0, 0, 2, 2, &path, Fit::Contain, Protocol::HalfBlocks), DrawCmd::Text { x: 4, y: 0, text: "ok".into(), style: CellStyle::default() }];
+        imaging::inject_fault("draw");
+        let broken = canvas(6, 2, &cmds);
+        assert_eq!(rows_text(&broken), vec!["    ok", "      "], "no picture, the rest of the frame is intact");
+        let fine = canvas(6, 2, &cmds);
+        assert_eq!(rows_text(&fine)[0], "\u{2580}\u{2580}  ok");
+        // the Kitty path: a panic while working out the placement leaves it out; the next frame places it
+        let kitty = [image_cmd(1, 1, 4, 2, &path, Fit::Contain, Protocol::Kitty)];
+        imaging::inject_fault("place");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 4));
+        let mut list = Vec::new();
+        render_with(&kitty, &mut buf, Some(&mut list));
+        assert!(list.is_empty());
+        render_with(&kitty, &mut buf, Some(&mut list));
+        assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn an_absurdly_large_rectangle_is_refused_and_a_position_near_the_limit_does_not_overflow() {
+        let path = png("rect.png", &four_rows());
+        let buf = canvas(4, 2, &[image_cmd(0, 0, 60000, 60000, &path, Fit::Contain, Protocol::HalfBlocks)]);
+        assert_eq!(rows_text(&buf), vec!["    ", "    "]);
+        let mut b = Buffer::empty(Rect::new(0, 0, 4, 2));
+        let mut list = Vec::new();
+        render_with(&[image_cmd(65535, 65535, 4, 4, &path, Fit::Contain, Protocol::Kitty)], &mut b, Some(&mut list));
+        assert!(list.is_empty(), "off the screen: nothing to place, and no overflow");
     }
 }

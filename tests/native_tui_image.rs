@@ -96,3 +96,81 @@ println( "support=" & tui.image_support() );
     assert!(run(&dir, script, &[("MATCHBOX_TUI_IMAGES", "kitty")], &[]).contains("support=kitty"));
     let _ = fs::remove_dir_all(&dir);
 }
+
+fn png_bytes_file(dir: &std::path::Path, name: &str, bytes: &[u8]) {
+    fs::write(dir.join(name), bytes).unwrap();
+}
+
+#[test]
+fn damaged_missing_and_oversized_pictures_return_false_and_the_program_carries_on() {
+    let dir = workdir("tui-image-bad");
+    png_bytes_file(&dir, "truncated.png", &FOUR_ROWS[..FOUR_ROWS.len() / 2]);
+    png_bytes_file(&dir, "empty.png", &[]);
+    png_bytes_file(&dir, "text.png", b"definitely not a picture");
+    fs::create_dir_all(dir.join("folder")).unwrap();
+    let out = run(
+        &dir,
+        r##"tui = createObject( "rust", "tui.TUI" );
+tui.begin_frame();
+println( "truncated=" & tui.image( 0, 0, 3, 2, "truncated.png" ) );
+println( "empty=" & tui.image( 0, 0, 3, 2, "empty.png" ) );
+println( "text=" & tui.image( 0, 0, 3, 2, "text.png" ) );
+println( "folder=" & tui.image( 0, 0, 3, 2, "folder" ) );
+println( "huge=" & tui.image( 0, 0, 60000, 60000, "four-rows.png" ) );
+println( "zero=" & tui.image( 0, 0, 0, 0, "four-rows.png" ) );
+println( "again=" & tui.image( 0, 0, 3, 2, "truncated.png" ) );
+println( "good=" & tui.image( 0, 0, 2, 2, "four-rows.png" ) );
+println( tui.render_to_string( 3, 2 ) );
+"##,
+        &[],
+        &[],
+    );
+    for line in ["truncated=false", "empty=false", "text=false", "folder=false", "huge=false", "zero=false", "again=false", "good=true"] {
+        assert!(out.contains(line), "{line} in {out}");
+    }
+    assert!(out.contains("\u{2580}\u{2580} "), "{out}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_size_and_pixel_limits_can_be_changed_with_environment_variables() {
+    let dir = workdir("tui-image-limits");
+    let script = r##"tui = createObject( "rust", "tui.TUI" );
+tui.begin_frame();
+println( "drawn=" & tui.image( 0, 0, 2, 2, "four-rows.png" ) );
+"##;
+    assert!(run(&dir, script, &[], &[]).contains("drawn=true"));
+    assert!(run(&dir, script, &[("MATCHBOX_TUI_IMAGE_MAX_BYTES", "10")], &[]).contains("drawn=false"), "over the byte limit");
+    assert!(run(&dir, script, &[("MATCHBOX_TUI_IMAGE_MAX_PIXELS", "7")], &[]).contains("drawn=false"), "2 x 4 = 8 pixels is over a limit of 7");
+    assert!(run(&dir, script, &[("MATCHBOX_TUI_IMAGE_MAX_PIXELS", "8")], &[]).contains("drawn=true"), "and exactly at the limit is fine");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A panic inside the decoder (injected through MATCHBOX_TUI_IMAGE_FAULT, which this test build can recover from) prints nothing,
+/// gives false, and the next frame and the next picture draw normally.
+#[test]
+fn a_decoder_panic_is_silent_gives_false_and_the_next_frame_draws() {
+    let dir = workdir("tui-image-fault");
+    fs::write(dir.join("other.png"), FOUR_ROWS).unwrap();
+    fs::write(dir.join("t.bxs"), r##"tui = createObject( "rust", "tui.TUI" );
+tui.begin_frame();
+println( "first=" & tui.image( 0, 0, 2, 2, "four-rows.png" ) );
+tui.begin_frame();
+println( "second=" & tui.image( 0, 0, 2, 2, "other.png" ) );
+println( tui.render_to_string( 3, 2 ) );
+"##).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_matchbox"))
+        .current_dir(&dir)
+        .arg("t.bxs")
+        .env("MATCHBOX_TUI_IMAGE_FAULT", "decode")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(stdout.contains("first=false"), "{stdout}");
+    assert!(stdout.contains("second=true"), "{stdout}");
+    assert!(stdout.contains("\u{2580}\u{2580} "), "{stdout}");
+    assert!(!stderr.contains("internal error") && !stderr.contains("panicked") && !stderr.contains("injected"), "nothing printed for a caught panic: {stderr}");
+    let _ = fs::remove_dir_all(&dir);
+}

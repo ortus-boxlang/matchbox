@@ -8,11 +8,175 @@
 //!
 //! The terminal is never asked what it supports (a reply would arrive on the input stream): `detect_from` looks at the
 //! environment only. Sixel and iTerm2 are accepted as names and fall back to half blocks in this version.
+//!
+//! A picture can never take the program down. Every decode and every draw runs under `guard` (a caught panic is the same as a
+//! bad file: nothing is drawn); a file is checked against size and pixel limits before it is decoded; a file that failed is
+//! remembered (by path, size and modification time) so a screen drawing it every frame does not decode it again; and the
+//! caches are bounded and evict the oldest entry. See `Limits` and `guard`.
 use image::imageops::{self, FilterType};
 use image::RgbaImage;
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::Hash;
+use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
+use std::sync::Once;
+
+/// Largest picture file that is decoded, in bytes (20 MB). Override with `MATCHBOX_TUI_IMAGE_MAX_BYTES`.
+pub const DEFAULT_MAX_BYTES: u64 = 20 * 1024 * 1024;
+/// Largest picture that is decoded, in pixels (12 megapixels, read from the file header before decoding). Override with `MATCHBOX_TUI_IMAGE_MAX_PIXELS`.
+/// Measured on a release build, a 12 megapixel PNG takes about a third of a second to decode and reduce; a 20 megapixel one takes about 0.6 s.
+pub const DEFAULT_MAX_PIXELS: u64 = 12_000_000;
+/// A decoded picture bigger than this on its longest side is scaled down to it before it is kept (a terminal never needs more).
+pub const MAX_STORE_DIM: u32 = 2048;
+/// Decoded pictures kept at most, and the most memory they may use.
+pub const MAX_CACHE_ENTRIES: usize = 48;
+pub const MAX_CACHE_BYTES: usize = 64 * 1024 * 1024;
+/// Resampled grids kept at most, and the most memory they may use.
+pub const MAX_GRID_ENTRIES: usize = 256;
+pub const MAX_GRID_BYTES: usize = 32 * 1024 * 1024;
+/// Files remembered as failed (past this the memory is cleared and files are tried again).
+pub const MAX_FAILED: usize = 512;
+/// The most cells wide or high a picture rectangle may be; a bigger one is refused (no terminal is that large).
+pub const MAX_CELLS: u16 = 1024;
+
+/// The limits a picture is checked against before it is decoded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// File size in bytes.
+    pub max_bytes: u64,
+    /// Width times height in pixels.
+    pub max_pixels: u64,
+}
+
+/// The limits from environment variables: `MATCHBOX_TUI_IMAGE_MAX_BYTES` and `MATCHBOX_TUI_IMAGE_MAX_PIXELS` (positive whole
+/// numbers; anything else keeps the default).
+pub fn limits_from(get: &dyn Fn(&str) -> Option<String>) -> Limits {
+    let number = |name: &str, default: u64| get(name).and_then(|v| v.trim().parse::<u64>().ok()).filter(|n| *n > 0).unwrap_or(default);
+    Limits { max_bytes: number("MATCHBOX_TUI_IMAGE_MAX_BYTES", DEFAULT_MAX_BYTES), max_pixels: number("MATCHBOX_TUI_IMAGE_MAX_PIXELS", DEFAULT_MAX_PIXELS) }
+}
+
+/// `limits_from` on the real environment.
+pub fn limits() -> Limits {
+    limits_from(&|name| std::env::var(name).ok())
+}
+
+thread_local! {
+    /// How many panics are being caught on this thread right now (the panic hook stays quiet while it is above 0).
+    static QUIET: Cell<u32> = const { Cell::new(0) };
+    /// A fault to trigger once on this thread (set by tests): "decode", "draw" or "place".
+    static FAULT: Cell<Option<&'static str>> = const { Cell::new(None) };
+    /// Whether the fault named in `MATCHBOX_TUI_IMAGE_FAULT` has already been triggered on this thread.
+    static FAULT_ENV_FIRED: Cell<bool> = const { Cell::new(false) };
+    /// How many pictures were really decoded on this thread (read by tests).
+    static DECODES: Cell<u64> = const { Cell::new(0) };
+}
+static HOOK: Once = Once::new();
+/// Panics the hook let through because no guard was active (read by tests to show a guarded panic prints nothing).
+#[cfg(test)]
+pub(crate) static LOUD_PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether a caught panic can really be recovered from in this build. A build with `panic = "abort"` (the release profile of the
+/// `matchbox` binary and of the native runner stub) ends the process on the first panic whatever `guard` does, so there the
+/// protection against a decoder panic is the limits and the checks made before decoding, not `guard`.
+pub const PANICS_ARE_CAUGHT: bool = cfg!(panic = "unwind");
+
+/// Runs `f`; a panic inside it is caught and turned into `None`, and the panic hook prints nothing for it (a message in the
+/// middle of a full-screen terminal would wreck the display, and the program must go on drawing the next frame). Everything
+/// that decodes or draws a picture goes through this.
+pub fn guard<T>(f: impl FnOnce() -> T) -> Option<T> {
+    HOOK.call_once(|| {
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            if QUIET.with(|q| q.get()) == 0 {
+                #[cfg(test)]
+                LOUD_PANICS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                previous(info);
+            }
+        }));
+    });
+    QUIET.with(|q| q.set(q.get() + 1));
+    let result = panic::catch_unwind(AssertUnwindSafe(f));
+    QUIET.with(|q| q.set(q.get() - 1));
+    result.ok()
+}
+
+/// Makes the next `fault( kind )` on this thread panic (`"decode"`, `"draw"` or `"place"`). For tests.
+#[doc(hidden)]
+pub fn inject_fault(kind: &'static str) {
+    FAULT.with(|f| f.set(Some(kind)));
+}
+
+/// Panics once if a fault of this `kind` was injected with `inject_fault`, or named in `MATCHBOX_TUI_IMAGE_FAULT` (used by the
+/// end-to-end tests to prove a decoder panic does not take the program down; it does nothing when the variable is not set).
+fn fault(kind: &str) {
+    if FAULT.with(|f| f.get()) == Some(kind) {
+        FAULT.with(|f| f.set(None));
+        panic!("injected {kind} fault");
+    }
+    if std::env::var("MATCHBOX_TUI_IMAGE_FAULT").map(|v| v == kind).unwrap_or(false) && !FAULT_ENV_FIRED.with(|f| f.replace(true)) {
+        panic!("injected {kind} fault");
+    }
+}
+
+/// The `fault` check for code outside this module (the canvas calls it where a placement is worked out).
+pub fn fault_point(kind: &str) {
+    fault(kind);
+}
+
+/// How many pictures have really been decoded on this thread (not counting cache hits or refusals before decoding).
+#[doc(hidden)]
+pub fn decode_attempts() -> u64 {
+    DECODES.with(|d| d.get())
+}
+
+/// A cache that keeps at most `max_entries` entries and `max_bytes` of data and drops the oldest first.
+pub struct ByteCache<K: Hash + Eq + Clone, V: Clone> {
+    map: HashMap<K, (V, usize)>,
+    order: VecDeque<K>,
+    bytes: usize,
+    max_entries: usize,
+    max_bytes: usize,
+}
+
+impl<K: Hash + Eq + Clone, V: Clone> ByteCache<K, V> {
+    pub fn new(max_entries: usize, max_bytes: usize) -> Self {
+        ByteCache { map: HashMap::new(), order: VecDeque::new(), bytes: 0, max_entries, max_bytes }
+    }
+
+    pub fn get(&self, key: &K) -> Option<V> {
+        self.map.get(key).map(|(v, _)| v.clone())
+    }
+
+    /// Keeps `value` (`size` bytes), dropping the oldest entries until it fits. A value bigger than the whole cache is not kept.
+    pub fn insert(&mut self, key: K, value: V, size: usize) {
+        if size > self.max_bytes {
+            return;
+        }
+        if let Some((_, old)) = self.map.remove(&key) {
+            self.bytes -= old;
+            self.order.retain(|k| k != &key);
+        }
+        while !self.order.is_empty() && (self.map.len() >= self.max_entries || self.bytes + size > self.max_bytes) {
+            if let Some(oldest) = self.order.pop_front() {
+                if let Some((_, old)) = self.map.remove(&oldest) {
+                    self.bytes -= old;
+                }
+            }
+        }
+        self.bytes += size;
+        self.order.push_back(key.clone());
+        self.map.insert(key, (value, size));
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
 
 /// How a picture is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -117,35 +281,86 @@ pub struct ImageKey {
 }
 
 thread_local! {
-    static PICTURES: RefCell<HashMap<ImageKey, Rc<RgbaImage>>> = RefCell::new(HashMap::new());
-    static GRIDS: RefCell<HashMap<(ImageKey, u16, u16, Fit), Rc<Grid>>> = RefCell::new(HashMap::new());
+    static PICTURES: RefCell<ByteCache<ImageKey, Rc<RgbaImage>>> = RefCell::new(ByteCache::new(MAX_CACHE_ENTRIES, MAX_CACHE_BYTES));
+    static GRIDS: RefCell<ByteCache<(ImageKey, u16, u16, Fit), Rc<Grid>>> = RefCell::new(ByteCache::new(MAX_GRID_ENTRIES, MAX_GRID_BYTES));
+    /// Files that failed to load, by path, size and modification time: they are not tried again until they change.
+    static FAILED: RefCell<HashSet<ImageKey>> = RefCell::new(HashSet::new());
 }
 
-/// A picture file decoded (PNG, JPEG, GIF or WebP; the first frame of a GIF), or `None` when it is missing or not a picture.
-/// Decoded pictures are kept, so drawing the same file every frame costs a lookup.
+/// Decodes the file under the limits, or `None`: the header is read first and a picture with more pixels than `limits.max_pixels`
+/// is refused before any pixel is decoded; the decoder is also given an allocation limit. A picture whose longest side is over
+/// `MAX_STORE_DIM` is scaled down to it.
+fn decode(path: &str, limits: Limits) -> Option<RgbaImage> {
+    fault("decode");
+    let open = || image::ImageReader::open(path).ok()?.with_guessed_format().ok();
+    let (w, h) = open()?.into_dimensions().ok()?;
+    if w == 0 || h == 0 || (w as u64) * (h as u64) > limits.max_pixels {
+        return None;
+    }
+    let mut reader = open()?;
+    let mut decode_limits = image::Limits::default();
+    decode_limits.max_image_width = Some(w);
+    decode_limits.max_image_height = Some(h);
+    decode_limits.max_alloc = Some(limits.max_pixels.saturating_mul(8).min(1 << 31));
+    reader.limits(decode_limits);
+    let decoded = reader.decode().ok()?;
+    let longest = decoded.width().max(decoded.height());
+    if longest > MAX_STORE_DIM {
+        // A big picture is reduced with the box filter of `thumbnail` (fast for large reductions) before it is converted and kept.
+        let scale = MAX_STORE_DIM as f64 / longest as f64;
+        let nw = ((decoded.width() as f64 * scale).round() as u32).max(1);
+        let nh = ((decoded.height() as f64 * scale).round() as u32).max(1);
+        return Some(decoded.thumbnail_exact(nw, nh).to_rgba8());
+    }
+    Some(decoded.to_rgba8())
+}
+
+/// A picture file decoded (PNG, JPEG, GIF or WebP; the first frame of a GIF), or `None` when it is missing, is not a picture,
+/// is over the limits (see `Limits`), is damaged, or the decoder panicked. It never panics and never decodes more than the
+/// limits allow. Decoded pictures are kept (bounded, oldest dropped first), so drawing the same file every frame costs a lookup;
+/// a file that failed is remembered by path, size and modification time and is not tried again until it changes.
 pub fn load(path: &str) -> Option<(ImageKey, Rc<RgbaImage>)> {
+    guard(|| load_unguarded(path)).flatten()
+}
+
+fn load_unguarded(path: &str) -> Option<(ImageKey, Rc<RgbaImage>)> {
     let meta = std::fs::metadata(path).ok()?;
     if !meta.is_file() {
         return None;
     }
     let modified_ns = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
     let key = ImageKey { path: path.to_string(), len: meta.len(), modified_ns };
-    if let Some(hit) = PICTURES.with(|p| p.borrow().get(&key).cloned()) {
+    if let Some(hit) = PICTURES.with(|p| p.borrow().get(&key)) {
         return Some((key, hit));
     }
-    let decoded = image::open(path).ok()?.to_rgba8();
-    if decoded.width() == 0 || decoded.height() == 0 {
+    if FAILED.with(|f| f.borrow().contains(&key)) {
         return None;
     }
-    let rc = Rc::new(decoded);
-    PICTURES.with(|p| {
-        let mut p = p.borrow_mut();
-        if p.len() >= 48 {
-            p.clear();
+    let limits = limits();
+    let decoded = if meta.len() == 0 || meta.len() > limits.max_bytes {
+        None
+    } else {
+        DECODES.with(|d| d.set(d.get() + 1));
+        guard(|| decode(path, limits)).flatten()
+    };
+    match decoded {
+        Some(img) => {
+            let rc = Rc::new(img);
+            let size = rc.width() as usize * rc.height() as usize * 4;
+            PICTURES.with(|p| p.borrow_mut().insert(key.clone(), rc.clone(), size));
+            Some((key, rc))
         }
-        p.insert(key.clone(), rc.clone());
-    });
-    Some((key, rc))
+        None => {
+            FAILED.with(|f| {
+                let mut f = f.borrow_mut();
+                if f.len() >= MAX_FAILED {
+                    f.clear();
+                }
+                f.insert(key);
+            });
+            None
+        }
+    }
 }
 
 /// Where a picture lands inside a `w` x `h` cell rectangle: the size and offset in cells.
@@ -200,6 +415,7 @@ fn opaque(p: &image::Rgba<u8>) -> Option<(u8, u8, u8)> {
 pub fn make_grid(img: &RgbaImage, w: u16, h: u16, fit: Fit) -> Grid {
     let (gw, gh) = (w as u32, 2 * h as u32);
     let mut pixels = vec![None; (gw * gh) as usize];
+    fault("draw");
     let (iw, ih) = img.dimensions();
     if gw == 0 || gh == 0 || iw == 0 || ih == 0 {
         return Grid { w, h, pixels };
@@ -231,31 +447,32 @@ pub fn make_grid(img: &RgbaImage, w: u16, h: u16, fit: Fit) -> Grid {
     Grid { w, h, pixels }
 }
 
-/// The resampled grid of a loaded picture, kept per file, size and fit.
-pub fn grid_for(key: &ImageKey, img: &RgbaImage, w: u16, h: u16, fit: Fit) -> Rc<Grid> {
-    let k = (key.clone(), w, h, fit);
-    if let Some(hit) = GRIDS.with(|g| g.borrow().get(&k).cloned()) {
-        return hit;
+/// The resampled grid of a loaded picture, kept per file, size and fit (bounded, oldest dropped first). `None` when the rectangle is
+/// larger than `MAX_CELLS` or the resampling panicked.
+pub fn grid_for(key: &ImageKey, img: &RgbaImage, w: u16, h: u16, fit: Fit) -> Option<Rc<Grid>> {
+    if w > MAX_CELLS || h > MAX_CELLS {
+        return None;
     }
-    let grid = Rc::new(make_grid(img, w, h, fit));
-    GRIDS.with(|g| {
-        let mut g = g.borrow_mut();
-        if g.len() >= 256 {
-            g.clear();
-        }
-        g.insert(k, grid.clone());
-    });
-    grid
+    let k = (key.clone(), w, h, fit);
+    if let Some(hit) = GRIDS.with(|g| g.borrow().get(&k)) {
+        return Some(hit);
+    }
+    let grid = Rc::new(guard(|| make_grid(img, w, h, fit))?);
+    GRIDS.with(|g| g.borrow_mut().insert(k, grid.clone(), w as usize * 2 * h as usize * 4 + 64));
+    Some(grid)
+}
+
+/// The picture as PNG bytes, which is what the Kitty protocol is sent (`f=100`). Empty when encoding panicked.
+pub fn png_bytes(img: &RgbaImage) -> Vec<u8> {
+    guard(|| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        let _ = img.write_to(&mut out, image::ImageFormat::Png);
+        out.into_inner()
+    })
+    .unwrap_or_default()
 }
 
 // ---- Kitty graphics protocol ---------------------------------------------------------------------------------
-
-/// The picture as PNG bytes, which is what the Kitty protocol is sent (`f=100`).
-pub fn png_bytes(img: &RgbaImage) -> Vec<u8> {
-    let mut out = std::io::Cursor::new(Vec::new());
-    let _ = img.write_to(&mut out, image::ImageFormat::Png);
-    out.into_inner()
-}
 
 /// The escape sequence that stores a picture in the terminal under `id`, without showing it (`a=t`), in chunks of at most
 /// 4096 base64 characters. `q=2` stops the terminal from answering, so nothing lands on the input stream.
@@ -511,5 +728,237 @@ mod tests {
     fn a_missing_file_does_not_load() {
         assert!(load("/nonexistent/definitely-not-here.png").is_none());
         assert!(load("/tmp").is_none(), "a folder is not a picture");
+    }
+
+    // ---- hardening: a bad picture never takes the program down ----
+    use std::sync::atomic::Ordering;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("matchbox-tui-img-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+    fn tiny_png() -> Vec<u8> {
+        let mut img = RgbaImage::new(16, 16);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = Rgba([(x * 16) as u8, (y * 16) as u8, 128, 255]);
+        }
+        png_bytes(&img)
+    }
+    fn write(dir: &std::path::Path, name: &str, bytes: &[u8]) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for b in data {
+            crc ^= *b as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+            }
+        }
+        !crc
+    }
+    /// A PNG that claims to be `w` x `h` pixels and has no pixel data at all: a decompression bomb header.
+    fn bomb_png(w: u32, h: u32) -> Vec<u8> {
+        let mut out = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&w.to_be_bytes());
+        ihdr.extend_from_slice(&h.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+        for (kind, data) in [(&b"IHDR"[..], ihdr), (&b"IEND"[..], Vec::new())] {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let mut body = kind.to_vec();
+            body.extend_from_slice(&data);
+            out.extend_from_slice(&body);
+            out.extend_from_slice(&crc32(&body).to_be_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn panics_are_only_caught_in_builds_that_unwind() {
+        // Tests run with the unwind strategy; a release build of matchbox aborts and cannot catch (see PANICS_ARE_CAUGHT).
+        assert!(PANICS_ARE_CAUGHT);
+        assert_eq!(guard(|| 7), Some(7));
+        assert_eq!(guard(|| -> u32 { panic!("caught") }), None);
+    }
+
+    #[test]
+    fn limits_come_from_the_environment_and_ignore_nonsense() {
+        let none = limits_from(&env(&[]));
+        assert_eq!(none, Limits { max_bytes: DEFAULT_MAX_BYTES, max_pixels: DEFAULT_MAX_PIXELS });
+        let set = limits_from(&env(&[("MATCHBOX_TUI_IMAGE_MAX_BYTES", "1000"), ("MATCHBOX_TUI_IMAGE_MAX_PIXELS", " 5000 ")]));
+        assert_eq!(set, Limits { max_bytes: 1000, max_pixels: 5000 });
+        let bad = limits_from(&env(&[("MATCHBOX_TUI_IMAGE_MAX_BYTES", "lots"), ("MATCHBOX_TUI_IMAGE_MAX_PIXELS", "0")]));
+        assert_eq!(bad, none);
+    }
+
+    #[test]
+    fn the_cache_drops_the_oldest_by_count_and_by_bytes_and_never_keeps_what_cannot_fit() {
+        let mut c: ByteCache<u32, u32> = ByteCache::new(3, 100);
+        for i in 1..=4 {
+            c.insert(i, i * 10, 10);
+        }
+        assert_eq!((c.get(&1), c.get(&2), c.get(&4)), (None, Some(20), Some(40)));
+        assert_eq!(c.len(), 3);
+        c.insert(5, 50, 85);
+        assert!(c.bytes() <= 100, "{}", c.bytes());
+        assert_eq!(c.get(&5), Some(50));
+        assert_eq!(c.get(&2), None);
+        c.insert(6, 60, 101);
+        assert_eq!(c.get(&6), None, "bigger than the whole cache");
+        c.insert(5, 55, 10);
+        assert_eq!((c.get(&5), c.len(), c.bytes()), (Some(55), 2, 20), "re-inserting replaces and recounts");
+    }
+
+    #[test]
+    fn damaged_files_return_none_and_never_panic() {
+        let dir = temp_dir("damaged");
+        let good = tiny_png();
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("truncated.png", good[..good.len() / 2].to_vec()),
+            ("garbage-body.png", [&good[..33], &[0xde, 0xad, 0xbe, 0xef, 0x13, 0x37][..], &vec![0x55u8; 300][..]].concat()),
+            ("empty.png", Vec::new()),
+            ("notes.png", b"this is a text file, not a picture\n".to_vec()),
+            ("signature-only.png", vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
+            ("webp-lie.webp", b"RIFF\x10\x00\x00\x00WEBPVP8 junkjunk".to_vec()),
+            ("gif-lie.gif", b"GIF89a\x01\x00\x01\x00junk".to_vec()),
+        ];
+        for (name, bytes) in cases {
+            let path = write(&dir, name, &bytes);
+            assert!(load(&path).is_none(), "{name} must not load");
+        }
+        // a real JPEG with its middle destroyed, and one cut short
+        let mut img = RgbaImage::new(32, 32);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = Rgba([(x * 8) as u8, (y * 8) as u8, 200, 255]);
+        }
+        let jpg = dir.join("ok.jpg");
+        image::DynamicImage::ImageRgba8(img).to_rgb8().save(&jpg).unwrap();
+        let bytes = std::fs::read(&jpg).unwrap();
+        assert!(load(jpg.to_str().unwrap()).is_some(), "the undamaged JPEG loads");
+        let mut corrupt = bytes.clone();
+        for b in corrupt[bytes.len() / 3..2 * bytes.len() / 3].iter_mut() {
+            *b = 0x5a;
+        }
+        let corrupt_path = write(&dir, "corrupt.jpg", &corrupt);
+        let _ = load(&corrupt_path); // may fail or decode with damage; it must not panic or hang
+        let short_path = write(&dir, "short.jpg", &bytes[..bytes.len() / 2]);
+        let _ = load(&short_path);
+        // a directory and a missing path
+        assert!(load(dir.to_str().unwrap()).is_none());
+        assert!(load(dir.join("nope.png").to_str().unwrap()).is_none());
+        assert!(load("").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_picture_that_claims_too_many_pixels_is_refused_from_its_header() {
+        let dir = temp_dir("bomb");
+        let before = decode_attempts();
+        // 100000 x 100000 = ten billion pixels, in a 70 byte file
+        let path = write(&dir, "bomb.png", &bomb_png(100_000, 100_000));
+        let t = std::time::Instant::now();
+        assert!(load(&path).is_none());
+        assert!(t.elapsed() < std::time::Duration::from_millis(500), "refused without decoding: {:?}", t.elapsed());
+        assert_eq!(decode_attempts() - before, 1);
+        // just over the default pixel limit of 12 megapixels
+        let over = write(&dir, "over.png", &bomb_png(4000, 3001));
+        assert!(load(&over).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_over_the_size_limit_is_refused_without_decoding() {
+        let dir = temp_dir("big-file");
+        let mut bytes = tiny_png();
+        bytes.resize(DEFAULT_MAX_BYTES as usize + 1, 0);
+        let path = write(&dir, "big.png", &bytes);
+        let before = decode_attempts();
+        assert!(load(&path).is_none());
+        assert_eq!(decode_attempts(), before, "refused on its size alone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failure_is_remembered_until_the_file_changes() {
+        let dir = temp_dir("negative");
+        let path = write(&dir, "later.png", b"not a picture yet");
+        let start = decode_attempts();
+        for _ in 0..20 {
+            assert!(load(&path).is_none());
+        }
+        assert_eq!(decode_attempts() - start, 1, "twenty frames, one decode attempt");
+        // the same size but a new modification time is tried again
+        let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+        drop(f);
+        assert!(load(&path).is_none());
+        assert_eq!(decode_attempts() - start, 2, "a touched file is retried");
+        // the real picture replaces it: loaded now, and from the cache afterwards
+        std::fs::write(&path, tiny_png()).unwrap();
+        assert!(load(&path).is_some());
+        assert!(load(&path).is_some());
+        assert_eq!(decode_attempts() - start, 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_panic_in_the_decoder_is_caught_is_silent_and_the_next_picture_loads() {
+        let dir = temp_dir("fault-decode");
+        let first = write(&dir, "first.png", &tiny_png());
+        let second = write(&dir, "second.png", &[tiny_png(), vec![0u8; 3]].concat());
+        guard(|| ()); // make sure the quiet hook is installed
+        let loud = LOUD_PANICS.load(Ordering::SeqCst);
+        inject_fault("decode");
+        assert!(load(&first).is_none(), "a decoder panic is a bad file");
+        assert_eq!(LOUD_PANICS.load(Ordering::SeqCst), loud, "the hook printed nothing");
+        assert!(load(&first).is_none(), "and it is remembered, so it does not panic again every frame");
+        assert!(load(&second).is_some(), "the next picture still loads");
+        // a panic outside a guard is still reported (so the hook is doing its job)
+        let _ = std::panic::catch_unwind(|| panic!("not guarded"));
+        assert!(LOUD_PANICS.load(Ordering::SeqCst) > loud);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resampling_that_panics_leaves_no_grid_and_the_next_call_works() {
+        let mut img = RgbaImage::new(4, 4);
+        for p in img.pixels_mut() {
+            *p = Rgba([1, 2, 3, 255]);
+        }
+        let key = ImageKey { path: "/fault-grid.png".into(), len: 1, modified_ns: 1 };
+        inject_fault("draw");
+        assert!(grid_for(&key, &img, 2, 2, Fit::Contain).is_none());
+        assert!(grid_for(&key, &img, 2, 2, Fit::Contain).is_some());
+        assert!(grid_for(&key, &img, MAX_CELLS + 1, 2, Fit::Contain).is_none(), "an absurd rectangle is refused");
+    }
+
+    #[test]
+    fn a_large_picture_within_the_limits_decodes_quickly_and_is_kept_small() {
+        // 4000 x 3000 = 12 megapixels, exactly the default limit; smooth colour so the file stays small and the decode is not cheap
+        let dir = temp_dir("large");
+        let mut img = RgbaImage::new(4000, 3000);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = Rgba([(x / 16) as u8, (y / 12) as u8, 90, 255]);
+        }
+        let path = dir.join("large.png");
+        img.save(&path).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        let t = std::time::Instant::now();
+        let (_, loaded) = load(&path).expect("within the limits");
+        let took = t.elapsed();
+        eprintln!("12 megapixel decode and scale: {took:?}");
+        assert!(loaded.width().max(loaded.height()) <= MAX_STORE_DIM, "kept at most {MAX_STORE_DIM} pixels on a side");
+        // Release builds: well under a second (about 0.35 s measured). Debug builds compile the decoders without optimisation and are
+        // several times slower, so there the bound only guards against a hang.
+        assert!(took < std::time::Duration::from_secs(if cfg!(debug_assertions) { 20 } else { 1 }), "{took:?}");
+        let t = std::time::Instant::now();
+        assert!(load(&path).is_some());
+        assert!(t.elapsed() < std::time::Duration::from_millis(50), "the second time is a cache lookup");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
