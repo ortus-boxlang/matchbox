@@ -76,9 +76,9 @@ static HOOK: Once = Once::new();
 #[cfg(test)]
 pub(crate) static LOUD_PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Whether a caught panic can really be recovered from in this build. A build with `panic = "abort"` (the release profile of the
-/// `matchbox` binary and of the native runner stub) ends the process on the first panic whatever `guard` does, so there the
-/// protection against a decoder panic is the limits and the checks made before decoding, not `guard`.
+/// Whether a caught panic can really be recovered from in this build. The release profile of the `matchbox` binary and of the native
+/// runner stub uses `panic = "unwind"`, so it is true there; a build with `panic = "abort"` ends the process on the first panic
+/// whatever `guard` does, so there the protection against a decoder panic is the limits and the checks made before decoding.
 pub const PANICS_ARE_CAUGHT: bool = cfg!(panic = "unwind");
 
 /// Runs `f`; a panic inside it is caught and turned into `None`, and the panic hook prints nothing for it (a message in the
@@ -780,7 +780,7 @@ mod tests {
 
     #[test]
     fn panics_are_only_caught_in_builds_that_unwind() {
-        // Tests run with the unwind strategy; a release build of matchbox aborts and cannot catch (see PANICS_ARE_CAUGHT).
+        // Tests run with the unwind strategy; a build with panic = "abort" cannot catch (see PANICS_ARE_CAUGHT).
         assert!(PANICS_ARE_CAUGHT);
         assert_eq!(guard(|| 7), Some(7));
         assert_eq!(guard(|| -> u32 { panic!("caught") }), None);
