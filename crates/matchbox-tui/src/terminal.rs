@@ -16,6 +16,7 @@ use matchbox_vm::types::{BxNativeObject, BxVM, BxValue, Tracer};
 
 use crate::canvas::{self, BorderStyle, CellStyle, DrawCmd};
 use crate::color;
+use crate::imaging::{self, Choice, Fit, KittyPlacement, KittyState};
 use crate::widget::{WidgetKind, WidgetRegistry};
 
 pub struct TUI {
@@ -25,6 +26,8 @@ pub struct TUI {
     canvas: Vec<DrawCmd>,
     mouse_enabled: bool,
     dirty: bool,
+    /// What has been sent to the terminal for pictures drawn with the Kitty protocol.
+    kitty: KittyState,
 }
 
 thread_local! {
@@ -116,6 +119,12 @@ impl TUI {
         }
         self.canvas.push(DrawCmd::Border { x: x as u16, y: y as u16, w: w as u16, h: h as u16, border, style, title, title_style });
         Ok(())
+    }
+
+    /// `image_support()`: how a picture would be drawn with `protocol: "auto"` in this terminal, `"kitty"` or `"halfblocks"`,
+    /// read from the environment only (the terminal is never asked). `MATCHBOX_TUI_IMAGES` overrides it.
+    pub fn bx_image_support(&self) -> String {
+        imaging::detect().name().to_string()
     }
 
     /// `render_to_string( width, height )`: the current frame's canvas drawn into memory as plain text, one line per
@@ -269,6 +278,9 @@ impl BxNativeObject for TUI {
         name: &str,
         args: &[BxValue],
     ) -> Result<BxValue, String> {
+        if name.eq_ignore_ascii_case("image") {
+            return self.call_image(vm, args);
+        }
         self.dispatch_method(vm, id, name, args)
     }
 
@@ -285,7 +297,36 @@ impl TUI {
             canvas: Vec::new(),
             mouse_enabled: false,
             dirty: true,
+            kitty: KittyState::new(),
         }
+    }
+
+    /// `image( x, y, width, height, path [, options] )`: draws a PNG, JPEG, GIF (first frame) or WebP file inside the rectangle of
+    /// cells and returns `true`, or draws nothing and returns `false` when the file is missing or not a picture.
+    /// `options` (a struct) may have `fit` (`"contain"`, the default, or `"cover"`) and `protocol` (`"auto"`, the default,
+    /// `"kitty"`, `"halfblocks"`; `"sixel"` and `"iterm2"` are accepted and draw as half blocks for now).
+    fn call_image(&mut self, vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+        if args.len() != 5 && args.len() != 6 {
+            return Err(format!("image requires 5 or 6 arguments (x, y, width, height, path [, options]), got {}", args.len()));
+        }
+        let path = vm.to_string(args[4]);
+        let (mut fit, mut choice) = (Fit::Contain, Choice::Auto);
+        if let Some(opts) = args.get(5).and_then(|v| v.as_gc_id()) {
+            if vm.struct_key_exists(opts, "fit") {
+                fit = Fit::parse(&vm.to_string(vm.struct_get(opts, "fit")));
+            }
+            if vm.struct_key_exists(opts, "protocol") {
+                let name = vm.to_string(vm.struct_get(opts, "protocol"));
+                choice = Choice::parse(&name).ok_or_else(|| format!("Unknown image protocol: {name}"))?;
+            }
+        }
+        let (x, y, w, h) = (args[0].as_number() as u16, args[1].as_number() as u16, args[2].as_number() as u16, args[3].as_number() as u16);
+        if w == 0 || h == 0 || imaging::load(&path).is_none() {
+            return Ok(BxValue::new_bool(false));
+        }
+        let protocol = choice.resolve(imaging::detect());
+        self.canvas.push(DrawCmd::Image { x, y, w, h, path, fit, protocol });
+        Ok(BxValue::new_bool(true))
     }
 
     pub fn with_current<F, R>(f: F) -> R
@@ -335,6 +376,7 @@ impl TUI {
         // Sort by Z-index
         widgets_to_render.sort_by_key(|w| w.5);
 
+        let mut kitty_wanted: Vec<KittyPlacement> = Vec::new();
         vm.suspend_gc();
         let res = terminal
             .draw(|frame| {
@@ -358,7 +400,7 @@ impl TUI {
                         }
                     }
                 }
-                canvas::render(&canvas_cmds, frame.buffer_mut());
+                canvas::render_with(&canvas_cmds, frame.buffer_mut(), Some(&mut kitty_wanted));
                 // Terminals without true colour get the nearest of the 256 palette colours.
                 if !color::terminal_has_truecolor() {
                     color::downgrade(frame.buffer_mut());
@@ -368,6 +410,16 @@ impl TUI {
         vm.resume_gc();
 
         res?;
+        // Pictures drawn with the Kitty protocol go to the terminal after the cells, only when they changed.
+        let bytes = self.kitty.emit(&kitty_wanted, &|key| imaging::load(&key.path).map(|(_, img)| imaging::png_bytes(&img)));
+        if !bytes.is_empty() {
+            if let Some(terminal) = self.terminal.as_mut() {
+                use std::io::Write;
+                let backend = terminal.backend_mut();
+                backend.write_all(bytes.as_bytes()).map_err(|e| e.to_string())?;
+                backend.flush().map_err(|e| e.to_string())?;
+            }
+        }
         Ok(())
     }
 
@@ -444,6 +496,12 @@ impl TUI {
     }
 
     pub fn shutdown(&mut self) -> Result<(), String> {
+        let clear = self.kitty.finish();
+        if !clear.is_empty() {
+            use std::io::Write;
+            let _ = io::stderr().write_all(clear.as_bytes());
+            let _ = io::stderr().flush();
+        }
         if self.terminal.is_some() {
             terminal::disable_raw_mode().map_err(|e| e.to_string())?;
             execute!(io::stderr(), LeaveAlternateScreen, DisableMouseCaptureEvent)
