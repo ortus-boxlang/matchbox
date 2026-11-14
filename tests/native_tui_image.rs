@@ -174,3 +174,77 @@ println( tui.render_to_string( 3, 2 ) );
     assert!(!stderr.contains("internal error") && !stderr.contains("panicked") && !stderr.contains("injected"), "nothing printed for a caught panic: {stderr}");
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Builds `script` into a native program (it uses the runner stub of this build, the one `matchbox --target native` ships) in `dir`.
+fn build_native(dir: &std::path::Path, script: &str) -> std::path::PathBuf {
+    fs::write(dir.join("app.bxs"), script).unwrap();
+    let binary = dir.join("app");
+    let build = Command::new(env!("CARGO_BIN_EXE_matchbox"))
+        .current_dir(dir)
+        .args(["--target", "native", "--output", binary.to_str().unwrap(), "app.bxs"])
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    binary
+}
+
+const NATIVE_SCRIPT: &str = r##"tui = createObject( "rust", "tui.TUI" );
+tui.begin_frame();
+println( "first=" & tui.image( 0, 0, 2, 2, "four-rows.png" ) );
+tui.begin_frame();
+println( "second=" & tui.image( 0, 0, 2, 2, "other.png" ) );
+println( "end" );
+"##;
+
+/// The release runner stub that native programs are made from keeps unwinding (`panic = "unwind"`), so a decoder panic in a compiled
+/// program is caught the same way as in the script interpreter: no message, no abort, the next picture draws.
+#[test]
+fn a_compiled_program_survives_a_decoder_panic() {
+    let dir = workdir("tui-image-native-fault");
+    fs::write(dir.join("other.png"), FOUR_ROWS).unwrap();
+    let binary = build_native(&dir, NATIVE_SCRIPT);
+    let out = Command::new(&binary).current_dir(&dir).env("MATCHBOX_TUI_IMAGE_FAULT", "decode").output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "the program was ended by the panic: {:?} {stdout}{stderr}", out.status);
+    assert!(stdout.contains("first=false") && stdout.contains("second=true") && stdout.contains("end"), "{stdout}");
+    assert!(!stderr.contains("panicked") && !stderr.contains("injected"), "{stderr}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Garbage in every shape a hostile or broken file can take, drawn from a compiled program: none of them ends the program or
+/// prints anything, each draws nothing (false), and a good picture afterwards still draws.
+#[test]
+fn a_compiled_program_survives_garbage_pictures() {
+    let dir = workdir("tui-image-native-garbage");
+    // a PNG header that promises 60000 x 60000 pixels and then stops (a decompression bomb in miniature)
+    let mut huge = FOUR_ROWS[..16].to_vec();
+    huge.extend_from_slice(&60000u32.to_be_bytes());
+    huge.extend_from_slice(&60000u32.to_be_bytes());
+    huge.extend_from_slice(&[8, 2, 0, 0, 0]);
+    fs::write(dir.join("huge.png"), &huge).unwrap();
+    fs::write(dir.join("zero.png"), b"").unwrap();
+    fs::write(dir.join("png-magic-only.png"), &FOUR_ROWS[..8]).unwrap();
+    fs::write(dir.join("jpeg-garbage.png"), [&[0xff, 0xd8, 0xff, 0xe0][..], &[0x55u8; 4000][..]].concat()).unwrap();
+    fs::write(dir.join("random.png"), (0..5000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect::<Vec<u8>>()).unwrap();
+    fs::write(dir.join("truncated.png"), &FOUR_ROWS[..FOUR_ROWS.len() - 9]).unwrap();
+    let script = r##"tui = createObject( "rust", "tui.TUI" );
+tui.begin_frame();
+for ( f in [ "huge.png", "zero.png", "png-magic-only.png", "jpeg-garbage.png", "random.png", "truncated.png", "does-not-exist.png" ] ) {
+    println( f & "=" & tui.image( 0, 0, 4, 2, f ) );
+    println( f & " again=" & tui.image( 0, 0, 4, 2, f ) );
+}
+println( "good=" & tui.image( 0, 0, 2, 2, "four-rows.png" ) );
+"##;
+    let binary = build_native(&dir, script);
+    let out = Command::new(&binary).current_dir(&dir).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{:?} {stdout}{stderr}", out.status);
+    for f in ["huge.png", "zero.png", "png-magic-only.png", "jpeg-garbage.png", "random.png", "truncated.png", "does-not-exist.png"] {
+        assert!(stdout.contains(&format!("{f}=false")) && stdout.contains(&format!("{f} again=false")), "{f} in {stdout}");
+    }
+    assert!(stdout.contains("good=true"), "{stdout}");
+    assert!(!stderr.contains("panicked") && !stderr.contains("internal error"), "{stderr}");
+    let _ = fs::remove_dir_all(&dir);
+}
