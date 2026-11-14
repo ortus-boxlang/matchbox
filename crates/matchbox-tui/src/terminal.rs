@@ -321,7 +321,9 @@ impl TUI {
             }
         }
         let (x, y, w, h) = (args[0].as_number() as u16, args[1].as_number() as u16, args[2].as_number() as u16, args[3].as_number() as u16);
-        if w == 0 || h == 0 || imaging::load(&path).is_none() {
+        // Never panics and never blocks beyond the limits: a rectangle that is empty or absurdly large, a file that is missing,
+        // damaged, over the limits or that made the decoder panic all give false and draw nothing.
+        if w == 0 || h == 0 || w > imaging::MAX_CELLS || h > imaging::MAX_CELLS || imaging::load(&path).is_none() {
             return Ok(BxValue::new_bool(false));
         }
         let protocol = choice.resolve(imaging::detect());
@@ -411,7 +413,8 @@ impl TUI {
 
         res?;
         // Pictures drawn with the Kitty protocol go to the terminal after the cells, only when they changed.
-        let bytes = self.kitty.emit(&kitty_wanted, &|key| imaging::load(&key.path).map(|(_, img)| imaging::png_bytes(&img)));
+        let kitty = &mut self.kitty;
+        let bytes = imaging::guard(|| kitty.emit(&kitty_wanted, &|key| imaging::load(&key.path).map(|(_, img)| imaging::png_bytes(&img)).filter(|png| !png.is_empty()))).unwrap_or_default();
         if !bytes.is_empty() {
             if let Some(terminal) = self.terminal.as_mut() {
                 use std::io::Write;

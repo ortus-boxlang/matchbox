@@ -86,7 +86,15 @@ Compatibility. Only what was run is marked verified:
 | WezTerm, foot | half blocks by default (force `kitty` or wait for Sixel at your own risk) | unverified |
 | tmux, screen | half blocks | by design |
 
-The first 48 pictures and 256 resampled sizes are kept in memory, so drawing the same file every frame costs a lookup; a file that changes on disk is read again.
+### Bad pictures
+
+`image` is built so that a picture cannot take the program down. It returns `false` and draws nothing for a file that is missing, is a folder, is empty, is not a picture, is damaged or truncated, is over a limit, or makes the decoder panic; the frame it is part of is drawn normally and the next frame draws as usual.
+
+* **Limits, checked before decoding.** A file larger than 20 MB, or whose header says it has more than 12 megapixels, is refused without decoding it (the dimensions are read from the header only, so a few bytes claiming ten billion pixels cost nothing). Change them with `MATCHBOX_TUI_IMAGE_MAX_BYTES` and `MATCHBOX_TUI_IMAGE_MAX_PIXELS` (positive whole numbers). The decoder is also given an allocation limit. A rectangle wider or taller than 1024 cells is refused.
+* **Time.** A decode within the limits is bounded: on a release build a 12 megapixel PNG takes about 0.4 s (a test measures it), smaller pictures much less, and a 20 megapixel one would take about 0.6 s, which is why the default limit is 12. The decode happens on the first call that draws the file, on the calling thread, and is not run in the background. Pictures longer than 2048 pixels on a side are reduced to that before they are kept.
+* **Memory.** Decoded pictures are kept for later frames, at most 48 and 64 MB, resampled grids at most 256 and 32 MB; the oldest go first. A file that is edited on disk is read again.
+* **Failures are remembered.** A file that failed (or was over a limit) is remembered by path, size and modification time, so a screen that draws it every frame does not decode it 20 times a second; changing the file tries it again.
+* **Panics.** Every decode, resample and draw runs under `catch_unwind`; a panic is the same as a bad file, and the panic message is not printed (it would wreck a full-screen display). **This holds only in builds that unwind.** The release profile of the `matchbox` binary and of the native runner stub is built with `panic = "abort"`, where the first panic ends the process whatever the code does; there the protection against a decoder panic is the limits and the header checks above, plus the fact that the decoders are fuzzed. Building the runner with `panic = "unwind"` makes the guard effective in native programs at some cost in size.
 
 ## Colours
 
