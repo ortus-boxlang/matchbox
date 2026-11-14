@@ -76,5 +76,5 @@ tempfile = "3.10"
 opt-level = "z"     # Optimize for size
 lto = true          # Enable Link Time Optimization
 codegen-units = 1   # Better optimizations
-panic = "abort"     # Remove stack unwinding code
+panic = "unwind"    # Keep unwinding: a decoder panic on a bad picture is caught (tui imaging::guard) instead of ending the program
 strip = true        # Automatically strip symbols from the binary
