@@ -8,6 +8,7 @@ pub mod types;
 pub mod vm;
 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
 pub mod plugins;
+pub mod resources;
 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
 pub mod bundle;
 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]

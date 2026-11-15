@@ -105,6 +105,7 @@ mod json;
 mod list_query_extra;
 mod math_datetime;
 mod net;
+mod resource;
 pub(crate) mod set;
 mod system_execute;
 mod system_output;
@@ -297,6 +298,10 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     bifs.insert("bytesget".to_string(), bytes_get_bif as BxNativeFunction);
     bifs.insert("bytesset".to_string(), bytes_set_bif as BxNativeFunction);
     bifs.insert("isbinary".to_string(), is_bytes_bif as BxNativeFunction);
+    bifs.insert("resourceread".to_string(), resource::resource_read as BxNativeFunction);
+    bifs.insert("resourcereadbinary".to_string(), resource::resource_read_binary as BxNativeFunction);
+    bifs.insert("resourceexists".to_string(), resource::resource_exists as BxNativeFunction);
+    bifs.insert("resourcelist".to_string(), resource::resource_list as BxNativeFunction);
 
     // Struct BIFs
     bifs.insert("structnew".to_string(), struct_new as BxNativeFunction);

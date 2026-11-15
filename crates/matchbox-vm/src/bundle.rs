@@ -16,7 +16,7 @@ use std::{
 };
 
 pub const TARGET: &str = env!("MATCHBOX_TARGET");
-pub const MAGIC: &[u8; 8] = b"MBMODS\0\x0C"; // \x0C: classes and interfaces are stored once (types::shared)
+pub const MAGIC: &[u8; 8] = b"MBMODS\0\x0D"; // \x0D: resources; \x0C: classes and interfaces are stored once (types::shared)
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SharedLibrary {
@@ -260,6 +260,8 @@ pub struct Module {
 pub struct Application {
     pub chunk: Chunk,
     pub modules: Vec<Module>,
+    /// The program's resource files (`crate::resources`), served from memory by the runner.
+    pub resources: crate::resources::Resources,
 }
 impl Application {
     pub fn from_executable(bytes: &[u8]) -> Result<Self> {
@@ -284,6 +286,10 @@ impl Application {
     }
     /// Trusted native modules execute arbitrary machine code in the host process.
     pub fn run(mut self, vm: &mut VM, cache: &Path) -> Result<BxValue> {
+        // a program run from source keeps reading its resource folders; a native one gets its packed files
+        if !self.resources.files.is_empty() {
+            crate::resources::use_packed(std::mem::take(&mut self.resources));
+        }
         let loaded = LoadedModules::load(vm, self.modules, cache)?;
         self.chunk.reconstruct_functions();
         let result = vm.interpret(self.chunk);

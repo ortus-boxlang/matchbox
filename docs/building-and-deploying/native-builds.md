@@ -90,6 +90,31 @@ cross build --release --target x86_64-unknown-linux-gnu
 
 ---
 
+## Resources
+
+Files a program needs at run time (JSON data, templates, pictures) can travel inside the binary instead of
+living in BoxLang source as giant string literals.
+
+- A `resources/` folder next to the program is used automatically; `--resources DIR` adds more folders
+  (repeatable). A file's resource path is its path inside its folder, with `/` separators.
+- `resourceRead( path )` returns the file as text (UTF-8), `resourceReadBinary( path )` as binary,
+  `resourceExists( path )` a boolean and `resourceList( [dir] )` the sorted paths under `dir` (all without it).
+- Run from source (`matchbox main.bxs`), the folders are read from disk. A native build packs every file,
+  raw and once, and the binary serves them from memory, from any directory.
+- The same path in two folders, `..` in a path, a missing resource and `resourceRead` of a file that is not
+  UTF-8 are errors.
+
+```text
+app/
+  main.bxs                  apps = jsonDeserialize( resourceRead( "catalog/apps.json" ) );
+  resources/catalog/apps.json
+```
+
+```bash
+matchbox main.bxs                                   # reads app/resources from disk
+matchbox --target native --output app main.bxs      # packs them into ./app
+```
+
 ## Binary Size
 
 MatchBox applies aggressive size optimizations in the release profile:
