@@ -103,6 +103,10 @@ living in BoxLang source as giant string literals.
   raw and once, and the binary serves them from memory, from any directory.
 - The same path in two folders, `..` in a path, a missing resource and `resourceRead` of a file that is not
   UTF-8 are errors.
+- To put a packed file on disk (an icon, a config template), write the binary as it is:
+  `fileWrite( target, resourceReadBinary( "icons/app.png" ) )` writes the bytes unchanged.
+- A build with no resources and no modules keeps the plain native layout; with resources the program is
+  stored as an application bundle (the same envelope native modules use).
 
 ```text
 app/
@@ -130,7 +134,7 @@ strip        = true  # Strip symbols
 
 The resulting binaries are typically **~500 KB** — small enough to ship as a GitHub release asset or embed in a container image.
 
-What a program adds on top of the runner is its bytecode. Each class is stored once, however many places use it (see [Classes Are Stored Once](../getting-started/building.md#classes-are-stored-once)), so a large program stays proportional to its source: BxRig, about 200 classes and 2.4 MB of source, builds a 12 MB native binary (runner included) that starts in about 45 ms. `--strip-source` removes the embedded source text as well.
+What a program adds on top of the runner is its bytecode. Each class is stored once, however many places use it (see [Classes Are Stored Once](../getting-started/building.md#classes-are-stored-once)), so a large program stays proportional to its source: BxRig, about 200 classes and 2.4 MB of source, builds a 12 MB native binary (runner included) that starts in about 45 ms. `--strip-source` removes the embedded source text as well. Keep large data out of string literals: pack it as a [resource](#resources) instead.
 
 ---
 

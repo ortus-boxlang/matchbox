@@ -97,11 +97,13 @@ A class file that creates itself while it is being compiled (`new lib.Node()` in
 
 ### Bytecode Format Versions
 
-When a MatchBox release changes the bytecode format (as the release that stores classes once did), rebuild your `.bxb` files and native binaries with that release. Native binaries carry a format marker (`BOXLANG\x02`, module bundles `MBMODS\0\x0C`) and a runner refuses one it does not know; `.bxb` files have no marker, so an old one fails to load.
+When a MatchBox release changes the bytecode format (as the release that stores classes once did), rebuild your `.bxb` files and native binaries with that release. Native binaries carry a format marker (`BOXLANG\x02`, application bundles `MBMODS\0\x0D`) and a runner refuses one it does not know; `.bxb` files have no marker, so an old one fails to load.
 
 ---
 
 ## Compile to a Standalone Native Binary
+
+> Data files the program reads at run time (JSON, templates, pictures) can be packed into the binary: see [Resources](../building-and-deploying/native-builds.md#resources).
 
 The flagship feature of MatchBox. Produce a single self-contained binary with no external dependencies — not even MatchBox itself needs to be installed on the target machine.
 
@@ -158,6 +160,9 @@ OPTIONS:
     --strip-source       Strip embedded source text from compiled output
                          Errors still report filename:line; native binaries
                          fall back to reading the source file from disk
+    --resources <DIR>    Add a folder of resource files (repeatable); a resources/
+                         folder next to the program is always used. Read with
+                         resourceRead( path ); packed into native binaries
     --keep <SYMBOLS>     Comma-separated list of BIFs to preserve from tree-shaking
     --no-shaking         Disable tree-shaking; include full prelude
     --no-std-lib         Exclude the standard library entirely

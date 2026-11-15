@@ -58,6 +58,8 @@ The JVM BoxLang runtime ships with a very large standard library of BIFs coverin
 | Database / query functions | ❌ | ✅ |
 | Regular expressions | ❌ | ✅ |
 | `createObject()` (Java) | ❌ | ✅ |
+| `fileWrite()` of binary content | ✅ Writes the bytes | ✅ |
+| `resourceRead()`, `resourceReadBinary()`, `resourceExists()`, `resourceList()` | ✅ MatchBox only: files packed with the program ([Resources](building-and-deploying/native-builds.md#resources)) | ❌ |
 
 > **Workaround:** Missing BIFs can often be implemented in pure BoxLang and placed in the `prelude.bxs` or a shared include file, or implemented as [Native Fusion](building-and-deploying/native-builds.md#native-fusion-rust-interop) Rust BIFs.
 

@@ -520,6 +520,21 @@ For a websocket example that serves a page and broadcasts a shared counter, see 
 
 ---
 
+## Resources
+
+Files a program reads at run time travel with it. Put them in a `resources/` folder next to the program
+(or pass `--resources DIR`) and read them by their path inside that folder:
+
+```boxlang
+apps = jsonDeserialize( resourceRead( "catalog/apps.json" ) );
+logo = resourceReadBinary( "icons/logo.png" );
+if ( resourceExists( "templates/app.toml" ) ) println( resourceRead( "templates/app.toml" ) );
+for ( path in resourceList( "templates" ) ) println( path );
+```
+
+Run from source they are read from disk; a native build packs them into the binary. See
+[Resources](../building-and-deploying/native-builds.md#resources).
+
 ## Standard Library (Prelude)
 
 MatchBox includes a small standard library of BIFs compiled into every program. A selection:
@@ -532,6 +547,8 @@ MatchBox includes a small standard library of BIFs compiled into every program. 
 | `arrayMap(arr, fn)` | Map over an array |
 | `arrayToList(arr, delim)` | Join array as string |
 | `deserializeYAML(yaml)` | Convert YAML null, boolean, number, string, sequence, and string-keyed mapping values to native BoxLang values |
+| `resourceRead(path)` / `resourceReadBinary(path)` | A file packed with the program, as text or binary ([Resources](#resources)) |
+| `resourceExists(path)` / `resourceList([dir])` | Whether a resource exists; the sorted resource paths under `dir` |
 | `fileWriteExclusive(path, content, mode)` | Create and write a new file atomically, failing if the path already exists (`bif-io`) |
 | `abs(n)` | Absolute value |
 | `min(a, b)` | Minimum of two numbers |
