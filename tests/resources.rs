@@ -90,6 +90,18 @@ fn a_native_binary_carries_its_resources() {
 }
 
 #[test]
+fn file_write_of_binary_writes_the_bytes() {
+    let png = picture();
+    let dir = project(&[
+        ("main.bxs", b"fileWrite( 'copy.png', resourceReadBinary( 'dot.png' ) );"),
+        ("resources/dot.png", &png),
+    ]);
+    let (ok, _, err) = matchbox(&dir, &["main.bxs"]);
+    assert!(ok, "{err}");
+    assert_eq!(fs::read(dir.join("copy.png")).unwrap(), png);
+}
+
+#[test]
 fn the_same_path_in_two_folders_is_an_error() {
     let dir = project(&[
         ("main.bxs", b"println( resourceRead( 'a.txt' ) );"),

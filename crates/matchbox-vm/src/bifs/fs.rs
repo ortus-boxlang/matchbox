@@ -585,8 +585,14 @@ pub fn file_write(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String
         return Err("fileWrite() expects 2 arguments: (path, content)".to_string());
     }
     let path_str = vm.to_string(args[0]);
-    let content = vm.to_string(args[1]);
-    fs::write(path_str, content).map_err(|e| e.to_string())?;
+    // binary content is written as it is (as BoxLang does); anything else as text
+    if vm.is_bytes(args[1]) {
+        let bytes = vm.to_bytes(args[1])?;
+        fs::write(path_str, bytes).map_err(|e| e.to_string())?;
+    } else {
+        let content = vm.to_string(args[1]);
+        fs::write(path_str, content).map_err(|e| e.to_string())?;
+    }
     Ok(BxValue::new_bool(true))
 }
 
