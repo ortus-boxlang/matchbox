@@ -7,6 +7,7 @@ use matchbox_vm::{BxObject, bx_methods};
 
 pub mod canvas;
 pub mod color;
+pub mod imaging;
 pub mod rendering_context;
 mod terminal;
 mod widget;
