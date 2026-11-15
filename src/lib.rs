@@ -26,7 +26,7 @@ use wasm_bindgen_futures::JsFuture;
 #[cfg(target_arch = "wasm32")]
 use web_sys::window;
 
-const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
+const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x02"; // \x02: classes and interfaces are stored once (types::shared)
 const WASI_HTTP_EMBED_MAGIC: &[u8; 8] = b"MBWH\0\0\0\x01";
 const WASI_HTTP_EMBED_CAPACITY: usize = 4 * 1024 * 1024;
 const WASI_HTTP_EMBED_DATA_CAPACITY: usize = WASI_HTTP_EMBED_CAPACITY - 12;
@@ -636,7 +636,7 @@ fn render_esp32_fusion_runner_source(registration_calls: &str) -> String {
 #[wasm_bindgen]
 pub fn run_boxlang_bytecode(bytes: &[u8]) -> String {
     let res = (|| -> Result<String> {
-        let mut chunk: Chunk = postcard::from_bytes(bytes)?;
+        let mut chunk: Chunk = matchbox_vm::types::shared::decode(bytes)?;
         chunk.reconstruct_functions();
         let mut vm = vm::VM::new();
         let val = vm.interpret(chunk)?;
@@ -712,7 +712,7 @@ impl BoxLangVM {
 
     pub fn load_bytecode(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
         let res = (|| -> Result<()> {
-            let mut chunk: Chunk = postcard::from_bytes(bytes)?;
+            let mut chunk: Chunk = matchbox_vm::types::shared::decode(bytes)?;
             chunk.reconstruct_functions();
             let chunk_rc = Rc::new(RefCell::new(chunk.clone()));
             self.chunk = Some(chunk_rc.clone());
@@ -1860,7 +1860,7 @@ fn process_file_with_args(
             app.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
             return Ok(());
         }
-        let mut chunk: Chunk = postcard::from_bytes(&bytes)?;
+        let mut chunk: Chunk = matchbox_vm::types::shared::decode(&bytes)?;
         chunk.reconstruct_functions();
         run_chunk_with_args(chunk, &[], cli_args)?;
     } else {
@@ -1930,7 +1930,7 @@ fn process_file_with_args(
             if modules_info.iter().any(|module| module.has_native) {
                 bail!("Source-only native modules require --target native; publish prebuilt artifacts to create a module bytecode bundle");
             }
-            let bytes = if modules_info.is_empty() { postcard::to_stdvec(&chunk)? } else {
+            let bytes = if modules_info.is_empty() { matchbox_vm::types::shared::encode(&chunk)? } else {
                 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
                 { matchbox_vm::bundle::Application {
                     chunk: chunk.clone(), modules: module_programs::prepare(&modules_info, matchbox_vm::bundle::TARGET)?,
@@ -2073,25 +2073,44 @@ fn process_directory(
 /// `filename` and per-opcode `lines` are preserved so errors still report `file:line`.
 /// Native binaries automatically fall back to reading the source file from disk.
 fn strip_sources(chunk: &mut Chunk) {
+    strip_sources_shared(chunk, &mut HashMap::new());
+}
+
+/// `done` maps a shared class or interface to its stripped copy, so every user of it keeps sharing one.
+fn strip_sources_shared(chunk: &mut Chunk, done: &mut HashMap<usize, types::Constant>) {
     chunk.source = String::new();
     for constant in chunk.constants.iter_mut() {
+        let key = match constant {
+            types::Constant::CompiledFunction(f) => {
+                strip_sources_shared(&mut f.chunk, done);
+                continue;
+            }
+            types::Constant::Class(c) => c.addr(),
+            types::Constant::Interface(i) => i.addr(),
+            _ => continue,
+        };
+        if let Some(stripped) = done.get(&key) {
+            *constant = stripped.clone();
+            continue;
+        }
         match constant {
-            types::Constant::CompiledFunction(f) => strip_sources(&mut f.chunk),
             types::Constant::Class(c) => {
-                strip_sources(&mut c.constructor.chunk);
+                let c = c.make_mut();
+                strip_sources_shared(&mut c.constructor.chunk, done);
                 for (_, m) in c.methods.iter_mut() {
-                    strip_sources(&mut m.chunk);
+                    strip_sources_shared(&mut m.chunk, done);
                 }
             }
             types::Constant::Interface(i) => {
-                for (_, m) in i.methods.iter_mut() {
+                for (_, m) in i.make_mut().methods.iter_mut() {
                     if let Some(f) = m {
-                        strip_sources(&mut f.chunk);
+                        strip_sources_shared(&mut f.chunk, done);
                     }
                 }
             }
             _ => {}
         }
+        done.insert(key, constant.clone());
     }
 }
 
@@ -2257,7 +2276,7 @@ fn load_embedded_bytecode() -> Result<Chunk> {
     let len = u64::from_le_bytes(len_bytes) as usize;
     let chunk_start = len_start.checked_sub(len).context("Invalid embedded bytecode length")?;
     let chunk_bytes = &bytes[chunk_start..len_start];
-    let mut chunk: Chunk = postcard::from_bytes(chunk_bytes)?;
+    let mut chunk: Chunk = matchbox_vm::types::shared::decode(chunk_bytes)?;
     chunk.reconstruct_functions();
     Ok(chunk)
 }
@@ -2277,7 +2296,7 @@ fn produce_native_binary(
     let stub_key = if target == "native" { "host" } else { target };
     let native_bytes = stubs::get_stub(stub_key)?;
     let mut binary_bytes = native_bytes.to_vec();
-    let chunk_bytes = postcard::to_stdvec(chunk)?;
+    let chunk_bytes = matchbox_vm::types::shared::encode(chunk)?;
     let chunk_len = chunk_bytes.len() as u64;
     if modules.is_empty() {
         binary_bytes.extend_from_slice(&chunk_bytes);
@@ -2662,7 +2681,7 @@ strip = false
     }
 
     // 3. Generate main.rs / lib.rs
-    let bytecode = postcard::to_stdvec(chunk)?;
+    let bytecode = matchbox_vm::types::shared::encode(chunk)?;
     let mut code = String::new();
 
     if !is_esp32 && target != "js" {
@@ -2714,7 +2733,7 @@ fn run_interpreted() -> anyhow::Result<()> {{
     let mut classes = HashMap::new();
 {}
     let bytecode: Vec<u8> = vec!{:?};
-    let mut chunk: Chunk = postcard::from_bytes(&bytecode)?;
+    let mut chunk: Chunk = matchbox_vm::types::shared::decode(&bytecode)?;
     chunk.reconstruct_functions();
     let mut vm = VM::new_with_bifs(bifs, classes);
     #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
@@ -2739,7 +2758,7 @@ impl BoxLangVM {
     #[wasm_bindgen(constructor)]
     pub fn new() -> BoxLangVM { BoxLangVM { vm: VM::new_with_bifs(HashMap::new(), HashMap::new()) } }
     pub fn load_bytecode(&mut self, bytes: &[u8]) -> Result<(), String> {
-        let mut chunk: Chunk = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+        let mut chunk: Chunk = matchbox_vm::types::shared::decode(bytes).map_err(|e| e.to_string())?;
         chunk.reconstruct_functions();
         self.vm.interpret(chunk).map_err(|e| e.to_string())?;
         Ok(())
@@ -3028,7 +3047,7 @@ fn read_crate_name(cargo_toml_path: &Path) -> Result<String> {
 fn produce_wasi_binary(chunk: &Chunk, source_path: &Path, output: Option<&Path>) -> Result<()> {
     let mut wasm_bytes = stubs::get_stub("wasi")?.to_vec();
 
-    let chunk_bytes = postcard::to_stdvec(chunk)?;
+    let chunk_bytes = matchbox_vm::types::shared::encode(chunk)?;
 
     // The runner stub contains a 1 MB sentinel region whose layout is:
     //   [0..8]  = magic "BXLG\x00\x00\x00\x01"
@@ -3226,7 +3245,7 @@ fn produce_esp32_binary(
     }
 
     let chip = chip.unwrap_or("esp32");
-    let bytecode_bytes = postcard::to_stdvec(chunk)?;
+    let bytecode_bytes = matchbox_vm::types::shared::encode(chunk)?;
 
     // ESP32 targets:
     let target = match chip {
@@ -3286,7 +3305,7 @@ fn produce_esp32_binary(
             // For now, we use the same "append to end" logic used for native binaries,
             // but the matchbox-esp32-runner needs to know how to find it if load_from_flash fails.
             let mut binary_bytes = stub_bytes.to_vec();
-            let chunk_bytes = postcard::to_stdvec(chunk)?;
+            let chunk_bytes = matchbox_vm::types::shared::encode(chunk)?;
             let chunk_len = chunk_bytes.len() as u64;
             binary_bytes.extend_from_slice(&chunk_bytes);
             binary_bytes.extend_from_slice(&chunk_len.to_le_bytes());

@@ -37,6 +37,8 @@ pub fn compile_with_treeshaking(
     // Class and interface files are loaded while compiling, so a first compile of the program
     // finds them; their code has to be tracked too or a prelude function they alone use would be
     // shaken out (`Variable 'arraysort' not found`).
+    // Both compiles below share one cache, so each class file is compiled once.
+    let _cache = compiler::CacheScope::open();
     let tracked_ast: Vec<Statement> = if no_shaking {
         ast.to_vec()
     } else {

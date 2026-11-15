@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Each class is compiled and stored once.** A class file was compiled again, and embedded in full, at every `new`, `extends` and "does it have `init`" check that named it, and again inside every class that used it. A program of about 200 classes that use each other (BxRig) produced a 220 MB native binary from 2.4 MB of source, needed 13.5 GB of memory to compile, and took 2.5 s to start. The compiler now keeps the classes and interfaces it compiled for the length of a compile (both tree-shaking passes share them), and bytecode writes a class in full the first time and as an index after that (`types::shared`: `Shared<T>`, `encode`, `decode`). The same program is now a 12 MB binary, compiles in 2 s with 0.4 GB, and starts in 45 ms. `--strip-source` keeps the sharing.
+- The bytecode format changed: the native footer is `BOXLANG\x02` and the module bundle magic `MBMODS\0\x0C`. Rebuild `.bxb` files and native binaries with this version.
+- A class file that instantiates itself while it is being compiled (`new lib.A()` inside `lib/A.bx`) now fails with `Circular class reference: ...` instead of overflowing the compiler's stack.
+
 ### Fixed
 - `len()` (and `.len()`) of a string counted UTF-8 bytes, and `find()` / `findNoCase()` returned byte offsets; both now count characters, so `len("é")` is 1 and `find` agrees with `left`, `right` and `mid`. Layout code that pads text with box-drawing or accented characters no longer miscounts (or loops forever).
 
