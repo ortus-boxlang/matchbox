@@ -89,6 +89,16 @@ matchbox --build --strip-source hello.bxs
 
 This typically reduces `.bxb` size by 30–40%. Errors still report the exact `filename:line`, and native binaries automatically fall back to reading the original `.bxs` file from disk if it is present alongside the binary.
 
+### Classes Are Stored Once
+
+Every class file a program uses is compiled once per build and stored once in the bytecode, however many `new`, `extends` or `implements` name it and however deeply classes use each other. A program of a few hundred classes compiles in seconds with a few hundred MB of memory, and its bytecode grows with the size of the source, not with how often classes are used.
+
+A class file that creates itself while it is being compiled (`new lib.Node()` inside `lib/Node.bx`) fails with `Circular class reference: ...`; create such an object at run time instead (for example through a factory that is not the class itself).
+
+### Bytecode Format Versions
+
+When a MatchBox release changes the bytecode format (as the release that stores classes once did), rebuild your `.bxb` files and native binaries with that release. Native binaries carry a format marker (`BOXLANG\x02`, module bundles `MBMODS\0\x0C`) and a runner refuses one it does not know; `.bxb` files have no marker, so an old one fails to load.
+
 ---
 
 ## Compile to a Standalone Native Binary

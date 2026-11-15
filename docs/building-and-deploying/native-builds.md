@@ -130,6 +130,8 @@ strip        = true  # Strip symbols
 
 The resulting binaries are typically **~500 KB** — small enough to ship as a GitHub release asset or embed in a container image.
 
+What a program adds on top of the runner is its bytecode. Each class is stored once, however many places use it (see [Classes Are Stored Once](../getting-started/building.md#classes-are-stored-once)), so a large program stays proportional to its source: BxRig, about 200 classes and 2.4 MB of source, builds a 12 MB native binary (runner included) that starts in about 45 ms. `--strip-source` removes the embedded source text as well.
+
 ---
 
 ## Native Fusion: Rust Interop
