@@ -1,5 +1,8 @@
 pub mod box_string;
+pub mod shared;
 pub mod value;
+
+pub use self::shared::Shared;
 
 #[cfg(test)]
 mod macros_test;
@@ -536,8 +539,8 @@ pub enum Constant {
     Boolean(bool),
     Null,
     CompiledFunction(BxCompiledFunction),
-    Class(BxClass),
-    Interface(BxInterface),
+    Class(Shared<BxClass>),
+    Interface(Shared<BxInterface>),
     StringArray(Vec<String>),
     /// Non-executable metadata in the constructor constant pool (not a method table).
     MethodSignatures(Vec<MethodSignature>),

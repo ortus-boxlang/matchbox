@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use matchbox_vm::Chunk;
 use matchbox_vm::types::{
     BxClass, BxCompiledFunction, BxInterface, ClassModifiers as VmClassModifiers, Constant,
-    FunctionKind, FunctionModifiers as VmFunctionModifiers, box_string::BoxString,
+    FunctionKind, FunctionModifiers as VmFunctionModifiers, Shared, box_string::BoxString,
 };
 use matchbox_vm::vm::opcode::op;
 use std::collections::{HashMap, HashSet};
@@ -31,6 +31,78 @@ thread_local! {
     /// ASTs of the class and interface files loaded while compiling (`new`, `import`, `extends`).
     /// Tree-shaking needs them: a prelude function used only inside such a file must be kept.
     static LOADED_SOURCES: std::cell::RefCell<Vec<Vec<Statement>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A class or interface file compiled once in this compile, and what loading it adds to the caller.
+#[derive(Clone)]
+struct CachedFile {
+    constant: Constant,
+    /// parents in other files that the caller defines before the class (`pending_parent_defs`)
+    parent_defs: Vec<(String, Constant)>,
+    /// the file's imports after compiling it (its `js:` bindings are emitted in the caller)
+    imports: HashMap<String, String>,
+}
+
+#[derive(Default)]
+struct FileCache {
+    files: HashMap<String, CachedFile>,
+    /// class files being compiled right now, to report a class that needs itself
+    loading: Vec<PathBuf>,
+}
+
+thread_local! {
+    /// Each class and interface file is compiled once per compile (see [`CacheScope`]); every `new`,
+    /// `extends` and `implements` of it shares that one compiled value, so bytecode holds it once.
+    static FILE_CACHE: std::cell::RefCell<Option<FileCache>> = const { std::cell::RefCell::new(None) };
+    static CACHE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Keeps compiled class files for as long as it lives. [`Compiler::compile`] opens one, so a compile
+/// never sees files compiled by an earlier one (an edited file is read again); a caller that compiles
+/// the same program twice (tree-shaking) opens one around both to compile each file once.
+pub struct CacheScope(());
+
+impl CacheScope {
+    pub fn open() -> Self {
+        CACHE_DEPTH.with(|d| {
+            if d.get() == 0 {
+                FILE_CACHE.with(|c| *c.borrow_mut() = Some(FileCache::default()));
+            }
+            d.set(d.get() + 1);
+        });
+        CacheScope(())
+    }
+}
+
+impl Drop for CacheScope {
+    fn drop(&mut self) {
+        CACHE_DEPTH.with(|d| {
+            d.set(d.get() - 1);
+            if d.get() == 0 {
+                FILE_CACHE.with(|c| *c.borrow_mut() = None);
+            }
+        });
+    }
+}
+
+fn cache_key(kind: &str, file: &Path, imports: &HashMap<String, String>) -> String {
+    // the importing file's imports reach the loaded file's compile, so they are part of the key
+    let mut pairs: Vec<_> = imports.iter().collect();
+    pairs.sort();
+    let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    format!("{kind}|{}|{:?}", canonical.display(), pairs)
+}
+
+fn cached_file(key: &str) -> Option<CachedFile> {
+    FILE_CACHE.with(|c| c.borrow().as_ref().and_then(|c| c.files.get(key).cloned()))
+}
+
+fn remember_file(key: String, file: CachedFile) {
+    FILE_CACHE.with(|c| {
+        if let Some(c) = c.borrow_mut().as_mut() {
+            c.files.insert(key, file);
+        }
+    });
 }
 
 /// Forgets the files recorded so far on this thread.
@@ -149,6 +221,7 @@ impl Compiler {
     }
 
     pub fn compile(&mut self, ast: &[Statement], source: &str) -> Result<Chunk> {
+        let _cache = CacheScope::open();
         self.chunk.source = source.to_string();
         let len = ast.len();
         for (i, stmt) in ast.iter().enumerate() {
@@ -533,7 +606,7 @@ impl Compiler {
                     methods: methods.into_iter().collect(),
                 };
 
-                let class_idx = self.chunk.add_constant(Constant::Class(class));
+                let class_idx = self.chunk.add_constant(Constant::Class(Shared::new(class)));
                 self.chunk.emit1(op::CONSTANT, class_idx, stmt.line as u32);
                 let name_idx = self
                     .chunk
@@ -547,10 +620,10 @@ impl Compiler {
                 let mut ancestors = Vec::new();
                 for parent_name in extends {
                     let parent = self.resolve_interface(parent_name)?;
-                    for ancestor in std::iter::once(parent_name.to_lowercase()).chain(parent.ancestors) {
+                    for ancestor in std::iter::once(parent_name.to_lowercase()).chain(parent.ancestors.iter().cloned()) {
                         if !ancestors.contains(&ancestor) { ancestors.push(ancestor); }
                     }
-                    methods.extend(parent.methods);
+                    methods.extend(parent.methods.iter().map(|(name, method)| (name.clone(), method.clone())));
                 }
                 for member in members {
                     if let StatementKind::FunctionDecl {
@@ -589,7 +662,7 @@ impl Compiler {
                     methods: methods.into_iter().collect(),
                 };
 
-                let iface_idx = self.chunk.add_constant(Constant::Interface(iface));
+                let iface_idx = self.chunk.add_constant(Constant::Interface(Shared::new(iface)));
                 self.chunk.emit1(op::CONSTANT, iface_idx, stmt.line as u32);
                 let name_idx = self
                     .chunk
@@ -3066,7 +3139,7 @@ impl Compiler {
                 .is_some_and(|parent| self.class_chain_has_init(parent, depth + 1))
     }
 
-    fn find_class_constant(&mut self, class_name: &str) -> Result<Option<BxClass>> {
+    fn find_class_constant(&mut self, class_name: &str) -> Result<Option<Shared<BxClass>>> {
         let lower_name = class_name.to_lowercase();
         for constant in &self.chunk.constants {
             if let Constant::Class(class) = constant {
@@ -3565,7 +3638,42 @@ impl Compiler {
 
     fn load_class_from_path(&mut self, class_path: &str) -> Result<Constant> {
         let file_path = self.resolve_source_file(class_path)?;
+        let key = cache_key("class", &file_path, &self.imports);
+        if let Some(hit) = cached_file(&key) {
+            self.propagate_js_imports(&hit.imports);
+            self.pending_parent_defs.extend(hit.parent_defs);
+            return Ok(hit.constant);
+        }
+        let canonical = fs::canonicalize(&file_path).unwrap_or_else(|_| file_path.clone());
+        let cycle = FILE_CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            let Some(c) = c.as_mut() else { return None };
+            if let Some(at) = c.loading.iter().position(|p| *p == canonical) {
+                let mut chain: Vec<String> = c.loading[at..].iter().map(|p| p.display().to_string()).collect();
+                chain.push(canonical.display().to_string());
+                return Some(chain.join(" -> "));
+            }
+            c.loading.push(canonical.clone());
+            None
+        });
+        if let Some(chain) = cycle {
+            bail!("Circular class reference: {chain} (a class file needs itself while it is being compiled; create it at run time instead)");
+        }
+        let before = self.pending_parent_defs.len();
+        let loaded = self.compile_class_file(class_path, &file_path);
+        FILE_CACHE.with(|c| {
+            if let Some(c) = c.borrow_mut().as_mut() {
+                c.loading.retain(|p| *p != canonical);
+            }
+        });
+        let (constant, imports) = loaded?;
+        remember_file(key, CachedFile { constant: constant.clone(), parent_defs: self.pending_parent_defs[before..].to_vec(), imports });
+        Ok(constant)
+    }
 
+    /// Compiles a class file; returns its class and its imports after compiling.
+    fn compile_class_file(&mut self, class_path: &str, file_path: &Path) -> Result<(Constant, HashMap<String, String>)> {
+        let file_path = file_path.to_path_buf();
         let source = fs::read_to_string(&file_path)?;
         let mut ast = crate::parser::parse(&source, file_path.to_str())
             .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", class_path, e))?;
@@ -3668,14 +3776,14 @@ impl Compiler {
                         }
                     }
                 }
-                return Ok(constant.clone());
+                return Ok((constant.clone(), sub_imports));
             }
         }
 
         bail!("No class declaration found in {}", file_path.display());
     }
 
-    fn resolve_interface(&mut self, name: &str) -> Result<BxInterface> {
+    fn resolve_interface(&mut self, name: &str) -> Result<Shared<BxInterface>> {
         let path = if let Some(path) = self.imports.get(&name.to_lowercase()) {
             path.clone()
         } else if let Some(interface) = self.chunk.constants.iter().find_map(|constant| match constant {
@@ -3685,11 +3793,29 @@ impl Compiler {
         self.load_interface_from_path(&path)
     }
 
-    fn load_interface_from_path(&mut self, iface_path: &str) -> Result<BxInterface> {
+    fn load_interface_from_path(&mut self, iface_path: &str) -> Result<Shared<BxInterface>> {
         let file_path = self.resolve_source_file(iface_path)?;
         let canonical = file_path.canonicalize()?;
         if self.interface_stack.contains(&canonical) { bail!("Circular interface inheritance at {}", file_path.display()); }
+        let key = cache_key("interface", &file_path, &self.imports);
+        if let Some(hit) = cached_file(&key) {
+            self.propagate_js_imports(&hit.imports);
+            return match hit.constant {
+                Constant::Interface(iface) => Ok(iface),
+                _ => bail!("No interface declaration found in {}", file_path.display()),
+            };
+        }
+        let (constant, imports) = self.compile_interface_file(iface_path, &file_path)?;
+        remember_file(key, CachedFile { constant: constant.clone(), parent_defs: Vec::new(), imports });
+        match constant {
+            Constant::Interface(iface) => Ok(iface),
+            _ => bail!("No interface declaration found in {}", file_path.display()),
+        }
+    }
 
+    fn compile_interface_file(&mut self, iface_path: &str, file_path: &Path) -> Result<(Constant, HashMap<String, String>)> {
+        let file_path = file_path.to_path_buf();
+        let canonical = file_path.canonicalize()?;
         let source = fs::read_to_string(&file_path)?;
         let ast = crate::parser::parse(&source, file_path.to_str())
             .map_err(|e| anyhow::anyhow!("Parse Error in {}: {}", iface_path, e))?;
@@ -3717,8 +3843,8 @@ impl Compiler {
         self.propagate_js_imports(&sub_imports);
 
         for constant in chunk.constants() {
-            if let Constant::Interface(interface) = constant {
-                return Ok(interface.clone());
+            if let Constant::Interface(_) = constant {
+                return Ok((constant.clone(), sub_imports));
             }
         }
 

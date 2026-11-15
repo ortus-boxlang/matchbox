@@ -19,6 +19,8 @@ enum ConstantKey {
     Null,
     StringArray(Vec<String>),
     Function(String),
+    /// The same shared class or interface (see `types::Shared`)
+    Shared(usize),
 }
 
 impl ConstantKey {
@@ -30,7 +32,9 @@ impl ConstantKey {
             Constant::Null => Some(ConstantKey::Null),
             Constant::StringArray(v) => Some(ConstantKey::StringArray(v.clone())),
             Constant::CompiledFunction(f) => Some(ConstantKey::Function(f.name.clone())),
-            Constant::Class(_) | Constant::Interface(_) | Constant::MethodSignatures(_) => None,
+            Constant::Class(c) => Some(ConstantKey::Shared(c.addr())),
+            Constant::Interface(i) => Some(ConstantKey::Shared(i.addr())),
+            Constant::MethodSignatures(_) => None,
         }
     }
 }

@@ -16,7 +16,7 @@ pub fn produce_js_bundle(
     output: Option<&Path>,
 ) -> Result<()> {
     try_log!("Producing standalone JS bundle...");
-    let bytecode = postcard::to_stdvec(chunk)?;
+    let bytecode = matchbox_vm::types::shared::encode(chunk)?;
 
     let wasm_bytes = stubs::get_stub("web")?.to_vec();
 

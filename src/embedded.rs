@@ -110,7 +110,7 @@ pub fn write_embedded_route_table(
 ) -> Result<PathBuf> {
     let route_table = build_embedded_route_table(manifest)?;
     let path = build_dir.join("embedded-route-table.json");
-    let bytes = postcard::to_stdvec(&route_table)?;
+    let bytes = matchbox_vm::types::shared::encode(&route_table)?;
     fs::write(&path, bytes).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(path)
 }
@@ -216,7 +216,7 @@ fn compile_source_file_with_kind(
     )
     .with_context(|| format!("Failed to compile {}", path.display()))?;
     chunk.reconstruct_functions();
-    postcard::to_stdvec(&chunk).with_context(|| format!("Failed to serialize {}", path.display()))
+    matchbox_vm::types::shared::encode(&chunk).with_context(|| format!("Failed to serialize {}", path.display()))
 }
 
 fn infer_class_name_from_filename(ast: &mut [Statement], path: &Path) {
