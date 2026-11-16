@@ -1290,47 +1290,33 @@ impl Compiler {
                     }
                 }
 
-                // When FOR_LOOP_STEP falls through (limit reached) there is no boolean
-                // on the stack — the bool from the initial JUMP_IF_FALSE guard was already
-                // consumed by the POP inside the loop header.  We track a JUMP emitted
-                // immediately after FOR_LOOP_STEP so we can skip the bool-POP that only
-                // applies to the early JUMP_IF_FALSE exit path.
-                let mut for_loop_step_done_jump: Option<usize> = None;
+                // The fused compare-and-jump opcodes (FOR_LOOP_STEP, LOCAL_COMPARE_JUMP, GLOBAL_COMPARE_JUMP)
+                // test the condition without pushing a boolean, so when they fall through (condition false)
+                // the stack holds no bool: the one from the initial JUMP_IF_FALSE guard was already consumed
+                // by the POP in the loop header. Each of them is followed by a JUMP over the bool-POP below,
+                // which only applies to the early JUMP_IF_FALSE exit. Falling into that POP instead removed
+                // the slot beneath the loop (an enclosing for-in's item or cursor, or a caller's local).
+                let mut fused_exit_jump: Option<usize> = None;
 
                 if let Some((is_local, idx, const_idx)) = optimized_condition {
-                    if is_local && merged_into_step {
-                        // Single opcode: increment local + compare + jump back
-                        let offset = self.chunk.code.len() - body_start + 3;
-                        self.chunk.emit3(
-                            op::FOR_LOOP_STEP,
-                            idx as u32,
-                            const_idx as u32,
-                            offset as u32,
-                            stmt.line as u32,
-                        );
-                        // FOR_LOOP_STEP falls through here. Skip the bool-POP below.
-                        let jump_ip = self.chunk.code.len();
-                        self.chunk.emit1(op::JUMP, 0, stmt.line as u32);
-                        for_loop_step_done_jump = Some(jump_ip);
+                    let fused_op = if is_local && merged_into_step {
+                        op::FOR_LOOP_STEP // increment local + compare + jump back
                     } else if is_local {
-                        let offset = self.chunk.code.len() - body_start + 3;
-                        self.chunk.emit3(
-                            op::LOCAL_COMPARE_JUMP,
-                            idx as u32,
-                            const_idx as u32,
-                            offset as u32,
-                            stmt.line as u32,
-                        );
+                        op::LOCAL_COMPARE_JUMP
                     } else {
-                        let offset = self.chunk.code.len() - body_start + 3;
-                        self.chunk.emit3(
-                            op::GLOBAL_COMPARE_JUMP,
-                            idx as u32,
-                            const_idx as u32,
-                            offset as u32,
-                            stmt.line as u32,
-                        );
-                    }
+                        op::GLOBAL_COMPARE_JUMP
+                    };
+                    let offset = self.chunk.code.len() - body_start + 3;
+                    self.chunk.emit3(
+                        fused_op,
+                        idx as u32,
+                        const_idx as u32,
+                        offset as u32,
+                        stmt.line as u32,
+                    );
+                    let jump_ip = self.chunk.code.len();
+                    self.chunk.emit1(op::JUMP, 0, stmt.line as u32);
+                    fused_exit_jump = Some(jump_ip);
                 } else {
                     let loop_end = self.chunk.code.len();
                     let offset = loop_end - loop_start + 1;
@@ -1338,8 +1324,8 @@ impl Compiler {
                 }
 
                 // Patch JUMP_IF_FALSE to land here; emit POP to discard the bool.
-                // This POP is only reached via the early JUMP_IF_FALSE exit — the
-                // FOR_LOOP_STEP fallthrough jumps past it (see for_loop_step_done_jump).
+                // This POP is only reached via the early JUMP_IF_FALSE exit; the fused
+                // opcode's fallthrough jumps past it (see fused_exit_jump).
                 if let Some(idx) = exit_jump {
                     let exit_target = self.chunk.code.len();
                     let offset = exit_target - idx - 1;
@@ -1347,8 +1333,8 @@ impl Compiler {
                     self.chunk.emit0(op::POP, stmt.line as u32);
                 }
 
-                // Patch the FOR_LOOP_STEP done-jump to land here (after the bool-POP).
-                if let Some(jump_ip) = for_loop_step_done_jump {
+                // Patch the fused opcode's done-jump to land here (after the bool-POP).
+                if let Some(jump_ip) = fused_exit_jump {
                     let target = self.chunk.code.len();
                     let offset = target - jump_ip - 1;
                     self.chunk.code[jump_ip] = op::JUMP as u32 | ((offset as u32) << 8);

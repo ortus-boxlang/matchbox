@@ -1,0 +1,72 @@
+// A counting for loop whose condition is `name < constant` compiles to a fused compare-and-jump
+// opcode that pushes no boolean. Its normal exit used to fall into the POP meant for the boolean of
+// the initial guard, removing the stack slot beneath the loop: the item or cursor of an enclosing
+// for-in (a VM panic on the outer loop's next iteration) or a function's local.
+function expect( actual, expected, label ) {
+	if ( actual != expected ) {
+		throw( message = label & ": expected [" & expected & "] got [" & actual & "]" );
+	}
+}
+
+// --- Script level ---
+
+out = [];
+for ( n in [ "x", "y" ] ) {
+	for ( i = 0; i < 2; i++ ) out.append( n & i );
+}
+expect( out.toList(), "x0,x1,y0,y1", "script: counting loop in for-in" );
+
+out = [];
+for ( n in [ "x", "y" ] ) {
+	diffs = [];
+	for ( i = 0; i < 2; i += 1 ) { diffs.append( i ); }
+	out.append( n & diffs.len() );
+}
+expect( out.toList(), "x2,y2", "script: counting loop with += in for-in" );
+
+out = [];
+for ( n in [ "x", "y" ] ) {
+	for ( m in [ 1, 2 ] ) out.append( n & m );
+}
+expect( out.toList(), "x1,x2,y1,y2", "script: for-in in for-in" );
+
+out = [];
+for ( n in [ "x", "y", "z" ] ) {
+	for ( i = 0; i < 4; i++ ) {
+		if ( i == 1 ) continue;
+		if ( i == 3 ) break;
+		out.append( n & i );
+	}
+	if ( n == "y" ) continue;
+	out.append( n );
+}
+expect( out.toList(), "x0,x2,x,y0,y2,z0,z2,z", "script: counting loop with break/continue in for-in" );
+
+// --- Inside a function ---
+
+function nested() {
+	var before = "kept";
+	var out = [];
+	for ( var n in [ "x", "y" ] ) {
+		for ( var i = 0; i < 2; i++ ) out.append( n & i );
+		out.append( n );
+		for ( var j = 0; j < 2; j += 1 ) out.append( n & "j" & j );
+		for ( var m in [ 1, 2 ] ) out.append( n & "m" & m );
+		for ( var k = 0; k < 4; k++ ) {
+			if ( k == 1 ) continue;
+			if ( k == 3 ) break;
+			out.append( n & "k" & k );
+		}
+		out.append( n );
+	}
+	for ( var p = 0; p < 2; p += 1 ) {}
+	var after = "also kept";
+	return before & " " & after & " " & out.toList();
+}
+expect(
+	nested(),
+	"kept also kept x0,x1,x,xj0,xj1,xm1,xm2,xk0,xk2,x,y0,y1,y,yj0,yj1,ym1,ym2,yk0,yk2,y",
+	"function: nested loops"
+);
+
+println( "nested for loops ok" );
