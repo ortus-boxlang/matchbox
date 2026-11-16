@@ -4131,6 +4131,25 @@ mod cli_tests {
 }
 
 #[cfg(test)]
+mod panic_report_tests {
+    use super::panic_report;
+
+    #[test]
+    fn the_report_names_the_message_and_the_location() {
+        let text = panic_report("index out of bounds", "crates/x.rs:10:5", None);
+        assert!(text.starts_with("matchbox: internal error: index out of bounds\n"));
+        assert!(text.contains("at crates/x.rs:10:5"));
+        assert!(text.contains("RUST_BACKTRACE=1"));
+    }
+
+    #[test]
+    fn a_captured_backtrace_is_printed_instead_of_the_hint() {
+        let text = panic_report("boom", "a.rs:1:1", Some("  0: frame"));
+        assert!(text.contains("0: frame") && !text.contains("Set RUST_BACKTRACE"));
+    }
+}
+
+#[cfg(test)]
 mod fusion_feature_tests {
     use super::fusion_vm_features;
 
@@ -4160,21 +4179,3 @@ mod fusion_feature_tests {
     }
 }
 
-#[cfg(test)]
-mod panic_report_tests {
-    use super::panic_report;
-
-    #[test]
-    fn the_report_names_the_message_and_the_location() {
-        let text = panic_report("index out of bounds", "crates/x.rs:10:5", None);
-        assert!(text.starts_with("matchbox: internal error: index out of bounds\n"));
-        assert!(text.contains("at crates/x.rs:10:5"));
-        assert!(text.contains("RUST_BACKTRACE=1"));
-    }
-
-    #[test]
-    fn a_captured_backtrace_is_printed_instead_of_the_hint() {
-        let text = panic_report("boom", "a.rs:1:1", Some("  0: frame"));
-        assert!(text.contains("0: frame") && !text.contains("Set RUST_BACKTRACE"));
-    }
-}
