@@ -905,6 +905,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn adapter_matches_if_none_match_across_repeated_header_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().canonicalize().unwrap();
+        std::fs::write(webroot.join("app.js"), "console.log(1);").unwrap();
+        let state = setup_test_state(webroot);
+
+        let initial = handler(
+            State(state.clone()),
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Request::builder()
+                .uri("/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(initial.status(), StatusCode::OK);
+        let etag = initial.headers().get("etag").unwrap().clone();
+
+        // Repeated list-valued fields are equivalent to one comma-separated field.
+        // The current tag is in the second field, not the first one.
+        let request = Request::builder()
+            .uri("/app.js")
+            .header("if-none-match", "\"outdated\"")
+            .header("if-none-match", etag.clone())
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(request.headers().get_all("if-none-match").iter().count(), 2);
+
+        let response = handler(
+            State(state),
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            request,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(response.headers().get("etag"), Some(&etag));
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
     async fn adapter_returns_304_with_etag_and_empty_body() {
         let temp = tempfile::tempdir().unwrap();
         let webroot = temp.path().to_path_buf().canonicalize().unwrap();
