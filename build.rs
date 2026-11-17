@@ -34,7 +34,7 @@ fn path_is_newer_than(path: &Path, reference: SystemTime) -> bool {
 
 /// Crates a Native Fusion build compiles against: `matchbox_vm` and every path dependency it has.
 /// `src/fusion_sdk.rs` has a test that fails if this list stops being closed over path dependencies.
-const FUSION_SDK_CRATES: &[&str] = &["matchbox-vm", "matchbox-macros", "matchbox-parser", "matchbox-plugin-sdk"];
+const FUSION_SDK_CRATES: &[&str] = &["matchbox-vm", "matchbox-macros", "matchbox-parser", "matchbox-plugin-sdk", "matchbox-utility"];
 
 /// Walks `dir` recursively and appends `(relative path, absolute path)` for every file the SDK embeds,
 /// skipping `target`, `tests`, `benches` and `examples`. Entries are sorted so the embedded set is stable.
@@ -130,6 +130,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=crates/matchbox-runner/src/main.rs");
     println!("cargo:rerun-if-changed=crates/matchbox-runner/Cargo.toml");
+    println!("cargo:rerun-if-changed=crates/matchbox-utility");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/src");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/Cargo.toml");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/build.rs");
@@ -203,6 +204,7 @@ fn main() {
         let sources_to_watch = [
             Path::new(&root_dir).join("crates/matchbox-runner/src/main.rs"),
             Path::new(&root_dir).join("crates/matchbox-runner/Cargo.toml"),
+            Path::new(&root_dir).join("crates/matchbox-utility"),
             Path::new(&root_dir).join("crates/matchbox-vm/src"),
             Path::new(&root_dir).join("crates/matchbox-vm/Cargo.toml"),
             Path::new(&root_dir).join("crates/matchbox-vm/build.rs"),
