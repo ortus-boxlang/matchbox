@@ -78,6 +78,7 @@ unsafe extern "C" fn capability(name: Text) -> *const c_void {
         Some(BYTES_V1) => (&BYTES as *const BytesV1).cast(),
         Some(TYPES_V1) => (&TYPES as *const TypesV1).cast(),
         Some(COLLECTIONS_V1) => (&COLLECTIONS as *const CollectionsV1).cast(),
+        Some(INTEGERS_V1) => (&INTEGERS as *const IntegersV1).cast(),
         _ => std::ptr::null(),
     }
 }
@@ -708,6 +709,35 @@ unsafe extern "C" fn struct_keys(ctx: Context, object: Value, out: *mut Value) -
     }
     output(ctx, BxValue::new_ptr(array), out)
 }
+/// `IntegersV1::int_new`: a VM integer when it fits in 32 bits, otherwise a decimal of the same value.
+unsafe extern "C" fn int_new(ctx: Context, value: i64, out: *mut Value) -> i32 {
+    let v = i32::try_from(value).map(BxValue::new_int).unwrap_or_else(|_| BxValue::new_number(value as f64));
+    output(unsafe { context(ctx) }, v, out)
+}
+/// `IntegersV1::int_get`: an integer, or a whole decimal within the `i64` range.
+unsafe extern "C" fn int_get(ctx: Context, value: Value, out: *mut i64) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        if out.is_null() { return Err("Null output pointer".into()); }
+        let value = ctx.value(value)?;
+        let whole = if value.is_int() {
+            i64::from(value.as_int())
+        } else if value.is_number() {
+            let n = value.as_number();
+            if n.fract() != 0.0 || !n.is_finite() || n < i64::MIN as f64 || n >= i64::MAX as f64 {
+                return Err("Expected a whole number".into());
+            }
+            n as i64
+        } else {
+            return Err("Expected a whole number".into());
+        };
+        unsafe { *out = whole };
+        Ok(())
+    })();
+    operation(ctx, result)
+}
+/// The `matchbox.integers.v1` table handed to plugins.
+static INTEGERS: IntegersV1 = IntegersV1 { int_new, int_get };
 /// The `matchbox.types.v1` table handed to plugins.
 static TYPES: TypesV1 = TypesV1 { kind_of, bool_get };
 /// The `matchbox.collections.v1` table handed to plugins.

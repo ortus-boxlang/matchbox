@@ -16,6 +16,8 @@ pub const BYTES_V1: &str = "matchbox.bytes.v1";
 pub const TYPES_V1: &str = "matchbox.types.v1";
 /// Name of the array and struct capability. See [`CollectionsV1`] and [`require_collections`].
 pub const COLLECTIONS_V1: &str = "matchbox.collections.v1";
+/// Name of the whole-number capability. See [`IntegersV1`] and [`require_integers`].
+pub const INTEGERS_V1: &str = "matchbox.integers.v1";
 
 /// An opaque handle to a BoxLang value. Valid only during the invocation that received or
 /// created it; use [`Call::retain`] to keep a value longer. Never inspect its bits.
@@ -149,6 +151,16 @@ pub struct CollectionsV1 {
     pub struct_get: unsafe extern "C" fn(Context, Value, Text, *mut Value, *mut bool) -> i32,
     /// Creates a new array of a struct's keys, in the struct's order. Fails for a non-struct.
     pub struct_keys: unsafe extern "C" fn(Context, Value, *mut Value) -> i32,
+}
+
+/// Additive capability: whole numbers. A number made with `number_new` is a decimal and shows as `5.0`; one made with `int_new`
+/// is whole and shows as `5`, as BoxLang's own integers do.
+#[repr(C)]
+pub struct IntegersV1 {
+    /// Creates a whole number. Values outside the VM's 32-bit integer range become a decimal of the same value.
+    pub int_new: unsafe extern "C" fn(Context, i64, *mut Value) -> i32,
+    /// Reads a whole number: an integer, or a decimal with no fractional part within the `i64` range. Anything else fails.
+    pub int_get: unsafe extern "C" fn(Context, Value, *mut i64) -> i32,
 }
 
 /// The host interface passed to `matchbox_plugin_init_v1`.
@@ -322,6 +334,18 @@ impl<'a> Call<'a> {
     /// Creates a binary value from a copy of `bytes`. Requires [`BYTES_V1`].
     pub fn bytes_new(&self, api: &BytesV1, bytes: &[u8]) -> Result<Value, String> {
         self.value(|out| unsafe { (api.new)(self.context, Bytes::new(bytes), out) })
+    }
+    /// Creates a whole number, shown without a decimal point (`5`, not `5.0`). Requires [`INTEGERS_V1`].
+    pub fn int_new(&self, api: &IntegersV1, value: i64) -> Result<Value, String> {
+        self.value(|out| unsafe { (api.int_new)(self.context, value, out) })
+    }
+    /// Reads a whole number: `5` and `5.0` are 5; `2.5`, a string or anything else is an error. Requires [`INTEGERS_V1`].
+    pub fn integer(&self, api: &IntegersV1, value: Value) -> Result<i64, String> {
+        let mut out = 0;
+        if unsafe { (api.int_get)(self.context, value, &mut out) } != 0 {
+            return Err("Expected a whole number".into());
+        }
+        Ok(out)
     }
     /// Creates a boolean.
     pub fn bool_new(&self, value: bool) -> Result<Value, String> {
@@ -531,6 +555,15 @@ pub unsafe fn require_collections(
     unsafe { require_capability(host, context, COLLECTIONS_V1).map(|api| &*api.cast()) }
 }
 
+/// Requests [`INTEGERS_V1`], for [`Call::int_new`] and [`Call::integer`].
+/// The returned table is valid for the host process lifetime.
+///
+/// # Safety
+/// Must be called with the pointers supplied to matchbox_plugin_init_v1.
+pub unsafe fn require_integers(host: *const HostV1, context: Context) -> Result<&'static IntegersV1, i32> {
+    unsafe { require_capability(host, context, INTEGERS_V1).map(|api| &*api.cast()) }
+}
+
 /// Looks up `name`, checking the host's ABI version. Reports a missing capability to the
 /// host as `Missing required capability: <name>` and returns status `1`.
 unsafe fn require_capability(
@@ -632,6 +665,8 @@ mod tests {
         assert_eq!(std::mem::size_of::<TypesV1>(), 2 * pointer);
         assert_eq!(std::mem::size_of::<CollectionsV1>(), 6 * pointer);
         assert_eq!(std::mem::offset_of!(CollectionsV1, struct_keys), 5 * pointer);
+        assert_eq!(std::mem::size_of::<IntegersV1>(), 2 * pointer);
+        assert_eq!(std::mem::offset_of!(IntegersV1, int_get), pointer);
         assert_eq!(std::mem::size_of::<Kind>(), 4);
     }
 }
