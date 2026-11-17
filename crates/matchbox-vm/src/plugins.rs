@@ -76,6 +76,8 @@ unsafe extern "C" fn capability(name: Text) -> *const c_void {
         Some(VALUES_V1) => (&VALUES as *const ValuesV1).cast(),
         Some(ROOTS_V1) => (&ROOTS as *const RootsV1).cast(),
         Some(BYTES_V1) => (&BYTES as *const BytesV1).cast(),
+        Some(TYPES_V1) => (&TYPES as *const TypesV1).cast(),
+        Some(COLLECTIONS_V1) => (&COLLECTIONS as *const CollectionsV1).cast(),
         _ => std::ptr::null(),
     }
 }
@@ -573,6 +575,137 @@ unsafe extern "C" fn bytes_new(ctx: Context, bytes: Bytes, out: *mut Value) -> i
     output(ctx, BxValue::new_ptr(id), out)
 }
 static BYTES: BytesV1 = BytesV1 { get: bytes_get, new: bytes_new };
+
+fn kind_of_value(vm: &dyn BxVM, value: BxValue) -> Kind {
+    if value.is_null() {
+        Kind::Null
+    } else if value.is_bool() {
+        Kind::Bool
+    } else if value.is_number() {
+        Kind::Number
+    } else if vm.is_string_value(value) {
+        Kind::String
+    } else if vm.is_array_value(value) {
+        Kind::Array
+    } else if vm.is_struct_value(value) {
+        Kind::Struct
+    } else if vm.is_bytes(value) {
+        Kind::Binary
+    } else {
+        Kind::Other
+    }
+}
+unsafe extern "C" fn kind_of(ctx: Context, value: Value, out: *mut u32) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        if out.is_null() { return Err("Null output pointer".into()); }
+        let value = ctx.value(value)?;
+        unsafe { *out = kind_of_value(&*ctx.vm, value) as u32 };
+        Ok(())
+    })();
+    operation(ctx, result)
+}
+unsafe extern "C" fn bool_get(ctx: Context, value: Value, out: *mut bool) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        if out.is_null() { return Err("Null output pointer".into()); }
+        let value = ctx.value(value)?;
+        if !value.is_bool() { return Err("Expected boolean".into()); }
+        unsafe { *out = value.as_bool() };
+        Ok(())
+    })();
+    operation(ctx, result)
+}
+fn array_id(ctx: &CallContext<'_>, value: Value) -> Result<usize, String> {
+    let value = ctx.value(value)?;
+    if !ctx.vm.is_array_value(value) { return Err("Expected array".into()); }
+    value.as_gc_id().ok_or_else(|| "Expected array".into())
+}
+fn struct_id(ctx: &CallContext<'_>, value: Value) -> Result<usize, String> {
+    let value = ctx.value(value)?;
+    if !ctx.vm.is_struct_value(value) { return Err("Expected struct".into()); }
+    value.as_gc_id().ok_or_else(|| "Expected struct".into())
+}
+unsafe extern "C" fn array_new(ctx: Context, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let id = ctx.vm.array_new();
+    output(ctx, BxValue::new_ptr(id), out)
+}
+unsafe extern "C" fn array_push(ctx: Context, array: Value, value: Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        let id = array_id(ctx, array)?;
+        let value = ctx.value(value)?;
+        ctx.vm.array_push(id, value);
+        Ok(())
+    })();
+    operation(ctx, result)
+}
+unsafe extern "C" fn array_len(ctx: Context, array: Value, out: *mut usize) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        if out.is_null() { return Err("Null output pointer".into()); }
+        let id = array_id(ctx, array)?;
+        unsafe { *out = ctx.vm.array_len(id) };
+        Ok(())
+    })();
+    operation(ctx, result)
+}
+unsafe extern "C" fn array_get(ctx: Context, array: Value, index: usize, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let found = (|| {
+        let id = array_id(ctx, array)?;
+        let len = ctx.vm.array_len(id);
+        if index >= len { return Err(format!("Array index {index} is out of bounds (length {len})")); }
+        Ok(ctx.vm.array_get(id, index))
+    })();
+    match found {
+        Ok(value) => output(ctx, value, out),
+        Err(error) => operation(ctx, Err(error)),
+    }
+}
+unsafe extern "C" fn struct_get(ctx: Context, object: Value, key: Text, out: *mut Value, found: *mut bool) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        if out.is_null() || found.is_null() { return Err("Null output pointer".into()); }
+        let id = struct_id(ctx, object)?;
+        let key = unsafe { text(key)? };
+        Ok(ctx.vm.struct_key_exists(id, key).then(|| ctx.vm.struct_get(id, key)))
+    })();
+    match result {
+        Ok(Some(value)) => {
+            unsafe { *found = true };
+            output(ctx, value, out)
+        }
+        Ok(None) => {
+            unsafe { *found = false };
+            0
+        }
+        Err(error) => operation(ctx, Err(error)),
+    }
+}
+unsafe extern "C" fn struct_keys(ctx: Context, object: Value, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let keys = match struct_id(ctx, object) {
+        Ok(id) => ctx.vm.struct_key_array(id),
+        Err(error) => return operation(ctx, Err(error)),
+    };
+    let array = ctx.vm.array_new();
+    for key in keys {
+        let text = ctx.vm.string_new(key);
+        ctx.vm.array_push(array, BxValue::new_ptr(text));
+    }
+    output(ctx, BxValue::new_ptr(array), out)
+}
+static TYPES: TypesV1 = TypesV1 { kind_of, bool_get };
+static COLLECTIONS: CollectionsV1 = CollectionsV1 {
+    array_new,
+    array_push,
+    array_len,
+    array_get,
+    struct_get,
+    struct_keys,
+};
 
 static ROOTS: RootsV1 = RootsV1 {
     retain: root_retain,
