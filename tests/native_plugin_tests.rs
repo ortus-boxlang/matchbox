@@ -336,6 +336,57 @@ retainState = null;
 }
 
 #[test]
+fn plugins_read_kinds_booleans_arrays_and_structs_and_return_nested_arrays() {
+    let dir = tempfile::tempdir().unwrap();
+    package(dir.path());
+    fs::write(
+        dir.path().join("collections.bxs"),
+        r#"
+// kind codes: 0 null, 1 bool, 2 number, 3 string, 4 array, 5 struct, 6 binary, 7 other
+kinds = fixtureKinds([true, 4, "text", [1], {a: 1}, charsetDecode("hi", "utf-8"), fixtureNew()]);
+assert kinds.toList() == "1,2,3,4,5,6,7";
+assert fixtureKinds([]).len() == 0;
+
+result = fixtureOptions({ width: 40, Invert: true });
+assert result.width == 80;
+assert result.invert == false;
+assert result.mode == "block";
+assert result.keys == "Invert,width";
+assert fixtureOptions({ width: 1, mode: "braille" }).mode == "braille";
+
+rows = fixtureGrid(3, 2);
+assert rows.len() == 2;
+assert rows[1].toList() == "0,1,2";
+assert rows[2].toList() == "1,2,3";
+
+failures = [];
+try { fixtureOptions({ invert: true }); } catch (any e) { failures.append("missing width"); }
+try { fixtureOptions({ width: 1, invert: "yes" }); } catch (any e) { failures.append("not a strict bool"); }
+try { fixtureOptions([1]); } catch (any e) { failures.append("not a struct"); }
+try { fixtureKinds("text"); } catch (any e) { failures.append("not an array"); }
+assert failures.len() == 4;
+println("collections ok");
+"#,
+    )
+    .unwrap();
+    let direct = cli(dir.path(), &["--module", "module", "collections.bxs"]);
+    success(&direct);
+    assert!(String::from_utf8_lossy(&direct.stdout).contains("collections ok"));
+    let built = cli(
+        dir.path(),
+        &["--target", "native", "--module", "module", "--output", "collections", "collections.bxs"],
+    );
+    success(&built);
+    let standalone = Command::new(dir.path().join("collections"))
+        .current_dir(dir.path())
+        .env("MATCHBOX_NATIVE_CACHE", dir.path().join("cache"))
+        .output()
+        .unwrap();
+    success(&standalone);
+    assert!(String::from_utf8_lossy(&standalone.stdout).contains("collections ok"));
+}
+
+#[test]
 fn module_contract_direct_bytecode_and_standalone() {
     let dir = tempfile::tempdir().unwrap();
     package(dir.path());

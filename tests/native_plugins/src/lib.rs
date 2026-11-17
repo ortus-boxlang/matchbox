@@ -8,6 +8,12 @@ use std::{
     },
 };
 static ROOT_API: OnceLock<&'static RootsV1> = OnceLock::new();
+static TYPES_API: OnceLock<&'static TypesV1> = OnceLock::new();
+static COLLECTIONS_API: OnceLock<&'static CollectionsV1> = OnceLock::new();
+fn types() -> Result<&'static TypesV1, String> { TYPES_API.get().copied().ok_or_else(|| "Missing types capability".into()) }
+fn collections() -> Result<&'static CollectionsV1, String> {
+    COLLECTIONS_API.get().copied().ok_or_else(|| "Missing collections capability".into())
+}
 thread_local! { static RETAINED: RefCell<Option<RetainedValue>> = const { RefCell::new(None) }; }
 static DROPS: AtomicUsize = AtomicUsize::new(0);
 unsafe extern "C" fn drop_class(data: *mut c_void) {
@@ -301,6 +307,69 @@ unsafe extern "C" fn library_value(
     }
 }
 
+// The kind code of each element of an array argument, as a new array.
+unsafe extern "C" fn kinds(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
+    unsafe {
+        guarded(ctx, api, out, || {
+            let call = Call::new(ctx, api, args, len);
+            let (types, collections) = (types()?, collections()?);
+            let input = call.argument(0)?;
+            let result = call.array_new(collections)?;
+            for index in 0..call.array_len(collections, input)? {
+                let kind = call.kind(types, call.array_get(collections, input, index)?)?;
+                call.array_push(collections, result, call.number_new(kind as u32 as f64)?)?;
+            }
+            Ok(result)
+        })
+    }
+}
+// Reads an options struct: width (number), invert (strict bool), mode (optional string), and its keys.
+unsafe extern "C" fn options(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
+    unsafe {
+        guarded(ctx, api, out, || {
+            let call = Call::new(ctx, api, args, len);
+            let (types, collections) = (types()?, collections()?);
+            let input = call.argument(0)?;
+            let width = call.number(call.struct_get(collections, input, "width")?.ok_or("width is required")?)?;
+            let invert = match call.struct_get(collections, input, "invert")? {
+                Some(value) => call.boolean(types, value)?,
+                None => false,
+            };
+            let mode = match call.struct_get(collections, input, "mode")? {
+                Some(value) => call.string(value)?,
+                None => "block".into(),
+            };
+            let mut keys = call.struct_keys(collections, input)?;
+            keys.sort_by_key(|key| key.to_ascii_lowercase());
+            let result = call.struct_new()?;
+            call.struct_set(result, "width", call.number_new(width * 2.0)?)?;
+            call.struct_set(result, "invert", call.bool_new(!invert)?)?;
+            call.struct_set(result, "mode", call.string_new(&mode)?)?;
+            call.struct_set(result, "keys", call.string_new(&keys.join(","))?)?;
+            Ok(result)
+        })
+    }
+}
+// Rows of numbers (x + y), the shape an image backend returns for pixels.
+unsafe extern "C" fn grid(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
+    unsafe {
+        guarded(ctx, api, out, || {
+            let call = Call::new(ctx, api, args, len);
+            let collections = collections()?;
+            let (width, height) = (call.number(call.argument(0)?)? as usize, call.number(call.argument(1)?)? as usize);
+            let rows = call.array_new(collections)?;
+            for y in 0..height {
+                let row = call.array_new(collections)?;
+                for x in 0..width {
+                    call.array_push(collections, row, call.number_new((x + y) as f64)?)?;
+                }
+                call.array_push(collections, rows, row)?;
+            }
+            Ok(rows)
+        })
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Context) -> i32 {
     if unsafe { require_values(host, ctx) }.is_err() {
@@ -311,6 +380,13 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
         Err(status) => return status,
     };
     let _ = ROOT_API.set(roots);
+    match unsafe { (require_types(host, ctx), require_collections(host, ctx)) } {
+        (Ok(types), Ok(collections)) => {
+            let _ = TYPES_API.set(types);
+            let _ = COLLECTIONS_API.set(collections);
+        }
+        (Err(status), _) | (_, Err(status)) => return status,
+    }
     let host = unsafe { &*host };
     if std::env::var_os("MATCHBOX_FIXTURE_MISSING_CAPABILITY").is_some() {
         if unsafe { (host.capability)(Text::new("missing.capability.v1")) }.is_null() {
@@ -353,6 +429,9 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
             info as Invoke,
         ),
         (r#"{"name":"fixtureDrops"}"#, drops as Invoke),
+        (r#"{"name":"fixtureKinds","arguments":[{"name":"values","required":true}]}"#, kinds as Invoke),
+        (r#"{"name":"fixtureOptions","arguments":[{"name":"options","required":true}]}"#, options as Invoke),
+        (r#"{"name":"fixtureGrid","arguments":[{"name":"width","required":true},{"name":"height","required":true}]}"#, grid as Invoke),
         (r#"{"name":"fixturePanic"}"#, panic_callback as Invoke),
         (r#"{"name":"fixtureBadHandle"}"#, bad_handle as Invoke),
         (
