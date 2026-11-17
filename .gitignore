@@ -39,3 +39,4 @@ reference/
 # Reproducible runtime benchmark reports are local artifacts, not fixtures.
 /benchmarks/runtime/results/
 /benchmarks/instructions/results/
+/src/stubs.rs

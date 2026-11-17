@@ -5,6 +5,8 @@ pub const ABI_MAJOR: u32 = 1;
 pub const VALUES_V1: &str = "matchbox.values.v1";
 pub const ROOTS_V1: &str = "matchbox.roots.v1";
 pub const BYTES_V1: &str = "matchbox.bytes.v1";
+pub const TYPES_V1: &str = "matchbox.types.v1";
+pub const COLLECTIONS_V1: &str = "matchbox.collections.v1";
 pub type Value = u64;
 /// Host-owned opaque allocation, valid until released exactly once on the VM thread.
 pub type RootHandle = *mut c_void;
@@ -52,6 +54,55 @@ impl Bytes {
 pub struct BytesV1 {
     pub get: unsafe extern "C" fn(Context, Value, *mut Bytes) -> i32,
     pub new: unsafe extern "C" fn(Context, Bytes, *mut Value) -> i32,
+}
+
+/// The kind of a value, as reported by [`TypesV1::kind_of`].
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Null = 0,
+    Bool = 1,
+    Number = 2,
+    String = 3,
+    Array = 4,
+    Struct = 5,
+    Binary = 6,
+    /// Anything else: native objects, classes, functions, queries and so on.
+    Other = 7,
+}
+impl Kind {
+    pub fn from_raw(raw: u32) -> Kind {
+        match raw {
+            0 => Kind::Null,
+            1 => Kind::Bool,
+            2 => Kind::Number,
+            3 => Kind::String,
+            4 => Kind::Array,
+            5 => Kind::Struct,
+            6 => Kind::Binary,
+            _ => Kind::Other,
+        }
+    }
+}
+
+/// Additive capability: inspect a value's kind and read booleans (strictly; no truthiness).
+#[repr(C)]
+pub struct TypesV1 {
+    pub kind_of: unsafe extern "C" fn(Context, Value, *mut u32) -> i32,
+    pub bool_get: unsafe extern "C" fn(Context, Value, *mut bool) -> i32,
+}
+
+/// Additive capability: build and read arrays, and read structs. Array indexes are 0-based.
+/// `struct_get` reports a missing key through `found` instead of failing. `struct_keys`
+/// returns a new array of the keys, in the struct's order.
+#[repr(C)]
+pub struct CollectionsV1 {
+    pub array_new: unsafe extern "C" fn(Context, *mut Value) -> i32,
+    pub array_push: unsafe extern "C" fn(Context, Value, Value) -> i32,
+    pub array_len: unsafe extern "C" fn(Context, Value, *mut usize) -> i32,
+    pub array_get: unsafe extern "C" fn(Context, Value, usize, *mut Value) -> i32,
+    pub struct_get: unsafe extern "C" fn(Context, Value, Text, *mut Value, *mut bool) -> i32,
+    pub struct_keys: unsafe extern "C" fn(Context, Value, *mut Value) -> i32,
 }
 
 /// JSON registration metadata: {"name":"...","arguments":[{"name":"...",
@@ -193,6 +244,58 @@ impl<'a> Call<'a> {
     pub fn bytes_new(&self, api: &BytesV1, bytes: &[u8]) -> Result<Value, String> {
         self.value(|out| unsafe { (api.new)(self.context, Bytes::new(bytes), out) })
     }
+    pub fn bool_new(&self, value: bool) -> Result<Value, String> {
+        self.value(|out| unsafe { (self.api.bool_new)(self.context, value, out) })
+    }
+    pub fn kind(&self, api: &TypesV1, value: Value) -> Result<Kind, String> {
+        let mut out = 0;
+        if unsafe { (api.kind_of)(self.context, value, &mut out) } != 0 {
+            return Err("Invalid value".into());
+        }
+        Ok(Kind::from_raw(out))
+    }
+    pub fn boolean(&self, api: &TypesV1, value: Value) -> Result<bool, String> {
+        let mut out = false;
+        if unsafe { (api.bool_get)(self.context, value, &mut out) } != 0 {
+            return Err("Expected a boolean".into());
+        }
+        Ok(out)
+    }
+    pub fn array_new(&self, api: &CollectionsV1) -> Result<Value, String> {
+        self.value(|out| unsafe { (api.array_new)(self.context, out) })
+    }
+    pub fn array_push(&self, api: &CollectionsV1, array: Value, value: Value) -> Result<(), String> {
+        if unsafe { (api.array_push)(self.context, array, value) } == 0 {
+            Ok(())
+        } else {
+            Err("Expected an array".into())
+        }
+    }
+    pub fn array_len(&self, api: &CollectionsV1, array: Value) -> Result<usize, String> {
+        let mut out = 0;
+        if unsafe { (api.array_len)(self.context, array, &mut out) } != 0 {
+            return Err("Expected an array".into());
+        }
+        Ok(out)
+    }
+    /// 0-based; an index past the end is an error.
+    pub fn array_get(&self, api: &CollectionsV1, array: Value, index: usize) -> Result<Value, String> {
+        self.value(|out| unsafe { (api.array_get)(self.context, array, index, out) })
+    }
+    /// `None` when the key is missing.
+    pub fn struct_get(&self, api: &CollectionsV1, object: Value, key: &str) -> Result<Option<Value>, String> {
+        let (mut out, mut found) = (0, false);
+        if unsafe { (api.struct_get)(self.context, object, Text::new(key), &mut out, &mut found) } != 0 {
+            return Err("Expected a struct".into());
+        }
+        Ok(found.then_some(out))
+    }
+    pub fn struct_keys(&self, api: &CollectionsV1, object: Value) -> Result<Vec<String>, String> {
+        let keys = self.value(|out| unsafe { (api.struct_keys)(self.context, object, out) })?;
+        (0..self.array_len(api, keys)?)
+            .map(|i| self.string(self.array_get(api, keys, i)?))
+            .collect()
+    }
     pub fn null_new(&self) -> Result<Value, String> {
         self.value(|out| unsafe { (self.api.null_new)(self.context, out) })
     }
@@ -293,6 +396,21 @@ pub unsafe fn require_bytes(host: *const HostV1, context: Context) -> Result<&'s
     unsafe { require_capability(host, context, BYTES_V1).map(|api| &*api.cast()) }
 }
 
+/// # Safety
+/// Must be called with the pointers supplied to matchbox_plugin_init_v1.
+pub unsafe fn require_types(host: *const HostV1, context: Context) -> Result<&'static TypesV1, i32> {
+    unsafe { require_capability(host, context, TYPES_V1).map(|api| &*api.cast()) }
+}
+
+/// # Safety
+/// Must be called with the pointers supplied to matchbox_plugin_init_v1.
+pub unsafe fn require_collections(
+    host: *const HostV1,
+    context: Context,
+) -> Result<&'static CollectionsV1, i32> {
+    unsafe { require_capability(host, context, COLLECTIONS_V1).map(|api| &*api.cast()) }
+}
+
 unsafe fn require_capability(
     host: *const HostV1,
     context: Context,
@@ -372,6 +490,14 @@ mod tests {
     }
 
     #[test]
+    fn kinds_round_trip_and_unknown_codes_are_other() {
+        for kind in [Kind::Null, Kind::Bool, Kind::Number, Kind::String, Kind::Array, Kind::Struct, Kind::Binary, Kind::Other] {
+            assert_eq!(Kind::from_raw(kind as u32), kind);
+        }
+        assert_eq!(Kind::from_raw(99), Kind::Other);
+    }
+
+    #[test]
     fn published_capability_layouts_remain_fixed() {
         let pointer = std::mem::size_of::<usize>();
         assert_eq!(std::mem::size_of::<HostV1>(), 4 * pointer);
@@ -381,5 +507,9 @@ mod tests {
         assert_eq!(std::mem::size_of::<RootsV1>(), 3 * pointer);
         assert_eq!(std::mem::size_of::<BytesV1>(), 2 * pointer);
         assert_eq!(std::mem::size_of::<Bytes>(), 2 * pointer);
+        assert_eq!(std::mem::size_of::<TypesV1>(), 2 * pointer);
+        assert_eq!(std::mem::size_of::<CollectionsV1>(), 6 * pointer);
+        assert_eq!(std::mem::offset_of!(CollectionsV1, struct_keys), 5 * pointer);
+        assert_eq!(std::mem::size_of::<Kind>(), 4);
     }
 }

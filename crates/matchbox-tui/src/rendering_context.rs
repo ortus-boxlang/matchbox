@@ -88,18 +88,7 @@ impl DrawCommand {
 }
 
 fn parse_color(color: &str) -> ratatui::style::Color {
-    use ratatui::style::Color;
-    match color.to_lowercase().as_str() {
-        "black" => Color::Black,
-        "red" => Color::Red,
-        "green" => Color::Green,
-        "yellow" => Color::Yellow,
-        "blue" => Color::Blue,
-        "magenta" => Color::Magenta,
-        "cyan" => Color::Cyan,
-        "white" => Color::White,
-        _ => Color::White,
-    }
+    crate::color::parse_or_white(color)
 }
 
 #[derive(Debug, BxObject)]

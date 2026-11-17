@@ -252,6 +252,7 @@ impl<'a> Export<'a> {
             StatementKind::Continue(label) => ("BoxContinue", json!({"label":label})),
             StatementKind::Break(label) => ("BoxBreak", json!({"label":label})),
             StatementKind::Labeled { label, body } => ("BoxLabel", json!({"label":label,"body":self.statements(body)})),
+            StatementKind::Block(body) => ("BoxStatementBlock", json!({"body":self.statements(body)})),
             StatementKind::If {
                 condition,
                 then_branch,
