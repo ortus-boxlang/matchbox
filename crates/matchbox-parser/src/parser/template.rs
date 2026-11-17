@@ -756,6 +756,13 @@ pub(super) fn component_statement(name: &str, attributes: Vec<(Expression, Expre
 
 /// `<bx:log text="" type="" log="" application="" />` is a call to `writeLog()`, so the component and the
 /// function share one implementation (and tree-shaking keeps `writeLog` when only the component is used).
+///
+/// Each attribute becomes a named argument, so `text`, `type`, `log`, `application` and `file` mean what they do in
+/// `writeLog()`.
+///
+/// # Errors
+///
+/// Fails for a body (the component takes its message from `text`) and for an unknown attribute name.
 fn log_component(attributes: Vec<(Expression, Expression)>, body: Option<Vec<Statement>>, line: u32) -> Result<Statement> {
     if body.is_some_and(|body| !body.is_empty()) {
         anyhow::bail!("The log component does not take a body; use its text attribute");

@@ -6,10 +6,27 @@
 use std::{collections::BTreeMap, io, path::Path};
 
 /// Parse `.env` content into ordered `(key, value)` pairs.
+///
+/// # Examples
+///
+/// ```
+/// use matchbox_utility::env_file::parse;
+///
+/// let vars = parse("# a comment\nKEY=value\nexport QUOTED=\"two words\"\n");
+/// assert_eq!(
+///     vars,
+///     vec![
+///         ("KEY".to_string(), "value".to_string()),
+///         ("QUOTED".to_string(), "two words".to_string()),
+///     ]
+/// );
+/// ```
 pub fn parse(content: &str) -> Vec<(String, String)> {
     content.lines().filter_map(parse_line).collect()
 }
 
+/// One `.env` line as a `(key, value)` pair, or `None` for a blank line, a comment, a line without `=`, or a key or
+/// value that the process environment cannot hold (an empty key, `=` in the key, or a NUL byte).
 fn parse_line(line: &str) -> Option<(String, String)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
@@ -24,6 +41,7 @@ fn parse_line(line: &str) -> Option<(String, String)> {
     Some((key.to_string(), unquote(value.trim()).to_string()))
 }
 
+/// Strip one pair of matching single or double quotes around a value. Nothing inside is unescaped.
 fn unquote(value: &str) -> &str {
     for quote in ['"', '\''] {
         if value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote) {
@@ -34,6 +52,10 @@ fn unquote(value: &str) -> &str {
 }
 
 /// Read one file. A missing file is not an error.
+///
+/// # Errors
+///
+/// Returns the I/O error when the file exists but cannot be read.
 pub fn read(path: &Path) -> io::Result<Vec<(String, String)>> {
     match std::fs::read_to_string(path) {
         Ok(content) => Ok(parse(&content)),
@@ -43,6 +65,10 @@ pub fn read(path: &Path) -> io::Result<Vec<(String, String)>> {
 }
 
 /// Merge the user-level and project-level files. Project values override user values.
+///
+/// # Errors
+///
+/// Returns the I/O error when either file exists but cannot be read.
 pub fn load(user_file: Option<&Path>, project_file: &Path) -> io::Result<BTreeMap<String, String>> {
     let mut vars = BTreeMap::new();
     if let Some(user_file) = user_file {

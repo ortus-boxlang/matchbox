@@ -8,6 +8,7 @@ use std::{
 /// Default `config/boxlang.json` seeded into a new home.
 pub const DEFAULT_CONFIG: &str = include_str!("../resources/boxlang.json");
 
+/// The directories created in a new home, as in the BoxLang runtime home.
 const HOME_DIRS: [&str; 7] = [
     "bin", "classes", "config", "global", "logs", "lib", "modules",
 ];
@@ -15,13 +16,30 @@ const HOME_DIRS: [&str; 7] = [
 /// The OS user's home directory (`HOME`, or `USERPROFILE` on Windows).
 pub fn user_home_dir() -> Option<PathBuf> {
     ["HOME", "USERPROFILE"]
-        .iter()
-        .filter_map(|name| std::env::var_os(name))
+        .into_iter()
+        .filter_map(std::env::var_os)
         .find(|value| !value.is_empty())
         .map(PathBuf::from)
 }
 
 /// Pick the home directory. `flag` and `env_home` win over the `~/.matchbox` default.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::NotFound`] when no flag or `MATCHBOX_HOME` value is given and there is no user home to
+/// put `.matchbox` in.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::{Path, PathBuf};
+/// use matchbox_utility::home::resolve;
+///
+/// let user = Path::new("/home/me");
+/// assert_eq!(resolve(Some("/flag"), Some("/env"), Some(user)).unwrap(), PathBuf::from("/flag"));
+/// assert_eq!(resolve(None, Some("/env"), Some(user)).unwrap(), PathBuf::from("/env"));
+/// assert_eq!(resolve(None, None, Some(user)).unwrap(), PathBuf::from("/home/me/.matchbox"));
+/// ```
 pub fn resolve(
     flag: Option<&str>,
     env_home: Option<&str>,
@@ -44,6 +62,12 @@ pub fn config_path(home: &Path) -> PathBuf {
 }
 
 /// Create the home layout and seed `config/boxlang.json` when it is missing.
+///
+/// Directories that already exist are left alone, and an existing config file is never overwritten.
+///
+/// # Errors
+///
+/// Returns the I/O error when a directory or the config file cannot be created.
 pub fn ensure(home: &Path) -> io::Result<()> {
     for dir in HOME_DIRS {
         std::fs::create_dir_all(home.join(dir))?;

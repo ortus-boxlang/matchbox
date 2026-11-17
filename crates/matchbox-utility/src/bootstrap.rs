@@ -6,26 +6,35 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The inputs of [`bootstrap_with`]. [`bootstrap`] fills them in from the real process.
 pub struct Options<'a> {
     /// `--bx-home`
     pub home: Option<&'a str>,
     /// `--bx-config`
     pub config: Option<&'a str>,
+    /// The working directory, where `./.env` and `./boxlang.json` are read.
     pub cwd: PathBuf,
     /// The OS user's home directory, where `~/.matchbox.env` and the default `~/.matchbox` live.
     pub user_home: Option<PathBuf>,
 }
 
+/// What [`bootstrap`] set up.
 pub struct Runtime {
+    /// The MatchBox home, as an absolute path. It exists.
     pub home: PathBuf,
     /// The config files that were layered, lowest priority first.
     pub config_files: Vec<PathBuf>,
+    /// The merged configuration. Its `logging` block is what the process-wide log service was started with.
     pub config: config::Config,
 }
 
 /// Bootstrap from the real process environment and working directory.
 ///
 /// Call once at startup, before other threads exist.
+///
+/// # Errors
+///
+/// See [`bootstrap_with`].
 pub fn bootstrap(home_flag: Option<&str>, config_flag: Option<&str>) -> io::Result<Runtime> {
     bootstrap_with(Options {
         home: home_flag,
@@ -35,6 +44,21 @@ pub fn bootstrap(home_flag: Option<&str>, config_flag: Option<&str>) -> io::Resu
     })
 }
 
+/// Set up the runtime from explicit [`Options`].
+///
+/// The steps run in this order, and the first failure stops the rest:
+///
+/// 1. `~/.matchbox.env` then `./.env` are loaded into the process environment. They run first so a project `.env` can
+///    set `MATCHBOX_HOME` and `MATCHBOX_CONFIG`.
+/// 2. The home is resolved ([`crate::home::resolve`]) and created ([`crate::home::ensure`]).
+/// 3. The config layers are resolved and merged ([`crate::config::resolve_layers`], [`crate::config::load`]).
+/// 4. The process-wide log service is started ([`crate::logger::init`]).
+///
+/// # Errors
+///
+/// Returns the I/O error of the failing step: an unreadable `.env`, no user home to put the MatchBox home in, a home
+/// that cannot be created, a missing `--bx-config` file, invalid JSON in a config layer, or a log file that cannot be
+/// opened.
 pub fn bootstrap_with(options: Options) -> io::Result<Runtime> {
     // 1. ~/.matchbox.env, then ./.env. Applied first so they can set MATCHBOX_HOME and MATCHBOX_CONFIG.
     let user_env = options
@@ -81,6 +105,7 @@ pub fn bootstrap_with(options: Options) -> io::Result<Runtime> {
     })
 }
 
+/// `path` as an absolute path, resolved against `cwd` when it is relative.
 fn absolute(cwd: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()

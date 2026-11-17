@@ -829,7 +829,7 @@ pub fn run() -> Result<()> {
     if cli.verbose || cli.bx_debug {
         enable_logging();
     }
-    // ~/.matchbox.env, ./.env, the MatchBox home, matchbox.json and logs. Explicit --bx-home or
+    // ~/.matchbox.env, ./.env, the MatchBox home, its layered boxlang.json config and logs. Explicit --bx-home or
     // --bx-config values must work, so their failures are fatal.
     init_runtime(cli.bx_home.as_deref(), cli.bx_config.as_deref(), cli.bx_home.is_some() || cli.bx_config.is_some())?;
     if cli.bx_transpile {
@@ -1205,9 +1205,16 @@ fn usage_text() -> String {
     out
 }
 
-/// Bootstrap the MatchBox runtime home: `.env` files, home directory, `matchbox.json` and logging.
+/// Bootstrap the MatchBox runtime home: `.env` files, the home directory, the layered `boxlang.json` config and logging.
 ///
-/// A failure is a warning unless `strict`, so a read-only home never stops a script from running.
+/// `home` and `config` are the `--bx-home` and `--bx-config` values, when given.
+///
+/// A failure is a warning unless `strict`, so a read-only home never stops a script from running. `strict` is set
+/// when the user passed `--bx-home` or `--bx-config`, because those must work.
+///
+/// # Errors
+///
+/// Returns the bootstrap error only when `strict` is true. See [`matchbox_utility::bootstrap::bootstrap_with`].
 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
 fn init_runtime(home: Option<&str>, config: Option<&str>, strict: bool) -> Result<()> {
     match matchbox_utility::bootstrap::bootstrap(home, config) {

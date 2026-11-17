@@ -15,15 +15,30 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The runtime configuration after layering and placeholder expansion.
+///
+/// Only the keys MatchBox uses are read into fields; everything else stays available in [`Config::raw`].
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// The `debugMode` key. When true the log levels are raised to `DEBUG`.
     pub debug_mode: bool,
+    /// The `logging` block, with defaults for missing keys.
     pub logging: LoggingConfig,
     /// The merged document after placeholder expansion.
     pub raw: Value,
 }
 
 /// Remove `//` and `/* */` comments, leaving string contents untouched.
+///
+/// # Examples
+///
+/// ```
+/// use matchbox_utility::config::strip_comments;
+///
+/// let json = strip_comments("{ // a comment\n \"url\": \"http://example.com\" /* more */ }");
+/// let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+/// assert_eq!(value["url"], "http://example.com");
+/// ```
 pub fn strip_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -89,6 +104,7 @@ fn merge(base: &mut Value, overlay: Value) {
     }
 }
 
+/// Replace `${matchbox-home}`, `${boxlang-home}` and `${user-dir}` in every string of a JSON value, in place.
 fn expand(value: &mut Value, home: &Path, cwd: &Path) {
     match value {
         Value::String(s) => {
@@ -105,6 +121,10 @@ fn expand(value: &mut Value, home: &Path, cwd: &Path) {
 
 /// The config files to layer, lowest priority first: the home's file, `./boxlang.json` if it exists,
 /// then `--bx-config` or `MATCHBOX_CONFIG`. A file named by flag or variable must exist.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::NotFound`] when `flag` or `env_config` names a file that does not exist.
 pub fn resolve_layers(
     flag: Option<&str>,
     env_config: Option<&str>,
@@ -130,6 +150,7 @@ pub fn resolve_layers(
     Ok(layers)
 }
 
+/// Whether two paths are the same file once resolved. A path that cannot be resolved is never the same.
 fn same_file(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
@@ -138,6 +159,11 @@ fn same_file(a: &Path, b: &Path) -> bool {
 }
 
 /// Read and merge the layers. A layer that is not valid JSON is an error that names the file.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::InvalidData`] naming the file when a layer is not valid JSON, or the I/O error when a layer
+/// exists but cannot be read.
 pub fn load(layers: &[PathBuf], home: &Path, cwd: &Path) -> io::Result<Config> {
     let mut merged = Value::Object(Default::default());
     for path in layers {
@@ -159,6 +185,9 @@ pub fn load(layers: &[PathBuf], home: &Path, cwd: &Path) -> io::Result<Config> {
     Ok(from_value(merged, home))
 }
 
+/// Read the `debugMode` and `logging` keys of a merged document into a [`Config`].
+///
+/// Missing or invalid values fall back to the defaults of the seeded `boxlang.json`.
 fn from_value(raw: Value, home: &Path) -> Config {
     let debug_mode = raw
         .get("debugMode")

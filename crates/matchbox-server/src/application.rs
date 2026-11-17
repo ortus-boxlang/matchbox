@@ -52,6 +52,14 @@ impl ApplicationRuntime {
             modules: None,
         }
     }
+    /// Compile the standard library prelude and run it once in this runtime's host globals.
+    ///
+    /// Templates, includes and application or module callbacks compile separately, so without this the prelude
+    /// functions (`writeLog()` among them) would not exist inside a request.
+    ///
+    /// # Errors
+    ///
+    /// Returns the parse, compile or run error of the prelude source.
     pub(crate) fn load_prelude(&mut self) -> Result<()> {
         // Templates, includes and application/module callbacks compile separately.
         // Install the standard library once in the host globals, outside request isolation.

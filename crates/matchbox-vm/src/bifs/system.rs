@@ -441,6 +441,13 @@ pub fn trace(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
 
 /// `__bxLogWrite( text, type, log, application )`: the writer behind the prelude `writeLog()` function.
 /// It writes `[application] text` to the named log, at the level named by `type` (see `logging` in boxlang.json).
+///
+/// `application` is a truthy or falsy value: `false`, `no`, `0` and an empty string leave the application name out.
+/// Does nothing when logging is not set up (browser and device builds).
+///
+/// # Errors
+///
+/// Fails for a wrong argument count, an unknown `type` (`Invalid log level`) and an invalid or unwritable log.
 pub fn log_write(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 4 {
         return Err("writeLog() expects text, type, log and application".to_string());

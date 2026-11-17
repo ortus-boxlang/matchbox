@@ -15,23 +15,44 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+/// The name of the runtime's own logger, which writes `runtime.log`.
 pub const RUNTIME_LOGGER: &str = "runtime";
+/// The name of the logger `writeLog()` and `bx:log` use when they name none, which writes `application.log`.
 pub const APPLICATION_LOGGER: &str = "application";
 /// The application name used when a script has none, as in BoxLang.
 pub const DEFAULT_APPLICATION: &str = "no-application";
 
+/// A log level, ordered from the least to the most verbose. A logger writes every level up to its own.
+///
+/// # Examples
+///
+/// ```
+/// use matchbox_utility::logger::Level;
+///
+/// assert!(Level::Warn < Level::Debug);
+/// assert_eq!(Level::parse("info"), Some(Level::Info));
+/// assert_eq!(Level::parse_type("Information"), Some(Level::Info));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
+    /// Nothing is written.
     Off,
+    /// Failures. `fatal` entries are written at this level.
     Error,
+    /// Something unexpected that did not stop the run.
     Warn,
+    /// Normal events.
     Info,
+    /// Detail for diagnosing a problem.
     Debug,
+    /// The most detail.
     Trace,
 }
 
 impl Level {
     /// A level as written in configuration: `OFF`, `ERROR`, `WARN`, `INFO`, `DEBUG` or `TRACE`.
+    ///
+    /// Case-insensitive. Returns `None` for anything else, including `information` (see [`Level::parse_type`]).
     pub fn parse(value: &str) -> Option<Level> {
         match value.trim().to_ascii_uppercase().as_str() {
             "OFF" => Some(Level::Off),
@@ -45,6 +66,8 @@ impl Level {
     }
 
     /// A `type` as `writeLog()` accepts it: the levels above plus `fatal`, `warning` and `information`.
+    ///
+    /// Case-insensitive. Returns `None` for an unknown type.
     pub fn parse_type(value: &str) -> Option<Level> {
         match value.trim().to_ascii_lowercase().as_str() {
             "fatal" | "fatal information" => Some(Level::Error),
@@ -54,6 +77,7 @@ impl Level {
         }
     }
 
+    /// The upper-case name written in log lines.
     fn name(self) -> &'static str {
         match self {
             Level::Off => "OFF",
@@ -66,13 +90,17 @@ impl Level {
     }
 }
 
+/// How a log line is written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoder {
+    /// `2026-11-17 12:00:00.000 [INFO] message`.
     Text,
+    /// One JSON object per line with `timestamp`, `level` and `message`.
     Json,
 }
 
 impl Encoder {
+    /// The encoder named `text` or `json`, case-insensitive. `None` for anything else.
     pub fn parse(value: &str) -> Option<Encoder> {
         match value.trim().to_ascii_lowercase().as_str() {
             "text" => Some(Encoder::Text),
@@ -82,13 +110,17 @@ impl Encoder {
     }
 }
 
+/// Where a logger writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Appender {
+    /// A log file in the logs directory (or an absolute path).
     File,
+    /// Standard error.
     Console,
 }
 
 impl Appender {
+    /// The appender named `file` or `console`, case-insensitive. `None` for anything else.
     pub fn parse(value: &str) -> Option<Appender> {
         match value.trim().to_ascii_lowercase().as_str() {
             "file" => Some(Appender::File),
@@ -101,13 +133,18 @@ impl Appender {
 /// One entry of `logging.loggers`. Unset values inherit from the root settings.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LoggerConfig {
+    /// The logger's level. `None` inherits the root level.
     pub level: Option<Level>,
+    /// Where the logger writes. `None` means a file.
     pub appender: Option<Appender>,
+    /// How lines are written. `None` inherits the default encoder.
     pub encoder: Option<Encoder>,
 }
 
+/// The `logging` block of `boxlang.json`.
 #[derive(Clone, Debug)]
 pub struct LoggingConfig {
+    /// Where log files are written (`logsDirectory`).
     pub logs_directory: PathBuf,
     /// Days to keep rotated files. 0 keeps them forever.
     pub max_log_days: u64,
@@ -115,13 +152,29 @@ pub struct LoggingConfig {
     pub max_file_size: u64,
     /// Bytes across one logger's files. 0 means no cap.
     pub total_cap_size: u64,
+    /// The level of every logger that has none of its own (`rootLevel`).
     pub root_level: Level,
+    /// The encoder of every logger that has none of its own (`defaultEncoder`).
     pub encoder: Encoder,
     /// Keyed by lowercase logger name.
     pub loggers: BTreeMap<String, LoggerConfig>,
 }
 
 /// Parse `100MB`, `5GB`, `512KB` or a plain byte count.
+///
+/// Units are `B`, `KB`, `MB` and `GB` (binary multiples), case-insensitive. Returns `None` for an unknown unit, a
+/// non-number, or a value that overflows.
+///
+/// # Examples
+///
+/// ```
+/// use matchbox_utility::logger::parse_size;
+///
+/// assert_eq!(parse_size("100MB"), Some(100 * 1024 * 1024));
+/// assert_eq!(parse_size("512 kb"), Some(512 * 1024));
+/// assert_eq!(parse_size("42"), Some(42));
+/// assert_eq!(parse_size("lots"), None);
+/// ```
 pub fn parse_size(value: &str) -> Option<u64> {
     let value = value.trim().to_ascii_uppercase();
     let (digits, unit) = match value.find(|c: char| !c.is_ascii_digit()) {
@@ -138,28 +191,50 @@ pub fn parse_size(value: &str) -> Option<u64> {
     digits.parse::<u64>().ok()?.checked_mul(factor)
 }
 
+/// The destination of a [`Logger`].
 enum Sink {
+    /// An open log file, shared by every thread that logs to it.
     File(Mutex<FileState>),
+    /// Standard error.
     Console,
 }
 
+/// A log file's open handle and its current size in bytes, kept together so rotation sees the true size.
 struct FileState {
+    /// The file, opened for appending.
     file: File,
+    /// Bytes in the file now, counted as lines are written.
     size: u64,
 }
 
+/// One log destination with its own level, encoder, and for files, rotation settings.
+///
+/// Get one from [`LogService::logger`]. A `Logger` is safe to share between threads.
 pub struct Logger {
+    /// The most verbose level this logger writes.
     level: Level,
+    /// How lines are written.
     encoder: Encoder,
+    /// Where lines go.
     sink: Sink,
     /// Only used by file loggers.
     path: PathBuf,
+    /// Bytes before a file logger rotates. 0 never rotates.
     max_file_size: u64,
+    /// Days to keep rotated files. 0 keeps them.
     max_log_days: u64,
+    /// Bytes across this logger's files before the oldest rotated ones are deleted. 0 means no cap.
     total_cap_size: u64,
 }
 
 impl Logger {
+    /// Open a logger at `path`, taking unset values from the root settings in `config`.
+    ///
+    /// For a file logger this creates the parent directory, prunes old rotated files, and opens the file for appending.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error when the directory or file cannot be created or opened.
     fn new(config: &LoggingConfig, logger: &LoggerConfig, path: PathBuf) -> io::Result<Logger> {
         let level = logger.level.unwrap_or(config.root_level);
         let encoder = logger.encoder.unwrap_or(config.encoder);
@@ -186,10 +261,15 @@ impl Logger {
         })
     }
 
+    /// Whether an entry at `level` would be written. [`Level::Off`] never is.
     pub fn enabled(&self, level: Level) -> bool {
         level != Level::Off && level <= self.level
     }
 
+    /// Write `message` at `level`, unless the logger's level is lower.
+    ///
+    /// Never fails and never panics: a write error is dropped, because logging must not stop the program. A file logger
+    /// rotates first when the line would take the file past its size limit.
     pub fn log(&self, level: Level, message: &str) {
         if !self.enabled(level) {
             return;
@@ -229,6 +309,10 @@ impl Logger {
         }
     }
 
+    /// Rename the active file to `<name>.<timestamp>.<n>.log` and start a new one, then prune old archives.
+    ///
+    /// The archive name is reserved with `create_new`, so a timestamp that repeats (in one burst, or across a restart) takes
+    /// the next number instead of replacing an archive. If anything fails the active file is kept and logging continues.
     fn rotate(&self, state: &mut FileState, now: chrono::DateTime<chrono::Utc>) {
         if state.file.flush().is_err() {
             return;
@@ -238,7 +322,11 @@ impl Logger {
             let rotated = rotated_path(&self.path, &format!("{stamp}.{sequence}"));
             // Reserve exclusively: timestamps can repeat, including across process restarts.
             // rename may replace only this empty reservation, never an existing archive.
-            match OpenOptions::new().write(true).create_new(true).open(&rotated) {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&rotated)
+            {
                 Ok(reservation) => drop(reservation),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(_) => return,
@@ -247,7 +335,11 @@ impl Logger {
                 let _ = std::fs::remove_file(&rotated);
                 return;
             }
-            if let Ok(file) = OpenOptions::new().create(true).append(true).open(&self.path) {
+            if let Ok(file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+            {
                 state.file = file;
                 state.size = 0;
                 prune(&self.path, self.max_log_days, self.total_cap_size);
@@ -338,6 +430,11 @@ pub struct LogService {
 }
 
 impl LogService {
+    /// Start a service for `config`, opening the `runtime` log.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error when the `runtime` log cannot be created or opened.
     pub fn new(config: LoggingConfig) -> io::Result<LogService> {
         let mut service = LogService {
             config,
@@ -357,6 +454,7 @@ impl LogService {
         Ok(service)
     }
 
+    /// The settings this service was started with.
     pub fn config(&self) -> &LoggingConfig {
         &self.config
     }
@@ -364,6 +462,14 @@ impl LogService {
     /// The logger for a name or an absolute path, created on first use.
     ///
     /// A relative name may not contain path separators or `..`: it always stays in the logs directory.
+    ///
+    /// Names are case-insensitive, `orders` and `orders.log` are the same logger, and a named file is written in lower case.
+    /// Per-logger settings come from `logging.loggers.<name>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::InvalidInput`] for a relative name with a path separator or `..`, and the I/O error when the
+    /// log file cannot be opened.
     pub fn logger(&self, name: &str) -> io::Result<Arc<Logger>> {
         let name = name.trim();
         let name = if name.is_empty() {
@@ -392,7 +498,9 @@ impl LogService {
                 format!("{name}.log")
             })
         } else {
-            self.config.logs_directory.join(format!("{settings_key}.log"))
+            self.config
+                .logs_directory
+                .join(format!("{settings_key}.log"))
         };
         // Named loggers are case-insensitive; absolute filesystem paths are not.
         // Normalize the optional extension before caching as well as settings lookup.
@@ -422,6 +530,11 @@ impl LogService {
     }
 
     /// `writeLog()` and `bx:log`: write `[application] text` at the level named by `type` to a logger.
+    ///
+    /// # Errors
+    ///
+    /// Returns the message `Invalid log level: <type>` for an unknown `log_type`, and the logger's error text for an invalid
+    /// or unopenable logger. Empty `text` is not an error: nothing is written.
     pub fn write(
         &self,
         text: &str,
@@ -444,15 +557,22 @@ impl LogService {
         Ok(())
     }
 
+    /// The `runtime` logger, kept so runtime messages need no lookup.
     pub fn runtime(&self) -> &Logger {
         &self.runtime
     }
 }
 
+/// The process-wide log service, set once by [`init`].
 static SERVICE: OnceLock<LogService> = OnceLock::new();
+/// The application name put in front of `writeLog()` messages. Empty means none.
 static APPLICATION: Mutex<String> = Mutex::new(String::new());
 
 /// Install the process-wide log service. The first call wins; later calls are no-ops.
+///
+/// # Errors
+///
+/// Returns the error from [`LogService::new`] when the service has not been started yet and its logs cannot be opened.
 pub fn init(config: LoggingConfig) -> io::Result<()> {
     if SERVICE.get().is_none() {
         let _ = SERVICE.set(LogService::new(config)?);
@@ -460,6 +580,7 @@ pub fn init(config: LoggingConfig) -> io::Result<()> {
     Ok(())
 }
 
+/// The process-wide log service, or `None` before [`init`] has run.
 pub fn service() -> Option<&'static LogService> {
     SERVICE.get()
 }
@@ -471,6 +592,7 @@ pub fn set_application(name: &str) {
     }
 }
 
+/// The application name [`fn@write`] puts in front of messages. Empty when none is set.
 pub fn application() -> String {
     APPLICATION
         .lock()
@@ -479,6 +601,10 @@ pub fn application() -> String {
 }
 
 /// `writeLog()` and `bx:log` on the process-wide service. Does nothing when logging is not set up.
+///
+/// # Errors
+///
+/// See [`LogService::write`].
 pub fn write(
     text: &str,
     log_type: &str,
@@ -496,6 +622,7 @@ pub fn write(
     service.write(text, log_type, logger, &application)
 }
 
+/// Whether the `runtime` logger writes `level`. `false` before [`init`] has run.
 pub fn enabled(level: Level) -> bool {
     service().is_some_and(|service| service.runtime().enabled(level))
 }
@@ -507,15 +634,19 @@ pub fn log(level: Level, message: impl AsRef<str>) {
     }
 }
 
+/// Write `message` to the `runtime` log at `ERROR`.
 pub fn error(message: impl AsRef<str>) {
     log(Level::Error, message);
 }
+/// Write `message` to the `runtime` log at `WARN`.
 pub fn warn(message: impl AsRef<str>) {
     log(Level::Warn, message);
 }
+/// Write `message` to the `runtime` log at `INFO`.
 pub fn info(message: impl AsRef<str>) {
     log(Level::Info, message);
 }
+/// Write `message` to the `runtime` log at `DEBUG`.
 pub fn debug(message: impl AsRef<str>) {
     log(Level::Debug, message);
 }
