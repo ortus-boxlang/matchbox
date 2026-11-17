@@ -748,7 +748,29 @@ impl<'a> TemplateParser<'a> {
 }
 
 pub(super) fn component_statement(name: &str, attributes: Vec<(Expression, Expression)>, body: Option<Vec<Statement>>, line: u32) -> Result<Statement> {
+    if name.eq_ignore_ascii_case("log") {
+        return log_component(attributes, body, line);
+    }
     Ok(Statement::new(StatementKind::Component { name: name.into(), attributes, body }, line))
+}
+
+/// `<bx:log text="" type="" log="" application="" />` is a call to `writeLog()`, so the component and the
+/// function share one implementation (and tree-shaking keeps `writeLog` when only the component is used).
+fn log_component(attributes: Vec<(Expression, Expression)>, body: Option<Vec<Statement>>, line: u32) -> Result<Statement> {
+    if body.is_some_and(|body| !body.is_empty()) {
+        anyhow::bail!("The log component does not take a body; use its text attribute");
+    }
+    let mut args = Vec::new();
+    for (key, value) in attributes {
+        let key = literal_text(&key).unwrap_or_default().to_ascii_lowercase();
+        if !matches!(key.as_str(), "text" | "type" | "log" | "application" | "file") {
+            anyhow::bail!("Unknown attribute [{key}] for the log component; it takes text, type, log, application and file");
+        }
+        args.push(Argument { name: Some(key), value });
+    }
+    let base = Box::new(Expression::new(ExpressionKind::Identifier("writeLog".into()), line));
+    let call = Expression::new(ExpressionKind::FunctionCall { base, args }, line);
+    Ok(Statement::new(StatementKind::Expression(call), line))
 }
 
 /// The text of a plain string literal such as `"i"` in `index="i"`.

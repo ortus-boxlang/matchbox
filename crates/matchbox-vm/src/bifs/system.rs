@@ -439,7 +439,24 @@ pub fn trace(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     Ok(BxValue::new_null())
 }
 
-pub fn write_log(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+/// `__bxLogWrite( text, type, log, application )`: the writer behind the prelude `writeLog()` function.
+/// It writes `[application] text` to the named log, at the level named by `type` (see `logging` in boxlang.json).
+pub fn log_write(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 4 {
+        return Err("writeLog() expects text, type, log and application".to_string());
+    }
+    let text = vm.to_string(args[0]);
+    let log_type = vm.to_string(args[1]);
+    let logger = vm.to_string(args[2]);
+    let use_application = !matches!(vm.to_string(args[3]).to_ascii_lowercase().as_str(), "false" | "no" | "0" | "");
+    matchbox_utility::logger::write(&text, &log_type, &logger, use_application)?;
+    Ok(BxValue::new_null())
+}
+
+/// `__bxLogApplication( name )`: sets the application name `writeLog()` puts in front of each message.
+pub fn log_application(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    let name = args.first().map(|value| vm.to_string(*value)).unwrap_or_default();
+    matchbox_utility::logger::set_application(&name);
     Ok(BxValue::new_null())
 }
 

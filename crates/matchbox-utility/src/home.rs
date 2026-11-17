@@ -5,8 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Default `config/matchbox.json` seeded into a new home.
-pub const DEFAULT_CONFIG: &str = include_str!("../resources/matchbox.json");
+/// Default `config/boxlang.json` seeded into a new home.
+pub const DEFAULT_CONFIG: &str = include_str!("../resources/boxlang.json");
 
 const HOME_DIRS: [&str; 7] = [
     "bin", "classes", "config", "global", "logs", "lib", "modules",
@@ -40,10 +40,10 @@ pub fn resolve(
 
 /// Path of the home's runtime config file.
 pub fn config_path(home: &Path) -> PathBuf {
-    home.join("config").join("matchbox.json")
+    home.join("config").join("boxlang.json")
 }
 
-/// Create the home layout and seed `config/matchbox.json` when it is missing.
+/// Create the home layout and seed `config/boxlang.json` when it is missing.
 pub fn ensure(home: &Path) -> io::Result<()> {
     for dir in HOME_DIRS {
         std::fs::create_dir_all(home.join(dir))?;

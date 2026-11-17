@@ -190,6 +190,7 @@ pub fn wrap_with_application(
 __bxApp = __bxAppNew( "__BxApplication" );
 __bxAppNamed = false;
 try {{ __bxAppNamed = len( __bxApp.name ) > 0; }} catch ( any e ) {{ }}
+if ( __bxAppNamed ) {{ __bxLogApplication( __bxApp.name ); }}
 try {{
     try {{
         __bxAppProceed = true;

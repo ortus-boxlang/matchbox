@@ -1,4 +1,4 @@
-//! `.env` loading, the MatchBox home (`matchbox.json`, `logs/`) and config precedence for the CLI.
+//! `.env` loading, the MatchBox home (`boxlang.json`, `logs/`), config layering and logging for the CLI.
 
 use std::{fs, path::Path, process::Command};
 
@@ -53,7 +53,7 @@ fn loads_user_and_project_env_and_creates_the_home() {
     );
 
     let home = user_home.join(".matchbox");
-    assert!(home.join("config/matchbox.json").is_file());
+    assert!(home.join("config/boxlang.json").is_file());
     for dir in ["bin", "classes", "global", "logs", "lib", "modules"] {
         assert!(home.join(dir).is_dir(), "{dir} missing");
     }
@@ -69,7 +69,7 @@ fn matchbox_home_env_and_flag_choose_the_home() {
         &["--bx-home", flag_home.to_str().unwrap(), "app.bxs"],
     );
     assert!(ok, "{err}");
-    assert!(flag_home.join("config/matchbox.json").is_file());
+    assert!(flag_home.join("config/boxlang.json").is_file());
     assert!(!user_home.join(".matchbox").exists());
 
     let env_home = dir.path().join("env-home");
@@ -80,24 +80,134 @@ fn matchbox_home_env_and_flag_choose_the_home() {
     .unwrap();
     let (ok, _, err) = run(&cwd, &user_home, &["app.bxs"]);
     assert!(ok, "{err}");
-    assert!(env_home.join("config/matchbox.json").is_file());
+    assert!(env_home.join("config/boxlang.json").is_file());
 }
 
 #[test]
-fn project_config_controls_the_runtime_log() {
+fn write_log_and_the_log_component_follow_the_layered_config() {
     let (_dir, user_home, cwd) = layout();
+    // ./boxlang.json overlays the home's config: application logs at DEBUG, orders is its own file.
     fs::write(
-        cwd.join(".matchbox.json"),
-        r#"{ "logging": { "rootLevel": "INFO", "defaultEncoder": "json" } }"#,
+        cwd.join("boxlang.json"),
+        r#"{ "logging": { "loggers": { "application": { "level": "DEBUG" }, "orders": { "level": "INFO", "encoder": "json" } } } }"#,
     )
     .unwrap();
-    let (ok, _, err) = run(&cwd, &user_home, &["app.bxs"]);
+    fs::write(
+        cwd.join("log.bxs"),
+        "writeLog( 'Hello Logger!' );\n\
+         writeLog( text = 'Hola debug', type = 'Debug' );\n\
+         writeLog( text = 'Order shipped', log = 'orders' );\n\
+         writeLog( text = 'Dropped', type = 'trace' );\n\
+         writeLog( text = 'No app', type = 'warning', application = false );\n",
+    )
+    .unwrap();
+    fs::write(cwd.join("log.bxm"), "<bx:log text=\"tag default\" /><bx:log text=\"tag orders\" type=\"error\" log=\"orders\" />").unwrap();
+
+    let (ok, _, err) = run(&cwd, &user_home, &["log.bxs"]);
     assert!(ok, "{err}");
-    let log = fs::read_to_string(user_home.join(".matchbox/logs/matchbox.log")).unwrap();
+    let (ok, _, err) = run(&cwd, &user_home, &["log.bxm"]);
+    assert!(ok, "{err}");
+
+    let logs = user_home.join(".matchbox/logs");
+    let application = fs::read_to_string(logs.join("application.log")).unwrap();
     assert!(
-        log.contains(r#""level":"INFO""#) && log.contains("MatchBox home"),
-        "{log}"
+        application.contains("[INFO] [no-application] Hello Logger!"),
+        "{application}"
     );
+    assert!(
+        application.contains("[DEBUG] [no-application] Hola debug"),
+        "{application}"
+    );
+    assert!(
+        application.contains("[WARN] [no-application] No app"),
+        "{application}"
+    );
+    assert!(
+        application.contains("[INFO] [no-application] tag default"),
+        "{application}"
+    );
+    assert!(
+        !application.contains("Dropped"),
+        "trace is below the DEBUG level: {application}"
+    );
+
+    let orders = fs::read_to_string(logs.join("orders.log")).unwrap();
+    assert!(
+        orders.contains(r#""level":"INFO""#) && orders.contains("Order shipped"),
+        "{orders}"
+    );
+    assert!(
+        orders.contains(r#""level":"ERROR""#) && orders.contains("tag orders"),
+        "{orders}"
+    );
+}
+
+#[test]
+fn default_levels_drop_information_from_the_application_log() {
+    // The seeded config logs `application` at WARN, as BoxLang does.
+    let (_dir, user_home, cwd) = layout();
+    fs::write(
+        cwd.join("log.bxs"),
+        "writeLog( 'quiet' );\nwriteLog( text = 'loud', type = 'error' );\n",
+    )
+    .unwrap();
+    let (ok, _, err) = run(&cwd, &user_home, &["log.bxs"]);
+    assert!(ok, "{err}");
+    let application = fs::read_to_string(user_home.join(".matchbox/logs/application.log")).unwrap();
+    assert!(
+        !application.contains("quiet") && application.contains("loud"),
+        "{application}"
+    );
+}
+
+#[test]
+fn application_name_prefixes_log_messages() {
+    let (_dir, user_home, cwd) = layout();
+    fs::write(
+        cwd.join("boxlang.json"),
+        r#"{ "logging": { "loggers": { "application": { "level": "INFO" } } } }"#,
+    )
+    .unwrap();
+    fs::write(
+        cwd.join("Application.bx"),
+        "class { this.name = 'shop'; }\n",
+    )
+    .unwrap();
+    fs::write(
+        cwd.join("log.bxs"),
+        "writeLog( 'ordered' );\nwriteLog( text = 'bare', application = false );\n",
+    )
+    .unwrap();
+    let (ok, _, err) = run(&cwd, &user_home, &["log.bxs"]);
+    assert!(ok, "{err}");
+    let application = fs::read_to_string(user_home.join(".matchbox/logs/application.log")).unwrap();
+    assert!(
+        application.contains("[INFO] [shop] ordered"),
+        "{application}"
+    );
+    assert!(
+        application.contains("[INFO] [no-application] bare"),
+        "{application}"
+    );
+}
+
+#[test]
+fn invalid_log_type_and_names_outside_the_logs_directory_fail() {
+    let (_dir, user_home, cwd) = layout();
+    fs::write(
+        cwd.join("bad.bxs"),
+        "writeLog( text = 'x', type = 'loud' );\n",
+    )
+    .unwrap();
+    let (ok, _, err) = run(&cwd, &user_home, &["bad.bxs"]);
+    assert!(!ok && err.contains("Invalid log level: loud"), "{err}");
+    fs::write(
+        cwd.join("escape.bxs"),
+        "writeLog( text = 'x', log = '../escape' );\n",
+    )
+    .unwrap();
+    let (ok, _, err) = run(&cwd, &user_home, &["escape.bxs"]);
+    assert!(!ok && err.contains("Invalid logger name"), "{err}");
 }
 
 #[test]

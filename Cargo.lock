@@ -1980,6 +1980,7 @@ dependencies = [
  "matchbox-macros",
  "matchbox-plugin-sdk",
  "matchbox_parser",
+ "matchbox_utility",
  "md-5",
  "postcard",
  "postgres",

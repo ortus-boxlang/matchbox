@@ -1,9 +1,16 @@
-//! Runtime configuration: the BoxLang `boxlang.json` spec, stored as `matchbox.json`.
+//! Runtime configuration in the BoxLang `boxlang.json` format.
+//!
+//! Layers, later ones override earlier ones (objects merge key by key, other values replace):
+//! 1. `<home>/config/boxlang.json`
+//! 2. `./boxlang.json` in the working directory
+//! 3. `--bx-config <file>` or `MATCHBOX_CONFIG`
+//!
 //! Comments (`//`, `/* */`) are allowed. Unknown keys are kept in `raw` and otherwise ignored.
 
-use crate::logger::{self, Encoder, Level, LoggingConfig};
+use crate::logger::{Appender, Encoder, Level, LoggerConfig, LoggingConfig, parse_size};
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
 };
@@ -12,7 +19,7 @@ use std::{
 pub struct Config {
     pub debug_mode: bool,
     pub logging: LoggingConfig,
-    /// The whole document after placeholder expansion.
+    /// The merged document after placeholder expansion.
     pub raw: Value,
 }
 
@@ -65,11 +72,29 @@ pub fn strip_comments(input: &str) -> String {
     out
 }
 
+/// Merge `overlay` into `base`: objects merge key by key, anything else replaces.
+fn merge(base: &mut Value, overlay: Value) {
+    match (base, overlay) {
+        (Value::Object(base), Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                match base.get_mut(&key) {
+                    Some(existing) => merge(existing, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
+}
+
 fn expand(value: &mut Value, home: &Path, cwd: &Path) {
     match value {
         Value::String(s) => {
             *s = s
                 .replace("${matchbox-home}", &home.to_string_lossy())
+                .replace("${boxlang-home}", &home.to_string_lossy())
                 .replace("${user-dir}", &cwd.to_string_lossy());
         }
         Value::Array(items) => items.iter_mut().for_each(|v| expand(v, home, cwd)),
@@ -78,43 +103,60 @@ fn expand(value: &mut Value, home: &Path, cwd: &Path) {
     }
 }
 
-/// Pick the config file: `--bx-config`, `MATCHBOX_CONFIG`, `./.matchbox.json`, then the home's file.
-/// An explicitly named file must exist.
-pub fn resolve_path(
+/// The config files to layer, lowest priority first: the home's file, `./boxlang.json` if it exists,
+/// then `--bx-config` or `MATCHBOX_CONFIG`. A file named by flag or variable must exist.
+pub fn resolve_layers(
     flag: Option<&str>,
     env_config: Option<&str>,
     cwd: &Path,
     home: &Path,
-) -> io::Result<PathBuf> {
+) -> io::Result<Vec<PathBuf>> {
+    let home_file = crate::home::config_path(home);
+    let mut layers = vec![home_file.clone()];
+    let project = cwd.join("boxlang.json");
+    if project.is_file() && !same_file(&project, &home_file) {
+        layers.push(project);
+    }
     if let Some(path) = flag.or(env_config).filter(|p| !p.is_empty()) {
         let path = cwd.join(path);
-        return if path.is_file() {
-            Ok(path)
-        } else {
-            Err(io::Error::new(
+        if !path.is_file() {
+            return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("config file not found: {}", path.display()),
-            ))
-        };
+            ));
+        }
+        layers.push(path);
     }
-    let project = cwd.join(".matchbox.json");
-    Ok(if project.is_file() {
-        project
-    } else {
-        crate::home::config_path(home)
-    })
+    Ok(layers)
 }
 
-pub fn load(path: &Path, home: &Path, cwd: &Path) -> io::Result<Config> {
-    let text = std::fs::read_to_string(path)?;
-    let mut raw: Value = serde_json::from_str(&strip_comments(&text)).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid config {}: {e}", path.display()),
-        )
-    })?;
-    expand(&mut raw, home, cwd);
-    Ok(from_value(raw, home))
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Read and merge the layers. A layer that is not valid JSON is an error that names the file.
+pub fn load(layers: &[PathBuf], home: &Path, cwd: &Path) -> io::Result<Config> {
+    let mut merged = Value::Object(Default::default());
+    for path in layers {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            // The home file is seeded by `home::ensure`; a missing optional layer is skipped.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        let layer: Value = serde_json::from_str(&strip_comments(&text)).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid config {}: {e}", path.display()),
+            )
+        })?;
+        merge(&mut merged, layer);
+    }
+    expand(&mut merged, home, cwd);
+    Ok(from_value(merged, home))
 }
 
 fn from_value(raw: Value, home: &Path) -> Config {
@@ -125,7 +167,7 @@ fn from_value(raw: Value, home: &Path) -> Config {
     let log = raw.get("logging").cloned().unwrap_or(Value::Null);
     let text = |key: &str| log.get(key).and_then(Value::as_str);
     let number = |key: &str, default: u64| log.get(key).and_then(Value::as_u64).unwrap_or(default);
-    let size = |key: &str, default: u64| text(key).and_then(logger::parse_size).unwrap_or(default);
+    let size = |key: &str, default: u64| text(key).and_then(parse_size).unwrap_or(default);
 
     let mut root_level = text("rootLevel")
         .and_then(Level::parse)
@@ -133,17 +175,33 @@ fn from_value(raw: Value, home: &Path) -> Config {
     if debug_mode && root_level < Level::Debug {
         root_level = Level::Debug;
     }
+
+    let mut loggers = BTreeMap::new();
+    if let Some(Value::Object(map)) = log.get("loggers") {
+        for (name, entry) in map {
+            let field = |key: &str| entry.get(key).and_then(Value::as_str);
+            let mut config = LoggerConfig {
+                level: field("level").and_then(Level::parse),
+                appender: field("appender").and_then(Appender::parse),
+                encoder: field("encoder").and_then(Encoder::parse),
+            };
+            if debug_mode && config.level.is_some_and(|level| level < Level::Debug) {
+                config.level = Some(Level::Debug);
+            }
+            loggers.insert(name.to_ascii_lowercase(), config);
+        }
+    }
+
     let logging = LoggingConfig {
         logs_directory: text("logsDirectory").map_or_else(|| home.join("logs"), PathBuf::from),
         max_log_days: number("maxLogDays", 90),
         max_file_size: size("maxFileSize", 100 << 20),
         total_cap_size: size("totalCapSize", 5 << 30),
         root_level,
-        encoder: if text("defaultEncoder").is_some_and(|e| e.eq_ignore_ascii_case("json")) {
-            Encoder::Json
-        } else {
-            Encoder::Text
-        },
+        encoder: text("defaultEncoder")
+            .and_then(Encoder::parse)
+            .unwrap_or(Encoder::Text),
+        loggers,
     };
     Config {
         debug_mode,
@@ -156,6 +214,12 @@ fn from_value(raw: Value, home: &Path) -> Config {
 mod tests {
     use super::*;
 
+    fn write(dir: &Path, name: &str, content: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
     #[test]
     fn strips_comments_but_not_strings() {
         let out = strip_comments("{ // c\n \"a\": \"http://x\", /* b\n */ \"b\": 1 }");
@@ -166,66 +230,124 @@ mod tests {
 
     #[test]
     fn seeded_default_config_loads() {
-        let home = Path::new("/h");
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("matchbox.json");
-        std::fs::write(&path, crate::home::DEFAULT_CONFIG).unwrap();
-        let config = load(&path, home, Path::new("/cwd")).unwrap();
+        let path = write(dir.path(), "boxlang.json", crate::home::DEFAULT_CONFIG);
+        let config = load(&[path], Path::new("/h"), Path::new("/cwd")).unwrap();
         assert!(!config.debug_mode);
         assert_eq!(config.logging.logs_directory, PathBuf::from("/h/logs"));
         assert_eq!(config.logging.root_level, Level::Warn);
         assert_eq!(config.logging.max_file_size, 100 << 20);
         assert_eq!(config.logging.total_cap_size, 5 << 30);
         assert_eq!(config.logging.encoder, Encoder::Text);
+        assert_eq!(config.logging.loggers["runtime"].level, Some(Level::Info));
+        assert_eq!(
+            config.logging.loggers["application"].level,
+            Some(Level::Warn)
+        );
+        assert_eq!(
+            config.logging.loggers["runtime"].appender,
+            Some(Appender::File)
+        );
     }
 
     #[test]
-    fn debug_mode_raises_level_and_unknown_keys_are_kept() {
+    fn layers_merge_objects_and_replace_values() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("c.json");
-        std::fs::write(&path, r#"{ "debugMode": true, "logging": { "rootLevel": "ERROR", "defaultEncoder": "json" }, "mappings": { "/": "${user-dir}" } }"#).unwrap();
-        let config = load(&path, Path::new("/h"), Path::new("/cwd")).unwrap();
-        assert_eq!(config.logging.root_level, Level::Debug);
-        assert_eq!(config.logging.encoder, Encoder::Json);
+        let home = write(
+            dir.path(),
+            "home.json",
+            r#"{ "logging": { "rootLevel": "WARN", "maxLogDays": 30, "loggers": { "application": { "level": "WARN" }, "runtime": { "level": "INFO" } } } }"#,
+        );
+        let project = write(
+            dir.path(),
+            "project.json",
+            r#"{ "mappings": { "/": "${user-dir}" }, "logging": { "rootLevel": "ERROR", "loggers": { "application": { "level": "DEBUG" } } } }"#,
+        );
+        let config = load(&[home, project], Path::new("/h"), Path::new("/cwd")).unwrap();
+        assert_eq!(config.logging.root_level, Level::Error);
+        assert_eq!(
+            config.logging.max_log_days, 30,
+            "untouched key survives the overlay"
+        );
+        assert_eq!(
+            config.logging.loggers["application"].level,
+            Some(Level::Debug)
+        );
+        assert_eq!(config.logging.loggers["runtime"].level, Some(Level::Info));
         assert_eq!(config.raw["mappings"]["/"], "/cwd");
     }
 
     #[test]
-    fn invalid_json_is_an_error() {
+    fn debug_mode_raises_levels_and_placeholders_expand() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("c.json");
-        std::fs::write(&path, "{ nope").unwrap();
-        assert!(load(&path, Path::new("/h"), dir.path()).is_err());
+        let path = write(
+            dir.path(),
+            "c.json",
+            r#"{ "debugMode": true, "logging": { "rootLevel": "ERROR", "defaultEncoder": "json", "logsDirectory": "${boxlang-home}/l", "loggers": { "Orders": { "level": "WARN", "appender": "console" } } } }"#,
+        );
+        let config = load(&[path], Path::new("/h"), Path::new("/cwd")).unwrap();
+        assert_eq!(config.logging.root_level, Level::Debug);
+        assert_eq!(config.logging.encoder, Encoder::Json);
+        assert_eq!(config.logging.logs_directory, PathBuf::from("/h/l"));
+        assert_eq!(config.logging.loggers["orders"].level, Some(Level::Debug));
+        assert_eq!(
+            config.logging.loggers["orders"].appender,
+            Some(Appender::Console)
+        );
     }
 
     #[test]
-    fn path_precedence() {
+    fn invalid_json_is_an_error_that_names_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "c.json", "{ nope");
+        let error = load(&[path], Path::new("/h"), dir.path()).unwrap_err();
+        assert!(error.to_string().contains("c.json"), "{error}");
+    }
+
+    #[test]
+    fn layer_order_and_explicit_file_must_exist() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path();
         let home = cwd.join("home");
-        // default: home config
+        let home_file = home.join("config/boxlang.json");
         assert_eq!(
-            resolve_path(None, None, cwd, &home).unwrap(),
-            home.join("config/matchbox.json")
+            resolve_layers(None, None, cwd, &home).unwrap(),
+            vec![home_file.clone()]
         );
-        // project file beats home
-        std::fs::write(cwd.join(".matchbox.json"), "{}").unwrap();
+
+        write(cwd, "boxlang.json", "{}");
+        write(cwd, "env.json", "{}");
+        write(cwd, "flag.json", "{}");
         assert_eq!(
-            resolve_path(None, None, cwd, &home).unwrap(),
-            cwd.join(".matchbox.json")
-        );
-        // env beats project, flag beats env
-        std::fs::write(cwd.join("env.json"), "{}").unwrap();
-        std::fs::write(cwd.join("flag.json"), "{}").unwrap();
-        assert_eq!(
-            resolve_path(None, Some("env.json"), cwd, &home).unwrap(),
-            cwd.join("env.json")
+            resolve_layers(None, None, cwd, &home).unwrap(),
+            vec![home_file.clone(), cwd.join("boxlang.json")]
         );
         assert_eq!(
-            resolve_path(Some("flag.json"), Some("env.json"), cwd, &home).unwrap(),
-            cwd.join("flag.json")
+            resolve_layers(None, Some("env.json"), cwd, &home).unwrap(),
+            vec![
+                home_file.clone(),
+                cwd.join("boxlang.json"),
+                cwd.join("env.json")
+            ]
         );
-        // an explicit file must exist
-        assert!(resolve_path(Some("missing.json"), None, cwd, &home).is_err());
+        assert_eq!(
+            resolve_layers(Some("flag.json"), Some("env.json"), cwd, &home)
+                .unwrap()
+                .last()
+                .unwrap(),
+            &cwd.join("flag.json")
+        );
+        assert!(resolve_layers(Some("missing.json"), None, cwd, &home).is_err());
+    }
+
+    #[test]
+    fn project_file_that_is_the_home_file_is_not_layered_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_path_buf();
+        std::fs::create_dir_all(home.join("config")).unwrap();
+        // cwd == <home>/config, so ./boxlang.json is the home file itself.
+        let cwd = home.join("config");
+        write(&cwd, "boxlang.json", "{}");
+        assert_eq!(resolve_layers(None, None, &cwd, &home).unwrap().len(), 1);
     }
 }

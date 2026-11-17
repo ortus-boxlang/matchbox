@@ -1,4 +1,4 @@
-//! Process startup: load `.env` files, resolve the home, seed it, load the config, start logging.
+//! Process startup: load `.env` files, resolve the home, seed it, load the config layers, start logging.
 
 use crate::{config, env_file, home, logger};
 use std::{
@@ -18,7 +18,8 @@ pub struct Options<'a> {
 
 pub struct Runtime {
     pub home: PathBuf,
-    pub config_path: PathBuf,
+    /// The config files that were layered, lowest priority first.
+    pub config_files: Vec<PathBuf>,
     pub config: config::Config,
 }
 
@@ -55,23 +56,27 @@ pub fn bootstrap_with(options: Options) -> io::Result<Runtime> {
     let home = absolute(&options.cwd, &home);
     home::ensure(&home)?;
 
-    // 3. Config
+    // 3. Config layers: home, ./boxlang.json, then --bx-config or MATCHBOX_CONFIG
     let env_config = std::env::var("MATCHBOX_CONFIG").ok();
-    let config_path =
-        config::resolve_path(options.config, env_config.as_deref(), &options.cwd, &home)?;
-    let config = config::load(&config_path, &home, &options.cwd)?;
+    let config_files =
+        config::resolve_layers(options.config, env_config.as_deref(), &options.cwd, &home)?;
+    let config = config::load(&config_files, &home, &options.cwd)?;
 
     // 4. Logging
     logger::init(config.logging.clone())?;
-    logger::info(format!(
+    logger::debug(format!(
         "MatchBox home: {}, config: {}",
         home.display(),
-        config_path.display()
+        config_files
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     ));
 
     Ok(Runtime {
         home,
-        config_path,
+        config_files,
         config,
     })
 }
@@ -113,11 +118,11 @@ mod tests {
         assert_eq!(std::env::var("MB_BOOT_USER").unwrap(), "user");
         assert_eq!(std::env::var("MB_BOOT_BOTH").unwrap(), "project");
         assert_eq!(runtime.home, user_home.join(".matchbox"));
-        assert!(runtime.home.join("config/matchbox.json").is_file());
+        assert!(runtime.home.join("config/boxlang.json").is_file());
         assert!(runtime.home.join("logs").is_dir());
         assert_eq!(
-            runtime.config_path,
-            runtime.home.join("config/matchbox.json")
+            runtime.config_files,
+            vec![runtime.home.join("config/boxlang.json")]
         );
     }
 }

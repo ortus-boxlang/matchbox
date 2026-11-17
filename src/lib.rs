@@ -1159,7 +1159,7 @@ fn usage_text() -> String {
     let _ = writeln!(out, "  --bx-code <code>    Execute inline BoxLang code");
     let _ = writeln!(out, "  -e, --eval <source> Execute inline BoxLang source (cannot combine with files or build/server options)");
     let _ = writeln!(out, "  --bx-printAST       Print the AST (JSON) of a file, --bx-code or stdin");
-    let _ = writeln!(out, "  --bx-config <path>  Config file (default: ./.matchbox.json, then <home>/config/matchbox.json)");
+    let _ = writeln!(out, "  --bx-config <path>  Config file layered over <home>/config/boxlang.json and ./boxlang.json");
     let _ = writeln!(out, "  --bx-home <path>    MatchBox home (default: MATCHBOX_HOME, then ~/.matchbox)");
     let _ = writeln!(out, "  --bx-transpile      Accepted for BoxLang compatibility; not supported by MatchBox");
     let _ = writeln!(out, "  --build             Compile to bytecode (.bxb)");
