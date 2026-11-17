@@ -186,14 +186,11 @@ struct Parser<'a> {
     filename: Option<&'a str>,
     issues: Option<Vec<ParseError>>,
     unclosed_blocks: usize,
-    /// Token index of a `{` that starts a statement. That brace is not a
-    /// struct literal where `=` may separate keys (see `parse_struct_members`).
-    statement_brace: Option<usize>,
 }
 
 impl<'a> Parser<'a> {
     fn new(source: &'a str, tokens: &'a [SyntaxToken], filename: Option<&'a str>) -> Self {
-        Self { source, tokens, pos: 0, filename, issues: None, unclosed_blocks: 0, statement_brace: None }
+        Self { source, tokens, pos: 0, filename, issues: None, unclosed_blocks: 0 }
     }
 
     fn kind(&self, offset: usize) -> Option<TokenKind> {
@@ -522,9 +519,6 @@ impl<'a> Parser<'a> {
                 Ok(Statement::new(StatementKind::Block(body), line))
             }
             Some(_) => {
-                if self.peek_is(TokenKind::LeftBrace) {
-                    self.statement_brace = Some(self.pos);
-                }
                 let expr = self.parse_expression()?;
                 // Consume optional semicolon
                 if self.peek_is(TokenKind::Semicolon) { self.pos += 1; }
@@ -1961,16 +1955,12 @@ impl<'a> Parser<'a> {
                 Ok(Expression::new(ExpressionKind::Identifier(name), line))
             }
             Some(TokenKind::LeftBrace) => {
-                let brace = self.pos;
                 self.pos += 1; // {
                 if self.peek_is(TokenKind::RightBrace) {
                     self.pos += 1;
                     return Ok(Expression::new(ExpressionKind::Literal(Literal::Struct(Vec::new())), line));
                 }
-                // `{ a = 1 }` as a whole statement is a block in BoxLang, not a
-                // struct, so `=` keys are only accepted where a value is expected.
-                let allow_equals = self.statement_brace != Some(brace);
-                let members = self.parse_struct_members(allow_equals)?;
+                let members = self.parse_struct_members()?;
                 self.expect(TokenKind::RightBrace)?;
                 Ok(Expression::new(ExpressionKind::Literal(Literal::Struct(members)), line))
             }
@@ -2075,10 +2065,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_struct_members(
-        &mut self,
-        allow_equals: bool,
-    ) -> Result<Vec<(Expression, Expression)>> {
+    fn parse_struct_members(&mut self) -> Result<Vec<(Expression, Expression)>> {
         let mut members = Vec::new();
         loop {
             let line = self.peek_line();
@@ -2090,15 +2077,12 @@ impl<'a> Parser<'a> {
                     Expression::new(ExpressionKind::Literal(Literal::Null), line),
                 ));
             } else {
-                // `=` separates keys only where a value is expected, not in a
-                // `{` that starts a statement (see `statement_brace`).
-                let equals_key = allow_equals && self.kind(1) == Some(TokenKind::Equal);
-                let key = if (self.kind(1) == Some(TokenKind::Colon) || equals_key)
+                let key = if self.tokens.get(self.pos + 1).is_some_and(|token| matches!(token.kind, TokenKind::Colon | TokenKind::Equal))
                     && self.peek_lexeme().is_some_and(|key| key.chars().all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '$')) {
                     let key = self.peek_lexeme().unwrap().to_owned();
                     self.pos += 1;
                     Expression::new(ExpressionKind::Literal(Literal::String(vec![StringPart::Text(key)])), line)
-                } else if equals_key {
+                } else if self.kind(1) == Some(TokenKind::Equal) {
                     // `{ "a" = 1 }`: a full expression would read `"a" = 1` as an assignment.
                     self.parse_primary()?
                 } else { self.parse_expression()? };
@@ -2750,13 +2734,13 @@ mod tests {
     }
 
     #[test]
-    fn brace_starting_a_statement_is_not_an_equals_struct() {
-        // `{ a = 1 }` on its own is a block in BoxLang, not a struct. MatchBox
-        // has no block statement, so it stays a parse error rather than
-        // silently building a struct and throwing it away.
-        assert!(parse("a = 0\n{ a = 1 }\n", None).is_err());
-        assert!(parse("switch (1) { case 1: { a = 5 } }", None).is_err());
-        // Where a value is expected, `=` keys still work.
+    fn equals_keys_work_wherever_a_struct_literal_does() {
+        // Whether a `{` that starts a statement is a block or a struct literal
+        // is decided by `bare_block_ahead`; `=` keys follow that rule.
+        assert!(matches!(
+            parse("a = 0\n{ a = 1; }\n", None).unwrap()[1].kind,
+            StatementKind::Block(_)
+        ));
         assert_eq!(
             parse("s = { a = 1 };", None).unwrap(),
             parse("s = { a : 1 };", None).unwrap()

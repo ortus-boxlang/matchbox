@@ -168,6 +168,7 @@ impl Transpiler {
             }
             // The label names a loop, not a variable, so only the body is walked.
             StatementKind::Labeled { body, .. } => self.stmts(body),
+            StatementKind::Block(body) => self.stmts(body),
             StatementKind::Component {
                 attributes, body, ..
             } => {
