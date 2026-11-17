@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Runtime home, `matchbox.json` and logs**, following the BoxLang CLI. MatchBox creates `~/.matchbox` (`--bx-home`, `MATCHBOX_HOME`) with `bin`, `classes`, `config`, `global`, `logs`, `lib` and `modules`, and seeds `config/matchbox.json` using the `boxlang.json` format. The config file is chosen from `--bx-config`, `MATCHBOX_CONFIG`, `./.matchbox.json`, then the home. The `logging` block (`logsDirectory`, `maxLogDays`, `maxFileSize`, `totalCapSize`, `rootLevel`, `defaultEncoder`) and `debugMode` are honored by a new file logger at `<home>/logs/matchbox.log`.
+- **`.env` loading**: `~/.matchbox.env` then `./.env` (project wins, file values win over the OS environment) are loaded at startup and read with `getSystemSetting()`. `--serve` also loads `<webroot>/.env`. Applies to the interpreter, the REPL, the server and native binaries.
+
+### Changed
+- `--bx-config` and `--bx-home` are now implemented. A missing `--bx-config` file is an error.
+
 ## [0.13.0] - 2026-11-10
 
 

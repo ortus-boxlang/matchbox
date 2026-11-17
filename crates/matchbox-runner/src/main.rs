@@ -221,6 +221,12 @@ fn main() {}
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn main() -> Result<()> {
+    // Load ~/.matchbox.env and ./.env, set up the MatchBox home, config and logs.
+    #[cfg(not(target_family = "wasm"))]
+    if let Err(e) = matchbox_utility::bootstrap::bootstrap(None, None) {
+        eprintln!("[matchbox] runtime home setup failed: {e}");
+    }
+
     // Keep the OS default Ctrl+C action: VM polling cannot interrupt blocked native calls.
     let mut vm = VM::new_with_args(std_env::args().collect());
     #[cfg(feature = "jit")]

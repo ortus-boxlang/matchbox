@@ -130,6 +130,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=crates/matchbox-runner/src/main.rs");
     println!("cargo:rerun-if-changed=crates/matchbox-runner/Cargo.toml");
+    println!("cargo:rerun-if-changed=crates/matchbox-utility");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/src");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/Cargo.toml");
     println!("cargo:rerun-if-changed=crates/matchbox-vm/build.rs");
@@ -197,6 +198,7 @@ fn main() {
         let sources_to_watch = [
             Path::new(&root_dir).join("crates/matchbox-runner/src/main.rs"),
             Path::new(&root_dir).join("crates/matchbox-runner/Cargo.toml"),
+            Path::new(&root_dir).join("crates/matchbox-utility"),
             Path::new(&root_dir).join("crates/matchbox-vm/src"),
             Path::new(&root_dir).join("crates/matchbox-vm/Cargo.toml"),
             Path::new(&root_dir).join("crates/matchbox-vm/build.rs"),

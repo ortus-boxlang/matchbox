@@ -1277,6 +1277,7 @@ dependencies = [
  "bincode",
  "console_error_panic_hook",
  "js-sys",
+ "matchbox_utility",
  "matchbox_vm",
  "postcard",
  "serde",
@@ -1284,6 +1285,14 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "matchbox_utility"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "serde_json",
 ]
 
 [[package]]

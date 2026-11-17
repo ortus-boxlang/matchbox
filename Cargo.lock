@@ -1941,6 +1941,11 @@ dependencies = [
 [[package]]
 name = "matchbox_utility"
 version = "0.2.0"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "matchbox_vm"

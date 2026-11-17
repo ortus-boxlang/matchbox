@@ -11,7 +11,9 @@ fn script(name: &str) -> PathBuf {
 }
 
 fn run(args: &[&str]) -> (bool, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_matchbox")).args(args).output().unwrap();
+    // Keep test runs out of the real ~/.matchbox.
+    let home = std::env::temp_dir().join(format!("matchbox-cli-args-home-{}", std::process::id()));
+    let output = Command::new(env!("CARGO_BIN_EXE_matchbox")).args(args).env("MATCHBOX_HOME", home).output().unwrap();
     (
         output.status.success(),
         String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -85,10 +87,12 @@ fn help_and_version_are_global_only_as_the_sole_argument() {
 #[test]
 fn bx_flags_are_honored_anywhere_and_not_passed_to_the_script() {
     let file = script("bx.bxs");
-    let (ok, out, err) = run(&[file.to_str().unwrap(), "one", "--bx-config=/x.json", "--bx-debug", "two"]);
+    let config = file.with_file_name("bx-config.json");
+    fs::write(&config, "{}").unwrap();
+    let config_flag = format!("--bx-config={}", config.display());
+    let (ok, out, err) = run(&[file.to_str().unwrap(), "one", &config_flag, "--bx-debug", "two"]);
     assert!(ok, "{err}");
     assert!(out.contains(r#""positionals":["one","two"]"#) && out.contains(r#""options":{}"#), "{out}");
-    assert!(err.contains("--bx-config /x.json is not supported"), "{err}");
 }
 
 #[test]
