@@ -53,6 +53,26 @@ class ReleaseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             prepare_changelog(prepared, original, released, "0.11.0")
 
+    def test_stable_and_snapshot_version_discovery(self):
+        for snapshot, channel, version in (
+            (False, "latest", "0.11.0+123"),
+            (True, "snapshot", "0.11.0-snapshot+123"),
+        ):
+            with self.subTest(channel=channel), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / "Cargo.toml").write_text('[package]\nversion = "0.11.0"\n')
+                directory = root / "assets"
+                directory.mkdir()
+                for name in CLI_FILES:
+                    (directory / name).write_bytes(name.encode())
+                package(directory, metadata(root, snapshot, "123", "a" * 40))
+                properties = (directory / f"version-{channel}.properties").read_text()
+                self.assertEqual(properties.splitlines()[0], f"version={version}")
+                self.assertRegex(properties.splitlines()[1], r"^buildDate=\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+                other_channel = "latest" if snapshot else "snapshot"
+                self.assertFalse((directory / f"version-{other_channel}.properties").exists())
+                self.assertIn(f"  version-{channel}.properties\n", (directory / "SHA256SUMS").read_text())
+
     def test_download_metadata_and_checksums_require_all_eight_clis(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
