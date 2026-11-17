@@ -211,6 +211,175 @@ fn invalid_log_type_and_names_outside_the_logs_directory_fail() {
 }
 
 #[test]
+fn rapid_log_rotation_preserves_every_message() {
+    let (_dir, user_home, cwd) = layout();
+    fs::write(
+        cwd.join("boxlang.json"),
+        r#"{ "logging": { "maxFileSize": "150B", "maxLogDays": 0, "totalCapSize": "0" } }"#,
+    )
+    .unwrap();
+    // Many rotations in one burst reproduce timestamp collisions without sleeps.
+    const MESSAGES: usize = 2000;
+    fs::write(
+        cwd.join("rotate.bxs"),
+        format!(
+            "for (i = 1; i <= {MESSAGES}; i++) {{ writeLog(text = 'record-' & i, type = 'error'); }}"
+        ),
+    )
+    .unwrap();
+    let (ok, _, err) = run(&cwd, &user_home, &["rotate.bxs"]);
+    assert!(ok, "{err}");
+
+    // Read both the active log and all archives, independent of archive naming/layout.
+    fn records_in(dir: &Path, records: &mut Vec<usize>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                records_in(&path, records);
+            } else {
+                for line in fs::read_to_string(&path).unwrap().lines() {
+                    if let Some((_, id)) = line.split_once("[no-application] record-") {
+                        records.push(id.parse().expect("complete log record"));
+                    }
+                }
+            }
+        }
+    }
+    let mut records = Vec::new();
+    records_in(&user_home.join(".matchbox/logs"), &mut records);
+    assert_eq!(
+        records.len(), MESSAGES,
+        "rotation must not lose or duplicate records when retention is disabled"
+    );
+    records.sort_unstable();
+    assert_eq!(records, (1..=MESSAGES).collect::<Vec<_>>());
+}
+
+#[test]
+fn logger_names_with_and_without_log_extension_share_settings() {
+    let (_dir, user_home, cwd) = layout();
+    fs::write(
+        cwd.join("boxlang.json"),
+        r#"{ "logging": { "loggers": { "orders": { "level": "ERROR", "encoder": "json" } } } }"#,
+    )
+    .unwrap();
+    fs::write(
+        cwd.join("aliases.bxs"),
+        "writeLog(text = 'hidden-bare', type = 'warning', log = 'orders');\n\
+         writeLog(text = 'hidden-extension', type = 'warning', log = 'orders.log');\n\
+         writeLog(text = 'kept-bare', type = 'error', log = 'orders');\n\
+         writeLog(text = 'kept-extension', type = 'error', log = 'orders.log');\n",
+    )
+    .unwrap();
+    let (ok, _, err) = run(&cwd, &user_home, &["aliases.bxs"]);
+    assert!(ok, "{err}");
+    let orders = fs::read_to_string(user_home.join(".matchbox/logs/orders.log")).unwrap();
+    assert!(
+        !orders.contains("hidden-"),
+        "both names must honor the configured ERROR threshold: {orders}"
+    );
+    let entries: Vec<serde_json::Value> = orders
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("both names must use the configured JSON encoder"))
+        .collect();
+    assert_eq!(entries.len(), 2, "{orders}");
+    assert_eq!(entries[0]["message"], "[no-application] kept-bare");
+    assert_eq!(entries[1]["message"], "[no-application] kept-extension");
+    assert!(entries.iter().all(|entry| entry["level"] == "ERROR"));
+}
+
+#[cfg(feature = "server")]
+mod http_logging {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpStream,
+        process::{Child, Stdio},
+        time::{Duration, Instant},
+    };
+
+    // Like the server crate's HTTP transport tests, exercise a real child and TCP request.
+    // Use the main CLI here so runtime bootstrap and logging configuration run too.
+    struct Server(Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn assert_http_logging(filename: &str, source: &str, message: &str) {
+        let (_dir, user_home, cwd) = layout();
+        fs::write(cwd.join(filename), source).unwrap();
+        let stdout_path = cwd.join("server.stdout");
+        let stderr_path = cwd.join("server.stderr");
+        let mut server = Server(
+            Command::new(env!("CARGO_BIN_EXE_matchbox"))
+                .args(["--serve", "--host", "127.0.0.1", "--port", "0", "--webroot", "."])
+                .current_dir(&cwd)
+                .env("HOME", &user_home)
+                .env("USERPROFILE", &user_home)
+                .env_remove("MATCHBOX_HOME")
+                .env_remove("MATCHBOX_CONFIG")
+                .stdout(Stdio::from(fs::File::create(&stdout_path).unwrap()))
+                .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()))
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let port: u16 = loop {
+            let stdout = fs::read_to_string(&stdout_path).unwrap();
+            if let Some(address) = stdout.lines().find_map(|line| {
+                line.strip_prefix("MatchBox Server listening on http://127.0.0.1:")
+            }) {
+                break address.parse().expect("server's bound port");
+            }
+            let exited = server.0.try_wait().unwrap();
+            assert!(
+                exited.is_none() && Instant::now() < deadline,
+                "server did not start: status={exited:?}\n{stdout}\n{}",
+                fs::read_to_string(&stderr_path).unwrap()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(stream, "GET /{filename} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        let (headers, body) = response.split_once("\r\n\r\n").expect("HTTP response");
+        assert!(
+            headers.starts_with("HTTP/1.0 200"),
+            "logging must not fail the request: {response}\n{}",
+            fs::read_to_string(&stderr_path).unwrap()
+        );
+        assert_eq!(body.trim(), "logged");
+        let log = fs::read_to_string(user_home.join(".matchbox/logs/application.log"))
+            .expect("HTTP request must create the application log");
+        assert!(log.contains(&format!("[ERROR] [no-application] {message}")), "{log}");
+    }
+
+    #[test]
+    fn write_log_in_an_http_request_writes_the_message() {
+        assert_http_logging(
+            "log.bxs",
+            "writeLog(text = 'http-function', type = 'error'); writeOutput('logged');",
+            "http-function",
+        );
+    }
+
+    #[test]
+    fn log_component_in_an_http_request_writes_the_message() {
+        assert_http_logging(
+            "log.bxm",
+            "<bx:log text=\"http-component\" type=\"error\" />logged",
+            "http-component",
+        );
+    }
+}
+
+#[test]
 fn explicit_missing_config_is_an_error() {
     let (_dir, user_home, cwd) = layout();
     let (ok, _, err) = run(&cwd, &user_home, &["--bx-config", "nope.json", "app.bxs"]);

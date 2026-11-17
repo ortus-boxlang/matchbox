@@ -230,17 +230,29 @@ impl Logger {
     }
 
     fn rotate(&self, state: &mut FileState, now: chrono::DateTime<chrono::Utc>) {
-        let rotated = rotated_path(&self.path, &now.format("%Y%m%d-%H%M%S%.3f").to_string());
-        let _ = state.file.flush();
-        if std::fs::rename(&self.path, rotated).is_ok()
-            && let Ok(file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)
-        {
-            state.file = file;
-            state.size = 0;
-            prune(&self.path, self.max_log_days, self.total_cap_size);
+        if state.file.flush().is_err() {
+            return;
+        }
+        let stamp = now.format("%Y%m%d-%H%M%S%.3f").to_string();
+        for sequence in 0u64.. {
+            let rotated = rotated_path(&self.path, &format!("{stamp}.{sequence}"));
+            // Reserve exclusively: timestamps can repeat, including across process restarts.
+            // rename may replace only this empty reservation, never an existing archive.
+            match OpenOptions::new().write(true).create_new(true).open(&rotated) {
+                Ok(reservation) => drop(reservation),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(_) => return,
+            }
+            if std::fs::rename(&self.path, &rotated).is_err() {
+                let _ = std::fs::remove_file(&rotated);
+                return;
+            }
+            if let Ok(file) = OpenOptions::new().create(true).append(true).open(&self.path) {
+                state.file = file;
+                state.size = 0;
+                prune(&self.path, self.max_log_days, self.total_cap_size);
+            }
+            return;
         }
     }
 }
@@ -359,34 +371,53 @@ impl LogService {
         } else {
             name
         };
-        let key = name.to_ascii_lowercase();
-        if let Ok(loggers) = self.loggers.lock()
-            && let Some(logger) = loggers.get(&key)
-        {
+        let absolute = Path::new(name).is_absolute();
+        if !absolute && (name.contains(['/', '\\']) || name.contains("..")) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Invalid logger name [{name}]"),
+            ));
+        }
+        let lower = name.to_ascii_lowercase();
+        let without_extension = if lower.ends_with(".log") {
+            &name[..name.len() - 4]
+        } else {
+            name
+        };
+        let settings_key = without_extension.to_ascii_lowercase();
+        let path = if absolute {
+            PathBuf::from(if lower.ends_with(".log") {
+                name.to_string()
+            } else {
+                format!("{name}.log")
+            })
+        } else {
+            self.config.logs_directory.join(format!("{settings_key}.log"))
+        };
+        // Named loggers are case-insensitive; absolute filesystem paths are not.
+        // Normalize the optional extension before caching as well as settings lookup.
+        let key = if absolute {
+            path.to_string_lossy().into_owned()
+        } else {
+            settings_key.clone()
+        };
+        // Keep lookup and insertion under one lock so concurrent first use cannot
+        // create independent file handles/rotation state for the same logger.
+        let mut loggers = self
+            .loggers
+            .lock()
+            .map_err(|_| io::Error::other("Logger registry lock poisoned"))?;
+        if let Some(logger) = loggers.get(&key) {
             return Ok(logger.clone());
         }
-
-        let with_extension = if name.to_ascii_lowercase().ends_with(".log") {
-            name.to_string()
-        } else {
-            format!("{name}.log")
-        };
-        let path = if Path::new(name).is_absolute() {
-            PathBuf::from(with_extension)
-        } else {
-            if name.contains(['/', '\\']) || name.contains("..") {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("Invalid logger name [{name}]"),
-                ));
-            }
-            self.config.logs_directory.join(with_extension)
-        };
-        let settings = self.config.loggers.get(&key).copied().unwrap_or_default();
+        let settings = self
+            .config
+            .loggers
+            .get(&settings_key)
+            .copied()
+            .unwrap_or_default();
         let logger = Arc::new(Logger::new(&self.config, &settings, path)?);
-        if let Ok(mut loggers) = self.loggers.lock() {
-            loggers.insert(key, logger.clone());
-        }
+        loggers.insert(key, logger.clone());
         Ok(logger)
     }
 
