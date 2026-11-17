@@ -65,6 +65,10 @@ pub fn config_path(home: &Path) -> PathBuf {
 ///
 /// Directories that already exist are left alone, and an existing config file is never overwritten.
 ///
+/// Safe to call from several processes at once. The seed is written to a temporary file and then linked into place,
+/// so another MatchBox that starts at the same moment sees either no config file or the complete one, never a
+/// partly written file, and the process that loses the race leaves the winner's file alone.
+///
 /// # Errors
 ///
 /// Returns the I/O error when a directory or the config file cannot be created.
@@ -74,9 +78,22 @@ pub fn ensure(home: &Path) -> io::Result<()> {
     }
     let config = config_path(home);
     if !config.exists() {
-        std::fs::write(config, DEFAULT_CONFIG)?;
+        seed(&config)?;
     }
     Ok(())
+}
+
+/// Write [`DEFAULT_CONFIG`] to `config` unless the file already exists, without ever exposing a partial file.
+fn seed(config: &Path) -> io::Result<()> {
+    let temporary = config.with_extension(format!("json.{}.tmp", std::process::id()));
+    std::fs::write(&temporary, DEFAULT_CONFIG)?;
+    // `hard_link` fails when `config` exists, so it never replaces a file another process (or the user) just wrote.
+    let linked = std::fs::hard_link(&temporary, config);
+    let _ = std::fs::remove_file(&temporary);
+    match linked {
+        Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -103,6 +120,30 @@ mod tests {
             PathBuf::from("/u/.matchbox")
         );
         assert!(resolve(None, None, None).is_err());
+    }
+
+    #[test]
+    fn concurrent_first_runs_never_see_a_partial_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = std::sync::Arc::new(dir.path().join("home"));
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let home = home.clone();
+                std::thread::spawn(move || {
+                    ensure(&home).unwrap();
+                    // Every reader sees the complete file once ensure has returned, and none is ever empty.
+                    assert_eq!(
+                        std::fs::read_to_string(config_path(&home)).unwrap(),
+                        DEFAULT_CONFIG
+                    );
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let leftovers = std::fs::read_dir(home.join("config")).unwrap().count();
+        assert_eq!(leftovers, 1, "temporary seed files are removed");
     }
 
     #[test]
