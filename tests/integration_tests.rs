@@ -1678,23 +1678,93 @@ mod eval_flag {
         }
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0, "artifacts left behind");
     }
-    
-//======================================
-// test for issue 3
-//===========================================
+}
+
+mod check_flag {
+    use std::fs;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn matchbox() -> Command {
+        Command::new(env!("CARGO_BIN_EXE_matchbox"))
+    }
 
     #[test]
-    fn test_cli_check_flag() {
-      let temp = tempfile::tempdir().unwrap();
-    
-    // 1. Valid file test
-      let valid_path = temp.path().join("valid.bxs");
-      fs::write(&valid_path, "var x = 42;").unwrap();
-    // Test processing or command execution for valid syntax checking
-    
-    // 2. Invalid file test
-      let invalid_path = temp.path().join("invalid.bxs");
-      fs::write(&invalid_path, "var x = ;").unwrap();
-    // Verify that parsing/checking invalid syntax yields an error
-}
+    fn valid_script_exits_zero_without_execution_or_build_artifacts() {
+        let temp = tempdir().unwrap();
+        let file = temp.path().join("valid.bxs");
+        fs::write(
+            &file,
+            "fileWrite(\"executed.txt\", \"ran\"); throw(\"must not execute\");",
+        )
+        .unwrap();
+
+        let output = matchbox()
+            .current_dir(temp.path())
+            .arg("--check")
+            .arg(&file)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "valid syntax must exit zero; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !temp.path().join("executed.txt").exists(),
+            "source executed"
+        );
+        assert_eq!(
+            fs::read_dir(temp.path()).unwrap().count(),
+            1,
+            "syntax checking must leave only the original source file"
+        );
+    }
+
+    #[test]
+    fn invalid_syntax_reports_source_filename_on_stderr() {
+        let temp = tempdir().unwrap();
+        let file = temp.path().join("invalid.bxs");
+        fs::write(&file, "var x = ;\n").unwrap();
+
+        let output = matchbox()
+            .current_dir(temp.path())
+            .arg("--check")
+            .arg(&file)
+            .output()
+            .unwrap();
+
+        assert!(!output.status.success(), "invalid syntax must fail");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("invalid.bxs"),
+            "syntax diagnostics must identify the input file; stderr: {stderr}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "errors must not write help text to stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    #[test]
+    fn missing_eval_value_keeps_usage_and_errors_on_stderr() {
+        let temp = tempdir().unwrap();
+        let output = matchbox()
+            .current_dir(temp.path())
+            .arg("--eval")
+            .output()
+            .unwrap();
+
+        assert!(!output.status.success());
+        assert!(
+            output.stdout.is_empty(),
+            "usage_text must not write directly to stdout on errors: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Usage:"), "missing usage: {stderr}");
+        assert!(stderr.contains("Commands:"), "missing commands: {stderr}");
+    }
 }
