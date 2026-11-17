@@ -49,7 +49,7 @@ This uses the ordinary process loader namespace, not JVM-style sibling isolation
 
 ## Runtime startup
 
-Modules are discovered in project-local `boxlang_modules/` and in `BOXLANG_HOME/modules/` when that environment variable is set; project packages and explicit selections take precedence for the same directory name. Arbitrary packages can be selected with `--module` or explicit manifest paths.
+Modules are discovered in project-local `boxlang_modules/` and in `BOXLANG_HOME/modules/` when that environment variable is set; project packages and explicit selections take precedence for the same directory name. Arbitrary packages can be selected with `--module` or explicit manifest paths. Like every CLI option, `--module` must come before the script file (`matchbox --module DIR app.bxs`); arguments after the script are passed to the program.
 `modulesDirectory` in the project runtime configuration adds directories to scan:
 relative paths resolve against the startup project/CWD, and earlier entries win.
 Project/explicit selections and default home packages precede these additional
@@ -183,7 +183,7 @@ Direct execution, source-free `.bxb` and standalone execution, retained roots/co
 
 ## Native SDK / ABI
 
-Build a Rust `cdylib` with the `matchbox-plugin-sdk = "0.1"` Cargo dependency from crates.io (the SDK source lives in `crates/matchbox-plugin-sdk`). The SDK is independently versioned and used only by module authors; ForgeBox distributes the actual module and its prebuilt artifacts. Consumers need neither Cargo nor the SDK. Export `matchbox_plugin_init_v1`. The host supplies a C-layout registration interface and named capability lookup. The first capability is `matchbox.values.v1`: numbers, strings, booleans/null, structs, opaque plugin objects, and error reporting. BIF metadata declares names, aliases, argument names, required arguments, and scalar defaults. Named arguments are case-insensitive; unknown/duplicate arguments fail.
+Build a Rust `cdylib` with the `matchbox-plugin-sdk` Cargo dependency (the SDK source lives in `crates/matchbox-plugin-sdk`). Until it is published to crates.io, depend on it from this repository pinned to a commit: `matchbox-plugin-sdk = { git = "https://github.com/ortus-boxlang/matchbox", rev = "<commit>" }`. The SDK is independently versioned and used only by module authors; ForgeBox distributes the actual module and its prebuilt artifacts. Consumers need neither Cargo nor the SDK. Export `matchbox_plugin_init_v1`. The host supplies a C-layout registration interface and named capability lookup. The first capability is `matchbox.values.v1`: numbers, strings, booleans/null, structs, opaque plugin objects, and error reporting. BIF metadata declares names, aliases, argument names, required arguments, and scalar defaults. Named arguments are case-insensitive; unknown/duplicate arguments fail.
 
 The SDK depends only on Rust's standard library and does not link MatchBox's VM. No `String`, `Vec`, `Rc`, `BxVM`, NaN-box layout, or Rust trait-object vtable crosses the ABI. SDK helpers wrap the C interface for Rust authors.
 
@@ -201,6 +201,8 @@ Compatibility rules:
 Plugins are trusted arbitrary native code, not sandboxed. SHA-256 pins content; it does not establish publisher trust. Cache permissions prevent other users from substituting code; same-user compromise is outside this trust model.
 
 ## Binary VM values
+
+`matchbox.types.v1` and `matchbox.collections.v1` are additive capabilities. Types reports a value's kind (null, bool, number, string, array, struct, binary, or other) and reads booleans strictly. Collections creates arrays, appends to them, and reads their length and elements (0-based, bounds checked), reads a struct value by key (case-insensitive, like BoxLang; a missing key is reported, not an error) and returns a struct's keys as a new array in the struct's order. Values a plugin builds during an invocation are safe from collection until it returns. SDK authors negotiate with `require_types()` / `require_collections()` and use `Call::kind()`, `boolean()`, `array_new()`, `array_push()`, `array_len()`, `array_get()`, `struct_get()` and `struct_keys()`; `Call::bool_new()` wraps the existing values-table constructor.
 
 `matchbox.bytes.v1` is an additive capability with `get` and `new` operations. Binary data is not passed through UTF-8 strings. `get` exposes a call-scoped borrowed byte view; `new` copies plugin bytes before returning. SDK authors negotiate with `require_bytes()` and use `Call::bytes()` / `Call::bytes_new()`. Hosts lacking this capability fail initialization explicitly; existing ValuesV1/RootsV1 tables and ABI major 1 remain unchanged.
 
