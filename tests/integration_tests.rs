@@ -326,6 +326,7 @@ script_test!(string_multibyte, "string_multibyte.bxs");
 script_test!(vm_bare_block, "vm_bare_block.bxs");
 script_test!(vm_numeric_text_args, "vm_numeric_text_args.bxs");
 script_test!(vm_len_simple_values, "vm_len_simple_values.bxs");
+script_test!(struct_key_casing, "struct_key_casing.bxs");
 
 #[test]
 #[cfg(feature = "bif-tui")]

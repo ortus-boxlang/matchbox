@@ -1,4 +1,4 @@
-use rpds::HashTrieMap;
+use rpds::{HashTrieMap, Vector};
 use std::collections::HashMap;
 
 pub type ShapeId = u32;
@@ -7,13 +7,17 @@ pub type ShapeId = u32;
 pub struct Shape {
     // Prefix layouts share HAMT nodes instead of retaining a full map copy per field.
     pub fields: HashTrieMap<u32, u32>,
-    pub transitions: HashMap<u32, ShapeId>,
+    /// Slot -> interned key as written. Lookups fold case through `fields`; this keeps each
+    /// layout's own spelling, so `{ mean: 1 }` stays `mean` after another layout used `Mean`.
+    pub names: Vector<u32>,
+    pub transitions: HashMap<(u32, u32), ShapeId>,
 }
 
 impl Shape {
     pub fn new() -> Self {
         Shape {
             fields: HashTrieMap::new(),
+            names: Vector::new(),
             transitions: HashMap::new(),
         }
     }
@@ -37,18 +41,25 @@ impl ShapeRegistry {
     }
 
     pub fn transition(&mut self, current_id: ShapeId, field_name_id: u32) -> ShapeId {
+        self.transition_named(current_id, field_name_id, field_name_id)
+    }
+
+    /// Adds a field whose lookup id is `field_name_id` (case-folded) and whose spelling is
+    /// the interned string `display_id`. Layouts that differ only in spelling are distinct.
+    pub fn transition_named(&mut self, current_id: ShapeId, field_name_id: u32, display_id: u32) -> ShapeId {
         // 1. Check if transition already exists
         if let Some(&next_id) = self.shapes[current_id as usize]
             .transitions
-            .get(&field_name_id)
+            .get(&(field_name_id, display_id))
         {
             return next_id;
         }
 
         // 2. Keep layout IDs immutable for existing member/inline-cache guards.
-        let fields = &self.shapes[current_id as usize].fields;
+        let current = &self.shapes[current_id as usize];
         let new_shape = Shape {
-            fields: fields.insert(field_name_id, fields.size() as u32),
+            fields: current.fields.insert(field_name_id, current.fields.size() as u32),
+            names: current.names.push_back(display_id),
             transitions: HashMap::new(),
         };
 
@@ -58,9 +69,14 @@ impl ShapeRegistry {
         // 3. Record transition in the parent shape
         self.shapes[current_id as usize]
             .transitions
-            .insert(field_name_id, new_id);
+            .insert((field_name_id, display_id), new_id);
 
         new_id
+    }
+
+    /// The interned spelling of the field in `slot`.
+    pub fn name(&self, shape_id: ShapeId, slot: u32) -> Option<u32> {
+        self.shapes[shape_id as usize].names.get(slot as usize).copied()
     }
 
     pub fn get_index(&self, shape_id: ShapeId, field_name_id: u32) -> Option<u32> {
@@ -92,5 +108,19 @@ mod tests {
         assert_eq!(registry.get_index(reverse, 7), Some(1));
         assert_eq!(registry.get_index(wide, 7), Some(0));
         assert_eq!(registry.get_index(wide, 11299), Some(11292));
+        assert_eq!(registry.name(wide, 0), Some(7));
+    }
+
+    #[test]
+    fn spelling_is_part_of_the_layout() {
+        let mut registry = ShapeRegistry::new();
+        let lower = registry.transition_named(0, 7, 70);
+        let upper = registry.transition_named(0, 7, 71);
+        assert_ne!(lower, upper);
+        assert_eq!(registry.transition_named(0, 7, 70), lower);
+        assert_eq!(registry.get_index(lower, 7), Some(0));
+        assert_eq!(registry.get_index(upper, 7), Some(0));
+        assert_eq!(registry.name(lower, 0), Some(70));
+        assert_eq!(registry.name(upper, 0), Some(71));
     }
 }

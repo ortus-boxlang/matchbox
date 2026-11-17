@@ -86,13 +86,11 @@ pub(super) unsafe extern "C" fn call(
         {
             return 1;
         }
-        let mut pairs = [(0, BxValue::new_null()); 2];
+        let mut pairs = [(0, 0, BxValue::new_null()); 2];
         for (index, key) in record.keys.iter().enumerate().rev() {
             let mut key = key.clone();
-            pairs[index] = (
-                vm.interner.intern(key.as_flat_str()),
-                arguments[record.slots[index]],
-            );
+            let (key_id, spelling) = vm.struct_key_ids(key.as_flat_str());
+            pairs[index] = (key_id, spelling, arguments[record.slots[index]]);
         }
         vm.literal_struct(&pairs[..record.keys.len()])
     };

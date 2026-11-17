@@ -1395,7 +1395,8 @@ impl BxVM for VM {
                 let current_shape = &self.shapes.shapes[s.shape_id as usize];
                 for (&fid, &fidx) in &current_shape.fields {
                     if fid != key_id {
-                        entries.push((fidx, fid, s.properties[fidx as usize]));
+                        let spelling = current_shape.names.get(fidx as usize).copied().unwrap_or(fid);
+                        entries.push((fidx, fid, spelling, s.properties[fidx as usize]));
                     }
                 }
 
@@ -1403,8 +1404,8 @@ impl BxVM for VM {
                 entries.sort_unstable_by_key(|entry| entry.0);
                 let mut new_shape_id = self.shapes.get_root();
                 let mut new_properties = Vec::with_capacity(entries.len());
-                for (_, fid, val) in entries {
-                    new_shape_id = self.shapes.transition(new_shape_id, fid);
+                for (_, fid, spelling, val) in entries {
+                    new_shape_id = self.shapes.transition_named(new_shape_id, fid, spelling);
                     new_properties.push(val);
                 }
 
@@ -1432,12 +1433,7 @@ impl BxVM for VM {
             return variables.borrow().keys().cloned().collect();
         }
         if let GcObject::Struct(s) = self.heap.get(id) {
-            let shape = &self.shapes.shapes[s.shape_id as usize];
-            let mut keys = vec![String::new(); shape.fields.size()];
-            for (&fid, &fidx) in &shape.fields {
-                keys[fidx as usize] = self.interner.resolve(fid).to_string();
-            }
-            return keys;
+            return self.shape_key_names(s.shape_id);
         }
         Vec::new()
     }
@@ -2082,7 +2078,8 @@ impl VM {
             if let Some(idx) = shapes.get_index(s.shape_id, key_id) {
                 s.properties[idx as usize] = val;
             } else {
-                s.shape_id = shapes.transition(s.shape_id, key_id);
+                let spelling = if s.case_sensitive { key_id } else { interner.intern_case_sensitive(key) };
+                s.shape_id = shapes.transition_named(s.shape_id, key_id, spelling);
                 s.properties.push(val);
             }
         }
@@ -2433,11 +2430,27 @@ impl VM {
         }
     }
 
-    fn literal_struct(&mut self, pairs: &[(u32, BxValue)]) -> BxValue {
+    /// Field names of a layout in slot order, spelled as they were written.
+    fn shape_key_names(&self, shape_id: u32) -> Vec<String> {
+        let shape = &self.shapes.shapes[shape_id as usize];
+        let mut keys = vec![String::new(); shape.fields.size()];
+        for (&fid, &fidx) in &shape.fields {
+            let spelling = shape.names.get(fidx as usize).copied().unwrap_or(fid);
+            keys[fidx as usize] = self.interner.resolve(spelling).to_string();
+        }
+        keys
+    }
+
+    /// The interned key (case-folded lookup id) and its spelling, for building a struct.
+    fn struct_key_ids(&mut self, key: &str) -> (u32, u32) {
+        (self.interner.intern(key), self.interner.intern_case_sensitive(key))
+    }
+
+    fn literal_struct(&mut self, pairs: &[(u32, u32, BxValue)]) -> BxValue {
         let mut shape_id = self.shapes.get_root();
         let mut properties = Vec::with_capacity(pairs.len());
-        for &(key, value) in pairs {
-            shape_id = self.shapes.transition(shape_id, key);
+        for &(key, spelling, value) in pairs {
+            shape_id = self.shapes.transition_named(shape_id, key, spelling);
             properties.push(value);
         }
         BxValue::new_ptr(self.heap.alloc(GcObject::Struct(BxStruct {
@@ -5930,8 +5943,8 @@ impl VM {
                     let mut shape_id = self.shapes.get_root();
                     let mut props = Vec::with_capacity(resolved.len());
                     for (key, value) in resolved {
-                        let key_id = self.interner.intern(&key);
-                        shape_id = self.shapes.transition(shape_id, key_id);
+                        let (key_id, spelling) = self.struct_key_ids(&key);
+                        shape_id = self.shapes.transition_named(shape_id, key_id, spelling);
                         props.push(value);
                     }
                     let id = self.heap.alloc(GcObject::Struct(BxStruct {
@@ -5949,8 +5962,8 @@ impl VM {
                         let value = self.fibers[fiber_idx].stack.pop().unwrap();
                         let key_val = self.fibers[fiber_idx].stack.pop().unwrap();
                         let key_str = self.to_string(key_val);
-                        let key_id = self.interner.intern(&key_str);
-                        kv_pairs.push((key_id, value));
+                        let (key_id, spelling) = self.struct_key_ids(&key_str);
+                        kv_pairs.push((key_id, spelling, value));
                     }
                     kv_pairs.reverse();
                     let value = self.literal_struct(&kv_pairs);
@@ -6169,7 +6182,12 @@ impl VM {
                                 if let Some(idx) = self.shapes.get_index(s.shape_id, key_id) {
                                     s.properties[idx as usize] = val;
                                 } else {
-                                    s.shape_id = self.shapes.transition(s.shape_id, key_id);
+                                    let spelling = if s.case_sensitive {
+                                        key_id
+                                    } else {
+                                        self.interner.intern_case_sensitive(index_string.as_deref().expect("Indexed property requires a name"))
+                                    };
+                                    s.shape_id = self.shapes.transition_named(s.shape_id, key_id, spelling);
                                     s.properties.push(val);
                                 }
                                 self.fibers[fiber_idx].stack.push(val);
@@ -6535,12 +6553,13 @@ impl VM {
                             }
                             frame_changed = true; continue 'quantum;
                         }
-                        let struct_name_id = if matches!(self.heap.get_opt(id), Some(GcObject::Struct(_))) {
+                        let mut struct_name = if matches!(self.heap.get_opt(id), Some(GcObject::Struct(_))) {
                             let mut name = self.read_string_constant(fiber_idx, idx as usize)?;
-                            Some(self.struct_key_id(id, name.as_flat_str()))
+                            Some((self.struct_key_id(id, name.as_flat_str()), name))
                         } else {
                             None
                         };
+                        let struct_name_id = struct_name.as_ref().map(|(key_id, _)| *key_id);
 
                         // BoxLang invokeImplicitAccessor: `obj.name = v` calls `setName( v )` unless `name` is a field.
                         if let Some(GcObject::Instance(inst)) = self.heap.get_opt(id) {
@@ -6607,7 +6626,11 @@ impl VM {
                                     }
                                     s.properties[idx as usize] = val;
                                 } else {
-                                    s.shape_id = self.shapes.transition(shape_id, name_id);
+                                    let spelling = match struct_name.as_mut() {
+                                        Some((_, name)) if !s.case_sensitive => self.interner.intern_case_sensitive(name.as_flat_str()),
+                                        _ => name_id,
+                                    };
+                                    s.shape_id = self.shapes.transition_named(shape_id, name_id, spelling);
                                     s.properties.push(val);
                                 }
                                 self.fibers[fiber_idx].stack.push(val);
@@ -7342,9 +7365,10 @@ impl VM {
                                     let keys = {
                                         let mut k = Vec::new();
                                         let shape = &self.shapes.shapes[s.shape_id as usize];
-                                        for &intern_id in shape.fields.keys() {
+                                        for (&intern_id, &slot) in shape.fields.iter() {
+                                            let spelling = shape.names.get(slot as usize).copied().unwrap_or(intern_id);
                                             let resolved =
-                                                self.interner.resolve(intern_id).to_string();
+                                                self.interner.resolve(spelling).to_string();
                                             k.push((intern_id, resolved));
                                         }
                                         k.sort_by(|a, b| a.1.cmp(&b.1));
@@ -9640,7 +9664,7 @@ impl VM {
                         shape.fields.iter().map(|(&k, &idx)| (k, idx)).collect();
                     fields.sort_by_key(|&(_, idx)| idx);
                     for (k, idx) in fields {
-                        let key_str = self.interner.resolve(k);
+                        let key_str = self.interner.resolve(shape.names.get(idx as usize).copied().unwrap_or(k));
                         Reflect::set(
                             &js_obj,
                             &JsValue::from_str(key_str),
@@ -9917,7 +9941,8 @@ impl VM {
                     let shape = &self.shapes.shapes[s.shape_id as usize];
                     for (&k, &idx) in shape.fields.iter() {
                         if let Some(v) = s.properties.get(idx as usize) {
-                            let key_str = self.interner.resolve(k).to_string();
+                            let spelling = shape.names.get(idx as usize).copied().unwrap_or(k);
+                            let key_str = self.interner.resolve(spelling).to_string();
                             map.insert(key_str, self.bx_to_json(v));
                         }
                     }
@@ -9959,8 +9984,8 @@ impl VM {
                 for (name, val) in obj {
                     let bx_val = self.json_to_bx(val);
                     let shape_id = bx_struct.shape_id;
-                    let name_id = self.interner.intern(&name);
-                    bx_struct.shape_id = self.shapes.transition(shape_id, name_id);
+                    let (name_id, spelling) = self.struct_key_ids(&name);
+                    bx_struct.shape_id = self.shapes.transition_named(shape_id, name_id, spelling);
                     bx_struct.properties.push(bx_val);
                 }
                 let id = self.heap.alloc(GcObject::Struct(bx_struct));
