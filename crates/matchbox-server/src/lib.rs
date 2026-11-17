@@ -615,6 +615,19 @@ async fn handler(
         body,
         ..Default::default()
     };
+    // If-None-Match is a list: repeated fields mean the same as one
+    // comma-separated field, so the engine must see every tag.
+    let if_none_match: Vec<&str> = parts
+        .headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    if if_none_match.len() > 1 {
+        request
+            .headers
+            .insert("if-none-match".into(), if_none_match.join(", "));
+    }
     if multipart::parse(&mut request).await.is_err() {
         return StatusCode::BAD_REQUEST.into_response();
     }
@@ -941,5 +954,100 @@ mod tests {
         assert!(err.to_string().contains("rust:"));
         assert!(err.to_string().contains("WASI HTTP"));
         assert!(err.to_string().contains("index.bxs"));
+    }
+
+    #[tokio::test]
+    async fn adapter_matches_if_none_match_across_repeated_header_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().canonicalize().unwrap();
+        std::fs::write(webroot.join("app.js"), "console.log(1);").unwrap();
+        let state = setup_test_state(webroot);
+
+        let initial = handler(
+            State(state.clone()),
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Request::builder()
+                .uri("/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(initial.status(), StatusCode::OK);
+        let etag = initial.headers().get("etag").unwrap().clone();
+
+        // Repeated list-valued fields are equivalent to one comma-separated field.
+        // The current tag is in the second field, not the first one.
+        let request = Request::builder()
+            .uri("/app.js")
+            .header("if-none-match", "\"outdated\"")
+            .header("if-none-match", etag.clone())
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(request.headers().get_all("if-none-match").iter().count(), 2);
+
+        let response = handler(
+            State(state),
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            request,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(response.headers().get("etag"), Some(&etag));
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn adapter_returns_304_with_etag_and_empty_body() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().to_path_buf().canonicalize().unwrap();
+        std::fs::write(webroot.join("app.js"), "console.log(1);").unwrap();
+        let state = setup_test_state(webroot);
+
+        // 1st request: 200 + ETag
+        let res = handler(
+            State(state.clone()),
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Request::builder()
+                .uri("/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .into_response();
+        assert_eq!(res.status(), StatusCode::OK);
+        let etag = res
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // 2nd request with If-None-Match (any casing; the adapter lowercases names)
+        let res = handler(
+            State(state.clone()),
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Request::builder()
+                .uri("/app.js")
+                .header("If-None-Match", etag.as_str())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .into_response();
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(res.headers().get("etag").unwrap().to_str().unwrap(), etag);
+        assert!(
+            res.headers().get("content-type").is_none(),
+            "304 must not claim a content type"
+        );
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.is_empty());
     }
 }
