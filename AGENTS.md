@@ -56,3 +56,24 @@ Load the `reference-boxlang` skill. BoxLang JVM defines canonical behavior. Alwa
 - Prefer established, well-maintained libraries when they reduce overall complexity or improve reliability. Do not reimplement common functionality without a clear reason.
 - Lean on the dependencies already in the project before writing your own implementation or adding packages. Do not assume a library lacks a capability without checking its documentation and types.
 - Make architectural decisions for the long term. Do not accept a stopgap that only works for now and is meant to be replaced later.
+
+## Rust Documentation
+
+Every Rust item you add or change gets rustdoc (`///`), including private functions, methods, struct fields and enum variants. Write it for the next reader, in plain sentences.
+
+- Start with one line that says what the item does or is. Add detail only when the behavior is not obvious from the name and types.
+- A function that returns `Result` or `Option` documents when it fails or returns `None` in a `# Errors` section (or a sentence for `Option`).
+- A function that can panic documents it in `# Panics`. An `unsafe` function documents its contract in `# Safety`.
+- Add a doctest (`# Examples`) to pure helpers such as parsers and formatters. Skip it for code that needs a VM, the file system or the network.
+- Module and crate docs (`//!`) say what the module is for and how it fits with the others.
+- Link to other items with ``[`Item`]``. Use ``[`fn@name`]`` when a function shares its name with a macro.
+- Do not repeat the code in prose, and do not leave stale names or paths in a doc after a rename.
+
+`matchbox_utility` enforces this with `#![warn(missing_docs)]`. Check a crate with:
+
+```bash
+RUSTDOCFLAGS="-D warnings" cargo doc -p matchbox_utility --no-deps --document-private-items
+cargo test -p matchbox_utility --doc
+```
+
+The other crates are not enforced yet. Document what you touch in them, and do not add `#![warn(missing_docs)]` to a crate in an unrelated change.
