@@ -219,10 +219,25 @@ fn load_embedded_bytecode() -> Result<Chunk> {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn main() {}
 
+/// The VM for a native program: with the `bif-tui` feature it also has the terminal UI classes
+/// (`createObject("rust", "tui.App")` and the widgets), like `matchbox script.bxs` built with `bif-tui`.
+#[cfg(all(not(all(target_arch = "wasm32", target_os = "unknown")), feature = "bif-tui"))]
+fn new_vm() -> VM {
+    let mut vm = VM::new_with_bifs(std::collections::HashMap::new(), matchbox_tui::register_classes());
+    vm.set_cli_args(std_env::args().collect());
+    vm
+}
+
+/// The VM for a native program (no terminal UI classes without the `bif-tui` feature).
+#[cfg(all(not(all(target_arch = "wasm32", target_os = "unknown")), not(feature = "bif-tui")))]
+fn new_vm() -> VM {
+    VM::new_with_args(std_env::args().collect())
+}
+
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn main() -> Result<()> {
     // Keep the OS default Ctrl+C action: VM polling cannot interrupt blocked native calls.
-    let mut vm = VM::new_with_args(std_env::args().collect());
+    let mut vm = new_vm();
     #[cfg(feature = "jit")]
     vm.enable_jit();
 

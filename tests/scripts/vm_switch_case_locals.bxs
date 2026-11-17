@@ -1,0 +1,99 @@
+// `var` declarations in the bodies of earlier `case` branches must not shift the slots of later branches.
+// Before the fix a later branch read slots that did not exist (wrong values, or an `index out of bounds` panic).
+function check( label, got, want ) {
+    if ( got != want ) throw( "FAIL " & label & ": got [" & got & "] wanted [" & want & "]" );
+}
+
+function pick( kind ) {
+    var trace = [];
+    switch ( kind ) {
+        case "a":
+            var first = "A";
+            var again = [ 1, 2 ];
+            for ( var n in again ) trace.append( first & n );
+            break;
+        case "b":
+            var bVal = { name: "B", list: [ 7 ] };
+            if ( bVal.name == "B" ) {
+                trace.append( "b-early" );
+                break;
+            }
+            trace.append( "b-late" );
+            break;
+        case "c":
+            var third = "c-own";
+            var more = [ "x" ];
+            trace.append( third );
+            break;
+        default:
+            var other = "d";
+            for ( var q in [ 1, 2 ] ) trace.append( other & q );
+    }
+    var after = "after";
+    return trace.toList( "," ) & "|" & after;
+}
+check( "case a", pick( "a" ), "A1,A2|after" );
+check( "case b with an early break", pick( "b" ), "b-early|after" );
+check( "case c after two cases with locals", pick( "c" ), "c-own|after" );
+check( "default after three cases with locals", pick( "z" ), "d1,d2|after" );
+
+function fallThrough( n ) {
+    var out = [];
+    switch ( n ) {
+        case 1:
+            var one = "one";
+            out.append( one );
+        case 2:
+            var two = "two";
+            out.append( two );
+            break;
+        case 3:
+            var three = "three";
+            out.append( three );
+    }
+    return out.toList( "," );
+}
+check( "fall through from case 1", fallThrough( 1 ), "one,two" );
+check( "case 2 alone", fallThrough( 2 ), "two" );
+check( "last case", fallThrough( 3 ), "three" );
+
+// the same inside a loop: a stray slot from an earlier case would corrupt the loop's own slots
+function insideLoop() {
+    var out = [];
+    for ( var item in [ "p", "q", "r" ] ) {
+        switch ( item ) {
+            case "p":
+                var a = 1; var b = 2;
+                out.append( a + b );
+                break;
+            case "q":
+                var c = 10;
+                out.append( c );
+                break;
+            default:
+                var d = "d";
+                out.append( d );
+        }
+    }
+    return out.toList( "," );
+}
+check( "switch with locals inside a for-in", insideLoop(), "3,10,d" );
+// a switch that matches nothing (and has no default) must not leave its value on the stack
+function noMatch( kind ) {
+    var out = [];
+    for ( var round in [ 1, 2 ] ) {
+        switch ( kind ) {
+            case "a":
+                var inA = "a";
+                out.append( inA );
+                break;
+        }
+        var tail = "t" & round;
+        out.append( tail );
+    }
+    for ( var z in [ "z" ] ) out.append( z );
+    return out.toList( "," );
+}
+check( "switch without a match", noMatch( "nothing" ), "t1,t2,z" );
+check( "switch with a match", noMatch( "a" ), "a,t1,a,t2,z" );
+println( "switch case locals ok" );

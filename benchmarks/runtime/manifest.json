@@ -1,0 +1,21 @@
+{
+  "upstream": {
+    "repository": "https://github.com/smarr/are-we-fast-yet",
+    "revision": "74306fec151070fd07157cefeacf19e7e0bcdc89",
+    "files": {
+      "awfy/AUTORS.md": "42470e19ebb36817669cdd2ae2fb843858f889bfd186b30e2d0a44a7338c3aff",
+      "awfy/javascript/sieve.js": "6f80ce83cecc9b33c2eeb8ec8b83b59d605039fce45c1c55f906c156ddaaa844",
+      "awfy/javascript/benchmark.js": "78f9885e38de580aac46dbdb65e78be4ac0974d7e2d2807dca8f77faae43eca7"
+    }
+  },
+  "benchmarks": [
+    {
+      "name": "sieve",
+      "description": "AWFY Sieve of Eratosthenes: fresh 5,000-element Boolean array, mark multiples, verify 669 primes.",
+      "problem_size": 5000,
+      "expected_result": 669,
+      "javascript": "awfy/javascript/sieve.js",
+      "boxlang": "awfy/boxlang/sieve.bxs"
+    }
+  ]
+}

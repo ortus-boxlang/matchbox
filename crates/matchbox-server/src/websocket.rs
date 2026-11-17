@@ -1,3 +1,4 @@
+use crate::app_server::{ResponseData, response_to_http};
 use crate::{RequestData, bx_to_json, request_data_from_parts};
 use axum::{
     extract::{
@@ -13,13 +14,10 @@ use matchbox_vm::{
 };
 use serde_json::Value as JsonValue;
 use std::{
-    cell::RefCell,
-    collections::HashMap,
-    rc::Rc,
-    sync::Arc,
-    sync::mpsc::{Receiver as StdReceiver, Sender as StdSender},
+    cell::RefCell, collections::HashMap, rc::Rc, sync::Arc, sync::mpsc::Receiver as StdReceiver,
 };
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::Semaphore;
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 use uuid::Uuid;
 
 use serde::{Deserialize, Serialize};
@@ -41,14 +39,38 @@ fn default_handler() -> String {
 #[derive(Clone)]
 pub struct WebSocketRuntimeHandle {
     pub uri: String,
-    pub commands: StdSender<WebSocketRuntimeCommand>,
+    pub commands: Arc<dyn Fn(WebSocketRuntimeCommand) -> Result<(), String> + Send + Sync>,
+    pub authorize: Option<Arc<dyn Fn(RequestData) -> Result<ResponseData, String> + Send + Sync>>,
+    pub connections: Arc<Semaphore>,
+    pub shutdown: tokio::sync::watch::Sender<bool>,
+}
+
+impl WebSocketRuntimeHandle {
+    pub fn new(
+        uri: String,
+        commands: impl Fn(WebSocketRuntimeCommand) -> Result<(), String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            uri,
+            commands: Arc::new(commands),
+            authorize: None,
+            connections: Arc::new(Semaphore::new(16)),
+            shutdown: tokio::sync::watch::channel(false).0,
+        }
+    }
+    async fn dispatch(&self, command: WebSocketRuntimeCommand) -> Result<(), String> {
+        let sender = self.commands.clone();
+        tokio::task::spawn_blocking(move || sender(command))
+            .await
+            .map_err(|_| "WebSocket dispatcher stopped".to_string())?
+    }
 }
 
 pub enum WebSocketRuntimeCommand {
     Connect {
         connection_id: String,
         request: RequestData,
-        outbound: UnboundedSender<WebSocketOutbound>,
+        outbound: Sender<WebSocketOutbound>,
     },
     Message {
         connection_id: String,
@@ -70,12 +92,55 @@ pub enum WebSocketOutbound {
     Binary(Vec<u8>),
     Close { code: u16, reason: String },
 }
+#[cfg(test)]
+mod limits {
+    use super::*;
+    #[test]
+    fn outbound_messages_and_queue_are_bounded() {
+        let (sender, mut receiver) = channel(1);
+        assert!(
+            sender
+                .send_bounded(WebSocketOutbound::Text("x".repeat(64 * 1024 + 1)))
+                .is_err()
+        );
+        assert!(receiver.try_recv().is_err());
+        sender
+            .send_bounded(WebSocketOutbound::Text("first".into()))
+            .unwrap();
+        assert!(
+            sender
+                .send_bounded(WebSocketOutbound::Text("second".into()))
+                .is_err()
+        );
+        assert!(
+            matches!(receiver.try_recv(), Ok(WebSocketOutbound::Text(text)) if text == "first")
+        );
+    }
+}
+
+trait BoundedSend {
+    fn send_bounded(&self, message: WebSocketOutbound) -> Result<(), String>;
+}
+impl BoundedSend for Sender<WebSocketOutbound> {
+    fn send_bounded(&self, message: WebSocketOutbound) -> Result<(), String> {
+        let size = match &message {
+            WebSocketOutbound::Text(text) => text.len(),
+            WebSocketOutbound::Binary(bytes) => bytes.len(),
+            WebSocketOutbound::Close { reason, .. } => reason.len(),
+        };
+        if size > 64 * 1024 {
+            return Err("WebSocket outbound message exceeds limit".into());
+        }
+        self.try_send(message)
+            .map_err(|_| "WebSocket outbound queue is full or closed".to_string())
+    }
+}
 
 #[derive(Debug)]
 pub struct WebSocketChannelObject {
     pub connection_id: String,
     pub request: RequestData,
-    pub outbound: Rc<RefCell<HashMap<String, UnboundedSender<WebSocketOutbound>>>>,
+    pub outbound: Rc<RefCell<HashMap<String, Sender<WebSocketOutbound>>>>,
 }
 
 impl BxNativeObject for WebSocketChannelObject {
@@ -103,7 +168,7 @@ impl BxNativeObject for WebSocketChannelObject {
                 let message = vm.to_string(args[0]);
                 if let Some(sender) = self.outbound.borrow().get(&self.connection_id) {
                     sender
-                        .send(WebSocketOutbound::Text(message))
+                        .send_bounded(WebSocketOutbound::Text(message))
                         .map_err(|_| "WebSocket connection is closed".to_string())?;
                 } else {
                     return Err("WebSocket connection is closed".to_string());
@@ -117,7 +182,7 @@ impl BxNativeObject for WebSocketChannelObject {
                 let message = vm.to_string(args[0]);
                 for sender in self.outbound.borrow().values() {
                     sender
-                        .send(WebSocketOutbound::Text(message.clone()))
+                        .send_bounded(WebSocketOutbound::Text(message.clone()))
                         .map_err(|_| "WebSocket connection is closed".to_string())?;
                 }
                 Ok(BxValue::new_null())
@@ -130,7 +195,7 @@ impl BxNativeObject for WebSocketChannelObject {
                 let text = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
                 if let Some(sender) = self.outbound.borrow().get(&self.connection_id) {
                     sender
-                        .send(WebSocketOutbound::Text(text))
+                        .send_bounded(WebSocketOutbound::Text(text))
                         .map_err(|_| "WebSocket connection is closed".to_string())?;
                 } else {
                     return Err("WebSocket connection is closed".to_string());
@@ -145,7 +210,7 @@ impl BxNativeObject for WebSocketChannelObject {
                 let text = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
                 for sender in self.outbound.borrow().values() {
                     sender
-                        .send(WebSocketOutbound::Text(text.clone()))
+                        .send_bounded(WebSocketOutbound::Text(text.clone()))
                         .map_err(|_| "WebSocket connection is closed".to_string())?;
                 }
                 Ok(BxValue::new_null())
@@ -157,7 +222,7 @@ impl BxNativeObject for WebSocketChannelObject {
                 let payload = vm.to_bytes(args[0])?;
                 if let Some(sender) = self.outbound.borrow().get(&self.connection_id) {
                     sender
-                        .send(WebSocketOutbound::Binary(payload))
+                        .send_bounded(WebSocketOutbound::Binary(payload))
                         .map_err(|_| "WebSocket connection is closed".to_string())?;
                 } else {
                     return Err("WebSocket connection is closed".to_string());
@@ -171,7 +236,7 @@ impl BxNativeObject for WebSocketChannelObject {
                 let payload = vm.to_bytes(args[0])?;
                 for sender in self.outbound.borrow().values() {
                     sender
-                        .send(WebSocketOutbound::Binary(payload.clone()))
+                        .send_bounded(WebSocketOutbound::Binary(payload.clone()))
                         .map_err(|_| "WebSocket connection is closed".to_string())?;
                 }
                 Ok(BxValue::new_null())
@@ -187,7 +252,7 @@ impl BxNativeObject for WebSocketChannelObject {
                     .unwrap_or_default();
                 if let Some(sender) = self.outbound.borrow().get(&self.connection_id) {
                     sender
-                        .send(WebSocketOutbound::Close { code, reason })
+                        .send_bounded(WebSocketOutbound::Close { code, reason })
                         .map_err(|_| "WebSocket connection is closed".to_string())?;
                 } else {
                     return Err("WebSocket connection is closed".to_string());
@@ -224,10 +289,42 @@ pub async fn websocket_handler(
     headers: HeaderMap,
     uri: axum::http::Uri,
 ) -> impl IntoResponse {
+    if *runtime.shutdown.borrow() {
+        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     let request = request_data_from_parts(method, uri.path(), uri.query(), &headers, Vec::new());
+    let permit = match runtime.connections.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "WebSocket connection limit reached",
+            )
+                .into_response();
+        }
+    };
+    if let Some(authorize) = runtime.authorize.clone() {
+        let candidate = request.clone();
+        match tokio::task::spawn_blocking(move || authorize(candidate)).await {
+            Ok(Ok(response)) if response.status == 200 => {}
+            Ok(Ok(response)) => return response_to_http(response),
+            _ => {
+                return (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "WebSocket authorization unavailable",
+                )
+                    .into_response();
+            }
+        }
+    }
     let connection_id = Uuid::new_v4().to_string();
-
-    ws.on_upgrade(move |socket| websocket_connection_loop(socket, runtime, connection_id, request))
+    ws.max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .on_upgrade(move |socket| async move {
+            let _permit = permit;
+            websocket_connection_loop(socket, runtime, connection_id, request).await;
+        })
+        .into_response()
 }
 
 pub async fn websocket_connection_loop(
@@ -236,18 +333,21 @@ pub async fn websocket_connection_loop(
     connection_id: String,
     request: RequestData,
 ) {
-    let (outbound_tx, mut outbound_rx): (
-        UnboundedSender<WebSocketOutbound>,
-        UnboundedReceiver<WebSocketOutbound>,
-    ) = unbounded_channel();
+    let (outbound_tx, mut outbound_rx): (Sender<WebSocketOutbound>, Receiver<WebSocketOutbound>) =
+        channel(16);
+    let mut shutdown = runtime.shutdown.subscribe();
+    if *shutdown.borrow() {
+        let _ = socket.close().await;
+        return;
+    }
 
     if runtime
-        .commands
-        .send(WebSocketRuntimeCommand::Connect {
+        .dispatch(WebSocketRuntimeCommand::Connect {
             connection_id: connection_id.clone(),
             request,
             outbound: outbound_tx,
         })
+        .await
         .is_err()
     {
         let _ = socket.close().await;
@@ -256,11 +356,13 @@ pub async fn websocket_connection_loop(
 
     loop {
         tokio::select! {
+            _ = shutdown.changed() => { let _ = socket.close().await; break; }
             outbound = outbound_rx.recv() => {
                 let Some(outbound) = outbound else {
                     break;
                 };
-                let send_result = match outbound {
+                let send_result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    match outbound {
                     WebSocketOutbound::Text(text) => socket.send(WebSocketMessage::Text(text)).await,
                     WebSocketOutbound::Binary(bytes) => socket.send(WebSocketMessage::Binary(bytes)).await,
                     WebSocketOutbound::Close { code, reason } => {
@@ -271,10 +373,9 @@ pub async fn websocket_connection_loop(
                             })))
                             .await
                     }
-                };
-                if send_result.is_err() {
-                    break;
-                }
+                    }
+                }).await;
+                if !matches!(send_result, Ok(Ok(()))) { break; }
             }
             inbound = socket.recv() => {
                 let Some(inbound) = inbound else {
@@ -282,18 +383,18 @@ pub async fn websocket_connection_loop(
                 };
                 match inbound {
                     Ok(WebSocketMessage::Text(text)) => {
-                        if runtime.commands.send(WebSocketRuntimeCommand::Message {
+                        if runtime.dispatch(WebSocketRuntimeCommand::Message {
                             connection_id: connection_id.clone(),
                             message: IncomingWebSocketMessage::Text(text),
-                        }).is_err() {
+                        }).await.is_err() {
                             break;
                         }
                     }
                     Ok(WebSocketMessage::Binary(bytes)) => {
-                        if runtime.commands.send(WebSocketRuntimeCommand::Message {
+                        if runtime.dispatch(WebSocketRuntimeCommand::Message {
                             connection_id: connection_id.clone(),
                             message: IncomingWebSocketMessage::Binary(bytes),
-                        }).is_err() {
+                        }).await.is_err() {
                             break;
                         }
                     }
@@ -311,8 +412,8 @@ pub async fn websocket_connection_loop(
     }
 
     let _ = runtime
-        .commands
-        .send(WebSocketRuntimeCommand::Close { connection_id });
+        .dispatch(WebSocketRuntimeCommand::Close { connection_id })
+        .await;
 }
 
 use crate::app_server::{BuildState, install_web_namespace};
@@ -333,17 +434,40 @@ pub fn websocket_runtime_main(
 
     let listener = vm.instantiate_global_class_without_constructor(&config.listener_class)?;
     vm.set_instance_variables_json(listener, config.listener_state.clone())?;
-    vm.insert_global("__websocketlistener".to_string(), listener);
-    let channel_registry_id = vm.struct_new();
-    vm.insert_global(
-        "__websocketconnections".to_string(),
-        BxValue::new_ptr(channel_registry_id),
-    );
-
-    let outbound_senders: Rc<RefCell<HashMap<String, UnboundedSender<WebSocketOutbound>>>> =
-        Rc::new(RefCell::new(HashMap::new()));
-
+    let state = SocketState::new(&mut vm, listener);
     while let Ok(command) = commands.recv() {
+        state.command(&mut vm, command);
+    }
+    Ok(())
+}
+
+pub(crate) struct SocketState {
+    listener: BxValue,
+    registry: usize,
+    outbound: Rc<RefCell<HashMap<String, Sender<WebSocketOutbound>>>>,
+}
+impl SocketState {
+    pub(crate) fn new(vm: &mut VM, listener: BxValue) -> Self {
+        vm.insert_global("__websocketlistener".to_string(), listener);
+        let channel_registry_id = vm.struct_new();
+        vm.insert_global(
+            "__websocketconnections".to_string(),
+            BxValue::new_ptr(channel_registry_id),
+        );
+
+        let outbound_senders: Rc<RefCell<HashMap<String, Sender<WebSocketOutbound>>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+
+        Self {
+            listener,
+            registry: channel_registry_id,
+            outbound: outbound_senders,
+        }
+    }
+    pub(crate) fn command(&self, mut vm: &mut VM, command: WebSocketRuntimeCommand) {
+        let listener = self.listener;
+        let channel_registry_id = self.registry;
+        let outbound_senders = &self.outbound;
         match command {
             WebSocketRuntimeCommand::Connect {
                 connection_id,
@@ -376,7 +500,7 @@ pub fn websocket_runtime_main(
             } => {
                 let channel = vm.struct_get(channel_registry_id, &connection_id);
                 if channel.is_null() {
-                    continue;
+                    return;
                 }
                 let message_value = match message {
                     IncomingWebSocketMessage::Text(text) => BxValue::new_ptr(vm.string_new(text)),
@@ -406,15 +530,13 @@ pub fn websocket_runtime_main(
             }
         }
     }
-
-    Ok(())
 }
 
 fn build_websocket_channel(
     vm: &mut VM,
     connection_id: &str,
     request: RequestData,
-    outbound: Rc<RefCell<HashMap<String, UnboundedSender<WebSocketOutbound>>>>,
+    outbound: Rc<RefCell<HashMap<String, Sender<WebSocketOutbound>>>>,
 ) -> BxValue {
     let id = vm.native_object_new(Rc::new(RefCell::new(WebSocketChannelObject {
         connection_id: connection_id.to_string(),
@@ -425,15 +547,20 @@ fn build_websocket_channel(
 }
 
 fn send_websocket_close(
-    outbound: Rc<RefCell<HashMap<String, UnboundedSender<WebSocketOutbound>>>>,
+    outbound: Rc<RefCell<HashMap<String, Sender<WebSocketOutbound>>>>,
     connection_id: &str,
     code: u16,
     reason: &str,
 ) {
-    if let Some(sender) = outbound.borrow().get(connection_id) {
-        let _ = sender.send(WebSocketOutbound::Close {
-            code,
-            reason: reason.to_string(),
-        });
+    let failed = outbound.borrow().get(connection_id).is_some_and(|sender| {
+        sender
+            .send_bounded(WebSocketOutbound::Close {
+                code,
+                reason: reason.to_string(),
+            })
+            .is_err()
+    });
+    if failed {
+        outbound.borrow_mut().remove(connection_id);
     }
 }

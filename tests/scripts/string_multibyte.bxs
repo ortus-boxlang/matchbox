@@ -1,0 +1,23 @@
+// Strings count characters, not UTF-8 bytes: len, find and the member forms agree with left, right and mid.
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+s = "a▀é";
+expect( len( s ), 3, "len counts characters" );
+expect( s.len(), 3, "member len counts characters" );
+expect( len( "▀▄" ), 2, "len of block characters" );
+expect( len( "" ), 0, "len of the empty string" );
+expect( len( "plain" ), 5, "len of ASCII is unchanged" );
+expect( len( 1234 ), 4, "len of a number" );
+expect( find( "é", s ), 3, "find gives a character position" );
+expect( findNoCase( "É", s ), 3, "findNoCase gives a character position" );
+expect( find( "é", "▀▀▀é" ), 4, "find after several multibyte characters" );
+expect( find( "▀", s ), 2, "find of a multibyte needle" );
+expect( find( "é", s, 3 ), 3, "find with a start position" );
+expect( find( "z", s ), 0, "find without a match is 0" );
+expect( mid( s, find( "é", s ), 1 ), "é", "find and mid agree" );
+expect( left( s, len( s ) - 1 ), "a▀", "left by len" );
+expect( len( repeatString( "▀", 4 ) ), 4, "len of a repeated string" );
+expect( len( [ 1, 2, 3 ] ), 3, "len of an array is unchanged" );
+expect( len( { a: 1, b: 2 } ), 2, "len of a struct is unchanged" );

@@ -1,0 +1,5 @@
+// Both MatchBox and JVM BoxLang execute this exact entry point and class files.
+import awfy.boxlang.Sieve;
+bench = new Sieve();
+benchmarkName = "sieve";
+include "../../harness.bxs";

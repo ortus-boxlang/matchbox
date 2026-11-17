@@ -1,0 +1,5 @@
+x=5;
+x+=2;
+function add(a,b) { return a+b; }
+y=add(x,3);
+console.log(y);
