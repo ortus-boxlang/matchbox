@@ -2446,6 +2446,7 @@ impl VM {
         (self.interner.intern(key), self.interner.intern_case_sensitive(key))
     }
 
+    /// Builds a struct from `(key id, spelling id, value)` pairs in order.
     fn literal_struct(&mut self, pairs: &[(u32, u32, BxValue)]) -> BxValue {
         let mut shape_id = self.shapes.get_root();
         let mut properties = Vec::with_capacity(pairs.len());

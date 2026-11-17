@@ -576,6 +576,7 @@ unsafe extern "C" fn bytes_new(ctx: Context, bytes: Bytes, out: *mut Value) -> i
 }
 static BYTES: BytesV1 = BytesV1 { get: bytes_get, new: bytes_new };
 
+/// The `matchbox.types.v1` kind code for a VM value.
 fn kind_of_value(vm: &dyn BxVM, value: BxValue) -> Kind {
     if value.is_null() {
         Kind::Null
@@ -595,6 +596,7 @@ fn kind_of_value(vm: &dyn BxVM, value: BxValue) -> Kind {
         Kind::Other
     }
 }
+/// `TypesV1::kind_of`: writes the value's kind code.
 unsafe extern "C" fn kind_of(ctx: Context, value: Value, out: *mut u32) -> i32 {
     let ctx = unsafe { context(ctx) };
     let result = (|| {
@@ -605,6 +607,7 @@ unsafe extern "C" fn kind_of(ctx: Context, value: Value, out: *mut u32) -> i32 {
     })();
     operation(ctx, result)
 }
+/// `TypesV1::bool_get`: reads a boolean strictly; any other value is an error.
 unsafe extern "C" fn bool_get(ctx: Context, value: Value, out: *mut bool) -> i32 {
     let ctx = unsafe { context(ctx) };
     let result = (|| {
@@ -616,21 +619,25 @@ unsafe extern "C" fn bool_get(ctx: Context, value: Value, out: *mut bool) -> i32
     })();
     operation(ctx, result)
 }
+/// The heap id of an array argument, or an `Expected array` error.
 fn array_id(ctx: &CallContext<'_>, value: Value) -> Result<usize, String> {
     let value = ctx.value(value)?;
     if !ctx.vm.is_array_value(value) { return Err("Expected array".into()); }
     value.as_gc_id().ok_or_else(|| "Expected array".into())
 }
+/// The heap id of a struct argument, or an `Expected struct` error.
 fn struct_id(ctx: &CallContext<'_>, value: Value) -> Result<usize, String> {
     let value = ctx.value(value)?;
     if !ctx.vm.is_struct_value(value) { return Err("Expected struct".into()); }
     value.as_gc_id().ok_or_else(|| "Expected struct".into())
 }
+/// `CollectionsV1::array_new`: creates an empty array.
 unsafe extern "C" fn array_new(ctx: Context, out: *mut Value) -> i32 {
     let ctx = unsafe { context(ctx) };
     let id = ctx.vm.array_new();
     output(ctx, BxValue::new_ptr(id), out)
 }
+/// `CollectionsV1::array_push`: appends a value to an array.
 unsafe extern "C" fn array_push(ctx: Context, array: Value, value: Value) -> i32 {
     let ctx = unsafe { context(ctx) };
     let result = (|| {
@@ -641,6 +648,7 @@ unsafe extern "C" fn array_push(ctx: Context, array: Value, value: Value) -> i32
     })();
     operation(ctx, result)
 }
+/// `CollectionsV1::array_len`: writes an array's length.
 unsafe extern "C" fn array_len(ctx: Context, array: Value, out: *mut usize) -> i32 {
     let ctx = unsafe { context(ctx) };
     let result = (|| {
@@ -651,6 +659,7 @@ unsafe extern "C" fn array_len(ctx: Context, array: Value, out: *mut usize) -> i
     })();
     operation(ctx, result)
 }
+/// `CollectionsV1::array_get`: reads a 0-based element; past the end is an error.
 unsafe extern "C" fn array_get(ctx: Context, array: Value, index: usize, out: *mut Value) -> i32 {
     let ctx = unsafe { context(ctx) };
     let found = (|| {
@@ -664,6 +673,7 @@ unsafe extern "C" fn array_get(ctx: Context, array: Value, index: usize, out: *m
         Err(error) => operation(ctx, Err(error)),
     }
 }
+/// `CollectionsV1::struct_get`: reads a key case-insensitively and reports whether it was found.
 unsafe extern "C" fn struct_get(ctx: Context, object: Value, key: Text, out: *mut Value, found: *mut bool) -> i32 {
     let ctx = unsafe { context(ctx) };
     let result = (|| {
@@ -684,6 +694,7 @@ unsafe extern "C" fn struct_get(ctx: Context, object: Value, key: Text, out: *mu
         Err(error) => operation(ctx, Err(error)),
     }
 }
+/// `CollectionsV1::struct_keys`: a new array of the struct's keys, in order and as spelled.
 unsafe extern "C" fn struct_keys(ctx: Context, object: Value, out: *mut Value) -> i32 {
     let ctx = unsafe { context(ctx) };
     let keys = match struct_id(ctx, object) {
@@ -697,7 +708,9 @@ unsafe extern "C" fn struct_keys(ctx: Context, object: Value, out: *mut Value) -
     }
     output(ctx, BxValue::new_ptr(array), out)
 }
+/// The `matchbox.types.v1` table handed to plugins.
 static TYPES: TypesV1 = TypesV1 { kind_of, bool_get };
+/// The `matchbox.collections.v1` table handed to plugins.
 static COLLECTIONS: CollectionsV1 = CollectionsV1 {
     array_new,
     array_push,

@@ -1,19 +1,24 @@
 use rpds::{HashTrieMap, Vector};
 use std::collections::HashMap;
 
+/// Index of a layout in the [`ShapeRegistry`].
 pub type ShapeId = u32;
 
+/// A struct or instance layout: which slot each key lives in, and how each key is spelled.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shape {
     // Prefix layouts share HAMT nodes instead of retaining a full map copy per field.
+    /// Case-folded key id -> slot.
     pub fields: HashTrieMap<u32, u32>,
     /// Slot -> interned key as written. Lookups fold case through `fields`; this keeps each
     /// layout's own spelling, so `{ mean: 1 }` stays `mean` after another layout used `Mean`.
     pub names: Vector<u32>,
+    /// Layouts reached by adding one key, by (key id, spelling id).
     pub transitions: HashMap<(u32, u32), ShapeId>,
 }
 
 impl Shape {
+    /// The empty layout.
     pub fn new() -> Self {
         Shape {
             fields: HashTrieMap::new(),
@@ -23,12 +28,16 @@ impl Shape {
     }
 }
 
+/// Every layout the VM has created. Layouts are shared by all structs and instances that
+/// add the same keys, spelled the same way, in the same order.
 pub struct ShapeRegistry {
     // ponytail: layouts live for the VM lifetime; prune unused layouts if unique-layout churn warrants it.
+    /// All layouts, indexed by [`ShapeId`]. Index 0 is the empty layout.
     pub shapes: Vec<Shape>,
 }
 
 impl ShapeRegistry {
+    /// A registry holding only the empty layout.
     pub fn new() -> Self {
         // Initial empty shape at index 0
         ShapeRegistry {
@@ -36,10 +45,13 @@ impl ShapeRegistry {
         }
     }
 
+    /// The empty layout every struct starts from.
     pub fn get_root(&self) -> ShapeId {
         0
     }
 
+    /// The layout after adding `field_name_id`, spelled as the interned key itself.
+    /// Use [`ShapeRegistry::transition_named`] when the written spelling is known.
     pub fn transition(&mut self, current_id: ShapeId, field_name_id: u32) -> ShapeId {
         self.transition_named(current_id, field_name_id, field_name_id)
     }
@@ -79,6 +91,7 @@ impl ShapeRegistry {
         self.shapes[shape_id as usize].names.get(slot as usize).copied()
     }
 
+    /// The slot of `field_name_id` (case-folded) in `shape_id`, if the layout has it.
     pub fn get_index(&self, shape_id: ShapeId, field_name_id: u32) -> Option<u32> {
         self.shapes[shape_id as usize]
             .fields

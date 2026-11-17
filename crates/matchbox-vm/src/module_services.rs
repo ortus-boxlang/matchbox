@@ -154,10 +154,12 @@ fn mapping_bool(vm: &mut VM, id: usize, key: &str, default: bool) -> Result<bool
     Ok(vm.cast_value_to_type(value, "boolean").map_err(anyhow::Error::msg)?.as_bool())
 }
 
+/// Binds the module's packaged classes under its mapping and public mapping names.
+///
+/// The invocation path (`bxModules.<name>`) always resolves too, as on the JVM, even when
+/// `usePrefix: false` maps the module elsewhere: relative interceptor and component
+/// class names are resolved under it.
 pub(crate) fn register_classes(vm: &mut VM, module: &Module, record: BxValue) -> Result<()> {
-    // The invocation path (bxModules.<name>) always resolves, as on the JVM, even when
-    // `usePrefix: false` maps the module elsewhere: relative interceptor and component
-    // class names are resolved under it.
     let invocation = vm.to_string(record_field(vm, record, "invocationPath"));
     for field in ["mapping", "publicMapping"] {
         let mapping = record_field(vm, record, field).as_gc_id().context("Module mapping missing")?;
