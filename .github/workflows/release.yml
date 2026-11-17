@@ -695,6 +695,12 @@ jobs:
             "s3://downloads.ortussolutions.com/ortussolutions/matchbox/$CHANNEL/" \
             --acl public-read --cache-control no-cache
 
+      - name: Publish evergreen version discovery
+        run: |
+          aws s3 cp "release-assets/version-$CHANNEL.properties" \
+            "s3://downloads.ortussolutions.com/ortussolutions/matchbox/version-$CHANNEL.properties" \
+            --acl public-read --cache-control no-cache --content-type text/plain
+
   prep-next-release:
     name: Prepare the next minor release
     if: inputs.snapshot != true

@@ -1,0 +1,18 @@
+// Classes in other files, three levels of cross-file inheritance, resolved from this file's
+// directory rather than the working directory.
+function expect( actual, expected, label ) {
+	if ( actual != expected ) {
+		throw( message = label & ": expected [" & expected & "] got [" & actual & "]" );
+	}
+}
+import models.Dog;
+import models.Puppy;
+d0 = new models.Dog();
+expect( d0.hello(), "I am Anon", "inherited init is called without arguments" );
+d = new models.Dog( "Rex" );
+expect( d.hello(), "I am Rex", "inherited method" );
+expect( d.bark(), "Rex says woof", "own method" );
+p = new models.Puppy( "Bit" );
+expect( p.hello(), "I am Bit", "two levels up" );
+expect( p.tiny(), "Bit is tiny", "own method on the third level" );
+println( "cross-file inheritance ok" );

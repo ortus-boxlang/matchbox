@@ -1,0 +1,24 @@
+// The numeric functions accept text that is a number, as BoxLang does (a value from a form, JSON or an argument is text).
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+function refuses( fn, label ) {
+    try { fn(); } catch ( any e ) { return; }
+    throw "#label# failed: expected an error";
+}
+
+expect( int( "60" ), 60, "int of text" );
+expect( int( " 60.9 " ), 60, "int truncates text with a fraction and spaces" );
+expect( int( -3.7 ), -3, "int of a number is unchanged" );
+expect( floor( "2.9" ), 2, "floor of text" );
+expect( ceiling( "2.1" ), 3, "ceiling of text" );
+expect( round( "2.5" ), 3, "round of text" );
+expect( round( "3.14159", "2" ), 3.14, "round with text precision" );
+expect( abs( "-4" ), 4, "abs of text" );
+expect( min( "3", 5 ), 3, "min of text and a number" );
+expect( max( "3", "5" ), 5, "max of two texts" );
+
+refuses( () => int( "abc" ), "int of words" );
+refuses( () => int( "" ), "int of the empty string" );
+refuses( () => floor( "1,5" ), "floor of a list" );
+refuses( () => max( "3", "x" ), "max with a word" );

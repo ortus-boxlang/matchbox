@@ -62,6 +62,13 @@ https://downloads.ortussolutions.com/ortussolutions/matchbox/snapshot/
 
 For example, `0.11.0-snapshot/matchbox-linux-x64` is the version-keyed development download. Stable version directories are immutable; snapshot and evergreen channels are refreshed without long-lived caching. `version.json` records the build number, source revision, and binary checksums.
 
+Version discovery follows the Ortus downloads convention:
+
+- [version-latest.properties](https://downloads.ortussolutions.com/ortussolutions/matchbox/version-latest.properties) — latest stable release.
+- [version-snapshot.properties](https://downloads.ortussolutions.com/ortussolutions/matchbox/version-snapshot.properties) — latest development snapshot.
+
+Each file contains `version` (for example, `0.11.0+123` or `0.12.0-snapshot+124`) and `buildDate` (`yyyy-MM-dd HH:mm:ss`, UTC packaging time). Use the version before `+` to locate the version-keyed download directory. These pointers update only after the corresponding downloads have uploaded, without long-lived caching; stable releases and snapshots update only their own pointer.
+
 ## Quick Start
 
 ### 1. Interactive REPL

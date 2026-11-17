@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MatchBox release versions, download metadata, and next-release preparation."""
 import argparse
-from datetime import date
+from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 import hashlib
 import json
@@ -45,7 +45,8 @@ def metadata(root, snapshot, build_id, revision):
 
 def package(directory, info):
     files = {path.name for path in directory.iterdir() if path.is_file()}
-    if files - {"version.json", "SHA256SUMS"} != CLI_FILES:
+    properties_name = f"version-{info['channel']}.properties"
+    if files - {"version.json", "SHA256SUMS", properties_name} != CLI_FILES:
         raise ValueError("Expected exactly the eight full CLI binaries")
     artifacts = []
     for name in sorted(CLI_FILES):
@@ -56,7 +57,12 @@ def package(directory, info):
             checksum = hashlib.file_digest(file, "sha256").hexdigest()
         artifacts.append({"file": name, "sha256": checksum})
     (directory / "version.json").write_text(json.dumps({**info, "artifacts": artifacts}, indent=2) + "\n")
-    artifacts.append({"file": "version.json", "sha256": hashlib.sha256((directory / "version.json").read_bytes()).hexdigest()})
+    (directory / properties_name).write_text(
+        f"version={info['build_version']}\n"
+        f"buildDate={datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}\n"
+    )
+    for name in ("version.json", properties_name):
+        artifacts.append({"file": name, "sha256": hashlib.sha256((directory / name).read_bytes()).hexdigest()})
     (directory / "SHA256SUMS").write_text("".join(f"{item['sha256']}  {item['file']}\n" for item in artifacts))
 
 

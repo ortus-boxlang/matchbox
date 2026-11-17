@@ -1,0 +1,33 @@
+// The struct built-ins accept the `variables` scope: structKeyExists, structGet, structKeyArray and structCount.
+function expect( actual, expected, label ) {
+    if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
+}
+
+class Holder {
+    function init() {
+        variables.silent = false;
+        variables.Name = "box";
+        return this;
+    }
+    function has( key ) { return structKeyExists( variables, key ); }
+    function missing() { return structKeyExists( variables, "nope" ); }
+    function fetch( key ) { return structGet( variables, key ); }
+    function keys() { return structKeyArray( variables ); }
+    function size() { return structCount( variables ); }
+}
+
+h = new Holder();
+expect( h.has( "silent" ), true, "a false value is still a key" );
+expect( h.has( "name" ), true, "keys are case-insensitive" );
+expect( h.has( "NAME" ), true, "lookup is case-insensitive" );
+expect( h.missing(), false, "a missing key is false" );
+expect( h.fetch( "name" ), "box", "structGet reads a variable" );
+expect( arrayFind( h.keys(), "name" ) > 0, true, "structKeyArray lists the keys" );
+expect( h.size() >= 2, true, "structCount counts the keys" );
+
+// script-level variables: the same store as bare variables
+topLevel = 7;
+expect( structKeyExists( variables, "topLevel" ), true, "script variables has topLevel" );
+expect( structKeyExists( variables, "nothingHere" ), false, "script variables lacks a missing key" );
+expect( structGet( variables, "topLevel" ), 7, "structGet on script variables" );
+println( "ok" );

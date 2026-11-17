@@ -235,6 +235,9 @@ pub trait BxVM {
     }
     fn native_object_call_method(&mut self, id: usize, name: &str, args: &[BxValue]) -> Result<BxValue, String>;
     fn resolve_class_reference(&mut self, _name: &str) -> Result<BxValue, String> { Err("Class resolution unavailable".into()) }
+    /// Creates an instance of a class value without calling `init()` (BoxLang does not call it on
+    /// the Application class).
+    fn construct_class_without_init(&mut self, _class: BxValue) -> Result<BxValue, String> { Err("Class construction unavailable".into()) }
     fn construct_native_class(&mut self, class_name: &str, args: &[BxValue]) -> Result<BxValue, String>;
     fn construct_box_class(&mut self, _class_name: &str, _args: Vec<BxValue>, _names: Option<Vec<String>>) -> Result<BxValue, String> {
         Err("BoxLang class construction unavailable".into())

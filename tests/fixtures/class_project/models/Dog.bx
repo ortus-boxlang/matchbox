@@ -1,0 +1,4 @@
+import models.Animal;
+class Dog extends="Animal" {
+  function bark() { return this.name & " says woof"; }
+}

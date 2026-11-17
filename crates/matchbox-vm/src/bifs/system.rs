@@ -459,8 +459,23 @@ pub fn get_base_template_path(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<Bx
     Ok(BxValue::new_ptr(vm.string_new(String::new())))
 }
 
+/// Absolute path of the file whose code is running (the template, class or script that calls this).
+/// Empty when the code has no file (`--eval`, REPL).
 pub fn get_current_template_path(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
-    Ok(BxValue::new_ptr(vm.string_new(String::new())))
+    let filename = vm
+        .current_chunk()
+        .map(|chunk| chunk.borrow().filename.clone())
+        .unwrap_or_default();
+    let path = std::path::Path::new(&filename);
+    let absolute = if filename.is_empty() || path.is_absolute() {
+        filename.clone()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path).to_string_lossy().into_owned(),
+            Err(_) => filename.clone(),
+        }
+    };
+    Ok(BxValue::new_ptr(vm.string_new(absolute)))
 }
 
 pub fn get_box_version_info(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
