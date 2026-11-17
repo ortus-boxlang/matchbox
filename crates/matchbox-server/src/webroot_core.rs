@@ -1,7 +1,8 @@
 use super::application_runtime::RenderJob;
 pub use super::application_runtime::WebrootRuntime;
 use anyhow::{Context, Result, bail, ensure};
-use matchbox_compiler::{compiler::Compiler, parser};
+use matchbox_compiler::cf::{SourceKind, parse_source};
+use matchbox_compiler::compiler::Compiler;
 use matchbox_vm::types::{BxVM, BxValue};
 use matchbox_vm::vm::VM;
 use matchbox_vm::vm::chunk::Chunk;
@@ -318,7 +319,7 @@ impl<S: AssetStore + Send + Sync + 'static> WebrootEngine<S> {
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if matches!(extension.as_str(), "bx" | "cfm" | "cfc" | "cfs" | "cfml") {
+        if matches!(extension.as_str(), "bx" | "cfc" | "cfs") {
             return Ok(text_response(501, "Unsupported executable source type"));
         }
         let bytes = self.read_or_rewrite(&mut asset_path)?;
@@ -500,11 +501,8 @@ pub(crate) fn form_scope_from_request(request: &WebrootRequest) -> ParameterValu
 }
 
 pub(crate) fn compile_template(asset_path: &str, source: &str) -> Result<Chunk> {
-    let ast = if asset_path.ends_with(".bxm") {
-        parser::parse_bxm(source, Some(asset_path))?
-    } else {
-        parser::parse(source, Some(asset_path))?
-    };
+    let kind = SourceKind::from_path(std::path::Path::new(asset_path));
+    let ast = parse_source(kind, source, Some(asset_path))?;
     let mut compiler = Compiler::new(asset_path);
     compiler.compile(&ast, source)
 }
@@ -715,7 +713,7 @@ fn contains_hidden_segment(path: &str) -> bool {
 }
 
 fn first_existing_index<S: AssetStore>(store: &S, dir: &str) -> Result<Option<String>> {
-    for index in ["index.bxm", "index.bxs"] {
+    for index in ["index.bxm", "index.bxs", "index.cfm"] {
         let candidate = if dir.is_empty() {
             index.to_string()
         } else {
@@ -729,7 +727,10 @@ fn first_existing_index<S: AssetStore>(store: &S, dir: &str) -> Result<Option<St
 }
 
 fn is_template_path(path: &str) -> bool {
-    path.ends_with(".bxm") || path.ends_with(".bxs")
+    path.ends_with(".bxm")
+        || path.ends_with(".bxs")
+        || path.ends_with(".cfm")
+        || path.ends_with(".cfml")
 }
 
 pub(crate) fn text_response(status: u16, body: &str) -> WebrootResponse {
@@ -905,6 +906,86 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(String::from_utf8(response.body).unwrap(), "Hello MatchBox");
+    }
+
+    #[test]
+    fn cf_template_is_rendered() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().canonicalize().unwrap();
+        std::fs::write(
+            webroot.join("hello.cfm"),
+            "<cfset greeting = \"Hello\"><cfoutput>#greeting# #url.name#</cfoutput>",
+        )
+        .unwrap();
+
+        let engine =
+            WebrootEngine::new(FileSystemAssetStore::new(webroot), WebrootConfig::default());
+        let response = engine
+            .handle(WebrootRequest {
+                method: "GET".to_string(),
+                path: "/hello.cfm".to_string(),
+                query: HashMap::from([("name".to_string(), "MatchBox".to_string())]),
+                form: Default::default(),
+                headers: Default::default(),
+                body: Vec::new(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(response.status, 200);
+        assert_eq!(String::from_utf8(response.body).unwrap(), "Hello MatchBox");
+    }
+
+    #[test]
+    fn cfml_page_is_rendered_not_served_as_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().canonicalize().unwrap();
+        std::fs::write(
+            webroot.join("page.cfml"),
+            "<cfset x = 2><cfoutput>x=#x#</cfoutput>",
+        )
+        .unwrap();
+
+        let engine =
+            WebrootEngine::new(FileSystemAssetStore::new(webroot), WebrootConfig::default());
+        let response = engine
+            .handle(WebrootRequest {
+                method: "GET".to_string(),
+                path: "/page.cfml".to_string(),
+                query: Default::default(),
+                form: Default::default(),
+                headers: Default::default(),
+                body: Vec::new(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(response.status, 200);
+        assert_eq!(String::from_utf8(response.body).unwrap(), "x=2");
+    }
+
+    #[test]
+    fn index_cfm_is_a_directory_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let webroot = temp.path().canonicalize().unwrap();
+        std::fs::write(webroot.join("index.cfm"), "<cfoutput>CF Home</cfoutput>").unwrap();
+
+        let engine =
+            WebrootEngine::new(FileSystemAssetStore::new(webroot), WebrootConfig::default());
+        let response = engine
+            .handle(WebrootRequest {
+                method: "GET".to_string(),
+                path: "/".to_string(),
+                query: Default::default(),
+                form: Default::default(),
+                headers: Default::default(),
+                body: Vec::new(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(response.status, 200);
+        assert_eq!(String::from_utf8(response.body).unwrap(), "CF Home");
     }
 
     #[test]

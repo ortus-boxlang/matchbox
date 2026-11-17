@@ -1,3 +1,4 @@
+pub mod cf;
 pub mod compiler;
 pub mod mappings;
 pub use matchbox_parser::{ast, cst, inspect, parser, tokenizer};

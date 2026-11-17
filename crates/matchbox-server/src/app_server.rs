@@ -9,6 +9,7 @@ use axum::{
     Router,
 };
 use hmac::{Hmac, Mac};
+use matchbox_compiler::cf::{SourceKind, parse_source};
 use matchbox_compiler::{compiler::Compiler, parser};
 use matchbox_vm::{
     types::{BxNativeObject, BxVM, BxValue},
@@ -2050,15 +2051,12 @@ fn render_template(
 ) -> Result<String, String> {
     let resolved_path = resolve_template_path(&app_root, template_path)?;
     let source = stdfs::read_to_string(&resolved_path).map_err(|e| e.to_string())?;
-    let ext = resolved_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    let ast = if ext.eq_ignore_ascii_case("bxm") {
-        parser::parse_bxm(&source, resolved_path.to_str()).map_err(|e| e.to_string())?
-    } else {
-        parser::parse(&source, resolved_path.to_str()).map_err(|e| e.to_string())?
-    };
+    let ast = parse_source(
+        SourceKind::from_path(&resolved_path),
+        &source,
+        resolved_path.to_str(),
+    )
+    .map_err(|e| e.to_string())?;
 
     let mut compiler = Compiler::new(&resolved_path.to_string_lossy());
     let chunk = compiler.compile(&ast, &source).map_err(|e| e.to_string())?;

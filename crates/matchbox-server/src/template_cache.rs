@@ -1,7 +1,8 @@
 //! Worker-owned immutable template programs; never cache response or request values.
 use crate::webroot_core::AssetStore;
 use anyhow::Result;
-use matchbox_compiler::{compiler::Compiler, parser};
+use matchbox_compiler::cf::{SourceKind, parse_source};
+use matchbox_compiler::compiler::Compiler;
 use matchbox_vm::vm::chunk::Chunk;
 use std::{collections::VecDeque, io};
 
@@ -79,11 +80,7 @@ impl TemplateCache {
             return Ok(Some(chunk));
         }
         let source = String::from_utf8(bytes)?;
-        let ast = if path.ends_with(".bxm") {
-            parser::parse_bxm(&source, Some(&filename))?
-        } else {
-            parser::parse(&source, Some(&filename))?
-        };
+        let ast = parse_source(SourceKind::from_path(std::path::Path::new(path)), &source, Some(&filename))?;
         let mut compiler = Compiler::new(&filename);
         compiler.runtime_module_classes = module_classes;
         let chunk = if class_context {

@@ -288,7 +288,22 @@ pub fn lex(source: &str) -> LexedSource<'_> {
 }
 
 pub fn lex_template(source: &str) -> LexedSource<'_> {
+    lex_template_with_prefix(source, "bx:")
+}
+
+/// Lex a template whose components use `tag_prefix`: `"bx:"` for BoxLang
+/// (`<bx:set>`), `"cf"` for CFML (`<cfset>`). The prefix matches in any case.
+pub fn lex_template_with_prefix<'a>(source: &'a str, tag_prefix: &'static str) -> LexedSource<'a> {
     let mut lexer = Lexer::new(source, LexerMode::DefaultTemplate);
+    lexer.tag_prefix = tag_prefix;
+    lexer.lex()
+}
+
+/// Lex CFScript (.cfc / .cfs). Same as `lex`, but with CF mode on, so
+/// CF-only keywords such as `component` are recognized.
+pub fn lex_cf_script(source: &str) -> LexedSource<'_> {
+    let mut lexer = Lexer::new(source, LexerMode::DefaultScript);
+    lexer.cf_mode = true;
     lexer.lex()
 }
 
@@ -327,6 +342,10 @@ struct Lexer<'a> {
     trivia: Vec<Trivia>,
     mode_stack: Vec<LexerMode>,
     errors: Vec<(Span, String)>,
+    /// True when lexing ColdFusion (CFScript). Enables CF-only keywords.
+    cf_mode: bool,
+    /// Tag prefix for template components: "bx:" for BoxLang, "cf" for CFML.
+    tag_prefix: &'static str,
 }
 
 impl<'a> Lexer<'a> {
@@ -340,7 +359,31 @@ impl<'a> Lexer<'a> {
             trivia: Vec::new(),
             mode_stack: vec![initial_mode],
             errors: Vec::new(),
+            cf_mode: false,
+            tag_prefix: "bx:",
         }
+    }
+
+    /// True if the source at the cursor starts with `pattern`, ignoring ASCII case.
+    fn at_ci(&self, pattern: &str) -> bool {
+        self.source.as_bytes()[self.pos..]
+            .get(..pattern.len())
+            .is_some_and(|bytes| bytes.eq_ignore_ascii_case(pattern.as_bytes()))
+    }
+
+    /// At `<prefix>name` (the cursor is just past the `<`).
+    fn at_open_tag(&self, name: &str) -> bool {
+        self.at_ci(&format!("{}{}", self.tag_prefix, name))
+    }
+
+    /// At `</prefix>name>`.
+    fn at_close_tag(&self, name: &str) -> bool {
+        self.at_ci(&format!("</{}{}>", self.tag_prefix, name))
+    }
+
+    /// Length of `</prefix>name>`.
+    fn close_tag_len(&self, name: &str) -> usize {
+        3 + self.tag_prefix.len() + name.len()
     }
 
     fn current_mode(&self) -> LexerMode {
@@ -368,12 +411,20 @@ impl<'a> Lexer<'a> {
                 LexerMode::DefaultScript => {
                     // Check for </bx:script> while in template script mode
                     if self.mode_stack_contains(LexerMode::TemplateScript) {
-                        if self.source[self.pos..].starts_with("</bx:script>") {
+                        if self.at_close_tag("script") {
                             let start = self.pos;
                             let start_line = self.line;
                             let start_col = self.col;
-                            self.pos += 12; self.col += 12;
-                            self.push_token(TokenKind::ScriptEnd, start, self.pos, start_line, start_col);
+                            let n = self.close_tag_len("script");
+                            self.pos += n;
+                            self.col += n as u32;
+                            self.push_token(
+                                TokenKind::ScriptEnd,
+                                start,
+                                self.pos,
+                                start_line,
+                                start_col,
+                            );
                             self.pop_mode(); // DefaultScript
                             self.pop_mode(); // TemplateScript
                             continue; // Back to template mode
@@ -388,14 +439,21 @@ impl<'a> Lexer<'a> {
                     self.skip_whitespace_and_comments();
                     if self.mode_stack_contains(LexerMode::TemplateScript)
                         && self.pos < self.source.len()
-                        && self.source[self.pos..].starts_with("</bx:script>")
+                        && self.at_close_tag("script")
                     {
                         let start = self.pos;
                         let start_line = self.line;
                         let start_col = self.col;
-                        self.pos += 12;
-                        self.col += 12;
-                        self.push_token(TokenKind::ScriptEnd, start, self.pos, start_line, start_col);
+                        let n = self.close_tag_len("script");
+                        self.pos += n;
+                        self.col += n as u32;
+                        self.push_token(
+                            TokenKind::ScriptEnd,
+                            start,
+                            self.pos,
+                            start_line,
+                            start_col,
+                        );
                         self.pop_mode(); // DefaultScript
                         self.pop_mode(); // TemplateScript
                         continue;
@@ -465,9 +523,10 @@ impl<'a> Lexer<'a> {
                 let start = self.pos;
                 self.advance(); // consume <
                 let rest = &self.source[self.pos..];
-                if rest.starts_with("bx:script") || rest.starts_with("bx:output") {
+                let prefix_len = self.tag_prefix.len() as u32;
+                if self.at_open_tag("script") || self.at_open_tag("output") {
                     // Check which tag
-                    let is_script = rest.starts_with("bx:script");
+                    let is_script = self.at_open_tag("script");
                     if is_script {
                         // <bx:script ...> — switch to script parsing mode
                         self.push_token(TokenKind::ScriptStart, start, self.pos, self.line, self.col.saturating_sub(1));
@@ -483,20 +542,23 @@ impl<'a> Lexer<'a> {
                     } else {
                         // <bx:output ...> — parse component normally, push output mode
                         self.push_mode(LexerMode::TemplateOutput);
-                        self.pos += 3; self.col += 3; // skip bx:
+                        self.pos += prefix_len as usize;
+                        self.col += prefix_len; // skip the prefix
                         self.tokenize_component_name(start);
                         self.push_mode(LexerMode::TemplateOutput);
                         return;
                     }
-                } else if rest.starts_with("bx:") {
+                } else if self.at_ci(self.tag_prefix) {
                     self.push_mode(LexerMode::TemplateComponentName);
-                    self.pos += 3; self.col += 3; // skip bx:
+                    self.pos += prefix_len as usize;
+                    self.col += prefix_len; // skip the prefix
                     self.tokenize_component_name(start);
                     return; // tokenize_component_name handles the rest
-                } else if rest.starts_with("/bx:") {
-                    let is_output_close = rest.starts_with("/bx:output");
+                } else if self.at_ci(&format!("/{}", self.tag_prefix)) {
+                    let is_output_close = self.at_ci(&format!("/{}output", self.tag_prefix));
                     self.push_mode(LexerMode::TemplateEndComponent);
-                    self.pos += 4; self.col += 4; // skip /bx:
+                    self.pos += prefix_len as usize + 1;
+                    self.col += prefix_len + 1; // skip /prefix
                     self.tokenize_component_name(start);
                     if is_output_close {
                         self.pop_mode();
@@ -801,7 +863,20 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let kind = keyword_or_ident(lexeme);
+        let kind = match keyword_or_ident(lexeme) {
+            // In CF files, `component` starting a declaration means the same
+            // as BoxLang's `class`. Anywhere else (`component = 1`,
+            // `s.component`, `f(component)`) it stays an ordinary name, as in
+            // BoxLang's CF lexer. BoxLang files never get this mapping.
+            TokenKind::Identifier
+                if self.cf_mode
+                    && lexeme.eq_ignore_ascii_case("component")
+                    && starts_cf_component_decl(&self.source[end..]) =>
+            {
+                TokenKind::Class
+            }
+            other => other,
+        };
         self.push_token(kind, start, end, start_line, start_col);
     }
 
@@ -1192,6 +1267,23 @@ fn is_ident_start(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '_' || ch == '$'
 }
 
+/// `rest` is the source right after the word `component`. It starts a
+/// declaration when what follows is the body (`component {`) or an attribute
+/// (`component extends="Base" {`, `component output=false {`).
+fn starts_cf_component_decl(rest: &str) -> bool {
+    let rest = rest.trim_start();
+    if rest.starts_with('{') {
+        return true;
+    }
+    // An attribute: a name, then `=` (but not `==`).
+    let name_len = rest.find(|c: char| !is_ident_cont(c)).unwrap_or(rest.len());
+    if name_len == 0 {
+        return false;
+    }
+    let after = rest[name_len..].trim_start();
+    after.starts_with('=') && !after.starts_with("==")
+}
+
 fn is_ident_cont(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
 }
@@ -1292,6 +1384,39 @@ mod tests {
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].kind, TokenKind::Identifier);
         assert_eq!(tokens[0].lexeme, "functionfoo");
+    }
+
+    #[test]
+    fn cf_mode_maps_component_to_class() {
+        // CF mode: `component` (any case) starting a declaration is the class keyword.
+        for src in [
+            "component {",
+            "Component {",
+            "COMPONENT\n{",
+            "component extends=\"Base\" {",
+            "component output=false accessors=\"true\" {",
+        ] {
+            let tokens = lex_cf_script(src).into_owned_tokens();
+            assert_eq!(tokens[0].kind, TokenKind::Class, "CF source: {src}");
+        }
+        // BoxLang mode: `component` stays an ordinary name.
+        let tokens = tokenize("component {");
+        assert_eq!(tokens[0].kind, TokenKind::Identifier);
+    }
+
+    #[test]
+    fn cf_mode_keeps_component_as_a_name_elsewhere() {
+        for src in [
+            "component = 1",
+            "component == 1",
+            "component;",
+            "component)",
+            "component.name",
+            "component: 2",
+        ] {
+            let tokens = lex_cf_script(src).into_owned_tokens();
+            assert_eq!(tokens[0].kind, TokenKind::Identifier, "CF source: {src}");
+        }
     }
 
     #[test]
