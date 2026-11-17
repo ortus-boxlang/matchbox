@@ -155,21 +155,31 @@ fn mapping_bool(vm: &mut VM, id: usize, key: &str, default: bool) -> Result<bool
 }
 
 pub(crate) fn register_classes(vm: &mut VM, module: &Module, record: BxValue) -> Result<()> {
+    // The invocation path (bxModules.<name>) always resolves, as on the JVM, even when
+    // `usePrefix: false` maps the module elsewhere: relative interceptor and component
+    // class names are resolved under it.
+    let invocation = vm.to_string(record_field(vm, record, "invocationPath"));
     for field in ["mapping", "publicMapping"] {
         let mapping = record_field(vm, record, field).as_gc_id().context("Module mapping missing")?;
         let prefix = vm.to_string(vm.struct_get(mapping, "name")).trim_matches('/').replace('/', ".");
         let root = normalize_path(Path::new(&vm.to_string(vm.struct_get(mapping, "path"))));
+        let mut prefixes = vec![prefix];
+        if field == "mapping" && !prefixes[0].eq_ignore_ascii_case(&invocation) {
+            prefixes.push(invocation.clone());
+        }
         for class in &module.classes {
             let path = normalize_path(&Path::new(&module.path).join(&class.path));
             let Ok(relative) = path.strip_prefix(&root) else { continue; };
-            let name = relative.with_extension("").to_string_lossy().replace(['/', '\\'], ".");
-            let name = if prefix.is_empty() { name } else { format!("{prefix}.{name}") };
+            let relative = relative.with_extension("").to_string_lossy().replace(['/', '\\'], ".");
             let value = vm.get_global(&class.global).context("Embedded module class missing")?;
-            let GcObject::Class(target) = vm.heap.get(value.as_gc_id().context("Embedded module class invalid")?) else {
-                bail!("Embedded module global is not a class");
-            };
-            if target.borrow().name == class.global { target.borrow_mut().name = name.clone(); }
-            vm.insert_global(name, value);
+            for prefix in &prefixes {
+                let name = if prefix.is_empty() { relative.clone() } else { format!("{prefix}.{relative}") };
+                let GcObject::Class(target) = vm.heap.get(value.as_gc_id().context("Embedded module class invalid")?) else {
+                    bail!("Embedded module global is not a class");
+                };
+                if target.borrow().name == class.global { target.borrow_mut().name = name.clone(); }
+                vm.insert_global(name, value);
+            }
         }
     }
     Ok(())

@@ -123,7 +123,8 @@ fn argument_hits_keep_read_spelling_case_and_write_readiness_rules() {
         vm.set_local_value(0, 0, BxValue::new_number(11.0));
         assert_eq!(vm.local_value(0, 0).as_number(), 11.0);
         assert_eq!(hit(&vm, 0).unwrap().as_number(), 11.0);
-        assert!(vm.struct_key_array(scope).contains(&"MiXeD".to_string()));
+        // An existing case-insensitive key keeps its first spelling, as on the JVM.
+        assert!(vm.struct_key_array(scope).contains(&if sensitive { "MiXeD" } else { "mixed" }.to_string()));
         assert_eq!(vm.struct_key_array(scope).len(), if sensitive { 2 } else { 1 });
         if sensitive { assert_eq!(vm.struct_get(scope, "mixed").as_number(), 7.0); }
     }
