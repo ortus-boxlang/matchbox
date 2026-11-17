@@ -205,7 +205,17 @@ fn headers_to_map(headers: Fields) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for (name, value) in headers.entries() {
         if let Ok(value) = String::from_utf8(value) {
-            map.entry(name.to_ascii_lowercase()).or_insert(value);
+            let name = name.to_ascii_lowercase();
+            // If-None-Match is a list: repeated fields mean the same as one
+            // comma-separated field, so the engine must see every tag.
+            if name == "if-none-match"
+                && let Some(tags) = map.get_mut(&name)
+            {
+                tags.push_str(", ");
+                tags.push_str(&value);
+                continue;
+            }
+            map.entry(name).or_insert(value);
         }
     }
     map

@@ -579,6 +579,19 @@ async fn handler(
         body,
         ..Default::default()
     };
+    // If-None-Match is a list: repeated fields mean the same as one
+    // comma-separated field, so the engine must see every tag.
+    let if_none_match: Vec<&str> = parts
+        .headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    if if_none_match.len() > 1 {
+        request
+            .headers
+            .insert("if-none-match".into(), if_none_match.join(", "));
+    }
     if multipart::parse(&mut request).await.is_err() {return StatusCode::BAD_REQUEST.into_response();}
     match tokio::task::spawn_blocking(move || state.engine.handle_with_context(request, context))
         .await
