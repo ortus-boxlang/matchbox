@@ -365,6 +365,15 @@ try { fixtureOptions({ width: 1, invert: "yes" }); } catch (any e) { failures.ap
 try { fixtureOptions([1]); } catch (any e) { failures.append("not a struct"); }
 try { fixtureKinds("text"); } catch (any e) { failures.append("not an array"); }
 assert failures.len() == 4;
+
+// whole numbers: int_new shows no decimal point, int_get takes 5 and 5.0 but not 2.5
+assert serializeJSON( { n: fixtureWhole(5) } ) == '{"n":10}';
+assert fixtureWhole(5.0) == 10 && toString( fixtureWhole(-4) ) == "-8";
+assert fixtureWhole(3000000000) == 6000000000;
+wholeFailures = 0;
+try { fixtureWhole(2.5); } catch (any e) { wholeFailures++; }
+try { fixtureWhole("x"); } catch (any e) { wholeFailures++; }
+assert wholeFailures == 2;
 println("collections ok");
 "#,
     )
