@@ -1,16 +1,33 @@
 #![doc = include_str!("../README.md")]
+#![deny(missing_docs)]
 use std::{ffi::c_void, ptr::NonNull};
 
+/// The plugin ABI major version this SDK targets. The host refuses a plugin whose
+/// `abi` in `box.json` does not match, and `require_*` fails if the host reports another one.
 pub const ABI_MAJOR: u32 = 1;
+/// Name of the core capability: numbers, strings, booleans, null, structs, native objects
+/// and errors. See [`ValuesV1`] and [`require_values`].
 pub const VALUES_V1: &str = "matchbox.values.v1";
+/// Name of the capability that keeps values alive between calls. See [`RootsV1`] and [`require_roots`].
 pub const ROOTS_V1: &str = "matchbox.roots.v1";
+/// Name of the binary value capability. See [`BytesV1`] and [`require_bytes`].
 pub const BYTES_V1: &str = "matchbox.bytes.v1";
+/// Name of the capability that reports a value's kind and reads booleans. See [`TypesV1`] and [`require_types`].
 pub const TYPES_V1: &str = "matchbox.types.v1";
+/// Name of the array and struct capability. See [`CollectionsV1`] and [`require_collections`].
 pub const COLLECTIONS_V1: &str = "matchbox.collections.v1";
+
+/// An opaque handle to a BoxLang value. Valid only during the invocation that received or
+/// created it; use [`Call::retain`] to keep a value longer. Never inspect its bits.
 pub type Value = u64;
 /// Host-owned opaque allocation, valid until released exactly once on the VM thread.
 pub type RootHandle = *mut c_void;
+/// The host's opaque per-call (or per-initialization) context. Pass it back unchanged;
+/// never keep it after the call returns.
 pub type Context = *mut c_void;
+/// The signature of a registered function: `(context, values table, reserved, arguments,
+/// argument count, result slot)`. Return `0` and write the result on success; report an
+/// error and return non-zero on failure. Wrap the body in [`guarded`].
 pub type Invoke = unsafe extern "C" fn(
     Context,
     *const ValuesV1,
@@ -19,16 +36,23 @@ pub type Invoke = unsafe extern "C" fn(
     usize,
     *mut Value,
 ) -> i32;
+/// Frees a native object's payload. Called once by the host when the object is collected.
+/// It must not unwind.
 pub type DropObject = unsafe extern "C" fn(*mut c_void);
+/// The signature of the exported `matchbox_plugin_init_v1` entry point. Return `0` on success.
 pub type Init = unsafe extern "C" fn(*const HostV1, Context) -> i32;
 
+/// A borrowed UTF-8 string passed across the ABI. It does not own its bytes.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Text {
+    /// Start of the UTF-8 bytes.
     pub ptr: *const u8,
+    /// Length in bytes.
     pub len: usize,
 }
 impl Text {
+    /// Borrows `s`. The result is valid only while `s` is alive.
     pub fn new(s: &str) -> Self {
         Self {
             ptr: s.as_ptr(),
@@ -41,10 +65,13 @@ impl Text {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Bytes {
+    /// Start of the bytes.
     pub ptr: *const u8,
+    /// Length in bytes.
     pub len: usize,
 }
 impl Bytes {
+    /// Borrows `bytes`. The result is valid only while `bytes` is alive.
     pub fn new(bytes: &[u8]) -> Self { Self { ptr: bytes.as_ptr(), len: bytes.len() } }
 }
 
@@ -52,7 +79,9 @@ impl Bytes {
 /// `new` copies the supplied bytes before returning. No VM layout crosses the ABI.
 #[repr(C)]
 pub struct BytesV1 {
+    /// Borrows a binary value's bytes until the invocation ends. Fails for a non-binary value.
     pub get: unsafe extern "C" fn(Context, Value, *mut Bytes) -> i32,
+    /// Creates a binary value from a copy of the bytes.
     pub new: unsafe extern "C" fn(Context, Bytes, *mut Value) -> i32,
 }
 
@@ -60,17 +89,26 @@ pub struct BytesV1 {
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    /// `null`.
     Null = 0,
+    /// A boolean.
     Bool = 1,
+    /// A number.
     Number = 2,
+    /// A string.
     String = 3,
+    /// An array.
     Array = 4,
+    /// A struct.
     Struct = 5,
+    /// A binary value.
     Binary = 6,
     /// Anything else: native objects, classes, functions, queries and so on.
     Other = 7,
 }
 impl Kind {
+    /// Converts a code from [`TypesV1::kind_of`]. Unknown codes, including ones a newer
+    /// host may add, become [`Kind::Other`].
     pub fn from_raw(raw: u32) -> Kind {
         match raw {
             0 => Kind::Null,
@@ -88,7 +126,9 @@ impl Kind {
 /// Additive capability: inspect a value's kind and read booleans (strictly; no truthiness).
 #[repr(C)]
 pub struct TypesV1 {
+    /// Writes the value's [`Kind`] code.
     pub kind_of: unsafe extern "C" fn(Context, Value, *mut u32) -> i32,
+    /// Reads a boolean. Fails for anything that is not a boolean, including `"yes"` and `1`.
     pub bool_get: unsafe extern "C" fn(Context, Value, *mut bool) -> i32,
 }
 
@@ -97,41 +137,64 @@ pub struct TypesV1 {
 /// returns a new array of the keys, in the struct's order.
 #[repr(C)]
 pub struct CollectionsV1 {
+    /// Creates an empty array.
     pub array_new: unsafe extern "C" fn(Context, *mut Value) -> i32,
+    /// Appends a value to an array. Fails for a non-array.
     pub array_push: unsafe extern "C" fn(Context, Value, Value) -> i32,
+    /// Writes an array's length. Fails for a non-array.
     pub array_len: unsafe extern "C" fn(Context, Value, *mut usize) -> i32,
+    /// Reads the element at a 0-based index. Fails for a non-array or an index past the end.
     pub array_get: unsafe extern "C" fn(Context, Value, usize, *mut Value) -> i32,
+    /// Reads a struct value by key, case-insensitively, and sets `found`. Fails for a non-struct.
     pub struct_get: unsafe extern "C" fn(Context, Value, Text, *mut Value, *mut bool) -> i32,
+    /// Creates a new array of a struct's keys, in the struct's order. Fails for a non-struct.
     pub struct_keys: unsafe extern "C" fn(Context, Value, *mut Value) -> i32,
 }
 
-/// JSON registration metadata: {"name":"...","arguments":[{"name":"...",
-/// "required":true,"default":null}]}. Defaults are null, numbers, strings, or bools.
-#[repr(C)]
+/// The host interface passed to `matchbox_plugin_init_v1`.
+///
 /// Borrowed only during initialization. Returned capability tables remain valid for
 /// the host process lifetime; registration/error context pointers must not be retained.
+#[repr(C)]
 pub struct HostV1 {
+    /// The host's ABI major version. Compare with [`ABI_MAJOR`].
     pub abi_major: u32,
+    /// Looks up a capability table by name, such as [`VALUES_V1`]. Null when the host lacks it.
     pub capability: unsafe extern "C" fn(Text) -> *const c_void,
+    /// Registers a function. The metadata is JSON:
+    /// `{"name":"...","aliases":["..."],"arguments":[{"name":"...","required":true,"default":null}]}`.
+    /// Defaults are null, numbers, strings or booleans. Returns `0` on success.
     pub register: unsafe extern "C" fn(Context, Text, Invoke) -> i32,
+    /// Reports an initialization error message.
     pub error: unsafe extern "C" fn(Context, Text),
 }
 
+/// The core value capability, `matchbox.values.v1`. Every plugin requires it.
 #[repr(C)]
 pub struct ValuesV1 {
-    /// Returned UTF-8 remains valid until this invocation ends.
+    /// Borrows a string value's UTF-8. Returned UTF-8 remains valid until this invocation ends.
     pub string_get: unsafe extern "C" fn(Context, Value, *mut Text) -> i32,
+    /// Reads a number.
     pub number_get: unsafe extern "C" fn(Context, Value, *mut f64) -> i32,
+    /// Creates a number.
     pub number_new: unsafe extern "C" fn(Context, f64, *mut Value) -> i32,
+    /// Creates a string from a copy of the UTF-8.
     pub string_new: unsafe extern "C" fn(Context, Text, *mut Value) -> i32,
+    /// Creates a boolean.
     pub bool_new: unsafe extern "C" fn(Context, bool, *mut Value) -> i32,
+    /// Creates `null`.
     pub null_new: unsafe extern "C" fn(Context, *mut Value) -> i32,
+    /// Creates an empty struct.
     pub struct_new: unsafe extern "C" fn(Context, *mut Value) -> i32,
+    /// Sets a struct key. The key keeps the spelling given here.
     pub struct_set: unsafe extern "C" fn(Context, Value, Text, Value) -> i32,
+    /// Creates a native object: `(kind, payload, drop, methods JSON)`.
     /// Ownership transfers only on success. method metadata: {"info":"imageInfo"}.
     pub object_new:
         unsafe extern "C" fn(Context, Text, *mut c_void, DropObject, Text, *mut Value) -> i32,
+    /// Borrows a native object's payload, checking it was created with the same kind.
     pub object_data: unsafe extern "C" fn(Context, Value, Text, *mut *mut c_void) -> i32,
+    /// Reports the error for a failing call. The host raises it as a BoxLang exception.
     pub error: unsafe extern "C" fn(Context, Text),
 }
 
@@ -140,9 +203,11 @@ pub struct ValuesV1 {
 /// and provider instance. Release remains valid after that VM has been destroyed.
 #[repr(C)]
 pub struct RootsV1 {
+    /// Keeps a value alive and writes a new root handle.
     pub retain: unsafe extern "C" fn(Context, Value, *mut RootHandle) -> i32,
+    /// Writes the rooted value as a handle for the current invocation.
     pub get: unsafe extern "C" fn(Context, RootHandle, *mut Value) -> i32,
-    /// Null is a no-op; every nonnull handle must be live and host-issued.
+    /// Releases a root. Null is a no-op; every nonnull handle must be live and host-issued.
     pub release: unsafe extern "C" fn(RootHandle),
 }
 
@@ -159,6 +224,8 @@ pub struct RetainedValue {
     api: &'static RootsV1,
 }
 impl RetainedValue {
+    /// The retained value as a handle for `call`. Fails when `call` belongs to another VM
+    /// or plugin than the one that retained it.
     pub fn value(&self, call: &Call<'_>) -> Result<Value, String> {
         call.value(|out| unsafe { (self.api.get)(call.context, self.handle, out) })
     }
@@ -170,12 +237,17 @@ impl Drop for RetainedValue {
 }
 
 /// Ergonomic, call-scoped wrapper. Construct only from the host's invocation callback.
+///
+/// Every helper returns `Err(message)` when the host refuses the operation, ready to
+/// return from a [`guarded`] body.
 pub struct Call<'a> {
     context: Context,
     api: &'a ValuesV1,
     args: &'a [Value],
 }
 impl<'a> Call<'a> {
+    /// Wraps the pointers an [`Invoke`] callback received.
+    ///
     /// # Safety
     /// Inputs must originate from the host and remain valid throughout this invocation.
     pub unsafe fn new(
@@ -194,6 +266,8 @@ impl<'a> Call<'a> {
             },
         }
     }
+    /// The argument at `index` (0-based), in the order the registration metadata declares.
+    /// Defaults are already filled in.
     pub fn argument(&self, index: usize) -> Result<Value, String> {
         self.args
             .get(index)
@@ -208,6 +282,7 @@ impl<'a> Call<'a> {
             Err("Host value operation failed".into())
         }
     }
+    /// Keeps `value` alive past this call. Requires [`ROOTS_V1`]; drop the result to release it.
     pub fn retain(&self, api: &'static RootsV1, value: Value) -> Result<RetainedValue, String> {
         let mut handle = std::ptr::null_mut();
         if unsafe { (api.retain)(self.context, value, &mut handle) } != 0 {
@@ -215,6 +290,7 @@ impl<'a> Call<'a> {
         }
         Ok(RetainedValue { handle, api })
     }
+    /// Reads a number.
     pub fn number(&self, value: Value) -> Result<f64, String> {
         let mut out = 0.0;
         if unsafe { (self.api.number_get)(self.context, value, &mut out) } == 0 {
@@ -223,6 +299,7 @@ impl<'a> Call<'a> {
             Err("Expected a number".into())
         }
     }
+    /// Reads a string, copied into an owned `String`.
     pub fn string(&self, value: Value) -> Result<String, String> {
         let mut out = Text::new("");
         if unsafe { (self.api.string_get)(self.context, value, &mut out) } != 0 {
@@ -235,18 +312,22 @@ impl<'a> Call<'a> {
         };
         String::from_utf8(bytes.to_vec()).map_err(|e| e.to_string())
     }
+    /// Reads a binary value's bytes, copied. Requires [`BYTES_V1`].
     pub fn bytes(&self, api: &BytesV1, value: Value) -> Result<Vec<u8>, String> {
         let mut out = Bytes::new(&[]);
         if unsafe { (api.get)(self.context, value, &mut out) } != 0 { return Err("Expected binary value".into()); }
         if out.len == 0 { return Ok(Vec::new()); }
         Ok(unsafe { std::slice::from_raw_parts(out.ptr, out.len) }.to_vec())
     }
+    /// Creates a binary value from a copy of `bytes`. Requires [`BYTES_V1`].
     pub fn bytes_new(&self, api: &BytesV1, bytes: &[u8]) -> Result<Value, String> {
         self.value(|out| unsafe { (api.new)(self.context, Bytes::new(bytes), out) })
     }
+    /// Creates a boolean.
     pub fn bool_new(&self, value: bool) -> Result<Value, String> {
         self.value(|out| unsafe { (self.api.bool_new)(self.context, value, out) })
     }
+    /// The value's [`Kind`]. Requires [`TYPES_V1`].
     pub fn kind(&self, api: &TypesV1, value: Value) -> Result<Kind, String> {
         let mut out = 0;
         if unsafe { (api.kind_of)(self.context, value, &mut out) } != 0 {
@@ -254,6 +335,8 @@ impl<'a> Call<'a> {
         }
         Ok(Kind::from_raw(out))
     }
+    /// Reads a boolean strictly: `"yes"`, `1` and other truthy values are errors.
+    /// Requires [`TYPES_V1`].
     pub fn boolean(&self, api: &TypesV1, value: Value) -> Result<bool, String> {
         let mut out = false;
         if unsafe { (api.bool_get)(self.context, value, &mut out) } != 0 {
@@ -261,9 +344,11 @@ impl<'a> Call<'a> {
         }
         Ok(out)
     }
+    /// Creates an empty array. Requires [`COLLECTIONS_V1`].
     pub fn array_new(&self, api: &CollectionsV1) -> Result<Value, String> {
         self.value(|out| unsafe { (api.array_new)(self.context, out) })
     }
+    /// Appends `value` to `array`. Requires [`COLLECTIONS_V1`].
     pub fn array_push(&self, api: &CollectionsV1, array: Value, value: Value) -> Result<(), String> {
         if unsafe { (api.array_push)(self.context, array, value) } == 0 {
             Ok(())
@@ -271,6 +356,7 @@ impl<'a> Call<'a> {
             Err("Expected an array".into())
         }
     }
+    /// The number of elements in `array`. Requires [`COLLECTIONS_V1`].
     pub fn array_len(&self, api: &CollectionsV1, array: Value) -> Result<usize, String> {
         let mut out = 0;
         if unsafe { (api.array_len)(self.context, array, &mut out) } != 0 {
@@ -278,11 +364,13 @@ impl<'a> Call<'a> {
         }
         Ok(out)
     }
-    /// 0-based; an index past the end is an error.
+    /// The element at `index`. 0-based; an index past the end is an error.
+    /// Requires [`COLLECTIONS_V1`].
     pub fn array_get(&self, api: &CollectionsV1, array: Value, index: usize) -> Result<Value, String> {
         self.value(|out| unsafe { (api.array_get)(self.context, array, index, out) })
     }
-    /// `None` when the key is missing.
+    /// Reads `key` from a struct, case-insensitively. `None` when the key is missing.
+    /// Requires [`COLLECTIONS_V1`].
     pub fn struct_get(&self, api: &CollectionsV1, object: Value, key: &str) -> Result<Option<Value>, String> {
         let (mut out, mut found) = (0, false);
         if unsafe { (api.struct_get)(self.context, object, Text::new(key), &mut out, &mut found) } != 0 {
@@ -290,24 +378,31 @@ impl<'a> Call<'a> {
         }
         Ok(found.then_some(out))
     }
+    /// A struct's keys, in the struct's order and spelled as stored. Requires [`COLLECTIONS_V1`].
     pub fn struct_keys(&self, api: &CollectionsV1, object: Value) -> Result<Vec<String>, String> {
         let keys = self.value(|out| unsafe { (api.struct_keys)(self.context, object, out) })?;
         (0..self.array_len(api, keys)?)
             .map(|i| self.string(self.array_get(api, keys, i)?))
             .collect()
     }
+    /// Creates `null`.
     pub fn null_new(&self) -> Result<Value, String> {
         self.value(|out| unsafe { (self.api.null_new)(self.context, out) })
     }
+    /// Creates a number.
     pub fn number_new(&self, number: f64) -> Result<Value, String> {
         self.value(|out| unsafe { (self.api.number_new)(self.context, number, out) })
     }
+    /// Creates a string from a copy of `text`.
     pub fn string_new(&self, text: &str) -> Result<Value, String> {
         self.value(|out| unsafe { (self.api.string_new)(self.context, Text::new(text), out) })
     }
+    /// Creates an empty struct.
     pub fn struct_new(&self) -> Result<Value, String> {
         self.value(|out| unsafe { (self.api.struct_new)(self.context, out) })
     }
+    /// Sets `key` on a struct. A new key keeps the spelling given; an existing key is
+    /// matched case-insensitively and keeps its first spelling.
     pub fn struct_set(&self, object: Value, key: &str, value: Value) -> Result<(), String> {
         if unsafe { (self.api.struct_set)(self.context, object, Text::new(key), value) } == 0 {
             Ok(())
@@ -315,6 +410,11 @@ impl<'a> Call<'a> {
             Err("Host struct operation failed".into())
         }
     }
+    /// Creates a native object holding `data`. `kind` names the payload type (for example
+    /// `"stats.total.v1"`); `methods` is JSON mapping method names to registered functions,
+    /// which receive the object as their first argument. On success the host owns `data`
+    /// and calls `drop` when the object is collected; on error the caller still owns it.
+    ///
     /// # Safety
     /// Payload must match the type identifier and drop callback, which must not unwind.
     pub unsafe fn object_new(
@@ -336,6 +436,8 @@ impl<'a> Call<'a> {
         })
     }
     /// Returns a non-null payload borrowed for this invocation.
+    /// Fails when `value` is not a native object created with the same `kind`.
+    ///
     /// # Safety
     /// Cast/dereference the returned pointer only as the payload type registered for `kind`.
     pub unsafe fn object_data(&self, value: Value, kind: &str) -> Result<NonNull<c_void>, String> {
@@ -347,8 +449,12 @@ impl<'a> Call<'a> {
     }
 }
 
+/// Runs a callback body, writes its value to `out` and returns `0`; or reports its error
+/// (or a caught panic) to the host and returns `1`.
+///
 /// Catch Rust panics inside the plugin, never at the foreign ABI boundary.
 /// The plugin must build with panic=unwind for recovery; panic=abort terminates the app.
+///
 /// # Safety
 /// `context`, `api`, and `out` must be the live host invocation pointers.
 pub unsafe fn guarded(
@@ -371,6 +477,9 @@ pub unsafe fn guarded(
     }
 }
 
+/// Requests the core [`VALUES_V1`] capability. Call it first in `matchbox_plugin_init_v1`
+/// and return the error status unchanged if it fails.
+///
 /// # Safety
 /// Must be called with the pointers supplied to matchbox_plugin_init_v1.
 pub unsafe fn require_values(
@@ -380,6 +489,8 @@ pub unsafe fn require_values(
     unsafe { require_capability(host, context, VALUES_V1).map(|api| api.cast()) }
 }
 
+/// Requests [`ROOTS_V1`], to keep values between calls with [`Call::retain`].
+///
 /// # Safety
 /// Must be called with the pointers supplied to matchbox_plugin_init_v1.
 /// The returned table is immutable and valid for the host process lifetime.
@@ -390,18 +501,27 @@ pub unsafe fn require_roots(
     unsafe { require_capability(host, context, ROOTS_V1).map(|api| &*api.cast()) }
 }
 
+/// Requests [`BYTES_V1`], for [`Call::bytes`] and [`Call::bytes_new`].
+/// The returned table is valid for the host process lifetime.
+///
 /// # Safety
 /// Must be called with the pointers supplied to matchbox_plugin_init_v1.
 pub unsafe fn require_bytes(host: *const HostV1, context: Context) -> Result<&'static BytesV1, i32> {
     unsafe { require_capability(host, context, BYTES_V1).map(|api| &*api.cast()) }
 }
 
+/// Requests [`TYPES_V1`], for [`Call::kind`] and [`Call::boolean`].
+/// The returned table is valid for the host process lifetime.
+///
 /// # Safety
 /// Must be called with the pointers supplied to matchbox_plugin_init_v1.
 pub unsafe fn require_types(host: *const HostV1, context: Context) -> Result<&'static TypesV1, i32> {
     unsafe { require_capability(host, context, TYPES_V1).map(|api| &*api.cast()) }
 }
 
+/// Requests [`COLLECTIONS_V1`], for the array and struct-read helpers on [`Call`].
+/// The returned table is valid for the host process lifetime.
+///
 /// # Safety
 /// Must be called with the pointers supplied to matchbox_plugin_init_v1.
 pub unsafe fn require_collections(
@@ -411,6 +531,8 @@ pub unsafe fn require_collections(
     unsafe { require_capability(host, context, COLLECTIONS_V1).map(|api| &*api.cast()) }
 }
 
+/// Looks up `name`, checking the host's ABI version. Reports a missing capability to the
+/// host as `Missing required capability: <name>` and returns status `1`.
 unsafe fn require_capability(
     host: *const HostV1,
     context: Context,

@@ -18,7 +18,8 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-matchbox-plugin-sdk = "0.1"
+# Not on crates.io yet: pin a MatchBox commit.
+matchbox-plugin-sdk = { git = "https://github.com/ortus-boxlang/matchbox", rev = "<commit>" }
 
 [profile.release]
 panic = "unwind"
@@ -63,7 +64,7 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
 
 `cargo build --release` produces a platform shared library. Module authors prebuild one artifact per supported target triple and put its package-relative path, SHA-256, and ABI major in `box.json` → `matchbox.artifacts`. Artifact paths are not tied to a particular directory layout. MatchBox can embed these bytes in standalone applications.
 
-The [native module guide](https://github.com/ortus-boxlang/matchbox/blob/feature/native-modules/docs/native-plugins.md) covers artifact metadata and packaging. See [API documentation](https://docs.rs/matchbox-plugin-sdk) for the complete interface.
+The [native module guide](https://github.com/ortus-boxlang/matchbox/blob/develop/docs/native-plugins.md) covers artifact metadata and packaging, and the [MatchBox module docs](https://matchbox.boxlang.io/modules/native/) walk through a complete plugin. Every public item is documented in the crate: run `cargo doc --open` in your plugin to browse the API.
 
 ## Versioning and ownership
 
