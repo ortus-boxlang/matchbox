@@ -4740,10 +4740,12 @@ impl VM {
                                     // ── Active path: call the compiled native loop ────────────
                                     if let Some((active_ip, compiled)) = jit_body_active {
                                         if active_ip == ip_at_start {
-                                            eprintln!(
-                                                "[JIT] calling compiled loop at ip={}!",
-                                                ip_at_start
-                                            );
+                                            if self.jit_trace_enabled() {
+                                                eprintln!(
+                                                    "[JIT] calling compiled loop at ip={}!",
+                                                    ip_at_start
+                                                );
+                                            }
                                             self.sync_jit_locals(fiber_idx, false);
                                             let deopt = unsafe {
                                                 compiled(
@@ -4755,10 +4757,12 @@ impl VM {
                                             };
                                             self.sync_jit_locals(fiber_idx, true);
                                             if deopt == 1 {
-                                                eprintln!(
-                                                    "[JIT] deoptimizing loop at ip={} (type mismatch)!",
-                                                    ip_at_start
-                                                );
+                                                if self.jit_trace_enabled() {
+                                                    eprintln!(
+                                                        "[JIT] deoptimizing loop at ip={} (type mismatch)!",
+                                                        ip_at_start
+                                                    );
+                                                }
                                                 // JIT bailed out — resume at start of this iteration.
                                                 ip -= offset as usize;
                                                 jit_body_active = None;
@@ -7460,10 +7464,12 @@ impl VM {
                                                     if deopt == 0 {
                                                         ip += offset as usize; // jump past loop
                                                     } else {
-                                                        eprintln!(
-                                                            "[JIT] deopt iter loop ip={}",
-                                                            ip_at_start
-                                                        );
+                                                        if self.jit_trace_enabled() {
+                                                            eprintln!(
+                                                                "[JIT] deopt iter loop ip={}",
+                                                                ip_at_start
+                                                            );
+                                                        }
                                                         jit_iter_active = None;
                                                     }
                                                     handled = deopt == 0;
