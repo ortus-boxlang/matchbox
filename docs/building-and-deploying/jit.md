@@ -22,7 +22,7 @@ cargo build --no-default-features --features 'bif-io,bif-cli,bif-crypto,bif-http
 python3 tests/jit_runner.py target/lint-jit/debug/matchbox
 ```
 
-The process check removes source/module copies, verifies numeric results, and requires actual Cranelift compilation/execution of compiler-generated numeric/default/named-argument leaves, binary-search/counting function loops, and an empty-loop control, in source, plain/module `.bxb`, and standalone paths. Set `MATCHBOX_JIT_TRACE=1` to log initialization and hot functions rejected by the translatability check; compiled-function messages include names. Trace output goes to stderr; a first-successful-execution message distinguishes native execution from compilation followed only by deopts. Enabling the feature alone is not evidence that application functions compiled.
+The process check removes source/module copies, verifies numeric results, and requires actual Cranelift compilation/execution of compiler-generated numeric/default/named-argument leaves, binary-search/counting function loops, and an empty-loop control, in source, plain/module `.bxb`, and standalone paths. Nothing is printed by default. Set `MATCHBOX_JIT_TRACE=1` to log initialization, every compile and deopt, and hot functions rejected by the translatability check; compiled-function messages include names. Trace output goes to stderr; a first-successful-execution message distinguishes native execution from compilation followed only by deopts. Enabling the feature alone is not evidence that application functions compiled.
 
 ---
 

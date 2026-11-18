@@ -297,6 +297,13 @@ pub unsafe extern "C" fn jit_load_prop_at(
 }
 
 impl super::VM {
+    /// True when the JIT is active and `MATCHBOX_JIT_TRACE` was set when it started.
+    /// Every `[JIT]` diagnostic line (stderr only) must be guarded by this or by
+    /// `JitState::trace`; nothing is printed by default.
+    pub(crate) fn jit_trace_enabled(&self) -> bool {
+        self.jit.as_ref().is_some_and(|jit| jit.trace)
+    }
+
     fn jit_intrinsics_match(&mut self, fiber: usize, mask: u8) -> bool {
         ["int", "isStruct", "structKeyExists"].iter().all(|name| {
             let (kind, _, expected) = intrinsic(name).unwrap();
@@ -638,13 +645,19 @@ impl JitState {
         if prev < JIT_THRESHOLD && new_count >= JIT_THRESHOLD {
             match self.compile_empty_loop(code_ptr, ip) {
                 Ok(_) => {
-                    eprintln!(
-                        "[JIT] compiled empty loop @ code=0x{:x} ip={}",
-                        code_ptr, ip
-                    );
+                    if self.trace {
+                        eprintln!(
+                            "[JIT] compiled empty loop @ code=0x{:x} ip={}",
+                            code_ptr, ip
+                        );
+                    }
                     return true;
                 }
-                Err(e) => eprintln!("[JIT] empty loop failed: {}", e),
+                Err(e) => {
+                    if self.trace {
+                        eprintln!("[JIT] empty loop failed: {}", e);
+                    }
+                }
             }
         }
         false
@@ -722,16 +735,20 @@ impl JitState {
                 code_ptr, ip, body_code, ic_entries, i_slot, limit_val, constants,
             ) {
                 Ok(_) => {
-                    eprintln!(
-                        "[JIT] compiled generic loop @ code=0x{:x} ip={} after {} iters",
-                        code_ptr, ip, new_count
-                    );
+                    if self.trace {
+                        eprintln!(
+                            "[JIT] compiled generic loop @ code=0x{:x} ip={} after {} iters",
+                            code_ptr, ip, new_count
+                        );
+                    }
                     return true;
                 }
                 Err(e) => {
-                    eprintln!("[JIT] generic loop failed: {}", e);
-                    // Also print the context's function for debugging
-                    eprintln!("{}", self.ctx.func.display());
+                    if self.trace {
+                        eprintln!("[JIT] generic loop failed: {}", e);
+                        // Also print the context's function for debugging
+                        eprintln!("{}", self.ctx.func.display());
+                    }
                 }
             }
         }
@@ -1341,15 +1358,19 @@ impl JitState {
             match self.compile_iter_loop(code_ptr, ip, cursor_slot, item_slot, body_code, constants)
             {
                 Ok(_) => {
-                    eprintln!(
-                        "[JIT] compiled iter loop @ code=0x{:x} ip={} after {} iters",
-                        code_ptr, ip, new_count
-                    );
+                    if self.trace {
+                        eprintln!(
+                            "[JIT] compiled iter loop @ code=0x{:x} ip={} after {} iters",
+                            code_ptr, ip, new_count
+                        );
+                    }
                     return true;
                 }
                 Err(e) => {
-                    eprintln!("[JIT] iter loop failed: {}", e);
-                    eprintln!("{}", self.ctx.func.display());
+                    if self.trace {
+                        eprintln!("[JIT] iter loop failed: {}", e);
+                        eprintln!("{}", self.ctx.func.display());
+                    }
                 }
             }
         }
@@ -1763,14 +1784,16 @@ impl JitState {
             if hints.len() > arity as usize { return None; }
             match self.compile_hot_fn(fn_id, code, &program.constants, writable, &members, hints, None) {
                 Ok(compiled) => {
-                    eprintln!(
-                        "[JIT] compiled hot {}fn name={} fn_id=0x{:x} entry={} type_hints={}",
-                        if writable != 0 { "loop " } else { "" },
-                        name,
-                        fn_id,
-                        entry,
-                        hints.iter().filter(|hint| Self::hint_kind(hint).is_some()).count()
-                    );
+                    if self.trace {
+                        eprintln!(
+                            "[JIT] compiled hot {}fn name={} fn_id=0x{:x} entry={} type_hints={}",
+                            if writable != 0 { "loop " } else { "" },
+                            name,
+                            fn_id,
+                            entry,
+                            hints.iter().filter(|hint| Self::hint_kind(hint).is_some()).count()
+                        );
+                    }
                     let compiled = CompiledFn {
                         call: compiled,
                         record_keys: record_keys.map(Arc::from),
@@ -1781,7 +1804,9 @@ impl JitState {
                     return Some(compiled);
                 }
                 Err(e) => {
-                    eprintln!("[JIT] hot fn compile failed: {}", e);
+                    if self.trace {
+                        eprintln!("[JIT] hot fn compile failed: {}", e);
+                    }
                     self.module.clear_context(&mut self.ctx);
                     self.func_ctx = FunctionBuilderContext::new();
                 }
