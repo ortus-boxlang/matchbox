@@ -25,6 +25,8 @@ pub struct TUI {
     /// Immediate-mode drawing for the frame in progress (see `canvas`), painted after the widgets.
     canvas: Vec<DrawCmd>,
     mouse_enabled: bool,
+    /// Whether `poll_event` reports mouse motion as `move` events (off unless `set_mouse_motion( true )`).
+    mouse_motion: bool,
     dirty: bool,
     /// What has been sent to the terminal for pictures drawn with the Kitty protocol.
     kitty: KittyState,
@@ -178,7 +180,8 @@ impl TUI {
     /// `poll_event( timeoutMs )`: the next event as a struct, or null when none arrives in time.
     /// `{type:"key", key, ctrl, alt, shift}` (key names: the character, or Enter, Tab, BackTab, Backspace, Escape, Left,
     /// Right, Up, Down, Home, End, PageUp, PageDown, Delete, Insert, F1..; with Ctrl+ or Alt+ in front),
-    /// `{type:"click", x, y, widgetId?}`, `{type:"scroll", direction:"up"|"down", x, y}`, `{type:"resize", width, height}`.
+    /// `{type:"click", x, y, widgetId?}`, `{type:"scroll", direction:"up"|"down", x, y}`, `{type:"resize", width, height}`,
+    /// and `{type:"move", x, y}` for mouse motion (with or without a button held) once `set_mouse_motion( true )` is called.
     pub fn bx_poll_event(&self, vm: &mut dyn BxVM, timeout: f64) -> Result<BxValue, String> {
         if !event::poll(std::time::Duration::from_millis(timeout as u64)).map_err(|e| e.to_string())? {
             return Ok(BxValue::new_null());
@@ -212,6 +215,13 @@ impl TUI {
                     let s = vm.struct_new();
                     set_str(vm, s, "type", "scroll");
                     set_str(vm, s, "direction", if mouse.kind == MouseEventKind::ScrollUp { "up" } else { "down" });
+                    vm.struct_set(s, "x", BxValue::new_number(mouse.column as f64));
+                    vm.struct_set(s, "y", BxValue::new_number(mouse.row as f64));
+                    Ok(BxValue::new_ptr(s))
+                }
+                kind if reports_motion(kind, self.mouse_motion) => {
+                    let s = vm.struct_new();
+                    set_str(vm, s, "type", "move");
                     vm.struct_set(s, "x", BxValue::new_number(mouse.column as f64));
                     vm.struct_set(s, "y", BxValue::new_number(mouse.row as f64));
                     Ok(BxValue::new_ptr(s))
@@ -257,6 +267,13 @@ impl TUI {
         self.set_mouse(enabled)
     }
 
+    /// Turns `move` events on or off. Off by default, so a loop that redraws on every event is not flooded by motion.
+    /// Motion is only seen while mouse reporting is on (`init()` turns it on; `set_mouse( false )` turns it off).
+    pub fn bx_set_mouse_motion(&mut self, enabled: bool) -> Result<(), String> {
+        self.mouse_motion = enabled;
+        Ok(())
+    }
+
     pub fn bx_shutdown(&mut self, vm: &mut dyn BxVM) -> Result<(), String> {
         let result = self.shutdown();
         vm.resume_gc();
@@ -296,6 +313,7 @@ impl TUI {
             frame_widgets: Vec::new(),
             canvas: Vec::new(),
             mouse_enabled: false,
+            mouse_motion: false,
             dirty: true,
             kitty: KittyState::new(),
         }
@@ -522,6 +540,11 @@ impl Drop for TUI {
     }
 }
 
+/// True when a mouse event is motion that `poll_event` reports as `move`: only while motion events are on.
+fn reports_motion(kind: MouseEventKind, motion: bool) -> bool {
+    motion && matches!(kind, MouseEventKind::Moved | MouseEventKind::Drag(_))
+}
+
 /// A key as text: the character itself, or a name (Enter, Tab, Escape, Up, F5, ...), with `Ctrl+` / `Alt+` in front
 /// when held (and `Shift+` for named keys; a shifted character is already the capital letter).
 fn format_key(key: KeyEvent) -> String {
@@ -603,5 +626,19 @@ mod key_tests {
         assert_eq!(format_key(key(KeyCode::Char('x'), KeyModifiers::ALT)), "Alt+x");
         assert_eq!(format_key(key(KeyCode::Up, KeyModifiers::SHIFT)), "Shift+Up");
         assert_eq!(format_key(key(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::ALT)), "Ctrl+Alt+Left");
+    }
+
+    #[test]
+    fn motion_is_reported_only_when_turned_on() {
+        assert!(!reports_motion(MouseEventKind::Moved, false));
+        assert!(reports_motion(MouseEventKind::Moved, true));
+        assert!(reports_motion(MouseEventKind::Drag(MouseButton::Left), true));
+        assert!(!reports_motion(MouseEventKind::Down(MouseButton::Left), true));
+        assert!(!reports_motion(MouseEventKind::ScrollUp, true));
+    }
+
+    #[test]
+    fn motion_is_off_for_a_new_tui() {
+        assert!(!TUI::new().mouse_motion);
     }
 }
