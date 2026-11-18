@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **TUI**: `tui.set_mouse_motion( true )` makes `poll_event` report mouse motion as `{ type: "move", x, y }` (with or without a button held). Off by default, so existing loops see no change. Documented in `docs/tui.md`.
 - **Resources**: files a program reads at run time travel with it. A `resources/` folder next to the program and each `--resources DIR` are read with `resourceRead( path )` (text), `resourceReadBinary( path )`, `resourceExists( path )` and `resourceList( [dir] )`. Run from source they come from disk; a native build packs them (raw, once) into the binary, which serves them from memory from any directory. The module bundle magic is now `MBMODS\0\x0D`; a native build without resources or modules keeps the plain layout. Documented in `docs/building-and-deploying/native-builds.md` (Resources), `docs/getting-started/features-overview.md`, `building.md` (`--resources`) and `differences-from-boxlang.md`.
 - `fileWrite( path, binary )` writes the bytes as they are, as BoxLang does (it wrote the binary's string form).
 
