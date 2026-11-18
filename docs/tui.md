@@ -35,6 +35,7 @@ try {
 | `size()` | `{ width, height }` of the terminal. |
 | `render_to_string( width, height )` | The current frame drawn into memory as plain text, one line per row. Needs no terminal: use it to test a UI. |
 | `set_mouse( enabled )` | Turns mouse reporting on or off. |
+| `set_mouse_motion( enabled )` | Turns `move` events on or off (off by default). |
 
 ## Drawing
 
@@ -115,6 +116,7 @@ is mapped to the nearest of the 256-colour palette, so the same program looks ri
 | `click` | `x`, `y` (left button), and `widgetId` when a widget was hit. |
 | `scroll` | `direction` (`up` or `down`), `x`, `y`. |
 | `resize` | `width`, `height`. |
+| `move` | `x`, `y`. Mouse motion, with or without a button held. Only after `set_mouse_motion( true )`, so loops that redraw on every event are not flooded. |
 
 ## Widgets
 
