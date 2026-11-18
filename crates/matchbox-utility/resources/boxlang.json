@@ -1,0 +1,47 @@
+/**
+ * MatchBox runtime configuration, in the BoxLang boxlang.json format.
+ *
+ * Layers, later ones override earlier ones (objects merge, other values replace):
+ *   1. this file
+ *   2. ./boxlang.json in the working directory
+ *   3. --bx-config <file> or MATCHBOX_CONFIG
+ *
+ * Keys MatchBox does not support yet are ignored.
+ * Placeholders: ${matchbox-home} (also ${boxlang-home}) is the MatchBox home, ${user-dir} is the working directory.
+ */
+{
+	// When true the root log level is raised to DEBUG
+	"debugMode": false,
+	// Logging settings for the runtime
+	"logging": {
+		// The location of the log files the runtime will produce
+		"logsDirectory": "${matchbox-home}/logs",
+		// The maximum number of days to keep rotated log files. 0 never deletes them
+		"maxLogDays": 90,
+		// The maximum size of a single log file before rotation (KB, MB, GB)
+		"maxFileSize": "100MB",
+		// The total cap size of each logger's files (KB, MB, GB). Oldest rotated files are deleted first
+		"totalCapSize": "5GB",
+		// The root logger level: ERROR, WARN, INFO, DEBUG, TRACE or OFF
+		"rootLevel": "WARN",
+		// Default encoder for file loggers: "text" or "json"
+		"defaultEncoder": "text",
+		// Per logger settings. A named logger writes to <logsDirectory>/<name>.log
+		"loggers": {
+			// The runtime's own log: runtime.log
+			"runtime": {
+				// Leave out to inherit from the root logger
+				"level": "INFO",
+				// "file" or "console"
+				"appender": "file",
+				"encoder": "text"
+			},
+			// writeLog() and bx:log write here unless they name another log: application.log
+			"application": {
+				"level": "WARN",
+				"appender": "file",
+				"encoder": "text"
+			}
+		}
+	}
+}

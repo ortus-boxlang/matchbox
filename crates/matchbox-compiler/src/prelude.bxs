@@ -1076,3 +1076,19 @@ function _destructureObjectRest(source, used) {
     }
     return result;
 }
+
+/**
+ * Writes a message to a log file, as in BoxLang. The entry is written as `[application] text`.
+ *
+ * @text The message. An empty message writes nothing.
+ * @type The level: information, warning, error, fatal, debug or trace. Entries below the log's level are dropped.
+ * @application Put the application name in front of the message. Defaults to true.
+ * @log A logger name (written to `<logsDirectory>/<name>.log`) or an absolute path. Defaults to `application`.
+ * @file Compatibility only: if set, it is used instead of `log`.
+ */
+function writeLog(text, type = "information", application = true, log = "", file = "") {
+    if (len(file) > 0) {
+        log = file;
+    }
+    __bxLogWrite(text, type, log, application);
+}

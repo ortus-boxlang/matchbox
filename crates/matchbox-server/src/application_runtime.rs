@@ -136,13 +136,16 @@ impl WebrootRuntime {
                     .spawn(move || {
                         let mut runtime = ApplicationRuntime::new();
                         let startup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                            || match bootstrap {
-                                Some(options) => runtime.load_modules(
-                                    &options.project,
-                                    options.home.as_deref(),
-                                    options.config.as_deref(),
-                                ),
-                                None => Ok((Vec::new(), Vec::new())),
+                            || {
+                                runtime.load_prelude()?;
+                                match bootstrap {
+                                    Some(options) => runtime.load_modules(
+                                        &options.project,
+                                        options.home.as_deref(),
+                                        options.config.as_deref(),
+                                    ),
+                                    None => Ok((Vec::new(), Vec::new())),
+                                }
                             },
                         ))
                         .map_err(|_| "Module startup panicked".to_string())
@@ -230,11 +233,16 @@ thread_local! { static RUNTIMES: std::cell::RefCell<HashMap<usize, ApplicationRu
 impl WebrootRuntime {
     pub(crate) fn render(&self, job: RenderJob) -> Result<RenderOutput> {
         RUNTIMES.with(|runtimes| {
-            runtimes
-                .borrow_mut()
-                .entry(self.inner.id)
-                .or_insert_with(ApplicationRuntime::new)
-                .render(job)
+            let mut runtimes = runtimes.borrow_mut();
+            let runtime = match runtimes.entry(self.inner.id) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let mut runtime = ApplicationRuntime::new();
+                    runtime.load_prelude()?;
+                    entry.insert(runtime)
+                }
+            };
+            runtime.render(job)
         })
     }
 }

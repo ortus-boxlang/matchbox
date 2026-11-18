@@ -816,6 +816,7 @@ pub fn run() -> Result<()> {
     {
         let bytes = fs::read(std_env::current_exe()?)?;
         if bytes.ends_with(matchbox_vm::bundle::MAGIC) {
+            init_runtime(None, None, false)?;
             let application = matchbox_vm::bundle::Application::from_executable(&bytes)?;
             let mut vm = vm::VM::new_with_args(std_env::args().collect());
             #[cfg(feature = "jit")]
@@ -825,6 +826,7 @@ pub fn run() -> Result<()> {
         }
     }
     if let Ok(embedded_chunk) = load_embedded_bytecode() {
+        init_runtime(None, None, false)?;
         return run_chunk(embedded_chunk, &[]);
     }
 
@@ -857,13 +859,9 @@ pub fn run() -> Result<()> {
     if cli.verbose || cli.bx_debug {
         enable_logging();
     }
-    // MatchBox has no boxlang.json or runtime home: accept the BoxLang flags (they must never
-    // reach the script) but say so instead of silently pretending to apply them.
-    for (flag, value) in [("--bx-config", &cli.bx_config), ("--bx-home", &cli.bx_home)] {
-        if let Some(value) = value {
-            eprintln!("[matchbox] {flag} {value} is not supported by MatchBox and is ignored");
-        }
-    }
+    // ~/.matchbox.env, ./.env, the MatchBox home, its layered boxlang.json config and logs. Explicit --bx-home or
+    // --bx-config values must work, so their failures are fatal.
+    init_runtime(cli.bx_home.as_deref(), cli.bx_config.as_deref(), cli.bx_home.is_some() || cli.bx_config.is_some())?;
     if cli.bx_transpile {
         bail!("--bx-transpile is not supported by MatchBox (BoxLang uses it to transpile to Java)");
     }
@@ -915,6 +913,11 @@ pub fn run() -> Result<()> {
     if is_serve {
         #[cfg(feature = "server")]
         {
+            // MiniServer parity: <webroot>/.env is loaded before the server starts (cwd .env was loaded at startup).
+            match matchbox_utility::env_file::load(None, &Path::new(&webroot).join(".env")) {
+                Ok(vars) => matchbox_utility::env_file::apply(&vars),
+                Err(e) => eprintln!("[matchbox] cannot read {webroot}/.env: {e}"),
+            }
             let port = cli
                 .port
                 .as_deref()
@@ -1186,8 +1189,9 @@ fn usage_text() -> String {
     let _ = writeln!(out, "  --bx-code <code>    Execute inline BoxLang code");
     let _ = writeln!(out, "  -e, --eval <source> Execute inline BoxLang source (cannot combine with files or build/server options)");
     let _ = writeln!(out, "  --bx-printAST       Print the AST (JSON) of a file, --bx-code or stdin");
-    let _ = writeln!(out, "  --bx-config <path>, --bx-home <path>, --bx-transpile");
-    let _ = writeln!(out, "                      Accepted for BoxLang compatibility; not supported by MatchBox");
+    let _ = writeln!(out, "  --bx-config <path>  Config file layered over <home>/config/boxlang.json and ./boxlang.json");
+    let _ = writeln!(out, "  --bx-home <path>    MatchBox home (default: MATCHBOX_HOME, then ~/.matchbox)");
+    let _ = writeln!(out, "  --bx-transpile      Accepted for BoxLang compatibility; not supported by MatchBox");
     let _ = writeln!(out, "  --build             Compile to bytecode (.bxb)");
     let _ = writeln!(out, "  --target <native>   Produce a standalone native binary");
     let _ = writeln!(out, "  --target <wasi>     Produce a standalone WASI container binary");
@@ -1229,6 +1233,33 @@ fn usage_text() -> String {
     let _ = writeln!(out, "and read with cliGetArgs(), exactly like BoxLang.");
     let _ = writeln!(out, "If no file is provided, matchbox starts in REPL mode.");
     out
+}
+
+/// Bootstrap the MatchBox runtime home: `.env` files, the home directory, the layered `boxlang.json` config and logging.
+///
+/// `home` and `config` are the `--bx-home` and `--bx-config` values, when given.
+///
+/// A failure is a warning unless `strict`, so a read-only home never stops a script from running. `strict` is set
+/// when the user passed `--bx-home` or `--bx-config`, because those must work.
+///
+/// # Errors
+///
+/// Returns the bootstrap error only when `strict` is true. See [`matchbox_utility::bootstrap::bootstrap_with`].
+#[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+fn init_runtime(home: Option<&str>, config: Option<&str>, strict: bool) -> Result<()> {
+    match matchbox_utility::bootstrap::bootstrap(home, config) {
+        Ok(_) => Ok(()),
+        Err(e) if strict => bail!("{e}"),
+        Err(e) => {
+            eprintln!("[matchbox] runtime home setup failed: {e}");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(any(target_family = "wasm", target_os = "espidf"))]
+fn init_runtime(_home: Option<&str>, _config: Option<&str>, _strict: bool) -> Result<()> {
+    Ok(())
 }
 
 fn run_lambda_command(args: &[String]) -> Result<()> {

@@ -202,7 +202,8 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
         system::box_module_reload as BxNativeFunction,
     );
     bifs.insert("trace".to_string(), system::trace as BxNativeFunction);
-    bifs.insert("writelog".to_string(), system::write_log as BxNativeFunction);
+    bifs.insert("__bxlogwrite".to_string(), system::log_write as BxNativeFunction);
+    bifs.insert("__bxlogapplication".to_string(), system::log_application as BxNativeFunction);
     bifs.insert(
         "getfunctioncalledname".to_string(),
         system::get_function_called_name as BxNativeFunction,
