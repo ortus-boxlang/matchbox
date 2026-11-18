@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A class file that instantiates itself while it is being compiled (`new lib.A()` inside `lib/A.bx`) now fails with `Circular class reference: ...` instead of overflowing the compiler's stack.
 
 ### Fixed
+- The JIT printed `[JIT] compiled hot fn name=... fn_id=...`, `[JIT] compiled ... loop ...`, `[JIT] calling compiled loop ...` and deopt lines to stderr on every run of a program with hot code, which corrupted TUIs (BxRig) and polluted output. All `[JIT]` diagnostics, including the compile-failure messages and the Cranelift IR dump, are now printed only when `MATCHBOX_JIT_TRACE` is set, and only to stderr. Documented in `docs/building-and-deploying/jit.md`.
 - A counting `for` loop whose condition is `name < number` (for example `for ( i = 0; i < 2; i++ )` at script level, or `for ( var i = 0; i < n; i += 1 )` in a function) removed one extra value from the VM stack when it finished. Nested in a `for ( x in collection )` loop this crashed the VM with `index out of bounds` on the outer loop's next iteration; in a function it could shift the slot of a later local. The compiler now jumps over the guard's `POP` after every fused compare-and-jump loop exit, not only after `FOR_LOOP_STEP`.
 
 ### Added
