@@ -399,7 +399,8 @@ fn warmed_members_do_not_renormalize_operand_names() {
                 .unwrap(),
             BxValue::new_int(42)
         );
-        assert_eq!(vm.struct_key_array(record), ["VaLuE"]);
+        // Reading through another spelling must not rename the stored key.
+        assert_eq!(vm.struct_key_array(record), ["value"]);
         ALLOCATIONS.with(|count| count.set(Some(0)));
         let result = vm.call_function_value(function, args, None).unwrap();
         allocations.push(ALLOCATIONS.with(|count| count.replace(None).unwrap()));
@@ -456,7 +457,7 @@ fn repeated_parameter_writes_do_not_allocate_binding_names() {
 }
 
 #[test]
-fn numeric_parameter_bindings_preserve_read_and_first_write_spelling() {
+fn numeric_parameter_bindings_keep_the_incoming_spelling() {
     for (spelling, incoming) in [
         ("SpellingProbe", "spellingprobe"),
         ("Élève中😀", "élève中😀"),
@@ -498,10 +499,10 @@ fn numeric_parameter_bindings_preserve_read_and_first_write_spelling() {
                 )
                 .unwrap();
             let scope = scope.as_gc_id().unwrap();
-            assert_eq!(
-                vm.struct_key_array(scope),
-                [if write { spelling } else { incoming }]
-            );
+            // The key keeps the spelling it arrived with; writes through the declared
+            // spelling update it in place (case-insensitive), as on the JVM.
+            let _ = spelling;
+            assert_eq!(vm.struct_key_array(scope), [incoming]);
             assert_eq!(
                 vm.struct_get(scope, incoming).as_number(),
                 if write { 42.0 } else { 7.0 }

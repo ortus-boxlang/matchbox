@@ -1,0 +1,32 @@
+// Each struct keeps its keys spelled as written, even when another struct or a
+// function used the same name with different casing first (lookups stay case-insensitive).
+first = { Mean: 1, COUNT: 1 };
+second = { mean: 2 };
+assert serializeJSON( second ) == '{"mean":2}';
+assert structKeyList( second ) == "mean";
+assert second.MEAN == 2 && second[ "Mean" ] == 2;
+assert structKeyList( first ) == "Mean,COUNT";
+
+dotted = {};
+dotted.total = 1;
+upper = {};
+upper.Total = 1;
+assert structKeyList( dotted ) == "total" && structKeyList( upper ) == "Total";
+
+indexed = {};
+indexed[ "count" ] = 1;
+assert structKeyList( indexed ) == "count";
+
+// Updating an existing key keeps its first spelling, as on the JVM.
+indexed[ "COUNT" ] = 2;
+assert structKeyList( indexed ) == "count" && indexed.count == 2;
+
+// Deleting a key keeps the spelling of the others.
+mixed = { Alpha: 1, beta: 2, Gamma: 3 };
+structDelete( mixed, "beta" );
+assert structKeyList( mixed ) == "Alpha,Gamma";
+
+assert structKeyList( deserializeJSON( '{"mean":1,"Name":"x"}' ) ).listSort( "textnocase" ) == "mean,Name";
+assert structKeyList( { ...second, Extra: 1 } ) == "mean,Extra";
+for ( key in second ) assert key == "mean";
+println( "struct key casing OK" );

@@ -212,7 +212,8 @@ fn active_argument_view_keeps_read_only_lookup_write_spelling_and_case_rules() {
         assert_eq!(borrowed_read(&mut vm, 0).as_number(), 11.0);
         assert_eq!(vm.struct_get(arguments, "MiXeD").as_number(), 11.0);
         assert_eq!(vm.struct_key_array(arguments).len(), if case_sensitive { 2 } else { 1 });
-        assert!(vm.struct_key_array(arguments).contains(&"MiXeD".to_string()));
+        // An existing case-insensitive key keeps its first spelling, as on the JVM.
+        assert!(vm.struct_key_array(arguments).contains(&if case_sensitive { "MiXeD" } else { "mixed" }.to_string()));
         if case_sensitive {
             assert_eq!(vm.struct_get(arguments, "mixed").as_number(), 7.0);
         }

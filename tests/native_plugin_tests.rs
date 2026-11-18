@@ -818,6 +818,43 @@ class {{
 }
 
 #[test]
+fn unprefixed_mappings_keep_the_invocation_path_for_classes_and_relative_interceptors() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("module");
+    fs::create_dir_all(module.join("models")).unwrap();
+    fs::create_dir_all(module.join("interceptors")).unwrap();
+    fs::write(module.join("ModuleConfig.bx"), r#"
+class {
+    this.mapping = {name:"plain", usePrefix:false};
+    function configure() {
+        interceptors = [{class:"interceptors.Probe", properties:{tag:"probe"}}];
+        customInterceptionPoints = ["onPlain"];
+    }
+}
+"#).unwrap();
+    fs::write(module.join("models/Counter.bx"), "class { function next() { return 1; } }").unwrap();
+    fs::write(module.join("interceptors/Probe.bx"), "class { function onPlain(data) { data.seen = properties.tag; } }").unwrap();
+    fs::write(dir.path().join("app.bxs"), r#"
+info = getModuleInfo("module");
+assert info.mapping.name == "/plain/";
+assert info.invocationPath == "bxModules.plain";
+assert new plain.models.Counter().next() == 1;
+assert new bxModules.plain.models.Counter().next() == 1;
+data = {};
+boxAnnounce("onPlain", data);
+assert data.seen == "probe";
+println("unprefixed mapping OK");
+"#).unwrap();
+    let output = cli(dir.path(), &["--module", "module", "app.bxs"]); success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "unprefixed mapping OK\n");
+    success(&cli(dir.path(), &["--target", "native", "--module", "module", "--output", "application", "app.bxs"]));
+    fs::remove_dir_all(module).unwrap();
+    let output = Command::new(dir.path().join("application")).current_dir(dir.path()).output().unwrap();
+    success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "unprefixed mapping OK\n");
+}
+
+#[test]
 fn runtime_mappings_resolve_embedded_classes_in_configure_imports_and_constructors() {
     let dir = tempfile::tempdir().unwrap();
     let module = dir.path().join("module");

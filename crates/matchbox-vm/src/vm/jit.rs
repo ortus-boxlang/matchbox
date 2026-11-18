@@ -377,11 +377,12 @@ impl super::VM {
                 }
             }
             if let Some(keys) = compiled.record_keys {
-                let mut pairs = [(0, crate::types::BxValue::new_null()); 2];
+                let mut pairs = [(0, 0, crate::types::BxValue::new_null()); 2];
                 // Match STRUCT's reverse key interning/presentation, then source order.
                 for (i, key) in keys.iter().enumerate().rev() {
                     let mut key = key.clone();
-                    pairs[i] = (self.interner.intern(key.as_flat_str()), unsafe {
+                    let (key_id, spelling) = self.struct_key_ids(key.as_flat_str());
+                    pairs[i] = (key_id, spelling, unsafe {
                         std::mem::transmute::<u64, crate::types::BxValue>(results[i])
                     });
                 }
