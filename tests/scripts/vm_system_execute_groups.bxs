@@ -1,0 +1,25 @@
+// Native Unix extension: owned groups must not leave descendants running.
+root = getTempDirectory() & "matchbox-process-group-" & createUUID();
+directoryCreate(root);
+try {
+    started = getTickCount();
+    blocked = systemExecute("/bin/sleep", ["10"], 1, true, null, null, null, false, {PATH: "/usr/bin:/bin"}, false, repeatString("x", 131072), true);
+    assert blocked.timeout && blocked.terminated;
+    assert getTickCount() - started < 3000 : "Blocked stdin escaped the execution deadline";
+    for (mode in ["exit", "timeout"]) {
+        marker = root & "/" & mode;
+        script = "(sleep 2; touch " & marker & ") & ";
+        if (mode == "timeout") { script &= "wait"; }
+        result = systemExecute("/bin/sh", ["-c", script], 1, true, null, null, null, false, {PATH: "/usr/bin:/bin"}, false, null, true);
+        if (mode == "timeout" && (!result.timeout || !result.terminated)) {
+            throw "Owned group did not report timeout termination";
+        }
+    }
+    sleep(2300);
+    if (fileExists(root & "/exit") || fileExists(root & "/timeout")) {
+        throw "systemExecute left a descendant running";
+    }
+} finally {
+    directoryDelete(root, true);
+}
+println("systemExecute owned process groups: OK");

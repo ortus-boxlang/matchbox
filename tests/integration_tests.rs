@@ -308,6 +308,9 @@ script_test!(vm_io_bifs, "vm_io_bifs.bxs");
     not(target_os = "espidf")
 ))]
 script_test!(vm_system_execute, "vm_system_execute.bxs");
+script_test!(vm_file_read_binary, "vm_file_read_binary.bxs");
+#[cfg(unix)]
+script_test!(vm_system_execute_groups, "vm_system_execute_groups.bxs");
 script_test!(vm_list_query_extra, "vm_list_query_extra.bxs");
 script_test!(vm_binary_encryption, "vm_binary_encryption.bxs");
 script_test!(vm_set_bifs, "vm_set_bifs.bxs");

@@ -3,6 +3,8 @@ extern crate self as matchbox_vm;
 pub mod bifs;
 pub mod paths;
 pub mod stdout;
+#[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
+pub mod process_groups;
 #[cfg(all(feature = "qoq", not(target_arch = "wasm32")))]
 pub mod qoq;
 pub mod types;

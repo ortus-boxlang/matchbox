@@ -151,6 +151,21 @@ Each worker accepts one active job; `submit` returns an empty string while busy,
 
 Submissions during startup or shutdown are rejected. On orderly disposal, accepted jobs finish and worker modules unload before parent modules. The native routed executable handles Ctrl-C and SIGTERM by stopping admission, closing WebSockets and draining work. Abrupt termination/crash cannot guarantee cleanup or that external commands stopped. Give external commands their own deadlines; shutdown can wait for them. Stopping this server does not undo external resources.
 
+For Unix commands whose descendants must not outlive the call, use the native extension
+`systemExecute(name, arguments, timeout, true, directory, output, error, inheritEnvironment,
+environment, inheritIO, input, true)`. The final `terminateProcessGroup` argument creates an
+owned process group. It requires `terminateOnTimeout=true`; the group is killed on timeout,
+normal leader exit, errors, and orderly routed-server SIGTERM/Ctrl-C before worker drain.
+The timeout also covers a child that does not read stdin. Default calls keep their existing
+non-owning behavior. Ownership is Unix-only and does not contain descendants which deliberately
+leave the group, stop remote work, or guarantee cleanup after an abrupt host kill.
+
+`fileReadBinary(path)` reads a local regular file without UTF-8 conversion. URLs and open-file
+objects are not supported by this native path-only implementation. A routed handler can send
+binary data with `event.renderData("binary", bytes[, contentType])`; the default content type is
+`application/octet-stream`. Keep path authorization and size limits in the application, and do
+not mount private state as static files.
+
 ## Periodic callbacks and request security helpers
 
 `app.every(milliseconds, callback)` registers a startup-only timer in the shared routed VM. Intervals range from 100 ms to 24 hours, with at most eight timers. Callbacks are serialized with HTTP/WebSocket handlers and missed ticks are coalesced. Submit slow work to a managed worker instead of blocking a timer.
