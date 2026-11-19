@@ -1597,6 +1597,7 @@ impl BxVM for VM {
     fn interception_points(&self) -> Vec<String> { VM::interception_points(self) }
     #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
     fn execution_components(&self) -> Result<Vec<BxValue>, String> { Ok(VM::execution_components(self)) }
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
     fn component_names(&self) -> Vec<String> { VM::component_names(self) }
     #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
     fn invoke_component(&mut self, name: &str, attributes: BxValue, body: BxValue) -> Result<BxValue, String> { VM::invoke_component(self, name, attributes, body).map_err(|error| error.to_string()) }
