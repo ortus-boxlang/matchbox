@@ -1,0 +1,11 @@
+// Local path contract shared with JVM BoxLang: preserve NUL and non-ASCII bytes.
+path = getTempDirectory() & "matchbox-read-binary-" & createUUID() & ".bin";
+try {
+    fileWrite(path, "A" & char(0) & "ÿ");
+    data = fileReadBinary(path);
+    assert isBinary(data);
+    assert lCase(binaryEncode(data, "hex")) == "4100c3bf";
+} finally {
+    if (fileExists(path)) { fileDelete(path); }
+}
+println("fileReadBinary local path: OK");

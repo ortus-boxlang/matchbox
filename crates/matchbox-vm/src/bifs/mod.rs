@@ -131,7 +131,7 @@ const GATED: &[(&str, &[&str])] = &[
         "contractpath", "createtempdirectory", "createtempfile", "directorycopy", "directorycreate", "directorydelete",
         "directoryexists", "directorylist", "directorymove", "directoryrename", "expandpath", "fileappend",
         "fileclose", "filecopy", "filecreatesymlink", "filedelete", "fileexists", "filegetmimetype",
-        "fileinfo", "fileiseof", "filemove", "fileopen", "filepublishexclusive", "fileread",
+        "fileinfo", "fileiseof", "filemove", "fileopen", "filepublishexclusive", "fileread", "filereadbinary",
         "filereadline", "fileseek", "filesetaccessmode", "filesetattribute", "filesetexecutable", "filesetlastmodified",
         "filewrite", "filewriteexclusive", "filewriteline", "getcanonicalpath", "getdirectoryfrompath", "getfileinfo",
         "gettempdirectory", "gettempfile", "propertyfile",
@@ -741,6 +741,7 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
             fs::file_set_executable as BxNativeFunction,
         );
         bifs.insert("fileread".to_string(), fs::file_read as BxNativeFunction);
+        bifs.insert("filereadbinary".to_string(), fs::file_read_binary as BxNativeFunction);
         bifs.insert("filewrite".to_string(), fs::file_write as BxNativeFunction);
         bifs.insert(
             "filewriteexclusive".to_string(),

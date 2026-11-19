@@ -1064,6 +1064,15 @@ impl BxNativeObject for RequestContextObject {
                         let body = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
                         render_response(&self.response, "application/json", body);
                     }
+                    "binary" => {
+                        let body = vm.to_bytes(args[1])?;
+                        let content_type = if args.len() > 2 {
+                            arg_string(vm, args, 2)
+                        } else {
+                            "application/octet-stream".to_string()
+                        };
+                        render_response(&self.response, &content_type, body);
+                    }
                     "html" => {
                         render_response(
                             &self.response,
@@ -1191,6 +1200,9 @@ async fn run_compiled_script_server(compiled: Arc<CompiledScriptApp>) -> anyhow:
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             actor.begin_shutdown();
+            if let Err(error) = matchbox_vm::process_groups::terminate_owned_process_groups() {
+                eprintln!("Could not stop owned process groups: {error}");
+            }
             if let Some(sockets) = sockets {
                 sockets.shutdown.send_replace(true);
             }
