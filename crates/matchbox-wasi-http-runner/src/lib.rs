@@ -202,7 +202,7 @@ fn split_path_query(path_with_query: &str) -> (String, Option<String>) {
 }
 
 fn headers_to_map(headers: Fields) -> HashMap<String, String> {
-    let mut map = HashMap::new();
+    let mut map: HashMap<String, String> = HashMap::new();
     for (name, value) in headers.entries() {
         if let Ok(value) = String::from_utf8(value) {
             let name = name.to_ascii_lowercase();
