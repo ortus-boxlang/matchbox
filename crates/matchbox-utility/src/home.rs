@@ -3,6 +3,7 @@
 use std::{
     io,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 /// Default `config/boxlang.json` seeded into a new home.
@@ -85,7 +86,10 @@ pub fn ensure(home: &Path) -> io::Result<()> {
 
 /// Write [`DEFAULT_CONFIG`] to `config` unless the file already exists, without ever exposing a partial file.
 fn seed(config: &Path) -> io::Result<()> {
-    let temporary = config.with_extension(format!("json.{}.tmp", std::process::id()));
+    // The process id separates processes; the counter separates threads (and repeated calls) within one process.
+    static SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let unique = SEED_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temporary = config.with_extension(format!("json.{}.{unique}.tmp", std::process::id()));
     std::fs::write(&temporary, DEFAULT_CONFIG)?;
     // `hard_link` fails when `config` exists, so it never replaces a file another process (or the user) just wrote.
     let linked = std::fs::hard_link(&temporary, config);

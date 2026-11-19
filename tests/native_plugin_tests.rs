@@ -2266,7 +2266,14 @@ fn function_interception_mutates_arguments_results_and_observes_errors() {
         println("function events OK");"#, include_str!("scripts/vm_execution_contexts.bxs"));
     fs::write(dir.path().join("app.bxs"), source).unwrap();
     let expected = format!("function events OK\ncontext scopes OK\n{}error:observed failure\n", "pre,post,".repeat(402));
-    let output = cli(dir.path(), &["--module", "module", "app.bxs"]);
+    // The JIT reports compiled functions on stderr only when MATCHBOX_JIT_TRACE is set.
+    let output = Command::new(env!("CARGO_BIN_EXE_matchbox"))
+        .current_dir(dir.path())
+        .env("MATCHBOX_NATIVE_CACHE", dir.path().join("cache"))
+        .env("MATCHBOX_JIT_TRACE", "1")
+        .args(["--module", "module", "app.bxs"])
+        .output()
+        .unwrap();
     success(&output);
     #[cfg(feature = "jit")]
     {
