@@ -71,6 +71,7 @@ The [native module guide](https://github.com/ortus-boxlang/matchbox/blob/develop
 The SDK has its own Cargo version, independent of MatchBox releases. Binary compatibility comes from immutable ABI majors and named capabilities, not matching Cargo versions or Rust toolchains:
 
 - `matchbox.values.v1`: call-scoped values, scalar/string operations, structs, opaque native objects, and errors.
+- `matchbox.global-services.v1`: an installed artifact may declare a packaged BoxLang service class by its package-relative file path. The host constructs it at module startup, registers its name, and owns shutdown and rollback.
 - `matchbox.class-providers.v1`: module-owned artifacts may declare an exact `java:` class name and a zero-argument `Invoke` factory during registration. The host calls the factory only on class resolution. The factory is not a global function.
 - `matchbox.object-state.v1`: `Call::state_object()` creates a native object whose private state is an ordinary GC-traced VM struct. Read/write that struct through `Call::object_state()` in the same provider and VM. Unlike an external root, the edge does not prevent cycles from being collected.
 - `matchbox.roots.v1`: optional retained VM values with explicit ownership and an RAII Rust wrapper.

@@ -103,6 +103,10 @@ Module-root `build/`, `dist/`, and `target/` directories are authoring outputs, 
 
 This is BoxLang package-class resolution, distinct from the class-provider boundary below. Public HTTP mapped mounts can serve native templates/static assets. Arbitrary application/runtime source mappings and complete BoxLang static scopes remain separate work.
 
+### Module-owned global services
+
+An installed plugin can use `require_global_services(host, ctx)` during initialization and call `(services.declare)(ctx, Text::new("models/Ledger.bx"))`. Use the class file path relative to **the declaring module**, not an import name or an external file. Initialization only copies the path. Before the module's `onLoad()`, MatchBox constructs that class on the owning VM and calls its zero-argument `init()`, if present. The instance enters the same registry as descriptor-declared global services: its `getName()` supplies the case-insensitive lookup key, duplicate names fail, and `onStartup()` and `onShutdown(force)` run with module activation, rollback and unload. Missing classes fail activation; nothing falls back to loose source or another module. This declaration does not register a Java class factory or a process-global VM value.
+
 ### Module-owned Java class providers
 
 An installed plugin can declare a class directly: negotiate `matchbox.class-providers.v1` during initialization and call `(providers.declare)(ctx, Text::new("java:org.example.Counter"), factory)`. The factory is a zero-argument `Invoke` callback, **not** a named global BIF. Return a supported class reference (for example a native object with methods) from that callback. Do not construct BoxLang classes during plugin initialization. MatchBox installs the declarations after `configure()` alongside descriptor entries, with the same validation, duplicate-name rejection, record ownership and cleanup. A raw library load without a module lifecycle does not offer this capability.

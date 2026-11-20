@@ -237,6 +237,16 @@ pub struct ClassProvidersV1 {
     pub declare: unsafe extern "C" fn(Context, Text, Invoke) -> i32,
 }
 
+/// Module-only registration of global services implemented by packaged BoxLang classes.
+pub const GLOBAL_SERVICES_V1: &str = "matchbox.global-services.v1";
+/// Startup declarations, separate from on-demand class resolution.
+#[repr(C)]
+pub struct GlobalServicesV1 {
+    /// Declare a package-relative class file (e.g. `models/Ledger.bx`).
+    /// The host constructs it with no arguments before the module's onLoad.
+    pub declare: unsafe extern "C" fn(Context, Text) -> i32,
+}
+
 /// Native objects with private, VM-traced struct slots instead of an opaque Rust payload.
 pub const OBJECT_STATE_V1: &str = "matchbox.object-state.v1";
 /// Invocation calls for native objects with VM-managed state.
@@ -751,6 +761,15 @@ pub unsafe fn require_paths(host: *const HostV1, context: Context) -> Result<&'s
 pub unsafe fn require_class_providers(host: *const HostV1, context: Context) -> Result<&'static ClassProvidersV1, i32> {
     unsafe { require_capability(host, context, CLASS_PROVIDERS_V1).map(|api| &*api.cast()) }
 }
+/// Requests the module-owned global service declaration table.
+/// # Errors
+/// Reports a missing capability when not loading a supported module artifact.
+/// # Safety
+/// Use only the pointers passed to plugin initialization.
+pub unsafe fn require_global_services(host: *const HostV1, context: Context) -> Result<&'static GlobalServicesV1, i32> {
+    unsafe { require_capability(host, context, GLOBAL_SERVICES_V1).map(|api| &*api.cast()) }
+}
+
 /// Requests VM-traced object slots.
 /// # Safety
 /// Use only the pointers passed to plugin initialization.

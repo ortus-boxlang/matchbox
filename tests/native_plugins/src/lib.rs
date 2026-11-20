@@ -518,6 +518,14 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
         let providers = unsafe { require_class_providers(host, ctx).unwrap() };
         if unsafe { (providers.declare)(ctx, Text::new("java:org.matchbox.fixture.Slots"), state_class) } != 0 { return 1; }
     }
+    // Set only by the service lifecycle test, in its isolated CLI subprocess.
+    if let Ok(path) = std::env::var("MATCHBOX_FIXTURE_SERVICE") {
+        let services = match unsafe { require_global_services(host, ctx) } {
+            Ok(services) => services,
+            Err(status) => return status,
+        };
+        if unsafe { (services.declare)(ctx, Text::new(&path)) } != 0 { return 1; }
+    }
     let roots = match unsafe { require_roots(host, ctx) } {
         Ok(roots) => roots,
         Err(status) => return status,

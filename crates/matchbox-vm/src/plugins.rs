@@ -35,6 +35,8 @@ struct Function {
 struct Registration {
     /// Factories are declarations only; no VM code runs until resolution.
     providers: Vec<(String, Invoke)>,
+    /// Class paths are copied at init and resolved against this artifact's module at startup.
+    service_classes: Vec<String>,
     functions: Vec<(Function, Invoke)>,
     error: Option<String>,
 }
@@ -101,10 +103,10 @@ unsafe extern "C" fn capability(name: Text) -> *const c_void {
 /// # Safety
 /// The name must be a valid ABI text view for this call.
 unsafe extern "C" fn module_capability(name: Text) -> *const c_void {
-    if unsafe { text(name) } == Ok(CLASS_PROVIDERS_V1) {
-        (&CLASS_PROVIDERS as *const ClassProvidersV1).cast()
-    } else {
-        unsafe { capability(name) }
+    match unsafe { text(name) }.ok() {
+        Some(CLASS_PROVIDERS_V1) => (&CLASS_PROVIDERS as *const ClassProvidersV1).cast(),
+        Some(GLOBAL_SERVICES_V1) => (&GLOBAL_SERVICES as *const GlobalServicesV1).cast(),
+        _ => unsafe { capability(name) },
     }
 }
 /// Collects a factory for normal validation and registration during module activation.
@@ -114,6 +116,16 @@ unsafe extern "C" fn declare_provider(ctx: Context, name: Text, factory: Invoke)
     let registration = unsafe { &mut *ctx.cast::<Registration>() };
     match unsafe { text(name) } {
         Ok(name) => { registration.providers.push((name.to_owned(), factory)); 0 }
+        Err(error) => { registration.error = Some(error); 1 }
+    }
+}
+/// Copies the class path; module activation restricts lookup to the packaged classes.
+/// # Safety
+/// Requires the live registration context and a valid UTF-8 text view.
+unsafe extern "C" fn declare_service(ctx: Context, path: Text) -> i32 {
+    let registration = unsafe { &mut *ctx.cast::<Registration>() };
+    match unsafe { text(path) } {
+        Ok(path) => { registration.service_classes.push(path.to_owned()); 0 }
         Err(error) => { registration.error = Some(error); 1 }
     }
 }
@@ -176,14 +188,23 @@ pub unsafe fn load(vm: &mut dyn BxVM, path: &Path) -> Result<(), String> {
     unsafe { load_module(vm, path, None) }.map(|_| ())
 }
 
-/// Loads plugin functions and returns its module-owned class factories for later activation.
-/// Without a module, the class-provider capability is unavailable and the result is empty.
+/// Declarations pending activation by the module that supplied this library.
+#[derive(Default)]
+pub struct ModuleDeclarations {
+    /// Exact-name factories, invoked lazily on class resolution.
+    pub providers: Vec<(String, NativeCallback)>,
+    /// Package-relative class files, instantiated once per VM at startup.
+    pub service_classes: Vec<String>,
+}
+
+/// Loads plugin functions and returns its module-owned declarations for later activation.
+/// Without an owning module, neither class nor service declarations are available.
 /// # Errors
 /// Fails if the library cannot be loaded, initialization fails, or registration is rejected.
 ///
 /// # Safety
 /// The selected library is trusted native code, capable of arbitrary process access.
-pub unsafe fn load_module(vm: &mut dyn BxVM, path: &Path, module: Option<&str>) -> Result<Vec<(String, NativeCallback)>, String> {
+pub unsafe fn load_module(vm: &mut dyn BxVM, path: &Path, module: Option<&str>) -> Result<ModuleDeclarations, String> {
     let module: Option<Rc<str>> = module.map(Rc::from);
     let path = path
         .canonicalize()
@@ -216,6 +237,7 @@ pub unsafe fn load_module(vm: &mut dyn BxVM, path: &Path, module: Option<&str>) 
     };
     let mut registration = Registration {
         providers: vec![],
+        service_classes: vec![],
         functions: vec![],
         error: None,
     };
@@ -247,11 +269,12 @@ pub unsafe fn load_module(vm: &mut dyn BxVM, path: &Path, module: Option<&str>) 
             vm.register_callback(&name, callback.clone())?;
         }
     }
-    Ok(registration.providers.into_iter().map(|(name, factory)| {
+    let providers = registration.providers.into_iter().map(|(name, factory)| {
         let function = Function { name: name.clone(), aliases: vec![], arguments: vec![] };
         let factory = callback(library.clone(), functions.clone(), module.clone(), function, factory);
         (name, factory)
-    }).collect())
+    }).collect();
+    Ok(ModuleDeclarations { providers, service_classes: registration.service_classes })
 }
 fn callback(
     library: Rc<Library>,
@@ -580,6 +603,8 @@ unsafe extern "C" fn object_state(ctx: Context, receiver: Value, kind: Text, out
     })();
     operation(ctx, result)
 }
+/// Process-wide table; the registration context owns all mutable declarations.
+static GLOBAL_SERVICES: GlobalServicesV1 = GlobalServicesV1 { declare: declare_service };
 static CLASS_PROVIDERS: ClassProvidersV1 = ClassProvidersV1 { declare: declare_provider };
 static OBJECT_STATE: ObjectStateV1 = ObjectStateV1 { new: state_object, state: object_state };
 

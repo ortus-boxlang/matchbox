@@ -307,8 +307,8 @@ struct ModuleActivation {
     record: Rc<crate::vm::gc::RootedValue>,
     targets: Vec<Rc<crate::vm::gc::RootedValue>>,
     global_services: Vec<String>,
-    /// Factories returned by the artifact, pending registration with the module record.
-    native_providers: Vec<(String, NativeCallback)>,
+    /// Native artifact contributions consumed only during this activation.
+    declarations: crate::plugins::ModuleDeclarations,
 }
 /// VM/thread-owned module lifetime. Hosts must unload before destroying the owning VM.
 /// Registrations/native libraries remain VM/process-owned; this is not hot reload.
@@ -398,12 +398,12 @@ impl LoadedModules {
                     construct(parent, modules, vm, cache, ready, prepared, services)?;
                 }
                 let module = &mut modules[index];
-                let native_providers = if let Some(artifact) = &module.artifact {
+                let declarations = if let Some(artifact) = &module.artifact {
                     let path = artifact.extract(cache)?;
                     unsafe { crate::plugins::load_module(vm, &path, Some(&module.name)) }
                         .map_err(anyhow::Error::msg)
                         .with_context(|| format!("Module {}", module.name))?
-                } else { vec![] };
+                } else { Default::default() };
                 for class in &mut module.classes {
                     class.chunk.reconstruct_functions();
                     vm.interpret(class.chunk.clone())?;
@@ -434,7 +434,7 @@ impl LoadedModules {
                     record: vm.heap.retain_value(record).map_err(anyhow::Error::msg)?,
                     targets: Vec::new(),
                     global_services: Vec::new(),
-                    native_providers,
+                    declarations,
                 });
                 crate::module_services::register_classes(vm, module, record)?;
                 ready[index] = 2;
@@ -456,7 +456,7 @@ impl LoadedModules {
                 let mut activation = prepared[index]
                     .take()
                     .context("Module descriptor did not create an instance")?;
-                let native_providers = std::mem::take(&mut activation.native_providers);
+                let native_providers = std::mem::take(&mut activation.declarations.providers);
                 let instance = vm
                     .heap
                     .read_retained_value(&activation.instance)
@@ -586,7 +586,7 @@ impl LoadedModules {
                 let members = vm.json_to_bx(serde_json::json!(members));
                 crate::module_services::set_record(vm, record, "memberMethods", members)?;
             }
-            for activation in &mut loaded.records {
+            for (activation, module) in loaded.records.iter_mut().zip(&modules) {
                 let instance = vm
                     .heap
                     .read_retained_value(&activation.instance)
@@ -654,6 +654,17 @@ impl LoadedModules {
                 }
                 if let Some(declared) = vm.instance_variable(instance, "globalServices") {
                     services.start_declared(vm, declared, &mut activation.global_services)?;
+                }
+                for path in activation.declarations.service_classes.drain(..) {
+                    // Resolve only from this module's compiled inventory, never the filesystem.
+                    let class = module.classes.iter().find(|class| Path::new(&class.path) == Path::new(&path))
+                        .with_context(|| format!("Global service class {path} not packaged in module {}", module.name))?;
+                    let service = vm.construct_global_class(&class.global, vec![])?;
+                    let _root = vm.heap.retain_value(service).map_err(anyhow::Error::msg)?;
+                    if vm.instance_has_method(service, "init") {
+                        vm.call_method_value(service, "init", vec![])?;
+                    }
+                    services.start_service(vm, service, &mut activation.global_services)?;
                 }
                 if vm.instance_has_method(instance, "onLoad") {
                     vm.call_method_value(instance, "onLoad", vec![])?;

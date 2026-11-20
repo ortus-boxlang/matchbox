@@ -1085,6 +1085,42 @@ fn module_global_service_retains_identity_and_is_stopped_on_exit_or_failed_activ
     assert_eq!(String::from_utf8_lossy(&output.stdout).matches("stopped:").count(), 1);
 }
 
+/// A plugin declares a packaged class, not a preconstructed VM object.
+#[test]
+fn plugin_declared_service_uses_the_module_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = package(dir.path());
+    fs::create_dir(module.join("models")).unwrap();
+    fs::write(module.join("models/Ledger.bx"), r#"class {
+        function init() { variables.calls = 0; println("init"); }
+        function getName() { return 'ledger'; }
+        function onStartup() { variables.calls++; println("started"); }
+        function record() { return ++variables.calls; }
+        function onShutdown(force) { println("stopped"); }
+    }"#).unwrap();
+    let descriptor = module.join("ModuleConfig.bx");
+    fs::write(&descriptor, r#"class {
+        function configure() { assert !boxRuntime.hasGlobalService('ledger'); }
+        function onLoad() { assert boxRuntime.getGlobalService('Ledger').record() == 2; }
+        function onUnload() { assert !boxRuntime.hasGlobalService('ledger'); println("unloaded"); }
+    }"#).unwrap();
+    fs::write(dir.path().join("app.bxs"), "assert getBoxRuntime().getGlobalService('LEDGER').record() == 3;").unwrap();
+    let run = |path| Command::new(env!("CARGO_BIN_EXE_matchbox"))
+        .current_dir(dir.path()).env("MATCHBOX_NATIVE_CACHE", dir.path().join("cache"))
+        .env("MATCHBOX_FIXTURE_SERVICE", path).args(["--module", "module", "app.bxs"]).output().unwrap();
+    let output = run("models/Ledger.bx");
+    success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "init\nstarted\nstopped\nunloaded");
+    let missing = run("elsewhere/Ledger.bx");
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("not packaged in module"));
+    fs::write(descriptor, "class { function onLoad() { throw 'activation failed'; } }").unwrap();
+    let failed = run("models/Ledger.bx");
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("activation failed"));
+    assert_eq!(String::from_utf8_lossy(&failed.stdout).trim(), "init\nstarted\nstopped");
+}
+
 #[test]
 fn wildcard_module_import_resolves_constructors_and_base_classes_without_source() {
     let dir = tempfile::tempdir().unwrap();

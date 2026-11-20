@@ -470,24 +470,32 @@ impl Services {
     pub fn start_declared(&self, vm: &mut VM, declared: BxValue, owned: &mut Vec<String>) -> Result<()> {
         if !vm.is_array_value(declared) { bail!("globalServices must be an array of service instances"); }
         let declarations = declared.as_gc_id().unwrap();
-        let registry = self.global_services.as_gc_id().unwrap();
         // A startup callback may change the descriptor. Keep the original instances
         // alive until registration finishes, without holding a borrow during user code.
         let entries = (0..vm.array_len(declarations)).map(|i| vm.array_get(declarations, i)).collect();
         let entries = vm.heap.retain_values(entries).map_err(anyhow::Error::msg)?;
         for &service in entries.iter() {
-            for method in ["getName", "onStartup", "onShutdown"] {
-                if !vm.has_method_by_value(service, method) { bail!("Global service is missing required method {method}"); }
-            }
-            let name = vm.call_method_value(service, "getName", vec![])?;
-            if !vm.is_string_value(name) { bail!("Global service name must be a nonempty string"); }
-            let name = vm.to_string(name);
-            if name.trim().is_empty() { bail!("Global service name must be a nonempty string"); }
-            if vm.struct_key_exists(registry, &name) { bail!("Global service already registered: {name}"); }
-            vm.struct_set(registry, &name, service);
-            owned.push(name.clone());
-            vm.call_method_value(service, "onStartup", vec![]).with_context(|| format!("Starting global service {name}"))?;
+            self.start_service(vm, service, owned)?;
         }
+        Ok(())
+    }
+
+    /// Starts one service and records ownership before invoking its startup hook.
+    /// # Errors
+    /// Rejects an invalid or duplicate service, or propagates a failing lifecycle hook.
+    pub(crate) fn start_service(&self, vm: &mut VM, service: BxValue, owned: &mut Vec<String>) -> Result<()> {
+        let registry = self.global_services.as_gc_id().unwrap();
+        for method in ["getName", "onStartup", "onShutdown"] {
+            if !vm.has_method_by_value(service, method) { bail!("Global service is missing required method {method}"); }
+        }
+        let name = vm.call_method_value(service, "getName", vec![])?;
+        if !vm.is_string_value(name) { bail!("Global service name must be a nonempty string"); }
+        let name = vm.to_string(name);
+        if name.trim().is_empty() { bail!("Global service name must be a nonempty string"); }
+        if vm.struct_key_exists(registry, &name) { bail!("Global service already registered: {name}"); }
+        vm.struct_set(registry, &name, service);
+        owned.push(name.clone());
+        vm.call_method_value(service, "onStartup", vec![]).with_context(|| format!("Starting global service {name}"))?;
         Ok(())
     }
 
