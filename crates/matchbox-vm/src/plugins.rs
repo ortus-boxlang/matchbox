@@ -84,6 +84,7 @@ unsafe extern "C" fn capability(name: Text) -> *const c_void {
         Some(PATHS_V1) => (&PATHS as *const PathsV1).cast(),
         Some(SETTINGS_V1) => (&SETTINGS as *const SettingsV1).cast(),
         Some(DATETIME_V1) => (&DATETIME as *const DatetimeV1).cast(),
+        Some(STRUCTS_V1) => (&STRUCTS as *const StructsV1).cast(),
         _ => std::ptr::null(),
     }
 }
@@ -766,6 +767,31 @@ unsafe extern "C" fn expand_path(ctx: Context, path: Text, out: *mut Value) -> i
         Err(error) => operation(ctx, Err(error)),
     }
 }
+/// `StructsV1::struct_new_with`: an empty struct, optionally ordered and/or case-sensitive.
+unsafe extern "C" fn struct_new_with(ctx: Context, ordered: bool, case_sensitive: bool, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let mut options = Vec::new();
+    if ordered { options.push("ordered".to_string()); }
+    if case_sensitive { options.push("casesensitive".to_string()); }
+    let id = ctx.vm.struct_new_with_options(&options);
+    output(ctx, BxValue::new_ptr(id), out)
+}
+/// `StructsV1::struct_flags`: whether a struct is ordered and whether it is case-sensitive.
+unsafe extern "C" fn struct_flags(ctx: Context, object: Value, ordered: *mut bool, case_sensitive: *mut bool) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        if ordered.is_null() || case_sensitive.is_null() { return Err("Null output pointer".into()); }
+        let id = struct_id(ctx, object)?;
+        unsafe {
+            *ordered = ctx.vm.struct_is_ordered(id);
+            *case_sensitive = ctx.vm.struct_is_case_sensitive(id);
+        }
+        Ok(())
+    })();
+    operation(ctx, result)
+}
+/// The `matchbox.structs.v1` table handed to plugins.
+static STRUCTS: StructsV1 = StructsV1 { struct_new_with, struct_flags };
 /// `DatetimeV1::datetime_is`: whether the value is a datetime.
 unsafe extern "C" fn datetime_is(ctx: Context, value: Value, out: *mut bool) -> i32 {
     let ctx = unsafe { context(ctx) };

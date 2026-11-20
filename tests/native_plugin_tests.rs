@@ -402,6 +402,20 @@ try { fixtureDateInfo( "2023-11-14" ); } catch (any e) { dateFailures++; }
 try { fixtureDateNew( 0, 1000000000 ); } catch (any e) { dateFailures++; }
 try { fixtureDateNew( 9223372036854775807 ); } catch (any e) { dateFailures++; }
 assert dateFailures == 3;
+// struct options: ordered keeps insertion order, case-sensitive keeps the spelling of keys that differ only in case
+sensitive = fixtureStructNew( true, true );
+assert arrayToList( sensitive.keyArray() ) == "b,A,a" && sensitive[ "A" ] == 2 && sensitive[ "a" ] == 3;
+assert fixtureStructFlags( sensitive ).ordered && fixtureStructFlags( sensitive ).caseSensitive;
+insensitive = fixtureStructNew( false, false );
+assert insensitive.len() == 2 && insensitive.a == 3;
+assert !fixtureStructFlags( insensitive ).ordered && !fixtureStructFlags( insensitive ).caseSensitive;
+assert fixtureStructFlags( fixtureStructNew( true, false ) ).ordered && !fixtureStructFlags( fixtureStructNew( true, false ) ).caseSensitive;
+assert !fixtureStructFlags( fixtureStructNew( false, true ) ).ordered && fixtureStructFlags( fixtureStructNew( false, true ) ).caseSensitive;
+assert fixtureStructNew( false, true ).len() == 3 && fixtureStructNew( true, false ).keyArray().len() == 2;
+structFailures = 0;
+try { fixtureStructFlags( [ 1 ] ); } catch (any e) { structFailures++; }
+try { fixtureStructFlags( "x" ); } catch (any e) { structFailures++; }
+assert structFailures == 2;
 println("collections ok");
 "#,
     )

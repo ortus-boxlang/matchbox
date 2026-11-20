@@ -14,6 +14,8 @@ static INTEGERS_API: OnceLock<&'static IntegersV1> = OnceLock::new();
 static PATHS_API: OnceLock<&'static PathsV1> = OnceLock::new();
 static SETTINGS_API: OnceLock<&'static SettingsV1> = OnceLock::new();
 static DATETIME_API: OnceLock<&'static DatetimeV1> = OnceLock::new();
+static STRUCTS_API: OnceLock<&'static StructsV1> = OnceLock::new();
+fn structs() -> Result<&'static StructsV1, String> { STRUCTS_API.get().copied().ok_or_else(|| "Missing structs capability".into()) }
 fn datetime() -> Result<&'static DatetimeV1, String> { DATETIME_API.get().copied().ok_or_else(|| "Missing datetime capability".into()) }
 fn settings_api() -> Result<&'static SettingsV1, String> { SETTINGS_API.get().copied().ok_or_else(|| "Missing settings capability".into()) }
 fn paths() -> Result<&'static PathsV1, String> { PATHS_API.get().copied().ok_or_else(|| "Missing paths capability".into()) }
@@ -377,6 +379,34 @@ unsafe extern "C" fn grid(ctx: Context, api: *const ValuesV1, _: *mut c_void, ar
         })
     }
 }
+// fixtureStructNew(ordered, caseSensitive): a struct with the keys b, A and a set in that order
+unsafe extern "C" fn struct_new_fixture(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
+    unsafe {
+        guarded(ctx, api, out, || {
+            let call = Call::new(ctx, api, args, len);
+            let ordered = call.boolean(types()?, call.argument(0)?)?;
+            let case_sensitive = call.boolean(types()?, call.argument(1)?)?;
+            let object = call.struct_new_with(structs()?, ordered, case_sensitive)?;
+            for (key, value) in [("b", 1.0), ("A", 2.0), ("a", 3.0)] {
+                call.struct_set(object, key, call.number_new(value)?)?;
+            }
+            Ok(object)
+        })
+    }
+}
+// fixtureStructFlags(struct): { ordered, caseSensitive }
+unsafe extern "C" fn struct_flags_fixture(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
+    unsafe {
+        guarded(ctx, api, out, || {
+            let call = Call::new(ctx, api, args, len);
+            let (ordered, case_sensitive) = call.struct_flags(structs()?, call.argument(0)?)?;
+            let info = call.struct_new()?;
+            call.struct_set(info, "ordered", call.bool_new(ordered)?)?;
+            call.struct_set(info, "caseSensitive", call.bool_new(case_sensitive)?)?;
+            Ok(info)
+        })
+    }
+}
 // fixtureIsDate(value): whether the value is a datetime
 unsafe extern "C" fn is_date(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
     unsafe {
@@ -468,6 +498,10 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
         Ok(integers) => { let _ = INTEGERS_API.set(integers); }
         Err(status) => return status,
     }
+    match unsafe { require_structs(host, ctx) } {
+        Ok(structs) => { let _ = STRUCTS_API.set(structs); }
+        Err(status) => return status,
+    }
     match unsafe { require_datetime(host, ctx) } {
         Ok(datetime) => { let _ = DATETIME_API.set(datetime); }
         Err(status) => return status,
@@ -525,6 +559,8 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
         (r#"{"name":"fixtureKinds","arguments":[{"name":"values","required":true}]}"#, kinds as Invoke),
         (r#"{"name":"fixtureOptions","arguments":[{"name":"options","required":true}]}"#, options as Invoke),
         (r#"{"name":"fixtureGrid","arguments":[{"name":"width","required":true},{"name":"height","required":true}]}"#, grid as Invoke),
+        (r#"{"name":"fixtureStructNew","arguments":[{"name":"ordered","required":true},{"name":"caseSensitive","required":true}]}"#, struct_new_fixture as Invoke),
+        (r#"{"name":"fixtureStructFlags","arguments":[{"name":"value","required":true}]}"#, struct_flags_fixture as Invoke),
         (r#"{"name":"fixtureIsDate","arguments":[{"name":"value","required":true}]}"#, is_date as Invoke),
         (r#"{"name":"fixtureDateNew","arguments":[{"name":"seconds","required":true},{"name":"nanos","default":0},{"name":"zone","default":""}]}"#, date_new as Invoke),
         (r#"{"name":"fixtureDateInfo","arguments":[{"name":"date","required":true}]}"#, date_info as Invoke),
