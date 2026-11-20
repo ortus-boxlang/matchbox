@@ -260,6 +260,8 @@ pub struct Module {
 pub struct Application {
     pub chunk: Chunk,
     pub modules: Vec<Module>,
+    /// The application's `expandPath` mappings (`boxlang.json`, `Application.bx`), fixed when it was built.
+    pub mappings: Vec<crate::paths::PathMapping>,
 }
 impl Application {
     pub fn from_executable(bytes: &[u8]) -> Result<Self> {
@@ -284,7 +286,10 @@ impl Application {
     }
     /// Trusted native modules execute arbitrary machine code in the host process.
     pub fn run(mut self, vm: &mut VM, cache: &Path) -> Result<BxValue> {
+        vm.set_path_mappings(std::mem::take(&mut self.mappings));
         let loaded = LoadedModules::load(vm, self.modules, cache)?;
+        let module_mappings = loaded.mappings(vm)?;
+        vm.add_path_mappings(module_mappings.into_iter().map(|m| crate::paths::PathMapping::new(&m.name, m.path, m.external)));
         self.chunk.reconstruct_functions();
         let result = vm.interpret(self.chunk);
         let shutdown = loaded.unload(vm);
@@ -391,7 +396,7 @@ impl LoadedModules {
                 let module = &mut modules[index];
                 if let Some(artifact) = &module.artifact {
                     let path = artifact.extract(cache)?;
-                    unsafe { crate::plugins::load(vm, &path) }
+                    unsafe { crate::plugins::load_module(vm, &path, Some(&module.name)) }
                         .map_err(anyhow::Error::msg)
                         .with_context(|| format!("Module {}", module.name))?;
                 }

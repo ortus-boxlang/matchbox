@@ -903,26 +903,8 @@ pub fn expand_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
     if args.is_empty() {
         return Err("expandPath() expects 1 argument".to_string());
     }
-    let path_str = vm.to_string(args[0]);
-    let path = Path::new(&path_str);
-    let has_trailing = path_str.ends_with('/') || path_str.ends_with('\\');
-
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let expanded = if path.is_absolute() && path.exists() {
-        path.to_path_buf()
-    } else if path_str.starts_with(['/', '\\']) {
-        cwd.join(path_str.trim_start_matches(['/', '\\']))
-    } else if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    };
-
-    let resolved = expanded.canonicalize().unwrap_or(expanded);
-    let mut result = normalize_path_string(&resolved);
-    if has_trailing && !result.ends_with(std::path::MAIN_SEPARATOR) {
-        result.push(std::path::MAIN_SEPARATOR);
-    }
+    let path = vm.to_string(args[0]);
+    let result = crate::paths::expand_for_vm(vm, &path)?;
     let s_id = vm.string_new(result);
     Ok(BxValue::new_ptr(s_id))
 }

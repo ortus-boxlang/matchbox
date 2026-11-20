@@ -95,7 +95,35 @@ impl VM {
         }))))
     }
 
+    /// `Class@module` as BoxLang writes a class that lives in a module: the class under the module's invocation path
+    /// (`bxModules.<module>.Class`). `None` when `name` has no `@`. Module names are case-insensitive.
+    fn module_qualified_class(&mut self, name: &str) -> Result<Option<String>> {
+        let (prefix, rest) = match name.split_once(':') {
+            Some((prefix, rest)) if prefix.eq_ignore_ascii_case("bx") => ("bx:", rest),
+            _ => ("", name),
+        };
+        let Some((class, module)) = rest.split_once('@') else {
+            return Ok(None);
+        };
+        if class.is_empty() || module.is_empty() || module.contains('@') {
+            bail!("Invalid module class reference: {name}");
+        }
+        let service = self
+            .get_global("__mb_moduleservice")
+            .with_context(|| format!("Module not loaded: {module}"))?;
+        let module_name = BxValue::new_ptr(self.string_new(module.to_string()));
+        if !self.call_method_value(service, "hasModule", vec![module_name])?.as_bool() {
+            bail!("Module not loaded: {module}");
+        }
+        let record = self.call_method_value(service, "getModuleRecord", vec![module_name])?;
+        let invocation = crate::module_services::record_field(self, record, "invocationPath");
+        Ok(Some(format!("{prefix}{}.{class}", self.to_string(invocation))))
+    }
+
     pub(super) fn resolve_class_reference(&mut self, name: &str) -> Result<BxValue> {
+        if let Some(resolved) = self.module_qualified_class(name)? {
+            return self.resolve_class_reference(&resolved);
+        }
         if let Some((prefix, class)) = name.split_once(':') {
             if prefix.eq_ignore_ascii_case("java") {
                 if let Some(value) = self.provided_class(&format!("java:{class}"))? {
