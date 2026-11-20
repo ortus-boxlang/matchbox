@@ -176,14 +176,14 @@ Add your modules to the `dependencies` or `devDependencies` section of your `box
 ```
 
 - **Relative Paths**: If the dependency value is a relative path (e.g., `./libs/my-mod`), Matchbox resolves it directly.
-- **Git/Remote**: For remote modules, run `box install`. CommandBox installs project modules into `boxlang_modules/`, where MatchBox automatically discovers them. Packages installed in `BOXLANG_HOME/modules/` are also discovered.
+- **Git/Remote**: For remote modules, run `box install`. CommandBox installs project modules into `boxlang_modules/`, where MatchBox automatically discovers them. Packages installed in `MATCHBOX_HOME/modules/` are also discovered.
 
 ### Directory Conventions
 
 Matchbox automatically scans the following directories for modules (any folder containing a `ModuleConfig.bx`):
 
 1. Project-local `boxlang_modules/`
-2. `BOXLANG_HOME/modules/` when the runtime-home environment variable is set
+2. `MATCHBOX_HOME/modules/` when the runtime-home environment variable is set
 
 Project packages and explicit selections override same-directory-name runtime-home packages. Other source/artifact layouts remain available through explicit paths; `modules/` is not an implicit project installation directory.
 

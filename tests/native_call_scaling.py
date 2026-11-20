@@ -15,7 +15,7 @@ with tempfile.TemporaryDirectory(prefix='matchbox-native-calls-') as directory:
         subprocess.run([MATCHBOX, '--no-shaking', *flags, '--output', str(output), str(script)], cwd=work, check=True)
     script.unlink()
     for index, command in enumerate([[MATCHBOX, str(bytecode)], [str(native)]]):
-        env = dict(os.environ, BOXLANG_HOME=str(work / f'mode-run-{index}' / 'home'), MATCHBOX_NATIVE_CACHE=str(work / f'mode-run-{index}' / 'cache'))
+        env = dict(os.environ, MATCHBOX_HOME=str(work / f'mode-run-{index}' / 'home'), MATCHBOX_NATIVE_CACHE=str(work / f'mode-run-{index}' / 'cache'))
         result = subprocess.run(command, cwd=work, env=env, capture_output=True, text=True, timeout=60, check=True)
         assert result.stdout.strip() == 'Native positional / named / reference / callback calls: OK', (result.stdout, result.stderr)
     for count in timings:
@@ -33,7 +33,7 @@ println(jsonSerialize({{ms: elapsed}}));
         script.unlink(); binaries[count] = binary
     for trial in range(3):
         for count in (list(timings) if trial != 1 else list(reversed(timings))):
-            env = dict(os.environ, BOXLANG_HOME=str(work / f'run-{count}-{trial}' / 'home'), MATCHBOX_NATIVE_CACHE=str(work / f'run-{count}-{trial}' / 'cache'))
+            env = dict(os.environ, MATCHBOX_HOME=str(work / f'run-{count}-{trial}' / 'home'), MATCHBOX_NATIVE_CACHE=str(work / f'run-{count}-{trial}' / 'cache'))
             result = subprocess.run([str(binaries[count])], cwd=work, env=env, capture_output=True, text=True, timeout=60, check=True)
             timings[count].append(json.loads(result.stdout)['ms'])
     medians = {count: statistics.median(samples) for count, samples in timings.items()}

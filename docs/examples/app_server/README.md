@@ -107,7 +107,7 @@ app.webhook(
 
 The native routed host evaluates the app script once, before publishing its listener. Routes and middleware are startup configuration; attempts to register them during a request fail. Restart after editing the app script.
 
-Installed modules use the existing native module loader: project `boxlang_modules`, explicit `BOXLANG_HOME/modules`, and project/runtime `modulesDirectory` configuration. `--config` selects the module configuration file. Module settings, private mappings and lifecycle hooks are applied before the script runs. Native artifacts must already be installed; startup does not compile or download providers. Package installation/source paths remain private even if a static mount aliases them. Mount only a dedicated public/assets directory, not application source or credentials.
+Installed modules use the existing native module loader: project `boxlang_modules`, explicit `MATCHBOX_HOME/modules`, and project/runtime `modulesDirectory` configuration. `--config` selects the module configuration file. Module settings, private mappings and lifecycle hooks are applied before the script runs. Native artifacts must already be installed; startup does not compile or download providers. Package installation/source paths remain private even if a static mount aliases them. Mount only a dedicated public/assets directory, not application source or credentials.
 
 HTTP handlers and configured WebSocket listeners share one thread-owned VM. Declare shared mutable structs or instances at startup. Request bindings are isolated and collected between calls; do not retain `event`, `rc`, `prc` or session data in application state. Modules unload at orderly runtime disposal.
 

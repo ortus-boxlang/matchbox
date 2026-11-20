@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Native programs can use the terminal UI**: the native runner stub includes the TUI classes when MatchBox is built with `bif-tui`. Native Fusion builds are unchanged.
 
 ### Changed
+- **Installed modules now come from `MATCHBOX_HOME/modules/`, not `BOXLANG_HOME/modules/`.** CLI module discovery reads `MATCHBOX_HOME`; the webroot runtime and app server use the same variable and fall back to `~/.matchbox`. An unrelated BoxLang install on the same machine no longer injects modules into MatchBox.
 - `--bx-config` and `--bx-home` are now implemented. A missing `--bx-config` file is an error.
 
 ### Added

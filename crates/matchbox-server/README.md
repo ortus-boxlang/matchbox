@@ -35,7 +35,7 @@ retains the representation's Content-Length without sending a body; 204 and
 
 Native hosts can eagerly create `WebrootRuntime::from_project(project, home, config)`
 before binding their HTTP listener. Defaults are CWD project discovery and explicit
-BOXLANG_HOME or ~/.boxlang module lookup; hosts can supply home/config paths without
+MATCHBOX_HOME or ~/.matchbox module lookup; hosts can supply home/config paths without
 changing environment. No directories or JVM installation are created. Plain
 `WebrootRuntime::default()` / `WebrootEngine::new()` remain explicitly unconfigured,
 so embedded hosts/tests do not silently scan the host filesystem.

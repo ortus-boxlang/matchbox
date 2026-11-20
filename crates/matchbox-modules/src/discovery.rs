@@ -92,7 +92,7 @@ fn default_max_connections() -> u32 {
 /// 2. `matchbox.toml` in `project_dir`
 /// 3. Project-local `boxlang_modules/` directory scanning
 /// 4. `extra_module_paths` collected from `--module <path>` CLI flags
-/// 5. `BOXLANG_HOME/modules/` supplies packages not installed/selected locally
+/// 5. `MATCHBOX_HOME/modules/` supplies packages not installed/selected locally
 ///
 /// Returns an empty `Vec` when neither source provides any modules, so callers can always
 /// call this unconditionally.
@@ -100,7 +100,7 @@ pub fn discover_modules(
     project_dir: &Path,
     extra_module_paths: &[PathBuf],
 ) -> Result<Vec<ModuleInfo>> {
-    let home = std::env::var_os("BOXLANG_HOME").map(PathBuf::from);
+    let home = std::env::var_os("MATCHBOX_HOME").map(PathBuf::from);
     discover_modules_with_home(project_dir, extra_module_paths, home.as_deref())
 }
 
