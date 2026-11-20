@@ -67,7 +67,7 @@ impl WebrootRuntime {
         let home = home
             .filter(|path| !path.as_os_str().is_empty())
             .or_else(|| {
-                std::env::var_os("BOXLANG_HOME")
+                std::env::var_os("MATCHBOX_HOME")
                     .filter(|value| !value.is_empty())
                     .map(Into::into)
             })
@@ -77,7 +77,7 @@ impl WebrootRuntime {
                 } else {
                     std::env::var_os("HOME")
                 };
-                user.map(|user| std::path::PathBuf::from(user).join(".boxlang"))
+                user.map(|user| std::path::PathBuf::from(user).join(".matchbox"))
             });
         if let Some(home) = &home
             && home.join("config/boxlang.json").exists()

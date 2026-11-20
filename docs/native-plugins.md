@@ -49,7 +49,7 @@ This uses the ordinary process loader namespace, not JVM-style sibling isolation
 
 ## Runtime startup
 
-Modules are discovered in project-local `boxlang_modules/` and in `BOXLANG_HOME/modules/` when that environment variable is set; project packages and explicit selections take precedence for the same directory name. Arbitrary packages can be selected with `--module` or explicit manifest paths. Like every CLI option, `--module` must come before the script file (`matchbox --module DIR app.bxs`); arguments after the script are passed to the program.
+Modules are discovered in project-local `boxlang_modules/` and in `MATCHBOX_HOME/modules/` when that environment variable is set; project packages and explicit selections take precedence for the same directory name. Arbitrary packages can be selected with `--module` or explicit manifest paths. Like every CLI option, `--module` must come before the script file (`matchbox --module DIR app.bxs`); arguments after the script are passed to the program.
 `modulesDirectory` in the project runtime configuration adds directories to scan:
 relative paths resolve against the startup project/CWD, and earlier entries win.
 Project/explicit selections and default home packages precede these additional

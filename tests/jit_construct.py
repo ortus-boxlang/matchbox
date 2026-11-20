@@ -72,7 +72,7 @@ for (reboundIndex = 1; reboundIndex <= 13000; reboundIndex++) { arrayAppend(rebo
 assert appendRecords(reboundValues, reboundOutput) == 13000;
 assert reboundOutput[13000].first == 13005;
 ''')
-    env = dict(os.environ, BOXLANG_HOME=str(work/'home'), MATCHBOX_JIT_TRACE='1', PATH='/usr/bin:/bin')
+    env = dict(os.environ, MATCHBOX_HOME=str(work/'home'), MATCHBOX_JIT_TRACE='1', PATH='/usr/bin:/bin')
     def check(command):
         result = subprocess.run(command,cwd=work,env=env,capture_output=True,timeout=90)
         assert result.returncode == 0,(result.stdout,result.stderr)

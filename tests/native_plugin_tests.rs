@@ -2538,11 +2538,20 @@ fn runtime_home_modules_are_discovered_and_project_packages_take_precedence() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let global = home.join("modules/location");
+    let boxlang_home = dir.path().join("boxlang-home");
+    let ignored = boxlang_home.join("modules/location");
     let local = dir.path().join("boxlang_modules/location");
     fs::create_dir_all(&global).unwrap();
     fs::write(
         global.join("ModuleConfig.bx"),
         "class { function configure() { settings = {source:'home'}; } }",
+    )
+    .unwrap();
+    // BOXLANG_HOME must be ignored: MatchBox modules come from MATCHBOX_HOME.
+    fs::create_dir_all(&ignored).unwrap();
+    fs::write(
+        ignored.join("ModuleConfig.bx"),
+        "class { function configure() { settings = {source:'boxlang'}; } }",
     )
     .unwrap();
     fs::write(
@@ -2553,7 +2562,8 @@ fn runtime_home_modules_are_discovered_and_project_packages_take_precedence() {
     let execute = || {
         Command::new(env!("CARGO_BIN_EXE_matchbox"))
             .current_dir(dir.path())
-            .env("BOXLANG_HOME", &home)
+            .env("MATCHBOX_HOME", &home)
+            .env("BOXLANG_HOME", &boxlang_home)
             .args(["app.bxs"])
             .output()
             .unwrap()

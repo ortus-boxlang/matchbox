@@ -12,7 +12,7 @@ with tempfile.TemporaryDirectory(prefix='matchbox-wide-struct-') as directory:
         subprocess.run([MATCHBOX, '--no-shaking', *flags, '--output', str(output), str(script)], cwd=work, check=True)
     script.unlink()
     for label, command in [('bytecode', [MATCHBOX, str(bytecode)]), ('native', [str(native)])]:
-        env = dict(os.environ, BOXLANG_HOME=str(work / 'home'), MATCHBOX_NATIVE_CACHE=str(work / f'cache-{label}'))
+        env = dict(os.environ, MATCHBOX_HOME=str(work / 'home'), MATCHBOX_NATIVE_CACHE=str(work / f'cache-{label}'))
         with subprocess.Popen(command, cwd=work, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
             try:
                 line = process.stdout.readline()
