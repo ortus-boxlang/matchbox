@@ -97,6 +97,9 @@ impl VM {
 
     /// `Class@module` as BoxLang writes a class that lives in a module: the class under the module's invocation path
     /// (`bxModules.<module>.Class`). `None` when `name` has no `@`. Module names are case-insensitive.
+    ///
+    /// # Errors
+    /// Returns an error for invalid references, unavailable modules, or invalid module records.
     fn module_qualified_class(&mut self, name: &str) -> Result<Option<String>> {
         let (prefix, rest) = match name.split_once(':') {
             Some((prefix, rest)) if prefix.eq_ignore_ascii_case("bx") => ("bx:", rest),
@@ -116,7 +119,11 @@ impl VM {
             bail!("Module not loaded: {module}");
         }
         let record = self.call_method_value(service, "getModuleRecord", vec![module_name])?;
-        let invocation = crate::module_services::record_field(self, record, "invocationPath");
+        let id = record.as_gc_id().context("Module record is not an object")?;
+        let GcObject::NativeObject(object) = self.heap.get(id) else {
+            bail!("Module record is not a native object");
+        };
+        let invocation = self.native_object_get(object, "invocationPath");
         Ok(Some(format!("{prefix}{}.{class}", self.to_string(invocation))))
     }
 
