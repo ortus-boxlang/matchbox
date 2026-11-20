@@ -112,6 +112,8 @@ impl BxValue {
 // ------------------------------------------------------------------------
 
 pub trait BxVM {
+    /// The current host's runtime service facade, also injected into module descriptors.
+    fn box_runtime(&mut self) -> Result<BxValue, String> { Err("Runtime services unavailable on this host".into()) }
     fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>>;
     /// The mappings `expandPath` resolves through: application, module and configuration mappings.
     fn path_mappings(&self) -> Vec<crate::paths::PathMapping> { Vec::new() }
@@ -157,7 +159,7 @@ pub trait BxVM {
     fn is_bytes(&self, val: BxValue) -> bool;
     fn type_name_from_value(&self, val: BxValue) -> Option<String>;
     /// `super.name( args )`: call the parent of `defining_class`'s `name` with `receiver` as `this`.
-    fn call_super_method(&mut self, _receiver: BxValue, _defining_class: &str, _name: &str, _args: Vec<BxValue>) -> Result<BxValue, String> {
+    fn call_super_method(&mut self, _receiver: BxValue, _defining_class: &str, _name: &str, _args: Vec<BxValue>, _names: Option<Vec<String>>) -> Result<BxValue, String> {
         Err("super is unavailable".into())
     }
     fn find_global_class_by_name(&self, type_name: &str) -> Option<Rc<RefCell<BxClass>>>;
@@ -190,7 +192,14 @@ pub trait BxVM {
     fn struct_set(&mut self, id: usize, key: &str, val: BxValue);
     fn struct_assign(&mut self, id: usize, key: &str, val: BxValue) -> Result<(), String> { self.struct_set(id, key, val); Ok(()) }
     fn struct_get(&self, id: usize, key: &str) -> BxValue;
+    /// Whether this scope binding is final. Ordinary structs have no final bindings.
+    fn struct_key_is_final(&self, _id: usize, _key: &str) -> bool { false }
     fn struct_delete(&mut self, id: usize, key: &str) -> bool;
+    /// Deletes a script-visible key, or returns an error if the binding is final.
+    fn struct_remove(&mut self, id: usize, key: &str) -> Result<bool, String> {
+        if self.struct_key_is_final(id, key) { return Err(format!("Cannot delete final key [{key}] in scope [static]")); }
+        Ok(self.struct_delete(id, key))
+    }
     fn struct_key_exists(&self, id: usize, key: &str) -> bool;
     fn struct_key_array(&self, id: usize) -> Vec<String>;
     fn struct_clear(&mut self, id: usize);
@@ -530,6 +539,28 @@ pub enum Constant {
     Class(BxClass),
     Interface(BxInterface),
     StringArray(Vec<String>),
+    /// Non-executable metadata in the constructor constant pool (not a method table).
+    MethodSignatures(Vec<MethodSignature>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MethodSignature {
+    pub name: String,
+    pub result: String,
+    pub parameters: Vec<(String, String, bool)>,
+    pub is_abstract: bool,
+    pub public_instance: bool,
+}
+
+impl MethodSignature {
+    /// As on the JVM, an untyped contract accepts a more specific implementation.
+    pub fn implements(&self, contract: &Self) -> bool {
+        self.public_instance && !self.is_abstract && (contract.result == "any" || contract.result == self.result)
+            && self.parameters.len() == contract.parameters.len()
+            && self.parameters.iter().zip(&contract.parameters).all(|((name, ty, required), (n, t, r))| {
+                name.eq_ignore_ascii_case(n) && (t.eq_ignore_ascii_case("any") || ty.eq_ignore_ascii_case(t)) && (!r || *required)
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -548,6 +579,8 @@ pub enum FunctionKind {
     Closure,
     Lambda,
     ComponentBody,
+    /// Class initialization code stored as the last constant of its constructor, not a callable member.
+    StaticInitializer,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -583,13 +616,41 @@ pub struct BxClass {
     pub modifiers: ClassModifiers,
     pub extends: Option<String>,
     pub implements: Vec<String>,
+    /// Interface methods which may be supplied by an ancestor resolved at construction.
+    #[serde(default)]
+    pub inherited_contracts: Vec<MethodSignature>,
     pub constructor: BxCompiledFunction,
     pub methods: Vec<(String, BxCompiledFunction)>,
+}
+
+impl BxClass {
+    /// Typed declarations are retained even though abstract methods have no function body.
+    pub fn method_signatures(&self) -> &[MethodSignature] {
+        self.constructor.chunk.constants().iter().rev().find_map(|c| match c {
+            Constant::MethodSignatures(methods) => Some(methods.as_slice()), _ => None,
+        }).unwrap_or(&[])
+    }
+
+    /// Names the compiled constructor; this identity does not change when a module maps the class.
+    pub fn constructor_name(class_name: &str) -> String {
+        format!("{class_name}.constructor")
+    }
+
+    /// Returns the optional class initializer. Keeping it in the class's constant pool leaves
+    /// the serialized layout of existing classes unchanged and keeps it out of method lookup.
+    pub fn static_initializer(&self) -> Option<&BxCompiledFunction> {
+        match self.constructor.chunk.constants().last()? {
+            Constant::CompiledFunction(function) if function.kind == FunctionKind::StaticInitializer => Some(function),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BxInterface {
     pub name: String,
+    #[serde(default)]
+    pub ancestors: Vec<String>,
     pub methods: Vec<(String, Option<BxCompiledFunction>)>,
 }
 
@@ -668,6 +729,9 @@ impl std::fmt::Display for BxRange {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BxStruct {
+    /// VM-interned names protected from rebinding. Only scopes declaring a final key allocate a set.
+    #[serde(skip)]
+    pub final_keys: Option<Box<std::collections::HashSet<u32>>>,
     pub shape_id: u32,
     pub properties: Vec<BxValue>,
     pub case_sensitive: bool,

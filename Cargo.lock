@@ -1974,6 +1974,7 @@ dependencies = [
  "httpdate",
  "matchbox-modules",
  "matchbox_compiler",
+ "matchbox_utility",
  "matchbox_vm",
  "mime_guess",
  "multer",

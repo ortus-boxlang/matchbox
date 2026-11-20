@@ -196,8 +196,9 @@ impl<'a> Export<'a> {
                 "BoxExpressionStatement",
                 json!({"expression":self.expression(expr)}),
             ),
-            StatementKind::VariableDecl { name, value } => {
-                let assignment = self.node("BoxAssignment",stmt.span,json!({"left":self.node("BoxIdentifier",None,json!({"name":name})),"right":self.expression(value),"op":self.enum_value("BoxAssignment","Equal"),"modifiers":[self.enum_value("BoxAssignment","Var")]}));
+            StatementKind::VariableDecl { name, value } | StatementKind::FinalDecl { name, value } => {
+                let modifier = if matches!(stmt.kind, StatementKind::FinalDecl { .. }) { "Final" } else { "Var" };
+                let assignment = self.node("BoxAssignment",stmt.span,json!({"left":self.node("BoxIdentifier",None,json!({"name":name})),"right":self.expression(value),"op":self.enum_value("BoxAssignment","Equal"),"modifiers":[self.enum_value("BoxAssignment",modifier)]}));
                 ("BoxExpressionStatement", json!({"expression":assignment}))
             }
             StatementKind::FunctionDecl {
@@ -238,9 +239,9 @@ impl<'a> Export<'a> {
                     ]))) } else { None }).collect()),
                 ]),
             ),
-            StatementKind::InterfaceDecl { name, members } => (
+            StatementKind::InterfaceDecl { name, extends, members } => (
                 "BoxInterface",
-                Value::from_iter([("name", json!(name)), ("body", self.statements(members))]),
+                Value::from_iter([("name", json!(name)), ("extends", json!(extends)), ("body", self.statements(members))]),
             ),
             StatementKind::Import { path, alias } => (
                 "BoxImport",
@@ -252,6 +253,7 @@ impl<'a> Export<'a> {
             StatementKind::Continue(label) => ("BoxContinue", json!({"label":label})),
             StatementKind::Break(label) => ("BoxBreak", json!({"label":label})),
             StatementKind::Labeled { label, body } => ("BoxLabel", json!({"label":label,"body":self.statements(body)})),
+            StatementKind::StaticInitializer(body) => ("BoxStaticInitializer", json!({"body":self.statements(body)})),
             StatementKind::Block(body) => ("BoxStatementBlock", json!({"body":self.statements(body)})),
             StatementKind::If {
                 condition,
@@ -305,7 +307,7 @@ impl<'a> Export<'a> {
                 "BoxTry",
                 Value::from_iter([
                     ("tryBody", self.statements(try_branch)),
-                    ("catches", catches.iter().map(|catch| Value::from_iter([("exception", json!(catch.exception_var)), ("body", self.statements(&catch.body))])).collect()),
+                    ("catches", catches.iter().map(|catch| Value::from_iter([("exception", json!(catch.exception_var)), ("types", json!(catch.types)), ("body", self.statements(&catch.body))])).collect()),
                     ("finallyBody", finally_branch.as_ref().map(|body| self.statements(body)).unwrap_or(Value::Null)),
                 ]),
             ),
@@ -449,6 +451,7 @@ impl<'a> Export<'a> {
     }
     fn expression_data(&self, expr: &Expression) -> Value {
         let (kind, fields) = match &expr.kind {
+            ExpressionKind::QualifiedClass(path) => ("BoxFQN", json!({"value":path})),
             ExpressionKind::Identifier(name) => ("BoxIdentifier", json!({"name":name})),
             ExpressionKind::Literal(literal) => return self.literal(literal, expr.span),
             ExpressionKind::Assignment { target, value } => (
@@ -511,6 +514,10 @@ impl<'a> Export<'a> {
             | ExpressionKind::SafeMemberAccess { base, member } => (
                 "BoxDotAccess",
                 json!({"context":self.expression(base),"access":self.node("BoxIdentifier",None,json!({"name":member})),"safe":matches!(expr.kind,ExpressionKind::SafeMemberAccess{..})}),
+            ),
+            ExpressionKind::DynamicNew { class_name, args } => (
+                "BoxNew",
+                json!({"expression":self.expression(class_name),"arguments":self.args(args)}),
             ),
             ExpressionKind::New { class_path, args } => (
                 "BoxNew",

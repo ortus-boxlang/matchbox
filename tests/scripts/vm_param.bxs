@@ -6,6 +6,20 @@ println(x); // expect 42
 param x = 99;
 println(x); // expect 42 still
 
+function fillConfig(config) {
+    param arguments.config.type = "text";
+    return config.type;
+}
+assert fillConfig({type:"custom"}) == "custom";
+assert fillConfig({}) == "text";
+fields = [{ name: "label" }];
+fields.each(param => { var property = {}; property["label"] = param.name; param.label = property.label; });
+assert fields[1].label == "label";
+param payload.nested.key = 42;
+assert payload.nested.key == 42;
+function unexpectedDefault() { throw "default must be lazy"; }
+param payload.nested.key = unexpectedDefault();
+
 // param without default when variable is missing throws
 try {
     param nonexistent;

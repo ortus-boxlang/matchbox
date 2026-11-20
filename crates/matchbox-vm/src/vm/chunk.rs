@@ -30,7 +30,7 @@ impl ConstantKey {
             Constant::Null => Some(ConstantKey::Null),
             Constant::StringArray(v) => Some(ConstantKey::StringArray(v.clone())),
             Constant::CompiledFunction(f) => Some(ConstantKey::Function(f.name.clone())),
-            Constant::Class(_) | Constant::Interface(_) => None,
+            Constant::Class(_) | Constant::Interface(_) | Constant::MethodSignatures(_) => None,
         }
     }
 }

@@ -57,6 +57,7 @@ pub struct RequestData {
     pub header_counts: HashMap<String, usize>,
     pub body: Vec<u8>,
     pub full_url: String,
+    pub remote_addr: String,
 }
 
 pub fn request_data_from_parts(
@@ -98,6 +99,7 @@ pub fn request_data_from_parts(
     RequestData {
         method: method.to_string(),
         path: path.to_string(),
+        remote_addr: String::new(),
         matched_route: None,
         route_params: HashMap::new(),
         raw_query: query.map(|s| s.to_string()),
@@ -418,7 +420,7 @@ pub fn find_file_case_insensitive(
     None
 }
 
-pub async fn run_server(args: Args) {
+pub async fn run_server(args: Args) -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     if let Some(app_path) = &args.app {
@@ -431,7 +433,7 @@ pub async fn run_server(args: Args) {
         {
             eprintln!("Error: {}", err);
         }
-        return;
+        return Ok(());
     }
 
     let webroot = PathBuf::from(&args.webroot)
@@ -458,6 +460,17 @@ pub async fn run_server(args: Args) {
         Config::default()
     };
 
+    let store = FileSystemAssetStore::new(webroot.clone());
+    #[cfg(not(target_family = "wasm"))]
+    let (runtime, store) = {
+        // --config is this host's HTTP configuration. Discover module settings
+        // from the webroot's boxlang.json, as for other webroot runtimes.
+        let runtime = application_runtime::WebrootRuntime::from_project(webroot.clone(), None, None)?;
+        let paths = runtime.module_paths()?;
+        (runtime, store.with_private_paths(paths))
+    };
+    #[cfg(target_family = "wasm")]
+    let runtime = application_runtime::WebrootRuntime::default();
     let websocket = if let Some(ws_config) = &config.websocket {
         if let Some(ws_script_path) = find_file_case_insensitive(&webroot, &ws_config.handler) {
             match std::fs::read_to_string(&ws_script_path) {
@@ -521,12 +534,13 @@ pub async fn run_server(args: Args) {
     let addr = listener.local_addr().unwrap();
     let state = Arc::new(AppState {
         port: addr.port(),
-        engine: WebrootEngine::new(
-            FileSystemAssetStore::new(webroot.clone()),
+        engine: WebrootEngine::with_runtime(
+            store,
             WebrootConfig {
                 rewrites: config.rewrites,
                 rewrite_file_name: config.rewrite_file_name.clone(),
             },
+            runtime,
         ),
         websocket,
     });
@@ -560,8 +574,8 @@ pub async fn run_server(args: Args) {
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .tcp_nodelay(true)
-    .await
-    .unwrap();
+    .await?;
+    Ok(())
 }
 
 async fn handler(

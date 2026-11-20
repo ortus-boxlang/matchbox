@@ -1,3 +1,6 @@
+diagnostic = { "errors" = [ { "message" = "offline" }, ], "count": 1 };
+assert diagnostic.errors.len() == 1 && diagnostic.errors[1].message == "offline";
+
 // Test struct member assignment
 s = {}
 s.x = 10

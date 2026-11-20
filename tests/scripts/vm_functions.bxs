@@ -6,9 +6,44 @@ function add(a, b) {
 result = add(10, 20)
 println("Result of add(10, 20): ", result)
 
+// Colon and equals both bind by name, not by position.
+function subtract(leftValue, rightValue) {
+    return leftValue - rightValue
+}
+if (subtract(rightValue: 3, leftValue = 10) != 7) {
+    throw "Unexpected result for mixed named argument separators"
+}
+
+// Typed arrow parameters must use the normal function parameter binder.
+formatLabel = (required string label, numeric copies = (1 + 1)) => label & copies;
+assert formatLabel("test") == "test2";
+assert formatLabel.$bx.meta.parameters[1].required;
+
 // Test closure/lambda
 multiply = (x, y) => x * y
 println("Result of multiply(5, 6): ", multiply(5, 6))
+
+// Shared tool adapters read the declared names, types and required flags.
+inspectable = function(required string UserLabel, numeric count = 4) {};
+fields = inspectable.$bx.meta.parameters;
+assert compare(fields[1].name, "UserLabel") == 0 && fields[1].type == "string" && fields[1].required;
+assert fields[2].type == "numeric" && !fields[2].required;
+
+// The function keyword can also name a parameter type.
+function applyTwice(required function callback, value) {
+    var required = callback(value);
+    return callback(required);
+}
+assert applyTwice(x => x + 2, 3) == 7;
+
+// A closure can receive a struct from a tool dispatcher without mutating that struct.
+collectLabels = function(first = "default", second = "default") {
+    return first & ":" & second & ":" & arguments.extra;
+};
+inputs = { first: "one", second: "two", extra: "kept" };
+assert collectLabels(second="override", argumentCollection=inputs) == "one:override:kept";
+assert inputs.second == "two";
+assert collectLabels(argumentCollection=["a", "b"], extra="extra") == "a:b:extra";
 
 // Nested function call
 function double(n) {

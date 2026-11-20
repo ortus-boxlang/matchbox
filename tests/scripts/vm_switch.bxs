@@ -62,4 +62,21 @@ if (i != 5) {
     throw "Loop break failed";
 }
 
+function selectGrouped(value) {
+    var selected = "";
+    switch (value) {
+        case "short": case "long": {
+            selected = "matched"
+            break
+        }
+        default: {
+            selected = "other"
+            break
+        }
+    }
+    return selected;
+}
+assert selectGrouped("short") == "matched";
+assert selectGrouped("long") == "matched";
+assert selectGrouped("missing") == "other";
 println("Switch and break tests passed!");

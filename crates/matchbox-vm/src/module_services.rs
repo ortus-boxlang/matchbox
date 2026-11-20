@@ -5,6 +5,7 @@ use crate::{
     vm::{VM, gc::GcObject},
 };
 use anyhow::{Context, Result, bail};
+mod logging;
 use std::{cell::RefCell, collections::HashMap, path::{Component, Path, PathBuf}, rc::Rc};
 
 type Fields = Rc<RefCell<HashMap<String, BxValue>>>;
@@ -179,7 +180,20 @@ pub(crate) fn register_classes(vm: &mut VM, module: &Module, record: BxValue) ->
                 let GcObject::Class(target) = vm.heap.get(value.as_gc_id().context("Embedded module class invalid")?) else {
                     bail!("Embedded module global is not a class");
                 };
-                if target.borrow().name == class.global { target.borrow_mut().name = name.clone(); }
+                if target.borrow().name == class.global {
+                    let mut target = target.borrow_mut();
+                    target.name = name.clone();
+                    // An unqualified base class lives beside the declaring module class.
+                    // Use the registered path, not a process-global short-name alias.
+                    if let Some(parent) = target.extends.as_mut().filter(|p| !p.contains(['.', ':'])) {
+                        let sibling = Path::new(&class.path).with_file_name(&*parent);
+                        if module.classes.iter().any(|candidate| Path::new(&candidate.path).with_extension("").to_string_lossy().eq_ignore_ascii_case(&sibling.to_string_lossy())) {
+                            if let Some((package, _)) = name.rsplit_once('.') {
+                                *parent = format!("{package}.{parent}");
+                            }
+                        }
+                    }
+                }
                 vm.insert_global(name, value);
             }
         }
@@ -234,7 +248,7 @@ pub(crate) fn set_record(vm: &mut VM, record: BxValue, name: &str, value: BxValu
 
 #[derive(Debug, Clone, Copy)]
 enum Kind {
-    Runtime,
+    Runtime { global_services: BxValue },
     Functions,
     Modules,
     Interceptors,
@@ -284,12 +298,19 @@ impl BxNativeObject for Service {
                 .ok_or_else(|| format!("Service unavailable: {name}"))
         };
         match (self.kind, name.as_str()) {
-            (Kind::Runtime, "getfunctionservice") if args.is_empty() => field("functionservice"),
-            (Kind::Runtime, "getmoduleservice") if args.is_empty() => field("moduleservice"),
-            (Kind::Runtime, "getinterceptorservice") if args.is_empty() => {
+            (Kind::Runtime { global_services }, "getglobalservice" | "hasglobalservice") if args.len() == 1 && vm.is_string_value(args[0]) => {
+                let key = vm.to_string(args[0]);
+                let registry = global_services.as_gc_id().unwrap();
+                Ok(if name == "hasglobalservice" { BxValue::new_bool(vm.struct_key_exists(registry, &key)) }
+                    else { vm.struct_get(registry, &key) })
+            }
+            (Kind::Runtime { .. }, "getloggingservice") if args.is_empty() => field("loggingservice"),
+            (Kind::Runtime { .. }, "getfunctionservice") if args.is_empty() => field("functionservice"),
+            (Kind::Runtime { .. }, "getmoduleservice") if args.is_empty() => field("moduleservice"),
+            (Kind::Runtime { .. }, "getinterceptorservice") if args.is_empty() => {
                 field("interceptorservice")
             }
-            (Kind::Runtime, "getcomponentservice") if args.is_empty() => field("componentservice"),
+            (Kind::Runtime { .. }, "getcomponentservice") if args.is_empty() => field("componentservice"),
             (Kind::Components, "hascomponent") if args.len() == 1 => {
                 let name = vm.to_string(args[0]);
                 Ok(BxValue::new_bool(vm.component_names().iter().any(|component| component.eq_ignore_ascii_case(&name))))
@@ -398,21 +419,34 @@ impl BxNativeObject for Service {
         }
     }
     fn trace(&self, tracer: &mut dyn Tracer) {
+        if let Kind::Runtime { global_services } = self.kind { tracer.mark(&global_services); }
         for value in self.fields.borrow().values() {
             tracer.mark(value);
         }
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Services {
     fields: Fields,
+    global_services: BxValue,
 }
 impl Services {
-    pub fn new(vm: &mut VM) -> Self {
+    /// Reuse the module descriptor's service graph even when a script asks first.
+    pub(crate) fn for_vm(vm: &mut VM) -> Self {
+        if let Some(existing) = &vm.runtime_services { return existing.clone(); }
+        let services = Self::new(vm);
+        vm.runtime_services = Some(services.clone());
+        services
+    }
+    pub(crate) fn runtime(&self) -> BxValue { self.fields.borrow()["boxruntime"] }
+
+    fn new(vm: &mut VM) -> Self {
         let registry = BxValue::new_ptr(vm.struct_new());
         let fields = Rc::new(RefCell::new(HashMap::from([("registry".into(), registry)])));
+        let global_services = BxValue::new_ptr(vm.struct_new());
         for (name, kind) in [
-            ("boxruntime", Kind::Runtime),
+            ("boxruntime", Kind::Runtime { global_services }),
             ("functionservice", Kind::Functions),
             ("moduleservice", Kind::Modules),
             ("interceptorservice", Kind::Interceptors),
@@ -426,25 +460,45 @@ impl Services {
             fields.borrow_mut().insert(name.into(), value);
             vm.insert_global(format!("__mb_{name}"), value);
         }
-        vm.register_callback("__mb_construct_box_class", NativeCallback {
-            parameters: vec!["class".into(), "arguments".into(), "names".into()],
-            callback: Rc::new(|vm, values| {
-                if values.len() != 3 || !vm.is_string_value(values[0]) || !vm.is_array_value(values[1]) || !vm.is_array_value(values[2]) {
-                    return Err("Class construction requires a name, arguments and argument names".into());
-                }
-                let class = vm.to_string(values[0]);
-                let args_id = values[1].as_gc_id().unwrap();
-                let names_id = values[2].as_gc_id().unwrap();
-                if vm.array_len(args_id) != vm.array_len(names_id) { return Err("Class argument names must match arguments".into()); }
-                let args = (0..vm.array_len(args_id)).map(|index| vm.array_get(args_id, index)).collect();
-                let names: Vec<_> = (0..vm.array_len(names_id)).map(|index| vm.to_string(vm.array_get(names_id, index))).collect();
-                let named = names.iter().any(|name| !name.is_empty());
-                vm.construct_box_class(&class, args, named.then_some(names))
-            }),
-        }).expect("VM callback registration");
-        vm.register_component_runtime().expect("VM callback registration");
-        Self { fields }
+        let logging = BxValue::new_ptr(vm.native_object_new(Rc::new(RefCell::new(logging::LoggingService::default()))));
+        fields.borrow_mut().insert("loggingservice".into(), logging);
+        Self { fields, global_services }
     }
+
+    /// Services are live values in the owning VM. Never serialize them or move them
+    /// to a different worker. Record ownership before startup so errors unwind safely.
+    pub fn start_declared(&self, vm: &mut VM, declared: BxValue, owned: &mut Vec<String>) -> Result<()> {
+        if !vm.is_array_value(declared) { bail!("globalServices must be an array of service instances"); }
+        let declarations = declared.as_gc_id().unwrap();
+        let registry = self.global_services.as_gc_id().unwrap();
+        // A startup callback may change the descriptor. Keep the original instances
+        // alive until registration finishes, without holding a borrow during user code.
+        let entries = (0..vm.array_len(declarations)).map(|i| vm.array_get(declarations, i)).collect();
+        let entries = vm.heap.retain_values(entries).map_err(anyhow::Error::msg)?;
+        for &service in entries.iter() {
+            for method in ["getName", "onStartup", "onShutdown"] {
+                if !vm.has_method_by_value(service, method) { bail!("Global service is missing required method {method}"); }
+            }
+            let name = vm.call_method_value(service, "getName", vec![])?;
+            if !vm.is_string_value(name) { bail!("Global service name must be a nonempty string"); }
+            let name = vm.to_string(name);
+            if name.trim().is_empty() { bail!("Global service name must be a nonempty string"); }
+            if vm.struct_key_exists(registry, &name) { bail!("Global service already registered: {name}"); }
+            vm.struct_set(registry, &name, service);
+            owned.push(name.clone());
+            vm.call_method_value(service, "onStartup", vec![]).with_context(|| format!("Starting global service {name}"))?;
+        }
+        Ok(())
+    }
+
+    pub fn stop_declared(&self, vm: &mut VM, name: &str) -> Result<()> {
+        let registry = self.global_services.as_gc_id().unwrap();
+        let service = vm.struct_get(registry, name);
+        let result = vm.call_method_value(service, "onShutdown", vec![BxValue::new_bool(false)]);
+        vm.struct_delete(registry, name);
+        result.map(|_| ()).with_context(|| format!("Stopping global service {name}"))
+    }
+
     pub fn register(&self, vm: &mut VM, name: &str, record: BxValue) {
         let id = self.fields.borrow()["registry"].as_gc_id().unwrap();
         vm.struct_set(id, name, record);
@@ -473,7 +527,9 @@ mod tests {
     #[test]
     fn service_registry_roots_records_and_tracks_new_settings_through_gc() {
         let mut vm = VM::new();
-        let services = Services::new(&mut vm);
+        let runtime_before_load = vm.box_runtime().unwrap();
+        let services = Services::for_vm(&mut vm);
+        assert_eq!(runtime_before_load, services.runtime());
         let module = Module {
             parent_module:None,nested_modules:vec![],
             name: "gc-test".into(),

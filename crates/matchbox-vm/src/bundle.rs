@@ -306,6 +306,7 @@ struct ModuleActivation {
     instance: Rc<crate::vm::gc::RootedValue>,
     record: Rc<crate::vm::gc::RootedValue>,
     targets: Vec<Rc<crate::vm::gc::RootedValue>>,
+    global_services: Vec<String>,
 }
 /// VM/thread-owned module lifetime. Hosts must unload before destroying the owning VM.
 /// Registrations/native libraries remain VM/process-owned; this is not hot reload.
@@ -347,7 +348,8 @@ impl LoadedModules {
             records: Vec::new(),
         };
         let result = (|| -> Result<()> {
-            let services = crate::module_services::Services::new(vm);
+            let services = crate::module_services::Services::for_vm(vm);
+            vm.register_component_runtime()?;
             let settings_id = vm.struct_new();
             vm.insert_global(
                 "__matchbox_module_settings".into(),
@@ -429,6 +431,7 @@ impl LoadedModules {
                     instance: vm.heap.retain_value(instance).map_err(anyhow::Error::msg)?,
                     record: vm.heap.retain_value(record).map_err(anyhow::Error::msg)?,
                     targets: Vec::new(),
+                    global_services: Vec::new(),
                 });
                 crate::module_services::register_classes(vm, module, record)?;
                 ready[index] = 2;
@@ -626,6 +629,9 @@ impl LoadedModules {
                     targets.push(vm.heap.retain_value(target).map_err(anyhow::Error::msg)?);
                     vm.struct_set(entry, "interceptor", target);
                 }
+                if let Some(declared) = vm.instance_variable(instance, "globalServices") {
+                    services.start_declared(vm, declared, &mut activation.global_services)?;
+                }
                 if vm.instance_has_method(instance, "onLoad") {
                     vm.call_method_value(instance, "onLoad", vec![])?;
                 }
@@ -690,6 +696,11 @@ impl LoadedModules {
             let targets = activation.targets;
             if let Err(error) = announce_module_event(vm, "preModuleUnload", record) {
                 shutdown_error.get_or_insert(error);
+            }
+            for name in activation.global_services.iter().rev() {
+                if let Err(error) = crate::module_services::Services::for_vm(vm).stop_declared(vm, name) {
+                    shutdown_error.get_or_insert(error);
+                }
             }
             if vm.instance_has_method(instance, "onUnload") {
                 if let Err(error) = vm.call_method_value(instance, "onUnload", vec![]) {

@@ -973,7 +973,8 @@ class {
 class {
     function init(numeric value = 7) { variables.value = value; return this; }
     function get() { return variables.value; }
-    static function kind() { return "mapped"; }
+    static { final kindName = "mapped"; }
+    static function kind() { return static.kindName; }
 }
 "#).unwrap();
     fs::write(module.join("public/Exposed.bx"), r#"
@@ -984,14 +985,16 @@ class {
 "#).unwrap();
     // A class outside the resolved mapping path must not shadow its mapped namesake.
     fs::write(module.join("Value.bx"), "class { function get() { return 99; } }").unwrap();
-    fs::write(dir.path().join("app.bxs"), r#"
+    fs::write(dir.path().join("app.bxs"), r##"
 import bxModules.lateOne.Value as MappedValue;
 import publicApi.Exposed;
 first = new MappedValue();
-second = new bxModules.lateOne.Value(value=13);
+mappedName = "bxModules.lateOne.Value";
+second = new "#mappedName#"(argumentCollection={value:13});
 assert first.get() == 7;
 assert second.get() == 13;
 assert MappedValue.kind() == "mapped";
+assert bxModules.lateOne.Value::kind() == "mapped";
 kindReference = MappedValue.kind;
 assert kindReference() == "mapped";
 try { MappedValue.get(); throw 'non-static call accepted'; }
@@ -999,7 +1002,7 @@ catch (any error) { assert findNoCase('requires an instance', error.message) > 0
 visible = new Exposed();
 assert visible.get() == 42;
 println("mapped class contracts OK");
-"#).unwrap();
+"##).unwrap();
     let expected = "configured mapped classes\nmapped class contracts OK\n";
     let output = cli(dir.path(), &["--module", "module", "app.bxs"]); success(&output);
     assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
@@ -1016,6 +1019,87 @@ println("mapped class contracts OK");
         success(&output);
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     }
+}
+
+#[test]
+fn mapped_class_can_construct_another_instance_of_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("probe");
+    fs::create_dir(&module).unwrap();
+    fs::write(dir.path().join("boxlang.json"), r#"{"mappings":{"/bxModules/probe":"${user-dir}/probe"}}"#).unwrap();
+    fs::write(module.join("ModuleConfig.bx"), "class {}").unwrap();
+    fs::write(module.join("Value.bx"), "class { function another() { return new bxModules.probe.Value(); } static function fresh() { return new Value(); } function read() { return 13; } }").unwrap();
+    fs::write(dir.path().join("app.bxs"), "assert new bxModules.probe.Value().another().read() == 13; assert bxModules.probe.Value::fresh().read() == 13;").unwrap();
+    success(&cli(dir.path(), &["--module", "probe", "app.bxs"]));
+}
+
+#[test]
+fn mapped_class_inherits_from_its_own_package_after_source_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("module");
+    for (package, expected) in [("left", 17), ("right", 29)] {
+        let classes = module.join(package);
+        fs::create_dir_all(&classes).unwrap();
+        fs::write(classes.join("Base.bx"), format!("class {{ variables.n = {expected}; function read() {{ return variables.n; }} }}")).unwrap();
+        fs::write(classes.join("Child.bx"), "class extends=Base {}").unwrap();
+    }
+    fs::write(module.join("ModuleConfig.bx"), "class {}").unwrap();
+    fs::write(dir.path().join("app.bxs"), "assert new bxModules.module.left.Child().read() == 17; assert new bxModules.module.right.Child().read() == 29;").unwrap();
+    success(&cli(dir.path(), &["--module", "module", "app.bxs"]));
+    success(&cli(dir.path(), &["--build", "--module", "module", "app.bxs"]));
+    fs::remove_dir_all(module).unwrap();
+    fs::remove_file(dir.path().join("app.bxs")).unwrap();
+    success(&cli(dir.path(), &["app.bxb"]));
+}
+
+#[test]
+fn module_global_service_retains_identity_and_is_stopped_on_exit_or_failed_activation() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("module");
+    fs::create_dir(&module).unwrap();
+    fs::write(module.join("Ledger.bx"), r#"class {
+        function getName() { return 'ledger'; }
+        function onStartup() { variables.labels = []; }
+        function add(label) { variables.labels.append(label); return variables.labels.toList(','); }
+        function onShutdown(force) { println('stopped:' & variables.labels.toList(',')); }
+    }"#).unwrap();
+    fs::write(module.join("ModuleConfig.bx"), r#"class {
+        function configure() { variables.globalServices = [new bxModules.module.Ledger()]; }
+        function onLoad() { assert getBoxRuntime().getGlobalService('LEDGER') === variables.globalServices[1]; }
+        function onUnload() { assert !getBoxRuntime().hasGlobalService('ledger'); println('released ledger'); }
+    }"#).unwrap();
+    fs::write(dir.path().join("app.bxs"), r#"
+        rt = getBoxRuntime(); assert !rt.hasGlobalService('absent'); assert isNull(rt.getGlobalService('absent'));
+        assert rt.hasGlobalService('Ledger'); assert rt.getGlobalService('ledger').add('first') == 'first';
+        assert getBoxRuntime().getGlobalService('LEDGER').add('second') == 'first,second';
+    "#).unwrap();
+    let output = cli(dir.path(), &["--module", "module", "app.bxs"]);
+    success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).matches("stopped:first,second").count(), 1);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("released ledger"));
+    fs::write(module.join("ModuleConfig.bx"), "class { function configure() { variables.globalServices=[new bxModules.module.Ledger(), new bxModules.module.Ledger()]; } }").unwrap();
+    let output = cli(dir.path(), &["--module", "module", "app.bxs"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).to_lowercase().contains("global service already registered: ledger"));
+    assert_eq!(String::from_utf8_lossy(&output.stdout).matches("stopped:").count(), 1);
+}
+
+#[test]
+fn wildcard_module_import_resolves_constructors_and_base_classes_without_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("module");
+    fs::create_dir_all(module.join("providers")).unwrap();
+    fs::create_dir_all(module.join("clients")).unwrap();
+    fs::write(module.join("ModuleConfig.bx"), "class {}").unwrap();
+    fs::write(module.join("providers/Base.bx"), "class { function label() { return 'base'; } }").unwrap();
+    fs::write(module.join("providers/Other.bx"), "class { function read() { return 29; } }").unwrap();
+    fs::write(module.join("clients/Consumer.bx"), "import bxModules.module.providers.*; class extends=Base { function other() { return new Other(); } }").unwrap();
+    fs::write(dir.path().join("app.bxs"), "import bxModules.module.clients.*; instance = new Consumer(); assert instance.label() == 'base'; assert instance.other().read() == 29;").unwrap();
+    success(&cli(dir.path(), &["--module", "module", "app.bxs"]));
+    success(&cli(dir.path(), &["--build", "--module", "module", "app.bxs"]));
+    fs::remove_dir_all(module).unwrap();
+    fs::remove_file(dir.path().join("app.bxs")).unwrap();
+    success(&cli(dir.path(), &["app.bxb"]));
 }
 
 #[test]
@@ -1283,8 +1367,9 @@ fn class_provider_records_and_results_are_validated_at_execution_only() {
 fn static_class_methods_share_named_binding_precedence_and_gc_roots() {
     let source = r#"
 class StaticProbe {
+    static { offsets = [0]; }
     function instanceOnly() { return 0; }
-    static function answer(numeric left=40, numeric right=2) { return left + right; }
+    static function answer(numeric left=40, numeric right=2) { return left + right + static.offsets[1]; }
 }
 staticReference = StaticProbe.answer;
 assert StaticProbe.answer(right=3, left=4) == 7;

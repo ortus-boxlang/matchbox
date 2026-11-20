@@ -21,3 +21,9 @@ println("CEO: #person.firstName# #person.lastName#")
 // Interpolation in single quotes
 single = 'Hello #name#'
 println(single)
+
+usage = { prompt_tokens: 17 };
+function echoUsage(text) { return text; }
+assert echoUsage("Prompt=#usage.keyExists( "prompt_tokens" ) ? usage.prompt_tokens : 0#") == "Prompt=17";
+assert echoUsage('Missing=#usage.keyExists( '' ) ? 1 : 0#') == 'Missing=0';
+assert echoUsage("#ver##name#") == "1BoxLang";

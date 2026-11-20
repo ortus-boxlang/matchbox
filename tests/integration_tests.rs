@@ -106,6 +106,7 @@ script_test!(
     "vm_throw_structured_exception.bxs"
 );
 script_test!(vm_functions, "vm_functions.bxs");
+script_test!(vm_class_static_initializer, "vm_class_static_initializer.bxs");
 script_test!(vm_function_execution, "vm_function_execution.bxs");
 script_test!(vm_scope_bindings, "vm_scope_bindings.bxs");
 script_test!(guarded_frame_local_alias, "test01-local.bxs");
@@ -237,6 +238,7 @@ script_test!(vm_accessors, "vm_accessors.bxs");
 script_test!(vm_typed_functions, "vm_typed_functions.bxs");
 script_test!(vm_defaults, "vm_defaults.bxs");
 script_test!(vm_interfaces, "vm_interfaces.bxs");
+script_test!(vm_abstract_methods, "vm_abstract_methods.bxs");
 script_test!(vm_on_missing_method, "vm_on_missing_method.bxs");
 script_test!(vm_imports_alias, "vm_imports_alias.bxs");
 script_test!(vm_imports_no_alias, "vm_imports_no_alias.bxs");
@@ -308,6 +310,9 @@ script_test!(vm_io_bifs, "vm_io_bifs.bxs");
     not(target_os = "espidf")
 ))]
 script_test!(vm_system_execute, "vm_system_execute.bxs");
+script_test!(vm_file_read_binary, "vm_file_read_binary.bxs");
+#[cfg(unix)]
+script_test!(vm_system_execute_groups, "vm_system_execute_groups.bxs");
 script_test!(vm_list_query_extra, "vm_list_query_extra.bxs");
 script_test!(vm_binary_encryption, "vm_binary_encryption.bxs");
 script_test!(vm_set_bifs, "vm_set_bifs.bxs");
@@ -736,7 +741,8 @@ fn test_vm_interface_fail() {
         false,
         false,
     );
-    assert!(result.is_err(), "vm_interface_fail.bxs should have failed");
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("must implement abstract method f"), "{error}");
 }
 
 #[test]

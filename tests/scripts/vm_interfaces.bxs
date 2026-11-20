@@ -2,14 +2,32 @@ import tests.models.ISpeakable;
 
 interface IGreetable {
     function greet(name);
+    default public string function label() { return variables.label; }
 }
 
-class Person implements="IGreetable, ISpeakable" {
+interface IWelcoming extends="IGreetable, ISpeakable" {}
+
+class Person implements="IWelcoming" {
+    function setLabel(value) { variables.label = value; }
     function greet(name) {
         println("Hello, " & name);
     }
 }
 
+interface LabelReader { string function readLabel(); }
+class ReadableBase { string function readLabel() { return "inherited"; } }
+class Labelled extends="ReadableBase" implements="LabelReader" {}
+assert new Labelled().readLabel() == "inherited";
+class UnreadableBase {}
+class MissingReader extends="UnreadableBase" implements="LabelReader" {}
+missingReaderRejected = false;
+try { new MissingReader(); } catch (any problem) { missingReaderRejected = findNoCase("readlabel", problem.message) > 0; }
+assert missingReaderRejected;
+
 p = new Person();
 p.greet("Jacob");
 p.speak();
+p.setLabel("first");
+other = new Person();
+other.setLabel("second");
+assert p.label() == "first" && other.label() == "second";

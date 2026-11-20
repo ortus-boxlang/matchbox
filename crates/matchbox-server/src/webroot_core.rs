@@ -98,23 +98,39 @@ pub struct AssetMetadata {
 #[derive(Clone, Debug)]
 pub struct FileSystemAssetStore {
     root: PathBuf,
+    private_paths: Vec<PathBuf>,
 }
 
 impl FileSystemAssetStore {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            private_paths: Vec::new(),
+        }
     }
 
-    fn full_path(&self, relative_path: &str) -> Result<PathBuf> {
+    pub(crate) fn with_private_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.private_paths = paths;
+        self
+    }
+
+    fn full_path(&self, relative_path: &str) -> std::io::Result<PathBuf> {
         let mut full = self.root.clone();
         if !relative_path.is_empty() {
             for component in Path::new(relative_path).components() {
                 match component {
                     Component::Normal(part) => full.push(part),
                     Component::CurDir => {}
-                    _ => bail!("Invalid webroot path"),
+                    _ => return Err(std::io::ErrorKind::InvalidInput.into()),
                 }
             }
+        }
+        if !self.private_paths.is_empty() {
+            let resolved = full.canonicalize()?;
+            if self.private_paths.iter().any(|path| resolved.starts_with(path)) {
+                return Err(std::io::ErrorKind::NotFound.into());
+            }
+            return Ok(resolved);
         }
         Ok(full)
     }
@@ -129,8 +145,7 @@ impl AssetStore for FileSystemAssetStore {
     }
 
     fn metadata(&self, relative_path: &str) -> Result<Option<AssetMetadata>> {
-        let full = self.full_path(relative_path)?;
-        match std::fs::metadata(full) {
+        match self.full_path(relative_path).and_then(std::fs::metadata) {
             Ok(metadata) => Ok(Some(AssetMetadata {
                 is_dir: metadata.is_dir(),
             })),
@@ -140,8 +155,7 @@ impl AssetStore for FileSystemAssetStore {
     }
 
     fn read(&self, relative_path: &str) -> Result<Option<Vec<u8>>> {
-        let full = self.full_path(relative_path)?;
-        match std::fs::read(full) {
+        match self.full_path(relative_path).and_then(std::fs::read) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(err.into()),

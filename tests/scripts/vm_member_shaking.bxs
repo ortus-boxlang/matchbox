@@ -3,6 +3,15 @@ function expect( actual, expected, label ) {
     if ( actual != expected ) { throw "#label# failed: expected [#expected#], got [#actual#]"; }
 }
 
+// A functional member receives the item, not any extra iteration arguments.
+class SchemaTool { function getSchema() { return "tool"; } }
+expect([new SchemaTool()].map(.getSchema)[1], "tool", "functional method");
+expect([{label:"field"}, {label:()=>"function"}].map(.label).toList(), "field,function", "functional field");
+expect(["ab", "c"].map(.len).toList(), "2,1", "functional member BIF");
+expect(["image"].map(img => { label: img, mimeType: "image/png" })[1].label, "image", "arrow struct result");
+width = 2;
+expect(["abcd"].map(.left(width))[1], "ab", "functional arguments");
+
 // arrays
 expect( [ 3, 1, 2 ].sort( "numeric" ).toList(), "1,2,3", "array sort" );
 expect( [ "a", "b" ].first(), "a", "array first" );

@@ -1,0 +1,54 @@
+class Recorder {
+    static { final labels = []; }
+    static { labels.append("start"); }
+    static function bindings() { return static; }
+    static function record(label) {
+        static.labels.append(label);
+        return static.labels.toList(",");
+    }
+}
+class OtherRecorder {
+    static { labels = ["other"]; }
+    function history() { return static.labels.toList(","); }
+}
+assert Recorder::record("first") == "start,first";
+new Recorder();
+assert Recorder::record("second") == "start,first,second";
+assert Recorder::labels.len() == 3;
+bindings = Recorder::bindings();
+for (change in [() => { bindings.LaBeLs = []; }, () => { bindings["LABELS"] = []; },
+    () => structUpdate(bindings, "labels", []), () => structDelete(bindings, "labels")]) {
+    try { change(); throw "accepted mutation"; }
+    catch (any failure) { assert failure.message contains "final key"; }
+}
+assert Recorder::record("third") == "start,first,second,third";
+assert (new OtherRecorder()).history() == "other";
+
+// Declaring a class does not initialize it. Failed initialization must not repeat its effects.
+attempts = [];
+class BrokenRecorder {
+    static { attempts.append("attempted"); throw "cannot initialize recorder"; }
+    static function record() { return 0; }
+}
+assert attempts.len() == 0;
+for (attempt in [1, 2]) {
+    try {
+        BrokenRecorder::record();
+        throw "unexpected successful call";
+    } catch (any failure) {
+        assert failure.message contains "cannot initialize recorder";
+    }
+}
+assert attempts.len() == 1;
+
+class ParentRecorder {
+    static { label = "parent"; }
+    function fromParent() { return static.label; }
+}
+class ChildRecorder extends="ParentRecorder" {
+    static { label = "child"; }
+    function fromChild() { return static.label; }
+}
+childRecorderInstance = new ChildRecorder();
+assert childRecorderInstance.fromParent() == "parent";
+assert childRecorderInstance.fromChild() == "child";

@@ -15,6 +15,13 @@ use std::thread;
 #[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
 use std::time::{Duration, Instant};
 
+/// Executes a command with optional bounded stdin, output redirection and Unix group ownership.
+///
+/// The native extension at position 12, `terminateProcessGroup`, requires `terminateOnTimeout`.
+/// Owned groups are killed on timeout, normal completion, error and orderly native host shutdown.
+///
+/// # Errors
+/// Returns argument, spawn, I/O or wait failures. Group ownership is Unix-only.
 #[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
 pub fn system_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -102,6 +109,13 @@ pub fn system_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
         return Err("systemExecute() inheritIO cannot be combined with input".to_string());
     }
 
+    let terminate_group = coerce_bool(vm, args.get(11), false, "terminateProcessGroup")?;
+    if terminate_group && !terminate_on_timeout {
+        return Err(
+            "systemExecute() terminateProcessGroup requires terminateOnTimeout=true".into(),
+        );
+    }
+
     if inherit_io {
         command.stdin(Stdio::inherit());
         command.stdout(Stdio::inherit());
@@ -128,20 +142,18 @@ pub fn system_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
         }
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("systemExecute() could not execute '{executable}': {error}"))?;
-    if let Some(input) = input {
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Err(error) = stdin.write_all(input.as_bytes()) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
-                    "systemExecute() failed writing process input: {error}"
-                ));
-            }
-        }
-    }
+    let (mut child, group) =
+        crate::process_groups::ProcessGroup::spawn(&mut command, terminate_group).map_err(
+            |error| format!("systemExecute() could not execute '{executable}': {error}"),
+        )?;
+    // Drain output before writing stdin: a child can write before it reads. A blocked stdin
+    // write must not prevent timeout or orderly host shutdown from stopping the child.
+    let input_thread = input.and_then(|input| {
+        child
+            .stdin
+            .take()
+            .map(|mut stdin| thread::spawn(move || stdin.write_all(input.as_bytes())))
+    });
     let pid = child.id();
     let stdout_thread = child.stdout.take().map(spawn_stream_reader);
     let stderr_thread = child.stderr.take().map(spawn_stream_reader);
@@ -156,10 +168,12 @@ pub fn system_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     let mut exit_code = None;
 
     loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| format!("systemExecute() failed waiting for process: {error}"))?
-        {
+        let status = match &group {
+            Some(group) => group.try_wait(&mut child),
+            None => child.try_wait().map_err(|e| e.to_string()),
+        }
+        .map_err(|error| format!("systemExecute() failed waiting for process: {error}"))?;
+        if let Some(status) = status {
             exit_code = status.code();
             break;
         }
@@ -167,7 +181,16 @@ pub fn system_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             timed_out = true;
             if terminate_on_timeout {
-                if let Err(error) = child.kill() {
+                let killed = match &group {
+                    Some(group) => group.terminate(),
+                    None => child.kill(),
+                };
+                if let Err(error) = killed {
+                    if group.is_some() {
+                        return Err(format!(
+                            "systemExecute() failed terminating process group: {error}"
+                        ));
+                    }
                     if child
                         .try_wait()
                         .map_err(|wait_error| {
@@ -198,6 +221,16 @@ pub fn system_execute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
 
     if !timed_out || terminated {
         wait_for_streams(&stdout_thread, &stderr_thread, Duration::from_secs(5));
+    }
+    if let Some(writer) = input_thread.filter(|writer| writer.is_finished()) {
+        let written = writer
+            .join()
+            .map_err(|_| "systemExecute() input writer failed".to_string())?;
+        // Closing stdin is expected when a deadline/shutdown kills the reader. Do not
+        // replace the timeout/exit outcome with a scheduling-dependent broken-pipe error.
+        if !timed_out && exit_code == Some(0) {
+            written.map_err(|e| format!("systemExecute() failed writing process input: {e}"))?;
+        }
     }
     let stdout = captured_output(&stdout_thread);
     let stderr = captured_output(&stderr_thread);
@@ -345,6 +378,10 @@ fn set_optional_string(
     }
 }
 
+/// Rejects command execution on targets without native process support.
+///
+/// # Errors
+/// Always returns an unsupported-target error.
 #[cfg(any(target_family = "wasm", target_os = "espidf"))]
 pub fn system_execute(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     Err("systemExecute() is not supported on this target".to_string())

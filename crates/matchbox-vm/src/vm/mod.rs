@@ -5,6 +5,7 @@ pub mod intern;
 mod members;
 mod calls;
 mod classes;
+mod statics;
 mod scopes;
 mod contexts;
 mod events;
@@ -487,6 +488,7 @@ pub enum DebugStepStatus {
 pub enum RuntimeError {
     /// Memory allocation failed even after garbage collection.
     OutOfMemory(String),
+    InvalidConstant,
 }
 
 impl RuntimeError {
@@ -494,6 +496,7 @@ impl RuntimeError {
     pub fn exception_type(&self) -> &str {
         match self {
             RuntimeError::OutOfMemory(_) => "OutOfMemoryException",
+            RuntimeError::InvalidConstant => "ExpressionException",
         }
     }
 }
@@ -502,6 +505,7 @@ impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RuntimeError::OutOfMemory(msg) => write!(f, "OutOfMemory: {}", msg),
+            RuntimeError::InvalidConstant => write!(f, "Method signature metadata is not an executable constant"),
         }
     }
 }
@@ -570,6 +574,10 @@ pub struct VM {
     pub interner: StringInterner,
     pub cli_args: Vec<String>,
     soap_clients: HashMap<String, BxValue>,
+    /// VM-owned class scopes, shared by repeated promotions of the same source class.
+    class_scopes: HashMap<(String, String), Result<BxValue, String>>,
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+    pub(crate) runtime_services: Option<crate::module_services::Services>,
     #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
     members: HashMap<String, HashMap<String, members::RegisteredMember>>,
     pub output_buffer: Option<String>,
@@ -612,7 +620,11 @@ impl VM {
 }
 
 impl BxVM for VM {
-    fn call_super_method(&mut self, receiver: BxValue, defining_class: &str, name: &str, args: Vec<BxValue>) -> Result<BxValue, String> {
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+    fn box_runtime(&mut self) -> Result<BxValue, String> {
+        Ok(crate::module_services::Services::for_vm(self).runtime())
+    }
+    fn call_super_method(&mut self, receiver: BxValue, defining_class: &str, name: &str, args: Vec<BxValue>, names: Option<Vec<String>>) -> Result<BxValue, String> {
         let id = receiver.as_gc_id().ok_or("super can only be used on a class instance")?;
         let mut current = match self.heap.get(id) {
             GcObject::Instance(instance) => Rc::clone(&instance.class),
@@ -622,7 +634,7 @@ impl BxVM for VM {
         let parent = loop {
             let (is_defining, parent_name) = {
                 let class = current.borrow();
-                (class.name.eq_ignore_ascii_case(defining_class), class.extends.clone())
+                (class.name.eq_ignore_ascii_case(defining_class) || class.constructor.name.eq_ignore_ascii_case(&BxClass::constructor_name(defining_class)), class.extends.clone())
             };
             let parent_class = parent_name.and_then(|parent_name| match self.get_global(&parent_name).and_then(|v| v.as_gc_id()) {
                 Some(parent_id) => match self.heap.get(parent_id) {
@@ -642,7 +654,7 @@ impl BxVM for VM {
         let mut method = (*method).clone();
         method.captured_receiver = Some(receiver);
         let function = BxValue::new_ptr(self.heap.alloc(GcObject::CompiledFunction(Rc::new(method))));
-        self.call_function_value_named(function, args, None).map_err(|e| e.to_string())
+        self.call_function_value_named(function, args, names).map_err(|e| e.to_string())
     }
 
     fn path_mappings(&self) -> Vec<crate::paths::PathMapping> { self.path_mappings.clone() }
@@ -1340,6 +1352,7 @@ impl BxVM for VM {
 
     fn struct_new(&mut self) -> usize {
         self.heap.alloc(GcObject::Struct(BxStruct {
+            final_keys: None,
             shape_id: self.shapes.get_root(),
             properties: Vec::new(),
             case_sensitive: false,
@@ -1370,6 +1383,7 @@ impl BxVM for VM {
     }
 
     fn struct_set(&mut self, id: usize, key: &str, val: BxValue) {
+        if self.struct_key_is_final(id, key) { return; }
         self.struct_set_and_key(id, key, val);
     }
 
@@ -1388,7 +1402,12 @@ impl BxVM for VM {
         BxValue::new_null()
     }
 
+    fn struct_key_is_final(&self, id: usize, key: &str) -> bool {
+        matches!(self.heap.get_opt(id), Some(GcObject::Struct(s)) if s.final_keys.as_ref().is_some_and(|keys| self.struct_key_lookup_id(id, key).is_some_and(|id| keys.contains(&id))))
+    }
+
     fn struct_delete(&mut self, id: usize, key: &str) -> bool {
+        if self.struct_key_is_final(id, key) { return false; }
         let key_id = self.struct_key_lookup_id(id, key).unwrap_or(u32::MAX);
         if let GcObject::Struct(s) = self.heap.get_mut(id) {
             if self.shapes.get_index(s.shape_id, key_id).is_some() {
@@ -2045,6 +2064,11 @@ impl VM {
     /// Shared GET_PRIVATE resolution; JIT intrinsic guards must respect the same scopes.
     fn private_value(&mut self, fiber: usize, name: &str) -> Option<BxValue> {
         let mut found = self.function_scope_value(fiber, name);
+        if found.is_none() && self.fibers[fiber].frames.last().unwrap().function.kind == crate::types::FunctionKind::StaticInitializer {
+            if let Some(scope) = self.frame_class_scope(fiber).and_then(|scope| scope.as_gc_id()) {
+                if self.struct_key_exists(scope, name) { return Some(self.struct_get(scope, name)); }
+            }
+        }
         let lambda = self.fibers[fiber].frames.last().unwrap().function.kind == crate::types::FunctionKind::Lambda;
         if let Some(receiver) = self.fibers[fiber].frames.last().unwrap()
             .receiver.filter(|_| found.is_none() && !lambda)
@@ -2066,7 +2090,7 @@ impl VM {
                 }
             }
             if found.is_none() && self.instance_has_method(receiver, name) {
-                found = self.method_reference(receiver, name).ok();
+                found = self.method_reference(receiver, name, &[]).ok();
             }
         }
         if found.is_none() && !lambda && name == "variables" {
@@ -2474,7 +2498,7 @@ impl VM {
             properties.push(value);
         }
         BxValue::new_ptr(self.heap.alloc(GcObject::Struct(BxStruct {
-            shape_id, properties, case_sensitive: false, ordered: false,
+            final_keys: None, shape_id, properties, case_sensitive: false, ordered: false,
         })))
     }
 
@@ -2708,6 +2732,9 @@ impl VM {
             interner: StringInterner::new(),
             cli_args: Vec::new(),
             soap_clients: HashMap::new(),
+            class_scopes: HashMap::new(),
+            #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+            runtime_services: None,
             #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
             members: HashMap::new(),
             output_buffer: None,
@@ -2923,6 +2950,7 @@ impl VM {
         use crate::types::BxStruct;
 
         let mut os_struct = BxStruct {
+            final_keys: None,
             shape_id: self.shapes.get_root(),
             properties: Vec::new(),
             case_sensitive: false,
@@ -2973,6 +3001,7 @@ impl VM {
         let os_ptr = self.heap.alloc(GcObject::Struct(os_struct));
 
         let mut server_struct = BxStruct {
+            final_keys: None,
             shape_id: self.shapes.get_root(),
             properties: Vec::new(),
             case_sensitive: false,
@@ -5808,6 +5837,27 @@ impl VM {
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
                     self.insert_global_interned(name_id, val);
                 }
+                op::DEFINE_FINAL_STATIC => {
+                    let key_id = self.read_intern_id(fiber_idx, op0 as usize)?;
+                    let key = self.interner.resolve(key_id).to_string();
+                    let value = self.fibers[fiber_idx].stack.pop().unwrap();
+                    let Some(id) = self.frame_class_scope(fiber_idx).and_then(|scope| scope.as_gc_id()) else {
+                        vm_throw!("Final static declaration requires a class scope");
+                    };
+                    if let Err(error) = self.assign_struct(id, &key, value) { vm_throw!("{}", error); }
+                    if let GcObject::Struct(scope) = self.heap.get_mut(id) {
+                        scope.final_keys.get_or_insert_with(Default::default).insert(key_id);
+                    }
+                }
+                op::GET_STATIC_SCOPE => {
+                    let owner = self.read_intern_id(fiber_idx, op0 as usize)?;
+                    let name = self.interner.resolve(owner).to_lowercase();
+                    let filename = self.fibers[fiber_idx].frames.last().unwrap().function.chunk.filename.clone();
+                    match self.lexical_static_scope(filename, name) {
+                        Ok(scope) => self.fibers[fiber_idx].stack.push(scope),
+                        Err(error) => vm_throw!("{}", error),
+                    }
+                }
                 op::GET_PRIVATE => {
                     let idx = op0;
                     let name_id = self.read_intern_id(fiber_idx, idx as usize)?;
@@ -5831,6 +5881,11 @@ impl VM {
                     let name_id = self.read_intern_id(fiber_idx, idx as usize)?;
                     let name = self.interner.resolve(name_id).to_string().to_lowercase();
                     let val = *self.fibers[fiber_idx].stack.last().unwrap();
+                    if self.fibers[fiber_idx].frames.last().unwrap().function.kind == crate::types::FunctionKind::StaticInitializer {
+                        let scope = self.frame_class_scope(fiber_idx).unwrap().as_gc_id().unwrap();
+                        if let Err(error) = self.assign_struct(scope, &name, val) { vm_throw!("{}", error); }
+                        continue 'quantum;
+                    }
                     if self.assign_function_scope(fiber_idx, &name, val) {
                         continue 'quantum;
                     }
@@ -5862,6 +5917,11 @@ impl VM {
                 op::DUP => {
                     let val = *self.fibers[fiber_idx].stack.last().unwrap();
                     self.fibers[fiber_idx].stack.push(val);
+                }
+                op::DUP_TOP_UNDER => {
+                    let stack = &mut self.fibers[fiber_idx].stack;
+                    let top = *stack.last().unwrap();
+                    stack.insert(stack.len() - 1 - op0 as usize, top);
                 }
                 op::DUP_BELOW => {
                     let stack = &mut self.fibers[fiber_idx].stack;
@@ -5987,6 +6047,7 @@ impl VM {
                         props.push(value);
                     }
                     let id = self.heap.alloc(GcObject::Struct(BxStruct {
+                        final_keys: None,
                         shape_id,
                         properties: props,
                         case_sensitive: false,
@@ -6138,7 +6199,7 @@ impl VM {
                         // retain conversion before observer lookup, including reentrant keys.
                         let index_string = (!direct_array).then(|| self.to_string(index_val));
                         if let Some(index_string) = index_string.as_deref()
-                            && self.struct_assignment_hooks.contains_key(&id)
+                            && self.requires_checked_assignment(id)
                         {
                             flush_ip!();
                             match self.assign_struct(id, index_string, val) {
@@ -6274,6 +6335,16 @@ impl VM {
                     }
                     let name_id = self.read_intern_id(fiber_idx, idx as usize)?;
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
+                    if self.interner.resolve(name_id).eq_ignore_ascii_case("$bx") {
+                        if let Some(GcObject::CompiledFunction(function)) = base_val.as_gc_id().and_then(|id| self.heap.get_opt(id)) {
+                            let function = Rc::clone(function);
+                            match self.callable_parameter_metadata(&function) {
+                                Ok(value) => self.fibers[fiber_idx].stack.push(value),
+                                Err(error) => vm_throw!("{}", error),
+                            }
+                            continue 'quantum;
+                        }
+                    }
                     if self.class_reference_target(base_val).is_some() {
                         let name = self.interner.resolve(name_id).to_owned();
                         match self.class_reference_member(base_val, &name) {
@@ -6393,7 +6464,7 @@ impl VM {
                                     self.fibers[fiber_idx].stack.push(val);
                                 } else {
                                     let name = self.interner.resolve(name_id).to_string();
-                                    if let Ok(value) = self.method_reference(base_val, &name) {
+                                    if let Ok(value) = self.method_reference(base_val, &name, &[]) {
                                         self.fibers[fiber_idx].stack.push(value);
                                     } else if let Some(getter) = Self::accessor_method_name("get", &name)
                                         .filter(|getter| self.instance_has_method(base_val, getter))
@@ -6410,9 +6481,10 @@ impl VM {
                                     }
                                 }
                             }
-                            GcObject::Class(_) => {
+                            GcObject::Class(class) => {
+                                let class = Rc::clone(class);
                                 let name = self.interner.resolve(name_id).to_string();
-                                match self.method_reference(base_val, &name) {
+                                match self.class_member_value(base_val, class, &name) {
                                     Ok(value) => self.fibers[fiber_idx].stack.push(value),
                                     Err(error) => vm_throw!("{}", error),
                                 }
@@ -6583,7 +6655,7 @@ impl VM {
                             }
                         }
 
-                        if self.struct_assignment_hooks.contains_key(&id) {
+                        if self.requires_checked_assignment(id) {
                             let name = self.read_string_constant(fiber_idx, idx as usize)?.to_string();
                             flush_ip!();
                             match self.assign_struct(id, &name, val) {
@@ -6756,7 +6828,7 @@ impl VM {
                     let base_val = self.fibers[fiber_idx].stack.pop().unwrap();
 
                     if let Some(id) = base_val.as_gc_id() {
-                        if self.struct_assignment_hooks.contains_key(&id) {
+                        if self.requires_checked_assignment(id) {
                             let name = self.read_string_constant(fiber_idx, idx as usize)?.to_string();
                             let old = self.struct_get(id, &name);
                             flush_ip!();
@@ -7187,6 +7259,7 @@ impl VM {
                         };
 
                         if let Some(class) = class {
+                            if let Err(error) = self.initialize_instance_classes(class_val, &class, &[]) { vm_throw!("{}", error); }
                             let variables_scope = Rc::new(RefCell::new(HashMap::new()));
 
                             let inst_id = self.heap.alloc(GcObject::Instance(BxInstance {
@@ -7198,6 +7271,7 @@ impl VM {
 
                             let instance_val = BxValue::new_ptr(inst_id);
                             self.fibers[fiber_idx].stack[class_idx] = instance_val;
+                            if let Err(error) = self.initialize_inherited_fields(instance_val, &class, &[]) { vm_throw!("{}", error); }
 
                             let constructor = class.borrow().constructor.clone();
                             let sub_chunk = constructor.chunk.execution_chunk();
@@ -7628,10 +7702,10 @@ impl VM {
                         .handlers
                         .pop();
                 }
-                op::THROW => {
+                op::THROW | op::RETHROW => {
                     let val = self.fibers[fiber_idx].stack.pop().unwrap();
                     flush_ip!();
-                    self.throw_value(fiber_idx, val)?;
+                    self.throw_value_internal(fiber_idx, val, opcode == op::RETHROW)?;
                     frame_changed = true;
                     continue 'quantum;
                 }
@@ -8304,13 +8378,15 @@ impl VM {
         }
     }
 
-    fn method_reference(&mut self, receiver: BxValue, name: &str) -> Result<BxValue> {
+    /// Binds a method to its receiver, or reports an initialization or method lookup failure.
+    fn method_reference(&mut self, receiver: BxValue, name: &str, host_args: &[BxValue]) -> Result<BxValue> {
         let id = receiver.as_gc_id().context("Value is not a class or instance")?;
         let (class, static_only) = match self.heap.get(id) {
             GcObject::Instance(instance) => (instance.class.clone(), false),
             GcObject::Class(class) => (class.clone(), true),
             _ => bail!("Value is not a class or instance"),
         };
+        if static_only { self.initialize_class(receiver, &class, host_args)?; }
         let method = self.resolve_method(class, name).with_context(|| format!("Method {name} not found"))?;
         if static_only && !method.modifiers.is_static { bail!("Non-static method {name} requires an instance"); }
         let mut method = (*method).clone();
@@ -8329,7 +8405,7 @@ impl VM {
             if names.iter().any(|name| !name.is_empty()) { bail!("Named native object method calls through this host API are not supported"); }
             return self.call_method_value(receiver, name, args);
         }
-        let value = self.method_reference(receiver, name)?;
+        let value = self.method_reference(receiver, name, &args)?;
         self.call_function_value_named(value, args, Some(names))
     }
 
@@ -8359,7 +8435,7 @@ impl VM {
             GcObject::Class(class) => Rc::clone(class),
             _ => bail!("Value is not a BoxLang class"),
         };
-        let class_name = class.borrow().name.clone();
+        self.initialize_instance_classes(class_val, &class, &args)?;
 
         let variables_scope = Rc::new(RefCell::new(HashMap::new()));
         let inst_id = self.heap.alloc(GcObject::Instance(BxInstance {
@@ -8369,7 +8445,7 @@ impl VM {
             variables: variables_scope,
         }));
         let instance_val = BxValue::new_ptr(inst_id);
-        if class.borrow().modifiers.is_abstract { bail!("Cannot instantiate abstract class {class_name}"); }
+        self.initialize_inherited_fields(instance_val, &class, &args)?;
 
         let constructor = class.borrow().constructor.clone();
         let sub_chunk = constructor.chunk.execution_chunk();
@@ -8441,6 +8517,7 @@ impl VM {
             GcObject::Class(class) => Rc::clone(class),
             _ => anyhow::bail!("Global {} is not a class", class_name),
         };
+        self.initialize_instance_classes(class_val, &class, &[])?;
 
         let variables_scope = Rc::new(RefCell::new(HashMap::new()));
         let inst_id = self.heap.alloc(GcObject::Instance(BxInstance {
@@ -9102,7 +9179,7 @@ impl VM {
 
             match self.heap.get(id) {
                 GcObject::Class(_) => {
-                    let method = match self.method_reference(receiver_val, &name) {
+                    let method = match self.method_reference(receiver_val, &name, &[]) {
                         Ok(method) => method,
                         Err(error) => return self.throw_error(fiber_idx, &error.to_string()),
                     };
@@ -9184,7 +9261,15 @@ impl VM {
                     }
                 }
                 GcObject::NativeObject(obj) => {
-                    let obj = Rc::clone(obj);
+                    // A BoxLang callable stored in `variables` is not a native method.
+                    // Preserve the names (especially argumentCollection) and closure scope.
+                    if obj.borrow().native_data("matchbox.variables_scope").is_some() {
+                        let stored = self.native_object_get(&Rc::clone(obj), &name);
+                        if !stored.is_null() {
+                            self.fibers[fiber_idx].stack[receiver_idx] = stored;
+                            return self.execute_call(fiber_idx, arg_count, names);
+                        }
+                    }
                     let mut args = Vec::with_capacity(arg_count);
                     for _ in 0..arg_count {
                         args.push(self.fibers[fiber_idx].stack.pop().unwrap());
@@ -9192,7 +9277,6 @@ impl VM {
                     args.reverse();
                     self.fibers[fiber_idx].stack.pop(); // receiver
 
-                    drop(obj);
                     match self.native_object_call_method(id, &name, &args) {
                         Ok(res) => {
                             self.fibers[fiber_idx].stack.push(res);
@@ -9581,6 +9665,7 @@ impl VM {
                 let id = self.gc_alloc(GcObject::String(s))?;
                 Ok(BxValue::new_ptr(id))
             }
+            Constant::MethodSignatures(_) => Err(RuntimeError::InvalidConstant),
             Constant::StringArray(arr) => {
                 let mut values = Vec::with_capacity(arr.len());
                 for s in arr {
@@ -9894,6 +9979,7 @@ impl VM {
         roots.extend(self.global_values.iter().cloned());
         roots.extend(self.script_variables.borrow().values().copied());
         roots.extend(self.soap_clients.values().copied());
+        roots.extend(self.class_scopes.values().filter_map(|scope| scope.as_ref().ok().copied()));
         roots.extend(self.function_events.values().copied());
         #[cfg(all(target_arch = "wasm32", feature = "js"))]
         roots.extend(self.callback_registry.borrow().values().cloned());
@@ -10017,6 +10103,7 @@ impl VM {
             }
             serde_json::Value::Object(obj) => {
                 let mut bx_struct = BxStruct {
+                    final_keys: None,
                     shape_id: self.shapes.get_root(),
                     properties: Vec::new(),
                     case_sensitive: false,
@@ -10211,7 +10298,7 @@ fn wasm_instance_prop_set(vm: &mut VM, base_val: BxValue, name: &str, val: BxVal
     }
 
     match vm.heap.get_mut(id) {
-        GcObject::Struct(_) => vm.struct_set(id, name, val),
+        GcObject::Struct(_) => vm.assign_struct(id, name, val).map_err(anyhow::Error::msg)?,
         GcObject::Instance(inst) => {
             let name_id = vm.interner.intern(name);
             if let Some(idx) = vm.shapes.get_index(inst.shape_id, name_id) {

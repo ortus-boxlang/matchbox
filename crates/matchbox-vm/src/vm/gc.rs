@@ -155,7 +155,7 @@ impl Heap {
         Ok(root)
     }
 
-    pub(super) fn retain_values(&mut self, values: Vec<BxValue>) -> Result<Rc<Vec<BxValue>>, String> {
+    pub(crate) fn retain_values(&mut self, values: Vec<BxValue>) -> Result<Rc<Vec<BxValue>>, String> {
         if values.iter().any(|value| value.as_gc_id().is_some_and(|id| self.get_opt(id).is_none())) {
             return Err("Cannot retain a collected value".into());
         }

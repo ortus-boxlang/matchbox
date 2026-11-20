@@ -579,6 +579,29 @@ pub fn file_read(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     Ok(BxValue::new_ptr(s_id))
 }
 
+/// Reads a local path as binary without UTF-8 conversion.
+///
+/// This path-only implementation does not support URLs or open file objects.
+///
+/// # Errors
+/// Returns an error when the path is absent, unreadable or not a regular file.
+#[cfg(feature = "bif-io")]
+pub fn file_read_binary(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    let path = args.first().ok_or("fileReadBinary() expects a file path")?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+    let file = options.open(vm.to_string(*path)).map_err(|e| e.to_string())?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("fileReadBinary() requires a regular file".into());
+    }
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::io::BufReader::new(file).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(BxValue::new_ptr(vm.bytes_new(bytes)))
+}
+
 #[cfg(feature = "bif-io")]
 pub fn file_write(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {

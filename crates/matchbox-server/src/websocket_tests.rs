@@ -57,6 +57,7 @@ mod tests {
                     headers: HashMap::new(),
                     header_counts: HashMap::new(),
                     body: Vec::new(),
+                    remote_addr: String::new(),
                     full_url: "http://localhost/ws".to_string(),
                 },
                 outbound: out_tx,
@@ -133,6 +134,7 @@ mod tests {
             headers: HashMap::new(),
             header_counts: HashMap::new(),
             body: Vec::new(),
+            remote_addr: String::new(),
             full_url: "http://localhost/ws".to_string(),
         };
 

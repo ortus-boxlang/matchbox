@@ -41,7 +41,12 @@ pub fn compile_with_treeshaking(
         ast.to_vec()
     } else {
         compiler::clear_loaded_sources();
-        let _ = compiler::Compiler::new(filename).compile(ast, source);
+        // The discovery pass must defer the same class names as code generation.
+        // Otherwise even a method that constructs another instance of its own
+        // packaged class recursively recompiles that file during discovery.
+        let mut discovery = compiler::Compiler::new(filename);
+        discovery.runtime_module_classes = runtime_module_classes;
+        let _ = discovery.compile(ast, source);
         let mut all = ast.to_vec();
         for loaded in compiler::take_loaded_sources() {
             all.extend(loaded);

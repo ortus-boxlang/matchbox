@@ -149,7 +149,7 @@ impl WebrootRuntime {
                             },
                         ))
                         .map_err(|_| "Module startup panicked".to_string())
-                        .and_then(|result| result.map_err(|error| error.to_string()));
+                        .and_then(|result| result.map_err(|error| format!("{error:#}")));
                         match startup {
                             Ok(paths) => {
                                 if ready.send(Ok(paths)).is_err() {
