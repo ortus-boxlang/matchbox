@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory(prefix="matchbox-jit-runner-") as directory:
     module.mkdir()
     (module / "box.json").write_text('{"slug":"jit-probe","boxlang":{"moduleName":"jit-probe"}}')
     (module / "ModuleConfig.bx").write_text("class {}")
-    env = dict(os.environ, BOXLANG_HOME=str(work / "home"), MATCHBOX_JIT_TRACE="1")
+    env = dict(os.environ, MATCHBOX_HOME=str(work / "home"), MATCHBOX_JIT_TRACE="1")
 
     def check(command):
         result = subprocess.run(command, cwd=work, env=dict(env, PATH="/usr/bin:/bin"), capture_output=True, timeout=60)

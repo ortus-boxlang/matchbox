@@ -284,10 +284,10 @@ mod native {
         let chunk =
             matchbox_compiler::compiler::Compiler::new("prelude.bxs").compile(&ast, source)?;
         vm.interpret(chunk)?;
-        let default_home = std::env::var_os("BOXLANG_HOME")
+        let default_home = std::env::var_os("MATCHBOX_HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".boxlang")));
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".matchbox")));
         let discovered = matchbox_modules::discovery::discover_module_installations(
             project,
             &[],
