@@ -156,6 +156,10 @@ fn plugin_values_errors_and_object_lifetime() {
             .contains("panicked")
     );
     assert!(vm.call_function("fixtureBadHandle", vec![], None).is_err());
+    // A plugin that no module supplied has no settings to read.
+    let key = vm.string_new("width".into());
+    let error = vm.call_function("fixtureSetting", vec![BxValue::new_ptr(key)], None).unwrap_err().to_string();
+    assert!(error.contains("not loaded by a module"), "{error}");
     assert!(
         vm.call_function("fixtureInfo", vec![BxValue::new_number(1.0)], None)
             .is_err()
@@ -380,6 +384,10 @@ assert fixtureExpandPath( "data.toml" ) == expandPath( "data.toml" );
 assert fixtureExpandPath( "data.toml" ) == here & "data.toml";
 assert fixtureExpandPath( "/data.toml" ) == expandPath( "/data.toml" );
 assert fixtureExpandPath( "sub/" ).endsWith( "/" );
+// settings: the plugin reads its own module's settings, defaults and boxlang.json overrides merged
+assert fixtureSetting( "width" ) == 32;
+assert fixtureSetting( "nested" ).first == 1 && fixtureSetting( "nested" ).second == 9;
+assert isNull( fixtureSetting( "missing" ) );
 println("collections ok");
 "#,
     )

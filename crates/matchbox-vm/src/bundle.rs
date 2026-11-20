@@ -396,7 +396,7 @@ impl LoadedModules {
                 let module = &mut modules[index];
                 if let Some(artifact) = &module.artifact {
                     let path = artifact.extract(cache)?;
-                    unsafe { crate::plugins::load(vm, &path) }
+                    unsafe { crate::plugins::load_module(vm, &path, Some(&module.name)) }
                         .map_err(anyhow::Error::msg)
                         .with_context(|| format!("Module {}", module.name))?;
                 }

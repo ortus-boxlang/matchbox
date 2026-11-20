@@ -42,6 +42,8 @@ struct CallContext<'a> {
     bytes: Vec<Vec<u8>>,
     library: Rc<Library>,
     functions: Rc<HashMap<String, (Function, Invoke)>>,
+    /// The module whose package supplied the plugin, when there is one.
+    module: Option<Rc<str>>,
     error: Option<String>,
 }
 impl CallContext<'_> {
@@ -80,6 +82,7 @@ unsafe extern "C" fn capability(name: Text) -> *const c_void {
         Some(COLLECTIONS_V1) => (&COLLECTIONS as *const CollectionsV1).cast(),
         Some(INTEGERS_V1) => (&INTEGERS as *const IntegersV1).cast(),
         Some(PATHS_V1) => (&PATHS as *const PathsV1).cast(),
+        Some(SETTINGS_V1) => (&SETTINGS as *const SettingsV1).cast(),
         _ => std::ptr::null(),
     }
 }
@@ -139,6 +142,15 @@ unsafe extern "C" fn register(ctx: Context, descriptor: Text, invoke: Invoke) ->
 /// # Safety
 /// The selected library is trusted native code, capable of arbitrary process access.
 pub unsafe fn load(vm: &mut dyn BxVM, path: &Path) -> Result<(), String> {
+    unsafe { load_module(vm, path, None) }
+}
+
+/// Loads a plugin that belongs to `module`, so it can read that module's settings.
+///
+/// # Safety
+/// The selected library is trusted native code, capable of arbitrary process access.
+pub unsafe fn load_module(vm: &mut dyn BxVM, path: &Path, module: Option<&str>) -> Result<(), String> {
+    let module: Option<Rc<str>> = module.map(Rc::from);
     let path = path
         .canonicalize()
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -195,7 +207,7 @@ pub unsafe fn load(vm: &mut dyn BxVM, path: &Path) -> Result<(), String> {
         let names: Vec<_> = std::iter::once(function.name.clone())
             .chain(function.aliases.iter().cloned())
             .collect();
-        let callback = callback(library.clone(), functions.clone(), function, invoke);
+        let callback = callback(library.clone(), functions.clone(), module.clone(), function, invoke);
         for name in names {
             vm.register_callback(&name, callback.clone())?;
         }
@@ -205,13 +217,14 @@ pub unsafe fn load(vm: &mut dyn BxVM, path: &Path) -> Result<(), String> {
 fn callback(
     library: Rc<Library>,
     functions: Rc<HashMap<String, (Function, Invoke)>>,
+    module: Option<Rc<str>>,
     function: Function,
     invoke: Invoke,
 ) -> NativeCallback {
     NativeCallback {
         parameters: function.arguments.iter().map(|a| a.name.clone()).collect(),
         callback: Rc::new(move |vm, args| {
-            invoke_function(vm, &library, &functions, &function, invoke, args)
+            invoke_function(vm, &library, &functions, module.clone(), &function, invoke, args)
         }),
     }
 }
@@ -219,6 +232,7 @@ fn invoke_function(
     vm: &mut dyn BxVM,
     library: &Rc<Library>,
     functions: &Rc<HashMap<String, (Function, Invoke)>>,
+    module: Option<Rc<str>>,
     function: &Function,
     invoke: Invoke,
     args: &[BxValue],
@@ -254,6 +268,7 @@ fn invoke_function(
         bytes: Vec::new(),
         library: library.clone(),
         functions: functions.clone(),
+        module,
         error: None,
     };
     let mut out = 0;
@@ -435,6 +450,7 @@ unsafe extern "C" fn object_new(
                     callback(
                         ctx.library.clone(),
                         ctx.functions.clone(),
+                        ctx.module.clone(),
                         function.clone(),
                         *invoke,
                     ),
@@ -749,6 +765,29 @@ unsafe extern "C" fn expand_path(ctx: Context, path: Text, out: *mut Value) -> i
         Err(error) => operation(ctx, Err(error)),
     }
 }
+/// `SettingsV1::module_settings`: the settings struct of the module that supplied the plugin. It is the module's live
+/// settings, with `boxlang.json` overrides merged in, so a change a script makes to it is seen by the next call.
+unsafe extern "C" fn module_settings(ctx: Context, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        let module = ctx.module.clone().ok_or("This plugin was not loaded by a module, so it has no settings")?;
+        let all = ctx
+            .vm
+            .get_global_value("__matchbox_module_settings")
+            .and_then(|value| value.as_gc_id())
+            .ok_or("Module settings are not available")?;
+        if !ctx.vm.struct_key_exists(all, &module) {
+            return Err(format!("Module not loaded: {module}"));
+        }
+        Ok(ctx.vm.struct_get(all, &module))
+    })();
+    match result {
+        Ok(settings) => output(ctx, settings, out),
+        Err(error) => operation(ctx, Err(error)),
+    }
+}
+/// The `matchbox.settings.v1` table handed to plugins.
+static SETTINGS: SettingsV1 = SettingsV1 { module_settings };
 /// The `matchbox.paths.v1` table handed to plugins.
 static PATHS: PathsV1 = PathsV1 { expand_path };
 /// The `matchbox.integers.v1` table handed to plugins.

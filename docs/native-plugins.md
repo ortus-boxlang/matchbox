@@ -214,6 +214,10 @@ The optional [`bx-matchbox-std`](../modules/bx-matchbox-std/README.md) package s
 
 `matchbox.paths.v1` is an additive capability with one operation, `expand_path`. It resolves a path exactly as `expandPath` does for the code that called the plugin: a relative path starts in the folder of the calling file, `/` is the application root, mappings from `boxlang.json`, `Application.bx` and modules resolve into their folders, and an `onMissingMapping` interceptor may answer. The file does not have to exist, and a trailing separator is kept. Plugin file functions should call it for every path they accept, so `tomlDeserializeFile( "/config/app.toml" )` finds the same file on every backend. SDK authors negotiate with `require_paths()` and call `Call::expand_path( api, "..." )`. Hosts lacking the capability fail initialization explicitly.
 
+## Module settings
+
+`matchbox.settings.v1` is an additive capability with one operation, `module_settings`. It writes the settings struct of the module whose package supplied the plugin: the defaults `ModuleConfig.bx` declares with the overrides from `boxlang.json` (`modules.<name>.settings`) deep-merged in, the same struct `getModuleSettings( name )` returns. It is the live struct, so read it on every call instead of keeping a copy, and a script's change to a setting is seen by the next call. A plugin loaded without a module has no settings and the call fails. SDK authors negotiate with `require_settings()` and call `Call::module_settings( api )`, then read keys with `struct_get`. Precedence between per-call arguments, settings and built-in defaults stays the plugin's choice; mirror the JVM module (per-call options, then module settings, then defaults) for parity.
+
 ## Retained VM values
 
 `matchbox.roots.v1` is an additive capability; `HostV1`, `ValuesV1`, and the ABI major are unchanged, so existing prebuilt plugins need no rebuild. Plugins requiring roots request `require_roots(host, context)` during initialization; older hosts report the missing capability explicitly.

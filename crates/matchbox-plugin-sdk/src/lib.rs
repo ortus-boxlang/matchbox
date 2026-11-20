@@ -16,6 +16,8 @@ pub const BYTES_V1: &str = "matchbox.bytes.v1";
 pub const TYPES_V1: &str = "matchbox.types.v1";
 /// Name of the array and struct capability. See [`CollectionsV1`] and [`require_collections`].
 pub const COLLECTIONS_V1: &str = "matchbox.collections.v1";
+/// Name of the module settings capability. See [`SettingsV1`] and [`require_settings`].
+pub const SETTINGS_V1: &str = "matchbox.settings.v1";
 /// Name of the path capability. See [`PathsV1`] and [`require_paths`].
 pub const PATHS_V1: &str = "matchbox.paths.v1";
 /// Name of the whole-number capability. See [`IntegersV1`] and [`require_integers`].
@@ -163,6 +165,15 @@ pub struct IntegersV1 {
     pub int_new: unsafe extern "C" fn(Context, i64, *mut Value) -> i32,
     /// Reads a whole number: an integer, or a decimal with no fractional part within the `i64` range. Anything else fails.
     pub int_get: unsafe extern "C" fn(Context, Value, *mut i64) -> i32,
+}
+
+/// Additive capability: the settings of the module that supplied the plugin.
+#[repr(C)]
+pub struct SettingsV1 {
+    /// Writes the module's settings struct: the defaults its `ModuleConfig.bx` declares with the overrides from
+    /// `boxlang.json` (`modules.<name>.settings`) merged in. It is the live struct, so read it on every call rather than
+    /// keeping a copy. Fails when the plugin was not loaded by a module.
+    pub module_settings: unsafe extern "C" fn(Context, *mut Value) -> i32,
 }
 
 /// Additive capability: paths, resolved as BoxLang's `expandPath` does for the code that called the plugin.
@@ -345,6 +356,11 @@ impl<'a> Call<'a> {
     /// Creates a binary value from a copy of `bytes`. Requires [`BYTES_V1`].
     pub fn bytes_new(&self, api: &BytesV1, bytes: &[u8]) -> Result<Value, String> {
         self.value(|out| unsafe { (api.new)(self.context, Bytes::new(bytes), out) })
+    }
+    /// The settings struct of the module that supplied the plugin, read with [`Call::struct_get`] and friends.
+    /// Requires [`SETTINGS_V1`].
+    pub fn module_settings(&self, api: &SettingsV1) -> Result<Value, String> {
+        self.value(|out| unsafe { (api.module_settings)(self.context, out) })
     }
     /// `path` made absolute as BoxLang's `expandPath` does: relative to the calling file, through mappings, with `/` as the
     /// application root. Requires [`PATHS_V1`].
@@ -572,6 +588,15 @@ pub unsafe fn require_collections(
     unsafe { require_capability(host, context, COLLECTIONS_V1).map(|api| &*api.cast()) }
 }
 
+/// Requests [`SETTINGS_V1`], for [`Call::module_settings`].
+/// The returned table is valid for the host process lifetime.
+///
+/// # Safety
+/// Must be called with the pointers supplied to matchbox_plugin_init_v1.
+pub unsafe fn require_settings(host: *const HostV1, context: Context) -> Result<&'static SettingsV1, i32> {
+    unsafe { require_capability(host, context, SETTINGS_V1).map(|api| &*api.cast()) }
+}
+
 /// Requests [`PATHS_V1`], for [`Call::expand_path`].
 /// The returned table is valid for the host process lifetime.
 ///
@@ -694,6 +719,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<IntegersV1>(), 2 * pointer);
         assert_eq!(std::mem::offset_of!(IntegersV1, int_get), pointer);
         assert_eq!(std::mem::size_of::<PathsV1>(), pointer);
+        assert_eq!(std::mem::size_of::<SettingsV1>(), pointer);
         assert_eq!(std::mem::size_of::<Kind>(), 4);
     }
 }
