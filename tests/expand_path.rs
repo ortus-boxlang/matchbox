@@ -20,8 +20,33 @@ fn run_in(dir: &PathBuf, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().replace('\\', "/")
 }
 
+/// Formats expected paths without Windows canonicalization prefixes.
+///
+/// # Examples
+/// ```ignore
+/// assert_eq!(text(PathBuf::from(r"\\?\C:\work\file")), "C:/work/file");
+/// ```
 fn text(path: PathBuf) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    let path = path.to_string_lossy().replace('\\', "/");
+    if let Some(rest) = path.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else {
+        path.strip_prefix("//?/").unwrap_or(&path).to_string()
+    }
+}
+
+/// Checks expected-path formatting independently of the host operating system.
+#[test]
+fn expected_paths_omit_windows_verbatim_prefixes() {
+    for (path, expected) in [
+        (r"\\?\C:\work\file", "C:/work/file"),
+        (r"\\?\UNC\server\share\file", "//server/share/file"),
+        (r"C:\work\file", "C:/work/file"),
+        (r"\\server\share\file", "//server/share/file"),
+        ("/work/file", "/work/file"),
+    ] {
+        assert_eq!(text(PathBuf::from(path)), expected);
+    }
 }
 
 #[test]
