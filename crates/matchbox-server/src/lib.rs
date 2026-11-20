@@ -57,6 +57,7 @@ pub struct RequestData {
     pub header_counts: HashMap<String, usize>,
     pub body: Vec<u8>,
     pub full_url: String,
+    pub remote_addr: String,
 }
 
 pub fn request_data_from_parts(
@@ -98,6 +99,7 @@ pub fn request_data_from_parts(
     RequestData {
         method: method.to_string(),
         path: path.to_string(),
+        remote_addr: String::new(),
         matched_route: None,
         route_params: HashMap::new(),
         raw_query: query.map(|s| s.to_string()),

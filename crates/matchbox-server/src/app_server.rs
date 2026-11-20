@@ -864,6 +864,9 @@ impl BxNativeObject for RequestContextObject {
                 param_value(vm, self.session_id, args);
                 Ok(BxValue::new_null())
             }
+            "gethttpheaders" => json_to_bx(vm, &serde_json::json!(self.request.headers)),
+            "getqueryparams" => json_to_bx(vm, &serde_json::json!(self.request.query)),
+            "getremoteaddr" => Ok(BxValue::new_ptr(vm.string_new(self.request.remote_addr.clone()))),
             "gethttpheadercount" => {
                 let count = self
                     .request
@@ -1195,7 +1198,7 @@ async fn run_compiled_script_server(compiled: Arc<CompiledScriptApp>) -> anyhow:
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let sockets = state.websocket.clone();
     let actor = state.compiled.runtime.as_ref().unwrap().clone();
-    axum::serve(listener, router)
+    axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .tcp_nodelay(true)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
@@ -1457,13 +1460,16 @@ async fn script_handler(
         }
     };
 
-    let request = request_data_from_parts(
+    let mut request = request_data_from_parts(
         parts.method,
         parts.uri.path(),
         parts.uri.query(),
         &parts.headers,
         body.to_vec(),
     );
+    if let Some(peer) = parts.extensions.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>() {
+        request.remote_addr = peer.0.ip().to_string();
+    }
     let compiled = state.compiled.clone();
     let dispatch_request = request.clone();
     let result =

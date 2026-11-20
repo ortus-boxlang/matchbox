@@ -47,6 +47,10 @@ pub fn prepare_installed(modules: &[ModuleInfo], target: &str) -> Result<Vec<Mod
     if modules.iter().any(|module| module.has_native) {
         bail!("Source-only native modules cannot load at runtime; install a package with prebuilt artifacts");
     }
+    // Webroot and routed workers compile installed descriptors on their owning thread.
+    matchbox_compiler::mappings::set_mappings(modules.iter().map(|module| {
+        matchbox_compiler::mappings::Mapping::new(&format!("/bxModules/{}", module.name), &module.path, false)
+    }).collect());
     prepare_modules(modules, target, false)
 }
 fn prepare_modules(modules: &[ModuleInfo], target: &str, allow_remote: bool) -> Result<Vec<Module>> {
