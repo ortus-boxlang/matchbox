@@ -614,7 +614,7 @@ impl<'a> Parser<'a> {
             path.push(':');
             self.pos += 1; // colon
         }
-        // Dotted path
+        // Dotted path, optionally module-qualified: `models.Counter@module`
         loop {
             path.push_str(&self.expect_get(TokenKind::Identifier)?);
             if self.peek_is(TokenKind::Dot) {
@@ -623,6 +623,11 @@ impl<'a> Parser<'a> {
             } else {
                 break;
             }
+        }
+        if self.peek_is(TokenKind::At) {
+            self.pos += 1; // @
+            path.push('@');
+            path.push_str(&self.expect_get(TokenKind::Identifier)?);
         }
         let alias = if self.peek_is(TokenKind::As) {
             self.pos += 1; // as
@@ -1800,6 +1805,12 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
+                // Module-qualified: `new models.Counter@module()`
+                if self.peek_is(TokenKind::At) {
+                    self.pos += 1; // @
+                    class_path.push('@');
+                    class_path.push_str(&self.expect_get(TokenKind::Identifier)?);
+                }
                 self.expect(TokenKind::LeftParen)?;
                 let args = self.parse_args()?;
                 self.expect(TokenKind::RightParen)?;
@@ -2395,6 +2406,27 @@ mod tests {
         let ast = parse("import foo.bar.Baz as Qux;\n", None).unwrap();
         assert_eq!(ast.len(), 1);
         assert!(matches!(ast[0].kind, StatementKind::Import { .. }));
+    }
+
+    #[test]
+    fn parse_module_qualified_import_and_new() {
+        let ast = parse("import models.Counter@mymod as C;\nimport Root@mymod;\nx = new models.Counter@mymod( 1 );\n", None).unwrap();
+        match &ast[0].kind {
+            StatementKind::Import { path, alias } => {
+                assert_eq!(path, "models.Counter@mymod");
+                assert_eq!(alias.as_deref(), Some("C"));
+            }
+            other => panic!("Expected Import, got {:?}", other),
+        }
+        assert!(matches!(&ast[1].kind, StatementKind::Import { path, .. } if path == "Root@mymod"));
+        let found = format!("{:?}", ast[2]);
+        assert!(found.contains("models.Counter@mymod"), "{found}");
+    }
+
+    #[test]
+    fn a_module_qualifier_needs_a_module_name() {
+        assert!(parse("import models.Counter@;\n", None).is_err());
+        assert!(parse("x = new models.Counter@();\n", None).is_err());
     }
 
     #[test]

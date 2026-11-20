@@ -16,6 +16,16 @@ pub const BYTES_V1: &str = "matchbox.bytes.v1";
 pub const TYPES_V1: &str = "matchbox.types.v1";
 /// Name of the array and struct capability. See [`CollectionsV1`] and [`require_collections`].
 pub const COLLECTIONS_V1: &str = "matchbox.collections.v1";
+/// Name of the typed error capability. See [`ErrorsV1`] and [`require_errors`].
+pub const ERRORS_V1: &str = "matchbox.errors.v1";
+/// Name of the struct options capability. See [`StructsV1`] and [`require_structs`].
+pub const STRUCTS_V1: &str = "matchbox.structs.v1";
+/// Name of the date and time capability. See [`DatetimeV1`] and [`require_datetime`].
+pub const DATETIME_V1: &str = "matchbox.datetime.v1";
+/// Name of the module settings capability. See [`SettingsV1`] and [`require_settings`].
+pub const SETTINGS_V1: &str = "matchbox.settings.v1";
+/// Name of the path capability. See [`PathsV1`] and [`require_paths`].
+pub const PATHS_V1: &str = "matchbox.paths.v1";
 /// Name of the whole-number capability. See [`IntegersV1`] and [`require_integers`].
 pub const INTEGERS_V1: &str = "matchbox.integers.v1";
 
@@ -161,6 +171,60 @@ pub struct IntegersV1 {
     pub int_new: unsafe extern "C" fn(Context, i64, *mut Value) -> i32,
     /// Reads a whole number: an integer, or a decimal with no fractional part within the `i64` range. Anything else fails.
     pub int_get: unsafe extern "C" fn(Context, Value, *mut i64) -> i32,
+}
+
+/// Additive capability: typed errors. A plain error from a plugin function surfaces in BoxLang as a generic
+/// `ExpressionException`; a typed one carries the exception type and detail the plugin chooses, so scripts can catch it by type
+/// as they can the JVM module's exception.
+#[repr(C)]
+pub struct ErrorsV1 {
+    /// Records the error the current function is about to fail with: an exception `type` (such as `TomlParseException`), the
+    /// `message` and a `detail`. Call it once, before returning the failure; the first error of a call wins. The function must
+    /// still fail (return a nonzero status, or `Err` through `guarded`) with the same message.
+    pub error_typed: unsafe extern "C" fn(Context, Text, Text, Text),
+}
+
+/// Additive capability: struct options. A struct is unordered and case-insensitive unless made otherwise; a parser that must
+/// keep a file's key order and spelling (TOML, YAML) makes its structs ordered and case-sensitive.
+#[repr(C)]
+pub struct StructsV1 {
+    /// Creates an empty struct. `ordered` keeps keys in insertion order. `case_sensitive` makes `Name` and `name` two keys and
+    /// keeps the spelling of each.
+    pub struct_new_with: unsafe extern "C" fn(Context, bool, bool, *mut Value) -> i32,
+    /// Writes whether a struct is ordered and whether it is case-sensitive. Fails for a value that is not a struct.
+    pub struct_flags: unsafe extern "C" fn(Context, Value, *mut bool, *mut bool) -> i32,
+}
+
+/// Additive capability: dates and times. A datetime is an instant on the UTC timeline plus an optional time zone name that
+/// BoxLang uses when it formats the value; the instant is what identifies it.
+#[repr(C)]
+pub struct DatetimeV1 {
+    /// Writes whether the value is a datetime.
+    pub datetime_is: unsafe extern "C" fn(Context, Value, *mut bool) -> i32,
+    /// Creates a datetime from whole seconds since 1970-01-01T00:00:00Z and a nanosecond part (below 1_000_000_000). `zone` is a
+    /// time zone name such as `UTC` or `America/New_York`, or empty for a datetime with no zone of its own.
+    pub datetime_new: unsafe extern "C" fn(Context, i64, u32, Text, *mut Value) -> i32,
+    /// Reads a datetime: whole seconds since the Unix epoch, the nanosecond part, and the zone name as a new string (empty when
+    /// the value has none). Fails when the value is not a datetime.
+    pub datetime_get: unsafe extern "C" fn(Context, Value, *mut i64, *mut u32, *mut Value) -> i32,
+}
+
+/// Additive capability: the settings of the module that supplied the plugin.
+#[repr(C)]
+pub struct SettingsV1 {
+    /// Writes the module's settings struct: the defaults its `ModuleConfig.bx` declares with the overrides from
+    /// `boxlang.json` (`modules.<name>.settings`) merged in. It is the live struct, so read it on every call rather than
+    /// keeping a copy. Fails when the plugin was not loaded by a module.
+    pub module_settings: unsafe extern "C" fn(Context, *mut Value) -> i32,
+}
+
+/// Additive capability: paths, resolved as BoxLang's `expandPath` does for the code that called the plugin.
+#[repr(C)]
+pub struct PathsV1 {
+    /// Writes a new string: `path` made absolute. A relative path starts in the folder of the calling file, `/` is the
+    /// application root, mappings (`boxlang.json`, `Application.bx`, modules) resolve into their folders, and a trailing
+    /// separator is kept. The file does not have to exist.
+    pub expand_path: unsafe extern "C" fn(Context, Text, *mut Value) -> i32,
 }
 
 /// The host interface passed to `matchbox_plugin_init_v1`.
@@ -334,6 +398,57 @@ impl<'a> Call<'a> {
     /// Creates a binary value from a copy of `bytes`. Requires [`BYTES_V1`].
     pub fn bytes_new(&self, api: &BytesV1, bytes: &[u8]) -> Result<Value, String> {
         self.value(|out| unsafe { (api.new)(self.context, Bytes::new(bytes), out) })
+    }
+    /// Records a typed error for the current call and returns `message`, so a function written with [`guarded`] fails with
+    /// `return Err( call.error_typed( api, "TomlParseException", "Invalid key", "line 3, column 5" ) )`. Scripts see an exception
+    /// with that `type`, `message` and `detail`. Requires [`ERRORS_V1`].
+    pub fn error_typed(&self, api: &ErrorsV1, exception_type: &str, message: &str, detail: &str) -> String {
+        unsafe { (api.error_typed)(self.context, Text::new(exception_type), Text::new(message), Text::new(detail)) };
+        message.to_string()
+    }
+    /// Creates an empty struct that keeps insertion order (`ordered`) and/or treats keys that differ only in case as different
+    /// keys (`case_sensitive`). Requires [`STRUCTS_V1`].
+    pub fn struct_new_with(&self, api: &StructsV1, ordered: bool, case_sensitive: bool) -> Result<Value, String> {
+        self.value(|out| unsafe { (api.struct_new_with)(self.context, ordered, case_sensitive, out) })
+    }
+    /// Whether a struct is `(ordered, case_sensitive)`. Fails for a value that is not a struct. Requires [`STRUCTS_V1`].
+    pub fn struct_flags(&self, api: &StructsV1, value: Value) -> Result<(bool, bool), String> {
+        let (mut ordered, mut case_sensitive) = (false, false);
+        if unsafe { (api.struct_flags)(self.context, value, &mut ordered, &mut case_sensitive) } != 0 {
+            return Err("Expected struct".into());
+        }
+        Ok((ordered, case_sensitive))
+    }
+    /// Whether a value is a datetime. Requires [`DATETIME_V1`].
+    pub fn is_datetime(&self, api: &DatetimeV1, value: Value) -> Result<bool, String> {
+        let mut out = false;
+        if unsafe { (api.datetime_is)(self.context, value, &mut out) } != 0 {
+            return Err("Unable to inspect value".into());
+        }
+        Ok(out)
+    }
+    /// Creates a datetime from Unix `seconds` and `nanos` (below 1_000_000_000) in the named `zone`, or in none when `zone`
+    /// is empty. Requires [`DATETIME_V1`].
+    pub fn datetime_new(&self, api: &DatetimeV1, seconds: i64, nanos: u32, zone: &str) -> Result<Value, String> {
+        self.value(|out| unsafe { (api.datetime_new)(self.context, seconds, nanos, Text::new(zone), out) })
+    }
+    /// Reads a datetime as `(Unix seconds, nanoseconds, zone name)`; the zone is empty when the value has none. Fails for a
+    /// value that is not a datetime. Requires [`DATETIME_V1`].
+    pub fn datetime_get(&self, api: &DatetimeV1, value: Value) -> Result<(i64, u32, String), String> {
+        let (mut seconds, mut nanos) = (0i64, 0u32);
+        let zone = self.value(|out| unsafe { (api.datetime_get)(self.context, value, &mut seconds, &mut nanos, out) })?;
+        Ok((seconds, nanos, self.string(zone)?))
+    }
+    /// The settings struct of the module that supplied the plugin, read with [`Call::struct_get`] and friends.
+    /// Requires [`SETTINGS_V1`].
+    pub fn module_settings(&self, api: &SettingsV1) -> Result<Value, String> {
+        self.value(|out| unsafe { (api.module_settings)(self.context, out) })
+    }
+    /// `path` made absolute as BoxLang's `expandPath` does: relative to the calling file, through mappings, with `/` as the
+    /// application root. Requires [`PATHS_V1`].
+    pub fn expand_path(&self, api: &PathsV1, path: &str) -> Result<String, String> {
+        let value = self.value(|out| unsafe { (api.expand_path)(self.context, Text::new(path), out) })?;
+        self.string(value)
     }
     /// Creates a whole number, shown without a decimal point (`5`, not `5.0`). Requires [`INTEGERS_V1`].
     pub fn int_new(&self, api: &IntegersV1, value: i64) -> Result<Value, String> {
@@ -555,6 +670,51 @@ pub unsafe fn require_collections(
     unsafe { require_capability(host, context, COLLECTIONS_V1).map(|api| &*api.cast()) }
 }
 
+/// Requests [`ERRORS_V1`], for [`Call::error_typed`].
+/// The returned table is valid for the host process lifetime.
+///
+/// # Safety
+/// Must be called with the pointers supplied to matchbox_plugin_init_v1.
+pub unsafe fn require_errors(host: *const HostV1, context: Context) -> Result<&'static ErrorsV1, i32> {
+    unsafe { require_capability(host, context, ERRORS_V1).map(|api| &*api.cast()) }
+}
+
+/// Requests [`STRUCTS_V1`], for [`Call::struct_new_with`] and [`Call::struct_flags`].
+/// The returned table is valid for the host process lifetime.
+///
+/// # Safety
+/// Must be called with the pointers supplied to matchbox_plugin_init_v1.
+pub unsafe fn require_structs(host: *const HostV1, context: Context) -> Result<&'static StructsV1, i32> {
+    unsafe { require_capability(host, context, STRUCTS_V1).map(|api| &*api.cast()) }
+}
+
+/// Requests [`DATETIME_V1`], for the datetime helpers on [`Call`].
+/// The returned table is valid for the host process lifetime.
+///
+/// # Safety
+/// Must be called with the pointers supplied to matchbox_plugin_init_v1.
+pub unsafe fn require_datetime(host: *const HostV1, context: Context) -> Result<&'static DatetimeV1, i32> {
+    unsafe { require_capability(host, context, DATETIME_V1).map(|api| &*api.cast()) }
+}
+
+/// Requests [`SETTINGS_V1`], for [`Call::module_settings`].
+/// The returned table is valid for the host process lifetime.
+///
+/// # Safety
+/// Must be called with the pointers supplied to matchbox_plugin_init_v1.
+pub unsafe fn require_settings(host: *const HostV1, context: Context) -> Result<&'static SettingsV1, i32> {
+    unsafe { require_capability(host, context, SETTINGS_V1).map(|api| &*api.cast()) }
+}
+
+/// Requests [`PATHS_V1`], for [`Call::expand_path`].
+/// The returned table is valid for the host process lifetime.
+///
+/// # Safety
+/// Must be called with the pointers supplied to matchbox_plugin_init_v1.
+pub unsafe fn require_paths(host: *const HostV1, context: Context) -> Result<&'static PathsV1, i32> {
+    unsafe { require_capability(host, context, PATHS_V1).map(|api| &*api.cast()) }
+}
+
 /// Requests [`INTEGERS_V1`], for [`Call::int_new`] and [`Call::integer`].
 /// The returned table is valid for the host process lifetime.
 ///
@@ -667,6 +827,13 @@ mod tests {
         assert_eq!(std::mem::offset_of!(CollectionsV1, struct_keys), 5 * pointer);
         assert_eq!(std::mem::size_of::<IntegersV1>(), 2 * pointer);
         assert_eq!(std::mem::offset_of!(IntegersV1, int_get), pointer);
+        assert_eq!(std::mem::size_of::<PathsV1>(), pointer);
+        assert_eq!(std::mem::size_of::<SettingsV1>(), pointer);
+        assert_eq!(std::mem::size_of::<ErrorsV1>(), pointer);
+        assert_eq!(std::mem::size_of::<StructsV1>(), 2 * pointer);
+        assert_eq!(std::mem::offset_of!(StructsV1, struct_flags), pointer);
+        assert_eq!(std::mem::size_of::<DatetimeV1>(), 3 * pointer);
+        assert_eq!(std::mem::offset_of!(DatetimeV1, datetime_get), 2 * pointer);
         assert_eq!(std::mem::size_of::<Kind>(), 4);
     }
 }

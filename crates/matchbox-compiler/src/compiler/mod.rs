@@ -310,7 +310,9 @@ impl Compiler {
                 let original_alias = if let Some(a) = alias {
                     a.clone()
                 } else {
-                    dotted_path.split('.').last().unwrap().to_string()
+                    // `models.Counter@module` is used as `Counter`
+                    let last = dotted_path.split('.').last().unwrap();
+                    last.split('@').next().unwrap_or(last).to_string()
                 };
                 let resolved_alias = original_alias.to_lowercase();
 
@@ -3322,7 +3324,9 @@ impl Compiler {
 
     fn is_runtime_module_class(&self, path: &str) -> bool {
         let path = if path.to_ascii_lowercase().starts_with("bx:") { &path[3..] } else { path };
-        self.runtime_module_classes && !path.contains(':') && path.contains('.')
+        // `Class@module` is looked up in the module at run time, like `bxModules.<module>.Class`
+        self.runtime_module_classes && !path.contains(':') && path.contains('@')
+            || self.runtime_module_classes && !path.contains(':') && path.contains('.')
             && (path.to_ascii_lowercase().starts_with("bxmodules.") || self.resolve_source_file(path).is_err())
     }
 

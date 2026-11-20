@@ -13,6 +13,7 @@
 //!
 //! Nothing here touches the VM. Hosts supply the mappings, the template and the missing-mapping handler.
 
+use crate::types::{BxVM, BxValue};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
@@ -42,6 +43,31 @@ pub fn clean_name(name: &str) -> String {
         name.push('/');
     }
     name
+}
+
+/// `expandPath( path )` for the code running in `vm`: its calling file, the VM's mappings and its
+/// `onMissingMapping` interceptors. A trailing separator on `path` is kept on the result.
+pub fn expand_for_vm(vm: &mut dyn BxVM, path: &str) -> Result<String, String> {
+    let has_trailing = path.ends_with('/') || path.ends_with('\\');
+    let mappings = vm.path_mappings();
+    let template = vm.current_chunk().map(|chunk| PathBuf::from(chunk.borrow().filename()));
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let options = ExpandOptions { template: template.as_deref(), ..ExpandOptions::default() };
+    let resolved = expand_path(&mappings, &cwd, path, &options, &mut |missing: &str| {
+        // BoxLang's onMissingMapping: a handler puts the answer in `resolvedFilePath`.
+        let data = vm.struct_new();
+        let text = vm.string_new(missing.to_string());
+        vm.struct_set(data, "path", BxValue::new_ptr(text));
+        vm.struct_set(data, "resolvedFilePath", BxValue::new_null());
+        vm.announce("onMissingMapping", BxValue::new_ptr(data)).ok()?;
+        let answer = vm.struct_get(data, "resolvedFilePath");
+        (!answer.is_null()).then(|| PathBuf::from(vm.to_string(answer)))
+    });
+    let mut result = resolved.to_string_lossy().into_owned();
+    if has_trailing && !result.ends_with(std::path::MAIN_SEPARATOR) {
+        result.push(std::path::MAIN_SEPARATOR);
+    }
+    Ok(result)
 }
 
 /// Options for [`expand_path`].

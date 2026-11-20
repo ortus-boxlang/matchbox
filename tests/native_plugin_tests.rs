@@ -156,6 +156,10 @@ fn plugin_values_errors_and_object_lifetime() {
             .contains("panicked")
     );
     assert!(vm.call_function("fixtureBadHandle", vec![], None).is_err());
+    // A plugin that no module supplied has no settings to read.
+    let key = vm.string_new("width".into());
+    let error = vm.call_function("fixtureSetting", vec![BxValue::new_ptr(key)], None).unwrap_err().to_string();
+    assert!(error.contains("not loaded by a module"), "{error}");
     assert!(
         vm.call_function("fixtureInfo", vec![BxValue::new_number(1.0)], None)
             .is_err()
@@ -374,6 +378,53 @@ wholeFailures = 0;
 try { fixtureWhole(2.5); } catch (any e) { wholeFailures++; }
 try { fixtureWhole("x"); } catch (any e) { wholeFailures++; }
 assert wholeFailures == 2;
+// paths: the plugin resolves a path like expandPath does for the calling script
+here = getDirectoryFromPath( getCurrentTemplatePath() );
+assert fixtureExpandPath( "data.toml" ) == expandPath( "data.toml" );
+assert fixtureExpandPath( "data.toml" ) == here & "data.toml";
+assert fixtureExpandPath( "/data.toml" ) == expandPath( "/data.toml" );
+assert fixtureExpandPath( "sub/" ).endsWith( "/" );
+// settings: the plugin reads its own module's settings, defaults and boxlang.json overrides merged
+assert fixtureSetting( "width" ) == 32;
+assert fixtureSetting( "nested" ).first == 1 && fixtureSetting( "nested" ).second == 9;
+assert isNull( fixtureSetting( "missing" ) );
+// datetimes: an instant plus an optional zone name round-trips through the plugin
+moment = fixtureDateNew( 1700000000, 500000000, "UTC" );
+assert isDate( moment ) && fixtureIsDate( moment );
+assert year( moment ) == 2023;
+info = fixtureDateInfo( moment );
+assert info.seconds == 1700000000 && info.nanos == 500000000 && info.zone == "UTC";
+assert fixtureDateInfo( fixtureDateNew( 0 ) ).zone == "" && fixtureDateInfo( fixtureDateNew( -86400 ) ).seconds == -86400;
+assert fixtureIsDate( now() ) && fixtureDateInfo( now() ).seconds > 1700000000;
+assert !fixtureIsDate( "2023-11-14" ) && !fixtureIsDate( 5 ) && !fixtureIsDate( [] );
+dateFailures = 0;
+try { fixtureDateInfo( "2023-11-14" ); } catch (any e) { dateFailures++; }
+try { fixtureDateNew( 0, 1000000000 ); } catch (any e) { dateFailures++; }
+try { fixtureDateNew( 9223372036854775807 ); } catch (any e) { dateFailures++; }
+assert dateFailures == 3;
+// struct options: ordered keeps insertion order, case-sensitive keeps the spelling of keys that differ only in case
+sensitive = fixtureStructNew( true, true );
+assert arrayToList( sensitive.keyArray() ) == "b,A,a" && sensitive[ "A" ] == 2 && sensitive[ "a" ] == 3;
+assert fixtureStructFlags( sensitive ).ordered && fixtureStructFlags( sensitive ).caseSensitive;
+insensitive = fixtureStructNew( false, false );
+assert insensitive.len() == 2 && insensitive.a == 3;
+assert !fixtureStructFlags( insensitive ).ordered && !fixtureStructFlags( insensitive ).caseSensitive;
+assert fixtureStructFlags( fixtureStructNew( true, false ) ).ordered && !fixtureStructFlags( fixtureStructNew( true, false ) ).caseSensitive;
+assert !fixtureStructFlags( fixtureStructNew( false, true ) ).ordered && fixtureStructFlags( fixtureStructNew( false, true ) ).caseSensitive;
+assert fixtureStructNew( false, true ).len() == 3 && fixtureStructNew( true, false ).keyArray().len() == 2;
+structFailures = 0;
+try { fixtureStructFlags( [ 1 ] ); } catch (any e) { structFailures++; }
+try { fixtureStructFlags( "x" ); } catch (any e) { structFailures++; }
+assert structFailures == 2;
+// typed errors: the type, message and detail the plugin chose, catchable by type; a plain error stays generic
+try { fixtureTypedError( "TomlParseException", "Invalid key", "line 3, column 5" ); assert false; }
+catch ( any e ) { assert e.type == "TomlParseException" && e.message == "Invalid key" && e.detail == "line 3, column 5"; }
+byType = false;
+try { fixtureTypedError( "TomlParseException", "again" ); } catch ( TomlParseException e ) { byType = e.detail == ""; }
+assert byType;
+try { fixtureWhole( "x" ); assert false; } catch ( any e ) { assert e.type == "ExpressionException"; }
+try { fixtureTypedError( "TomlParseException", "first" ); assert false; } catch ( any e ) { assert e.message == "first"; }
+try { fixtureWhole( "x" ); assert false; } catch ( any e ) { assert e.type == "ExpressionException" && e.message != "first"; }
 println("collections ok");
 "#,
     )
@@ -861,6 +912,39 @@ println("unprefixed mapping OK");
     let output = Command::new(dir.path().join("application")).current_dir(dir.path()).output().unwrap();
     success(&output);
     assert_eq!(String::from_utf8_lossy(&output.stdout), "unprefixed mapping OK\n");
+}
+
+#[test]
+fn module_qualified_class_names_resolve_in_new_and_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("module");
+    fs::create_dir_all(module.join("models")).unwrap();
+    // The module's name is "module"; its mapping, and so its invocation path, is "plain".
+    fs::write(module.join("ModuleConfig.bx"), r#"class { this.mapping = {name:"plain", usePrefix:false}; }"#).unwrap();
+    fs::write(module.join("models/Counter.bx"), "class { function next() { return 1; } }").unwrap();
+    fs::write(module.join("Root.bx"), "class { function where() { return \"root\"; } }").unwrap();
+    fs::write(dir.path().join("app.bxs"), r#"
+import models.Counter@module;
+import models.Counter@MODULE as Aliased;
+import Root@module;
+assert new Counter().next() == 1;
+assert new Aliased().next() == 1;
+assert new Root().where() == "root";
+assert new models.Counter@module().next() == 1;
+assert new models.Counter@MODULE().next() == 1;
+failures = 0;
+try { new models.Counter@missing(); } catch (any e) { failures++; assert e.message contains "Module not loaded: missing"; }
+try { new models.Nope@module(); } catch (any e) { failures++; }
+assert failures == 2;
+println("module class names OK");
+"#).unwrap();
+    let output = cli(dir.path(), &["--module", "module", "app.bxs"]); success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "module class names OK\n");
+    success(&cli(dir.path(), &["--target", "native", "--module", "module", "--output", "application", "app.bxs"]));
+    fs::remove_dir_all(module).unwrap();
+    let output = Command::new(dir.path().join("application")).current_dir(dir.path()).output().unwrap();
+    success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "module class names OK\n");
 }
 
 #[test]
@@ -2266,7 +2350,14 @@ fn function_interception_mutates_arguments_results_and_observes_errors() {
         println("function events OK");"#, include_str!("scripts/vm_execution_contexts.bxs"));
     fs::write(dir.path().join("app.bxs"), source).unwrap();
     let expected = format!("function events OK\ncontext scopes OK\n{}error:observed failure\n", "pre,post,".repeat(402));
-    let output = cli(dir.path(), &["--module", "module", "app.bxs"]);
+    // The JIT reports compiled functions on stderr only when MATCHBOX_JIT_TRACE is set.
+    let output = Command::new(env!("CARGO_BIN_EXE_matchbox"))
+        .current_dir(dir.path())
+        .env("MATCHBOX_NATIVE_CACHE", dir.path().join("cache"))
+        .env("MATCHBOX_JIT_TRACE", "1")
+        .args(["--module", "module", "app.bxs"])
+        .output()
+        .unwrap();
     success(&output);
     #[cfg(feature = "jit")]
     {

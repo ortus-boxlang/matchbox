@@ -1600,6 +1600,7 @@ impl BxVM for VM {
     fn interception_points(&self) -> Vec<String> { VM::interception_points(self) }
     #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
     fn execution_components(&self) -> Result<Vec<BxValue>, String> { Ok(VM::execution_components(self)) }
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
     fn component_names(&self) -> Vec<String> { VM::component_names(self) }
     #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
     fn invoke_component(&mut self, name: &str, attributes: BxValue, body: BxValue) -> Result<BxValue, String> { VM::invoke_component(self, name, attributes, body).map_err(|error| error.to_string()) }
@@ -1616,6 +1617,17 @@ impl BxVM for VM {
     }
 
     fn is_native_abort(&self, message: &str) -> bool { VM::is_native_abort(self, message) }
+    fn raise_typed_exception(&mut self, exception_type: &str, message: &str, detail: &str) -> Result<(), String> {
+        let exception = self.exception_from_message(exception_type, message.to_string(), None);
+        let id = exception.as_gc_id().ok_or("Exception was not created")?;
+        let detail = self.string_new(detail.to_string());
+        self.struct_set(id, "detail", BxValue::new_ptr(detail));
+        let root = self.heap.retain_value(exception)?;
+        // The existing path for BoxLang throws that cross a native call: it rethrows this value when the call returns
+        // `Err( message )` with the same message.
+        self.native_callback_exception = Some((message.to_string(), root));
+        Ok(())
+    }
     fn raise_abort(&mut self, kind: &str, cause: Option<String>) -> String { VM::raise_abort(self, kind, cause) }
     fn register_callback(&mut self, name: &str, callback: crate::types::NativeCallback) -> Result<(), String> {
         let id = self.heap.alloc(GcObject::NativeCallback(callback));
@@ -1753,6 +1765,10 @@ impl BxVM for VM {
 
     fn datetime_timezone(&self, value: BxValue) -> Option<String> {
         value.as_gc_id().and_then(|id| self.datetime_timezones.get(&id).cloned())
+    }
+
+    fn datetime_instant(&self, value: BxValue) -> Option<DateTime<Utc>> {
+        self.datetime_value(value)
     }
 
     fn string_new(&mut self, s: String) -> usize {

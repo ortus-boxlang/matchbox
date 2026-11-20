@@ -243,3 +243,24 @@ impl VM {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `BxVM::component_names` must return the registered names rather than recurse into itself.
+    #[test]
+    fn trait_component_names_lists_registered_components() {
+        let mut vm = VM::new();
+        assert!(BxVM::component_names(&vm).is_empty());
+
+        let registry = vm
+            .insert_empty_struct_global(COMPONENTS)
+            .as_gc_id()
+            .unwrap();
+        let record = vm.struct_new();
+        vm.struct_set(registry, "greet", BxValue::new_ptr(record));
+
+        assert_eq!(BxVM::component_names(&vm), vec!["greet".to_string()]);
+    }
+}

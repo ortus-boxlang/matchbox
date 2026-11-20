@@ -3374,7 +3374,7 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(
             String::from_utf8(response.body).unwrap(),
-            r#"{"currentRoute":"/meta/:id","isAjax":true,"isJSON":true,"routeParams":{"id":"42"}}"#
+            r#"{"currentRoute":"/meta/:id","isAjax":true,"isJson":true,"routeParams":{"id":"42"}}"#
         );
     }
 
