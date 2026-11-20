@@ -183,6 +183,20 @@ impl<'a> Parser<'a> {
         self.tokens.get(self.pos).map(|t| &self.source[t.span.start..t.span.end])
     }
 
+    /// In a declaration's name slot BoxLang keywords (e.g. `boolean include`)
+    /// are names, not the start of statements.
+    fn name_at(&self, offset: usize) -> bool {
+        self.tokens.get(self.pos + offset).is_some_and(|t| {
+            let text = &self.source[t.span.start..t.span.end];
+            text.chars().next().is_some_and(|ch| ch.is_alphabetic() || ch == '_' || ch == '$')
+                && text.chars().all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '$')
+        })
+    }
+
+    fn declared_name(&mut self) -> ParseResult<String> {
+        if self.name_at(0) { Ok(self.advance_lexeme().unwrap()) } else { Err(self.error_expected(TokenKind::Identifier)) }
+    }
+
     fn peek_line(&self) -> u32 {
         self.tokens.get(self.pos).map(|t| t.span.line).unwrap_or(0)
     }
@@ -440,6 +454,10 @@ impl<'a> Parser<'a> {
             return Ok(Statement::new(StatementKind::Labeled { label, body: vec![body] }, line));
         }
         match self.peek_kind() {
+            Some(TokenKind::Semicolon) => {
+                self.pos += 1;
+                Ok(Statement::new(StatementKind::Block(Vec::new()), line))
+            }
             Some(TokenKind::Import) => self.parse_import(line),
             Some(TokenKind::Class) | Some(TokenKind::Abstract) | Some(TokenKind::Final) | Some(TokenKind::At)
                 if self.is_class_decl() =>
@@ -455,6 +473,14 @@ impl<'a> Parser<'a> {
             {
                 self.parse_function_decl(line)
             }
+            Some(TokenKind::Final) if self.kind(1) == Some(TokenKind::Identifier) && self.kind(2) == Some(TokenKind::Equal) => {
+                self.pos += 1;
+                let name = self.expect_get(TokenKind::Identifier)?;
+                self.expect(TokenKind::Equal)?;
+                let value = self.parse_expression()?;
+                if self.peek_is(TokenKind::Semicolon) { self.pos += 1; }
+                Ok(Statement::new(StatementKind::FinalDecl { name, value }, line))
+            }
             Some(TokenKind::For) => self.parse_for(line),
             Some(TokenKind::While) => self.parse_while(line),
             Some(TokenKind::Do) => self.parse_do_while(line),
@@ -464,7 +490,7 @@ impl<'a> Parser<'a> {
             Some(TokenKind::Throw) => self.parse_throw(line),
             Some(TokenKind::Rethrow) => self.parse_rethrow(line),
             Some(TokenKind::Assert) => self.parse_assert(line),
-            Some(TokenKind::Param) => self.parse_param(line),
+            Some(TokenKind::Param) if matches!(self.kind(1), Some(TokenKind::Identifier | TokenKind::Static)) => self.parse_param(line),
             Some(TokenKind::Include) => self.parse_include(line),
             Some(TokenKind::Not) => self.parse_not_stmt(line),
             Some(TokenKind::Continue) => self.parse_continue(line),
@@ -620,6 +646,11 @@ impl<'a> Parser<'a> {
             if self.peek_is(TokenKind::Dot) {
                 path.push('.');
                 self.pos += 1;
+                if self.peek_is(TokenKind::Star) {
+                    self.pos += 1;
+                    path.push('*');
+                    break;
+                }
             } else {
                 break;
             }
@@ -630,6 +661,7 @@ impl<'a> Parser<'a> {
             path.push_str(&self.expect_get(TokenKind::Identifier)?);
         }
         let alias = if self.peek_is(TokenKind::As) {
+            if path.ends_with(".*") { return Err(self.error_current("a package wildcard cannot have an alias").into()); }
             self.pos += 1; // as
             Some(self.expect_get(TokenKind::Identifier)?)
         } else {
@@ -679,16 +711,7 @@ impl<'a> Parser<'a> {
                 }).collect::<Option<String>>(),
                 ExpressionKind::Literal(Literal::Boolean(value)) => Some(value.to_string()),
                 // BoxLang annotation values may be a bare fqn: `class extends=Base implements=models.Y`.
-                ExpressionKind::Identifier(_) | ExpressionKind::MemberAccess { .. } => {
-                    fn path(expr: &Expression) -> Option<String> {
-                        match &expr.kind {
-                            ExpressionKind::Identifier(name) => Some(name.clone()),
-                            ExpressionKind::MemberAccess { base, member } => Some(format!("{}.{}", path(base)?, member)),
-                            _ => None,
-                        }
-                    }
-                    path(v)
-                }
+                ExpressionKind::Identifier(_) | ExpressionKind::MemberAccess { .. } => v.dotted_name(),
                 _ => None,
             });
             match attr_name.to_ascii_lowercase().as_str() {
@@ -704,7 +727,13 @@ impl<'a> Parser<'a> {
         let mut members = Vec::new();
         while !self.peek_is(TokenKind::RightBrace) && self.peek_kind().is_some() {
             let start = self.pos;
-            let member = if self.peek_is(TokenKind::Property) {
+            let member = if self.peek_is(TokenKind::Static) && self.kind(1) == Some(TokenKind::LeftBrace) {
+                let line = self.peek_line();
+                self.pos += 2;
+                self.parse_block().map(|body| ClassMember::Statement(
+                    Statement::new(StatementKind::StaticInitializer(body), line).with_span(self.span_since(start))
+                ))
+            } else if self.peek_is(TokenKind::Property) {
                 self.parse_property().map(ClassMember::Property)
             } else {
                 self.parse_statement().map(ClassMember::Statement)
@@ -763,9 +792,38 @@ impl<'a> Parser<'a> {
         } else {
             String::new()
         };
+        let mut extends = Vec::new();
+        if self.peek_is(TokenKind::Extends) {
+            self.pos += 1;
+            self.expect(TokenKind::Equal)?;
+            let parent = self.parse_expression()?;
+            let names = match &parent.kind {
+                ExpressionKind::Literal(Literal::String(parts)) => parts.iter().map(|part| match part {
+                    StringPart::Text(text) => Some(text.as_str()), _ => None,
+                }).collect::<Option<String>>(),
+                _ => parent.dotted_name(),
+            }.ok_or_else(|| self.error_current("interface extends requires interface names"))?;
+            for name in names.split(',').map(str::trim) {
+                if name.is_empty() { return Err(self.error_current("empty parent interface name").into()); }
+                extends.push(name.to_owned());
+            }
+        }
         self.expect(TokenKind::LeftBrace)?;
-        let members = self.parse_block()?;
-        Ok(Statement::new(StatementKind::InterfaceDecl { name, members }, line))
+        let members = self.parse_block_with(Self::parse_interface_member)?;
+        Ok(Statement::new(StatementKind::InterfaceDecl { name, extends, members }, line))
+    }
+
+    /// An explicit interface default is a concrete method, not an abstract signature.
+    fn parse_interface_member(&mut self) -> Result<Statement> {
+        if !self.peek_is(TokenKind::Default) { return self.parse_statement(); }
+        let start = self.pos;
+        let line = self.peek_line();
+        self.pos += 1;
+        let method = self.parse_function_decl(line)?;
+        if !matches!(method.kind, StatementKind::FunctionDecl { body: FunctionBody::Block(_), .. }) {
+            return Err(self.error_current("default interface method requires a body").into());
+        }
+        Ok(method.with_span(self.span_since(start)))
     }
 
     fn parse_function_decl(&mut self, line: u32) -> Result<Statement> {
@@ -800,7 +858,7 @@ impl<'a> Parser<'a> {
         };
 
         self.expect(TokenKind::Function)?;
-        let name = self.expect_get(TokenKind::Identifier)?;
+        let name = self.declared_name()?;
         self.expect(TokenKind::LeftParen)?;
         let params = self.parse_params()?;
         self.expect(TokenKind::RightParen)?;
@@ -825,6 +883,7 @@ impl<'a> Parser<'a> {
         Ok(statement)
     }
 
+    /// Parses parameter declarations, returning an error for malformed names or defaults.
     fn parse_params(&mut self) -> Result<Vec<FunctionParam>> {
         let mut params = Vec::new();
         if self.peek_is(TokenKind::RightParen) {
@@ -833,12 +892,12 @@ impl<'a> Parser<'a> {
         loop {
             let required = self.peek_is(TokenKind::Required);
             if required { self.pos += 1; }
-            let type_name = if self.peek_is(TokenKind::Identifier) && self.kind(1) == Some(TokenKind::Identifier) {
+            let type_name = if matches!(self.peek_kind(), Some(TokenKind::Identifier | TokenKind::Function)) && self.name_at(1) {
                 Some(self.advance_lexeme().unwrap_or_default())
             } else {
                 None
             };
-            let name = self.expect_get(TokenKind::Identifier)?;
+            let name = self.declared_name()?;
             let default_value = if self.peek_is(TokenKind::Equal) {
                 self.pos += 1; // =
                 Some(self.parse_expression()?)
@@ -854,6 +913,8 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
+    /// Parses positional, named and spread arguments up to the closing parenthesis.
+    /// Returns an error if an argument expression is malformed.
     fn parse_args(&mut self) -> Result<Vec<Argument>> {
         let mut args = Vec::new();
         if self.peek_is(TokenKind::RightParen) {
@@ -866,9 +927,9 @@ impl<'a> Parser<'a> {
                 args.push(Argument { name: None, value: Expression::new(
                     ExpressionKind::Spread(Box::new(value)), 0,
                 ) });
-            } else if self.peek_is(TokenKind::Identifier) && self.kind(1) == Some(TokenKind::Equal) {
+            } else if self.peek_is(TokenKind::Identifier) && matches!(self.kind(1), Some(TokenKind::Equal | TokenKind::Colon)) {
                 let name = self.advance_lexeme().unwrap_or_default();
-                self.pos += 1; // =
+                self.pos += 1; // named argument separator
                 let value = self.parse_expression()?;
                 args.push(Argument { name: Some(name), value });
             } else {
@@ -881,10 +942,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_block(&mut self) -> Result<Vec<Statement>> {
+        self.parse_block_with(Self::parse_statement)
+    }
+
+    fn parse_block_with(&mut self, parse_item: fn(&mut Self) -> Result<Statement>) -> Result<Vec<Statement>> {
         let mut stmts = Vec::new();
         while !self.peek_is(TokenKind::RightBrace) && self.peek_kind().is_some() {
             let start = self.pos;
-            match self.parse_statement() {
+            match parse_item(self) {
                 Ok(statement) => stmts.push(statement),
                 Err(error) => self.recover_statement(error, start, true)?,
             }
@@ -914,41 +979,20 @@ impl<'a> Parser<'a> {
     }
 
     fn is_for_in(&self) -> bool {
-        // Look ahead to see if this is a for-in pattern
-        let mut i = self.pos;
-        if i < self.tokens.len() && self.tokens[i].kind == TokenKind::Var {
-            i += 1;
-        }
-        // Expect: identifier [, identifier] in
-        if i < self.tokens.len() && self.tokens[i].kind == TokenKind::Identifier {
-            i += 1;
-            if i < self.tokens.len() && self.tokens[i].kind == TokenKind::Comma {
-                i += 1;
-                // After comma must be another identifier then 'in'
-                if i < self.tokens.len() && self.tokens[i].kind == TokenKind::Identifier {
-                    i += 1;
-                    return i < self.tokens.len() && self.tokens[i].kind == TokenKind::In;
-                }
-                return false;
-            }
-            // After first identifier, check for 'in'
-            return i < self.tokens.len() && self.tokens[i].kind == TokenKind::In;
-        }
-        // If starts with semicolon, it's for-classic
-        if i < self.tokens.len() && self.tokens[i].kind == TokenKind::Semicolon {
-            return false;
-        }
-        false
+        let first = usize::from(self.peek_is(TokenKind::Var));
+        self.name_at(first) && (self.kind(first + 1) == Some(TokenKind::In)
+            || (self.kind(first + 1) == Some(TokenKind::Comma) && self.name_at(first + 2)
+                && self.kind(first + 3) == Some(TokenKind::In)))
     }
 
     fn parse_for_in(&mut self, line: u32) -> Result<Statement> {
         let saw_var = self.peek_is(TokenKind::Var);
         if saw_var { self.pos += 1; }
 
-        let item = self.expect_get(TokenKind::Identifier)?;
+        let item = self.declared_name()?;
         let index = if self.peek_is(TokenKind::Comma) {
             self.pos += 1;
-            Some(self.expect_get(TokenKind::Identifier)?)
+            Some(self.declared_name()?)
         } else {
             None
         };
@@ -1092,16 +1136,30 @@ impl<'a> Parser<'a> {
         while self.peek_is(TokenKind::Catch) {
             self.pos += 1; // catch
             self.expect(TokenKind::LeftParen)?;
-            // Catch types are currently ignored by the VM, but typed catches
-            // must still be accepted by the BoxLang parser.
-            if self.peek_is(TokenKind::Identifier) && self.kind(1) == Some(TokenKind::Identifier) {
-                self.pos += 1;
+            let mut types = Vec::new();
+            if self.kind(1) != Some(TokenKind::RightParen) {
+                loop {
+                    let ty = if self.peek_is(TokenKind::String) {
+                        let value = self.parse_primary()?;
+                        let ExpressionKind::Literal(Literal::String(parts)) = value.kind else { unreachable!() };
+                        let mut name = String::new();
+                        for part in parts { match part { StringPart::Text(s) => name.push_str(&s), _ => return Err(self.error_current("Dynamic catch type is unsupported").into()) } }
+                        name
+                    } else {
+                        let mut name = self.declared_name()?;
+                        while self.peek_is(TokenKind::Dot) { self.pos += 1; name.push('.'); name.push_str(&self.declared_name()?); }
+                        name
+                    };
+                    types.push(ty);
+                    if self.peek_lexeme() != Some("|") { break; }
+                    self.pos += 1;
+                }
             }
-            let exception_var = self.expect_get(TokenKind::Identifier)?;
+            let exception_var = self.declared_name()?;
             self.expect(TokenKind::RightParen)?;
             self.expect(TokenKind::LeftBrace)?;
             let body = self.parse_block()?;
-            catches.push(CatchBlock { exception_var, body });
+            catches.push(CatchBlock { types, exception_var, body });
         }
         let finally_branch = if self.peek_is(TokenKind::Finally) {
             self.pos += 1; // finally
@@ -1124,6 +1182,7 @@ impl<'a> Parser<'a> {
         Ok(Statement::new(StatementKind::Return(expr), line))
     }
 
+    /// Parses a throw statement, returning an error for malformed exception arguments.
     fn parse_throw(&mut self, line: u32) -> Result<Statement> {
         self.pos += 1; // throw
         let expr = if self.peek_is(TokenKind::Semicolon) || self.peek_kind().is_none() || self.at_statement_boundary() {
@@ -1138,7 +1197,11 @@ impl<'a> Parser<'a> {
                 } else {
                     self.expect_get(TokenKind::Identifier)?
                 };
-                self.expect(TokenKind::Equal)?;
+                if self.peek_is(TokenKind::Colon) {
+                    self.pos += 1;
+                } else {
+                    self.expect(TokenKind::Equal)?;
+                }
                 let value = self.parse_expression()?;
                 let key_expr = Expression::new(
                     ExpressionKind::Literal(Literal::String(vec![StringPart::Text(key_name)])),
@@ -1148,6 +1211,18 @@ impl<'a> Parser<'a> {
                 if self.peek_is(TokenKind::Comma) { self.pos += 1; } else { break; }
             }
             self.expect(TokenKind::RightParen)?;
+            Some(Expression::new(ExpressionKind::Literal(Literal::Struct(entries)), line))
+        } else if self.peek_is(TokenKind::LeftParen) && self.has_positional_throw_arguments() {
+            self.pos += 1;
+            let args = self.parse_args()?;
+            self.expect(TokenKind::RightParen)?;
+            let fields = ["message", "type", "detail", "errorCode", "extendedInfo", "cause"];
+            if args.len() > fields.len() || args.iter().any(|arg| arg.name.is_some()) {
+                return Err(self.error_current("expected positional throw(message, type, detail, errorCode, extendedInfo, object)").into());
+            }
+            let entries = fields.into_iter().zip(args).map(|(field, arg)| (
+                Expression::new(ExpressionKind::Literal(Literal::String(vec![StringPart::Text(field.into())])), line), arg.value
+            )).collect();
             Some(Expression::new(ExpressionKind::Literal(Literal::Struct(entries)), line))
         } else {
             Some(self.parse_expression()?)
@@ -1198,7 +1273,12 @@ impl<'a> Parser<'a> {
 
     fn parse_param(&mut self, line: u32) -> Result<Statement> {
         self.pos += 1; // param
-        let name = self.expect_get(TokenKind::Identifier)?;
+        let mut name = if self.peek_is(TokenKind::Static) { self.advance_lexeme().unwrap() } else { self.expect_get(TokenKind::Identifier)? };
+        while self.peek_is(TokenKind::Dot) {
+            self.pos += 1;
+            name.push('.');
+            name.push_str(&self.expect_get(TokenKind::Identifier)?);
+        }
         let default = if self.peek_is(TokenKind::Equal) {
             self.pos += 1;
             Some(self.parse_expression()?)
@@ -1331,6 +1411,14 @@ impl<'a> Parser<'a> {
             (Some(TokenKind::Var | TokenKind::If | TokenKind::For | TokenKind::While | TokenKind::Do | TokenKind::Try
                 | TokenKind::Return | TokenKind::Throw | TokenKind::Switch | TokenKind::Break | TokenKind::Continue
                 | TokenKind::Function), _) => true,
+            (Some(TokenKind::Identifier), Some(TokenKind::Equal)) => {
+                // `{ key = expr, ... }` can be a struct expression statement. If another
+                // statement follows the value without a comma, it is a semicolonless block.
+                let mut lookahead = Parser::new(self.source, self.tokens, self.filename);
+                lookahead.pos = self.pos + 3;
+                lookahead.parse_expression().is_ok()
+                    && !matches!(lookahead.peek_kind(), Some(TokenKind::Comma | TokenKind::RightBrace) | None)
+            }
             (Some(TokenKind::Identifier | TokenKind::String | TokenKind::StringStart | TokenKind::Number), Some(TokenKind::Colon | TokenKind::Equal)) => false,
             _ => true,
         }
@@ -1408,7 +1496,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_assignment_target(&mut self) -> Result<AssignmentTarget> {
-        let name = self.expect_get(TokenKind::Identifier)?;
+        let name = if matches!(self.peek_kind(), Some(TokenKind::Required | TokenKind::Param | TokenKind::Property)) {
+            self.advance_lexeme().unwrap()
+        } else { self.expect_get(TokenKind::Identifier)? };
         let mut has_accessors = false;
         while matches!(self.peek_kind(), Some(TokenKind::Dot) | Some(TokenKind::LeftBracket)) {
             has_accessors = true;
@@ -1714,13 +1804,14 @@ impl<'a> Parser<'a> {
                     );
                 }
                 Some(TokenKind::Dot | TokenKind::ColonColon | TokenKind::QuestionDot) => {
+                    if self.peek_is(TokenKind::ColonColon) && matches!(expr.kind, ExpressionKind::MemberAccess { .. }) {
+                        if let Some(path) = expr.dotted_name() {
+                            expr.kind = ExpressionKind::QualifiedClass(path);
+                        }
+                    }
                     let safe = self.peek_is(TokenKind::QuestionDot);
                     self.pos += 1;
-                    let member = if self.peek_lexeme().is_some_and(|name| {
-                        name.chars().next().is_some_and(|ch| ch.is_alphabetic() || ch == '_' || ch == '$')
-                            && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '$')
-                    }) { self.advance_lexeme().unwrap() }
-                    else { self.expect_get(TokenKind::Identifier)? };
+                    let member = self.declared_name()?;
                     let kind = if safe { ExpressionKind::SafeMemberAccess { base: Box::new(expr), member } }
                         else { ExpressionKind::MemberAccess { base: Box::new(expr), member } };
                     expr = Expression::new(kind, line);
@@ -1746,10 +1837,50 @@ impl<'a> Parser<'a> {
         Ok(expression.with_span(self.span_since(start)))
     }
 
+    /// Lower `.member` and `.member(args)` to a one-receiver callback. Explicit arguments
+    /// are evaluated in the callback, not when the reference is created. Hidden names
+    /// cannot shadow names in source expressions.
+    fn parse_functional_member(&mut self, line: u32) -> Result<Expression> {
+        self.pos += 1;
+        let member = self.declared_name()?;
+        let receiver = "<member receiver>";
+        let property = "<member property>";
+        let expr = |kind| Expression::new(kind, line);
+        let ident = |name: &str| expr(ExpressionKind::Identifier(name.to_owned()));
+        let access = expr(ExpressionKind::MemberAccess { base: Box::new(ident(receiver)), member });
+        let call = |base, args| expr(ExpressionKind::FunctionCall { base: Box::new(base), args });
+        let test = |name: &str, value| call(ident(name), vec![Argument { name: None, value }]);
+        let or = |a, b| expr(ExpressionKind::Binary { left: Box::new(a), operator: "||".into(), right: Box::new(b) });
+        let stmt = |kind| Statement::new(kind, line);
+        let ret = |value| stmt(StatementKind::Return(Some(value)));
+        let body = if self.peek_is(TokenKind::LeftParen) {
+            self.pos += 1;
+            let args = self.parse_args()?;
+            self.expect(TokenKind::RightParen)?;
+            FunctionBody::Expression(Box::new(call(access, args)))
+        } else {
+            // A bare reference projects a field (including false/zero/empty string),
+            // or invokes the member with no arguments when the field is null or callable.
+            let project = stmt(StatementKind::If {
+                condition: or(test("isStruct", ident(receiver)), test("isObject", ident(receiver))),
+                then_branch: vec![stmt(StatementKind::VariableDecl { name: property.into(), value: access.clone() }),
+                    stmt(StatementKind::If { condition: or(test("isNull", ident(property)), test("isClosure", ident(property))),
+                        then_branch: vec![], else_branch: Some(vec![ret(ident(property))]) })],
+                else_branch: None,
+            });
+            FunctionBody::Block(vec![project, ret(call(access, vec![]))])
+        };
+        Ok(expr(ExpressionKind::Literal(Literal::Function {
+            params: vec![FunctionParam { name: receiver.into(), type_name: None, required: true, default_value: None }],
+            body, is_lambda: false,
+        })))
+    }
+
     fn parse_primary_inner(&mut self) -> Result<Expression> {
         let line = self.peek_line();
 
         match self.peek_kind() {
+            Some(TokenKind::Dot) => self.parse_functional_member(line),
             Some(TokenKind::Number) => {
                 let lexeme = self.advance_lexeme().unwrap_or_default();
                 let n = lexeme.parse::<f64>().unwrap_or(0.0);
@@ -1766,6 +1897,10 @@ impl<'a> Parser<'a> {
             Some(TokenKind::Null) => {
                 self.pos += 1;
                 Ok(Expression::new(ExpressionKind::Literal(Literal::Null), line))
+            }
+            Some(TokenKind::Static) => {
+                self.pos += 1;
+                Ok(Expression::new(ExpressionKind::Identifier("static".into()), line))
             }
             Some(TokenKind::ColonColon) => {
                 self.pos += 1; // ::
@@ -1789,6 +1924,13 @@ impl<'a> Parser<'a> {
             }
             Some(TokenKind::New) => {
                 self.pos += 1; // new
+                if self.peek_is(TokenKind::String) {
+                    let class_name = Box::new(self.parse_primary()?);
+                    self.expect(TokenKind::LeftParen)?;
+                    let args = self.parse_args()?;
+                    self.expect(TokenKind::RightParen)?;
+                    return Ok(Expression::new(ExpressionKind::DynamicNew { class_name, args }, line));
+                }
                 let mut class_path = String::new();
                 // Optional prefix: identifier:
                 if self.kind(0) == Some(TokenKind::Identifier) && self.kind(1) == Some(TokenKind::Colon) {
@@ -1816,7 +1958,7 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::RightParen)?;
                 Ok(Expression::new(ExpressionKind::New { class_path, args }, line))
             }
-            Some(TokenKind::Identifier) => {
+            Some(TokenKind::Identifier | TokenKind::Required | TokenKind::Param | TokenKind::Property | TokenKind::Include) => {
                 let name = self.advance_lexeme().unwrap_or_default();
                 if (name.eq_ignore_ascii_case("sb") || name.eq_ignore_ascii_case("stringbuilder"))
                     && self.peek_is(TokenKind::LeftBrace)
@@ -1986,7 +2128,9 @@ impl<'a> Parser<'a> {
                     } else {
                         items.push(self.parse_expression()?);
                     }
-                    if self.peek_is(TokenKind::Comma) { self.pos += 1; } else { break; }
+                    if !self.peek_is(TokenKind::Comma) { break; }
+                    self.pos += 1;
+                    if self.peek_is(TokenKind::RightBracket) { break; }
                 }
                 self.expect(TokenKind::RightBracket)?;
                 Ok(Expression::new(ExpressionKind::Literal(Literal::Array(items)), line))
@@ -2020,6 +2164,12 @@ impl<'a> Parser<'a> {
                     let key = self.peek_lexeme().unwrap().to_owned();
                     self.pos += 1;
                     Expression::new(ExpressionKind::Literal(Literal::String(vec![StringPart::Text(key)])), line)
+                } else if matches!(self.peek_kind(), Some(TokenKind::String | TokenKind::StringStart)) {
+                    // '=' after a quoted key separates the value, it is not an assignment.
+                    let start = self.pos;
+                    let literal = self.parse_primary()?;
+                    if matches!(self.peek_kind(), Some(TokenKind::Equal | TokenKind::Colon)) { literal }
+                    else { self.pos = start; self.parse_expression()? }
                 } else { self.parse_expression()? };
                 if !matches!(self.peek_kind(), Some(TokenKind::Colon) | Some(TokenKind::Equal)) {
                     return Err(self
@@ -2041,30 +2191,28 @@ impl<'a> Parser<'a> {
     }
 
     fn is_lambda_params(&self) -> bool {
-        // Look ahead: identifier (, identifier)* ) => or ->
-        let mut i = self.pos;
-        if i >= self.tokens.len() || self.tokens[i].kind != TokenKind::Identifier {
-            return false;
-        }
-        i += 1;
-        while i < self.tokens.len() && self.tokens[i].kind == TokenKind::Comma {
-            i += 1;
-            if i >= self.tokens.len() || self.tokens[i].kind != TokenKind::Identifier {
-                return false;
+        // The matching ')' followed by an arrow disambiguates declarations from
+        // a grouped expression. Let parse_params handle types, required and defaults.
+        let mut depth = 0usize;
+        for (index, token) in self.tokens.iter().enumerate().skip(self.pos) {
+            match token.kind {
+                TokenKind::LeftParen => depth += 1,
+                TokenKind::RightParen if depth == 0 => return self.tokens.get(index + 1)
+                    .is_some_and(|next| matches!(next.kind, TokenKind::EqualGreater | TokenKind::MinusGreater)),
+                TokenKind::RightParen => depth -= 1,
+                _ => (),
             }
-            i += 1;
         }
-        if i >= self.tokens.len() || self.tokens[i].kind != TokenKind::RightParen {
-            return false;
-        }
-        i += 1;
-        i < self.tokens.len()
-            && (self.tokens[i].kind == TokenKind::EqualGreater
-                || self.tokens[i].kind == TokenKind::MinusGreater)
+        false
     }
 
     fn parse_lambda_body(&mut self) -> Result<FunctionBody> {
-        if self.peek_is(TokenKind::LeftBrace) {
+        // `{ key: value }` after an arrow is a struct expression, not a block
+        // containing a label. Preserve empty blocks and assignment statements.
+        let struct_body = self.peek_is(TokenKind::LeftBrace)
+            && (self.kind(1) == Some(TokenKind::DotDotDot) || self.kind(2) == Some(TokenKind::Colon))
+            && !self.bare_block_ahead();
+        if self.peek_is(TokenKind::LeftBrace) && !struct_body {
             self.pos += 1;
             Ok(FunctionBody::Block(self.parse_block()?))
         } else {
@@ -2145,6 +2293,22 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    /// Distinguish the multi-argument BIF from `throw (expression)` without
+    /// treating a comma inside a nested literal or call as an argument separator.
+    fn has_positional_throw_arguments(&self) -> bool {
+        let mut depth = 0usize;
+        for token in &self.tokens[self.pos + 1..] {
+            match token.kind {
+                TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => depth += 1,
+                TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace if depth == 0 => return false,
+                TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => depth -= 1,
+                TokenKind::Comma if depth == 0 => return true,
+                _ => (),
+            }
+        }
+        false
+    }
+
     fn is_throw_struct(&self) -> bool {
         // Look ahead: ( identifier (=|:) ... ) is throw struct syntax
         let mut i = self.pos + 1; // skip (
@@ -2185,9 +2349,10 @@ fn parse_string_content(raw: &str, source: &str, offset: usize) -> Vec<StringPar
                 i += 2;
                 continue;
             }
-            let closing = chars[i + 1..].iter().position(|character| *character == '#');
-            let valid_interpolation = closing.is_some_and(|closing| {
-                let expression: String = chars[i + 1..i + 1 + closing].iter().collect();
+            let base = 1 + chars[..=i].iter().map(|ch| ch.len_utf8()).sum::<usize>();
+            let remainder = &raw[base..raw.len() - 1];
+            let expression = crate::tokenizer::interpolation_end(remainder, quote).map(|end| &remainder[..end]);
+            let valid_interpolation = expression.is_some_and(|expression| {
                 if expression.contains('<') || expression.contains('>') {
                     return false;
                 }
@@ -2205,46 +2370,11 @@ fn parse_string_content(raw: &str, source: &str, offset: usize) -> Vec<StringPar
             if !text.is_empty() {
                 parts.push(StringPart::Text(std::mem::take(&mut text)));
             }
-            let expression_start = i;
-            let mut expr = String::new();
-            while i < chars.len() {
-                if chars[i] == '"' {
-                    // Skip over nested string
-                    expr.push('"');
-                    i += 1;
-                    while i < chars.len() && chars[i] != '"' {
-                        expr.push(chars[i]);
-                        i += 1;
-                    }
-                    if i < chars.len() { expr.push('"'); i += 1; }
-                    continue;
-                }
-                if chars[i] == '\'' {
-                    expr.push('\'');
-                    i += 1;
-                    while i < chars.len() && chars[i] != '\'' {
-                        expr.push(chars[i]);
-                        i += 1;
-                    }
-                    if i < chars.len() { expr.push('\''); i += 1; }
-                    continue;
-                }
-                if chars[i] == '#' {
-                    i += 1;
-                    if i < chars.len() && chars[i] == '#' {
-                        expr.push_str("##");
-                        i += 1;
-                        continue;
-                    }
-                    // Closing #
-                    break;
-                }
-                expr.push(chars[i]);
-                i += 1;
-            }
+            let expr = expression.unwrap();
+            i += expr.chars().count() + 1;
             if !expr.is_empty() {
-                let lexed = crate::tokenizer::lex(&expr);
-                let base = offset + 1 + chars[..expression_start].iter().map(|ch| ch.len_utf8()).sum::<usize>();
+                let lexed = crate::tokenizer::lex(expr);
+                let base = offset + base;
                 let origin = Span::at(source, base, base);
                 let tokens: Vec<_> = lexed.tokens().iter().map(|token| {
                     let mut token = *token;

@@ -14,7 +14,15 @@ impl VM {
         self.struct_assignment_hooks.insert(id, (root, callback));
         Ok(())
     }
+    /// Returns true for receivers whose bytecode stores must not use a shape-only fast path.
+    pub(super) fn requires_checked_assignment(&self, id: usize) -> bool {
+        self.struct_assignment_hooks.contains_key(&id)
+            || matches!(self.heap.get_opt(id), Some(GcObject::Struct(scope)) if scope.final_keys.is_some())
+    }
+
+    /// Assigns a script-visible value, returning an error on a final key or failed observer.
     pub fn assign_struct(&mut self, id: usize, key: &str, value: BxValue) -> Result<(), String> {
+        if self.struct_key_is_final(id, key) { return Err(format!("Cannot reassign final key [{key}] in scope [static]")); }
         let value = if let Some((_, callback)) = self.struct_assignment_hooks.get(&id).cloned() {
             let _value = self.heap.retain_value(value)?;
             let name = BxValue::new_ptr(self.string_new(key.into()));

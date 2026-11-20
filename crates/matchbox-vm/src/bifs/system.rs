@@ -421,6 +421,36 @@ pub fn box_module_reload(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValu
     Err("Module hot reload is not supported; rebuild and restart the application".into())
 }
 
+/// Match custom BoxLang exception type names case-insensitively, at dotted component boundaries.
+ pub(super) fn catch_matches(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() != 2 || !vm.is_array_value(args[1]) { return Err("Expected exception and catch types".into()); }
+    let types = args[1].as_gc_id().unwrap();
+    let mut exception = args[0];
+    let mut seen = std::collections::HashSet::new();
+    while vm.is_struct_value(exception) {
+        let id = exception.as_gc_id().unwrap();
+        if !seen.insert(id) { break; }
+        let ty = vm.to_string(vm.struct_get(id, "type")).to_ascii_lowercase();
+        if (0..vm.array_len(types)).any(|i| {
+            let wanted = vm.to_string(vm.array_get(types, i)).to_ascii_lowercase();
+            ty == wanted || ty.strip_prefix(&wanted).is_some_and(|suffix| suffix.starts_with('.'))
+        }) { return Ok(BxValue::new_bool(true)); }
+        exception = vm.struct_get(id, "cause");
+    }
+    Ok(BxValue::new_bool(false))
+}
+
+/// Compiler helper for named parent dispatch; use the ordinary function argument binder.
+pub(super) fn super_call_named(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.len() < 4 || !vm.is_array_value(args[3]) { return Err("Expected super receiver, class, method and argument names".into()); }
+    let id = args[3].as_gc_id().unwrap();
+    if vm.array_len(id) != args.len() - 4 { return Err("Super call argument names do not match values".into()); }
+    let names = (0..vm.array_len(id)).map(|i| vm.to_string(vm.array_get(id, i))).collect();
+    let class = vm.to_string(args[1]);
+    let method = vm.to_string(args[2]);
+    vm.call_super_method(args[0], &class, &method, args[4..].to_vec(), Some(names))
+}
+
 /// `super.method( args )`, compiled as `__supercall( this, definingClass, method, args... )`.
 pub fn super_call(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 3 {
@@ -428,7 +458,7 @@ pub fn super_call(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String
     }
     let defining_class = vm.to_string(args[1]);
     let method = vm.to_string(args[2]);
-    vm.call_super_method(args[0], &defining_class, &method, args[3..].to_vec())
+    vm.call_super_method(args[0], &defining_class, &method, args[3..].to_vec(), None)
 }
 
 pub fn lock(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
@@ -522,6 +552,12 @@ pub fn get_component_list(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxVal
 
 pub fn get_function_list(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     Err("BIF descriptor reflection is not supported; use functionService.getGlobalFunctionNames()".into())
+}
+
+/// Returns the existing runtime, not a new service graph on each call.
+#[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+pub fn get_box_runtime(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
+    vm.box_runtime()
 }
 
 fn module_registry(vm: &mut dyn BxVM) -> Result<Option<usize>, String> {

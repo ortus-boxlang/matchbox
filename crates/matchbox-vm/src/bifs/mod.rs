@@ -215,6 +215,8 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     );
     bifs.insert("lock".to_string(), system::lock as BxNativeFunction);
     bifs.insert("__supercall".to_string(), system::super_call as BxNativeFunction);
+    bifs.insert("__mb_catch_matches".into(), system::catch_matches as BxNativeFunction);
+    bifs.insert("__supercallnamed".to_string(), system::super_call_named as BxNativeFunction);
     bifs.insert("getbasetagdata".to_string(), system::get_base_tag_data as BxNativeFunction);
     bifs.insert("getbasetaglist".to_string(), system::get_base_tag_list as BxNativeFunction);
     bifs.insert("getbasetemplatepath".to_string(), system::get_base_template_path as BxNativeFunction);
@@ -222,6 +224,8 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     bifs.insert("getboxversioninfo".to_string(), system::get_box_version_info as BxNativeFunction);
     bifs.insert("getcomponentlist".to_string(), system::get_component_list as BxNativeFunction);
     bifs.insert("getfunctionlist".to_string(), system::get_function_list as BxNativeFunction);
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+    bifs.insert("getboxruntime".to_string(), system::get_box_runtime as BxNativeFunction);
     bifs.insert("getmoduleinfo".to_string(), system::get_module_info as BxNativeFunction);
     bifs.insert("getmodulelist".to_string(), system::get_module_list as BxNativeFunction);
     bifs.insert("invoke".to_string(), system::invoke as BxNativeFunction);
@@ -404,6 +408,7 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
         "createobject".to_string(),
         create_object as BxNativeFunction,
     );
+    bifs.insert("__mb_construct_box_class".into(), construct_box_class as BxNativeFunction);
     bifs.insert("__mb_resolve_class".into(), resolve_class as BxNativeFunction);
     bifs.insert("isnull".to_string(), is_null_bif as BxNativeFunction);
     bifs.insert("nullvalue".to_string(), null_value_bif as BxNativeFunction);
@@ -3569,7 +3574,7 @@ fn struct_delete_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
     }
     if let Some(id) = args[0].as_gc_id() {
         let key = vm.to_string(args[1]);
-        Ok(BxValue::new_bool(vm.struct_delete(id, &key)))
+        Ok(BxValue::new_bool(vm.struct_remove(id, &key)?))
     } else {
         Err("structDelete() expects a struct as the first argument".to_string())
     }
@@ -3833,26 +3838,26 @@ fn struct_to_sorted_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     Ok(BxValue::new_ptr(new_id))
 }
 
+/// Writes one translated path, propagating refused scope mutations to the caller.
 fn struct_key_translate_path(
     vm: &mut dyn BxVM,
     struct_id: usize,
     parts: &[&str],
     value: BxValue,
-) {
+) -> Result<(), String> {
     if parts.len() == 1 {
-        vm.struct_set(struct_id, parts[0], value);
-        return;
+        return vm.struct_assign(struct_id, parts[0], value);
     }
 
     let parent_id = match vm.struct_get(struct_id, parts[0]).as_gc_id() {
         Some(id) if vm.is_struct_value(vm.struct_get(struct_id, parts[0])) => id,
         _ => {
             let id = vm.struct_new();
-            vm.struct_set(struct_id, parts[0], BxValue::new_ptr(id));
+            vm.struct_assign(struct_id, parts[0], BxValue::new_ptr(id))?;
             id
         }
     };
-    struct_key_translate_path(vm, parent_id, &parts[1..], value);
+    struct_key_translate_path(vm, parent_id, &parts[1..], value)
 }
 
 fn struct_key_translate_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -3874,9 +3879,9 @@ fn struct_key_translate_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxVal
             dot_key.splitn(2, '.').collect()
         };
         if parts.len() >= 2 {
-            struct_key_translate_path(vm, id, &parts, val);
+            struct_key_translate_path(vm, id, &parts, val)?;
             if !retain_keys {
-                vm.struct_delete(id, dot_key);
+                vm.struct_remove(id, dot_key)?;
             }
         }
     }
@@ -4822,6 +4827,21 @@ pub(crate) fn jni_class_reference(vm: &mut dyn BxVM, name: &str) -> Result<BxVal
 fn resolve_class(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() != 1 || !vm.is_string_value(args[0]) { return Err("Class resolution requires a class name".into()); }
     vm.resolve_class_reference(&vm.to_string(args[0]))
+}
+
+/// Constructs a class by its runtime name. The compiler supplies parallel value/name arrays.
+fn construct_box_class(vm: &mut dyn BxVM, values: &[BxValue]) -> Result<BxValue, String> {
+    if values.len() != 3 || !vm.is_string_value(values[0]) || !vm.is_array_value(values[1]) || !vm.is_array_value(values[2]) {
+        return Err("Class construction requires a name, arguments and argument names".into());
+    }
+    let class = vm.to_string(values[0]);
+    let args_id = values[1].as_gc_id().unwrap();
+    let names_id = values[2].as_gc_id().unwrap();
+    if vm.array_len(args_id) != vm.array_len(names_id) { return Err("Class argument names must match arguments".into()); }
+    let args = (0..vm.array_len(args_id)).map(|index| vm.array_get(args_id, index)).collect();
+    let names: Vec<_> = (0..vm.array_len(names_id)).map(|index| vm.to_string(vm.array_get(names_id, index))).collect();
+    let named = names.iter().any(|name| !name.is_empty());
+    vm.construct_box_class(&class, args, named.then_some(names))
 }
 
 fn create_object(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {

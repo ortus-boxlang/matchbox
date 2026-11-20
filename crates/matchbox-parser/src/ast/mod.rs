@@ -50,6 +50,10 @@ pub struct ClassModifiers {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StatementKind {
+    /// Statements executed once for the class rather than once per instance.
+    StaticInitializer(Vec<Statement>),
+    /// A final binding protects the name, not the value stored under it.
+    FinalDecl { name: String, value: Expression },
     Import {
         path: String,
         alias: Option<String>,
@@ -65,6 +69,7 @@ pub enum StatementKind {
     },
     InterfaceDecl {
         name: String,
+        extends: Vec<String>,
         members: Vec<Statement>,
     },
     FunctionDecl {
@@ -159,6 +164,8 @@ pub struct SwitchCase {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CatchBlock {
+    /// Empty for an untyped catch.
+    pub types: Vec<String>,
     pub exception_var: String,
     pub body: Vec<Statement>,
 }
@@ -207,6 +214,15 @@ impl Expression {
         self.span = Some(span);
         self
     }
+
+    /// Returns a dotted identifier path, or `None` for a computed expression.
+    pub(crate) fn dotted_name(&self) -> Option<String> {
+        match &self.kind {
+            ExpressionKind::Identifier(name) => Some(name.clone()),
+            ExpressionKind::MemberAccess { base, member } => Some(format!("{}.{member}", base.dotted_name()?)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -217,6 +233,12 @@ pub struct Argument {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExpressionKind {
+    /// A qualified class name to the left of `::`, not a chain of property reads.
+    QualifiedClass(String),
+    DynamicNew {
+        class_name: Box<Expression>,
+        args: Vec<Argument>,
+    },
     New {
         class_path: String,
         args: Vec<Argument>,

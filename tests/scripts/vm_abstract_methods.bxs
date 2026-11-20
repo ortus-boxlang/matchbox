@@ -1,0 +1,35 @@
+interface NamedTool { function getLabel(); }
+abstract class AbstractTool implements="NamedTool" {
+    abstract public string function describe(required string label);
+    function run(label) { return describe(label); }
+}
+abstract class SpecializedTool extends="AbstractTool" {
+    function forward(label) { return super.run(argumentCollection: arguments); }
+}
+class Recorder extends="SpecializedTool" {
+    function getLabel() { return variables.name; }
+    function continue(boolean include = false) { return include; }
+    function init(name) { variables.name = name; }
+    string function describe(required string label) { return variables.name & ":" & label; }
+}
+class MissingTool extends="SpecializedTool" { function getLabel() { return "missing"; } }
+class MissingLabel extends="SpecializedTool" { string function describe(required string label) { return label; } }
+missingRejected = false;
+try { new MissingLabel(); } catch (any failure) { missingRejected = findNoCase("getLabel", failure.message) > 0; }
+assert missingRejected;
+class WrongReturn extends="AbstractTool" {
+    function getLabel() { return "wrong"; }
+    numeric function describe(required string label) { return 0; }
+}
+class WrongParameter extends="AbstractTool" {
+    function getLabel() { return "wrong"; }
+    string function describe(numeric label) { return "bad"; }
+}
+assert new Recorder("shared").continue(true);
+assert new Recorder("shared").run("test") == "shared:test";
+assert new Recorder("shared").forward("named") == "shared:named";
+for (invalid in [() => new MissingTool(), () => new WrongReturn(), () => new WrongParameter()]) {
+    rejected = false;
+    try { invalid(); } catch (any failure) { rejected = findNoCase("describe", failure.message) > 0; }
+    assert rejected;
+}

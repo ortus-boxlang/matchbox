@@ -41,6 +41,14 @@ threw = false;
 try { c.nonNumeric(); } catch ( any e ) { threw = true; }
 assert threw : "non numeric target throws";
 
+// Indexed updates return the old/new value and evaluate the key exactly once.
+counts = { tool: 3 };
+keysRead = [];
+nextKey = () => { keysRead.append(1); return "tool"; };
+assert counts[nextKey()]++ == 3;
+assert --counts[nextKey()] == 3;
+assert keysRead.len() == 2 && counts.tool == 3;
+
 // plain struct targets
 s = { n = 1 };
 s.n++;

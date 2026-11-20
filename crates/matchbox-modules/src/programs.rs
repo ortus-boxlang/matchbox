@@ -153,10 +153,17 @@ fn prepare_modules(modules: &[ModuleInfo], target: &str, allow_remote: bool) -> 
                         requires_body: annotation_bool(&ast, "RequiresBody")?,
                     });
                 }
+                // Preserve the declaring file's short self-reference after moving the
+                // class to its private bundle global. Do not publish a short global alias.
+                let short_name = file.file_stem().and_then(|stem| stem.to_str()).context("Invalid module class filename")?;
+                ast.insert(0, Statement::new(StatementKind::Import {
+                    path: global.clone(), alias: Some(short_name.to_owned()),
+                }, 1));
                 rename_class(&mut ast, &global)?;
                 classes.push(ModuleClass {
                     path: relative.to_string_lossy().into_owned(), global,
-                    chunk: compile(&ast, &source, &file.to_string_lossy(), modules)?,
+                    chunk: compile(&ast, &source, &file.to_string_lossy(), modules)
+                        .with_context(|| format!("Cannot compile module class {}", file.display()))?,
                 });
             }
             let artifact = read_artifact(&module.path, target, allow_remote)?;

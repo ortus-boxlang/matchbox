@@ -36,6 +36,18 @@ println( ( new shared.Greeter() ).hi() );
 println( ( new Greeter() ).hi() );
 "#;
 
+/// A dotted receiver before `::` names a class even when its first segment is also a variable.
+#[test]
+fn qualified_static_calls_resolve_source_classes_without_constructing_them() {
+    let dir = project("static", &[
+        ("models/Counter.bx", r#"class { function init() { throw "unexpected constructor"; } static function value() { return 7; } }"#),
+        ("main.bxs", "models = {Counter: {value: () => 9}}; assert models.Counter.value() == 9; println(models.Counter::value());"),
+    ]);
+    let (ok, out, err) = run_in(&dir, &["main.bxs"]);
+    assert!(ok, "{err}");
+    assert_eq!(out.trim(), "7");
+}
+
 #[test]
 fn application_bx_mappings_resolve_new_and_import() {
     let dir = project(

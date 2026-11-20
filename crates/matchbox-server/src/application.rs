@@ -78,6 +78,11 @@ impl ApplicationRuntime {
     ) -> Result<(Vec<PathBuf>, Vec<matchbox_vm::bundle::ModuleMapping>)> {
         let discovered =
             matchbox_modules::discovery::discover_module_installations(project, &[], home, config)?;
+        // Like the CLI, resolve module invocation paths before compiling descriptors/classes.
+        // This runtime and subsequent template compilation stay on this worker thread.
+        matchbox_compiler::mappings::set_mappings(discovered.modules.iter().map(|module| {
+            matchbox_compiler::mappings::Mapping::new(&format!("/bxModules/{}", module.name), &module.path, false)
+        }).collect());
         let modules = matchbox_modules::programs::prepare_installed(
             &discovered.modules,
             matchbox_vm::bundle::TARGET,

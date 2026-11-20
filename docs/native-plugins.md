@@ -153,6 +153,20 @@ root    = new Root@mymodule();             // Root.bx in the module's root folde
 
 The name is looked up in the module under its invocation path (`bxModules.<name>`, the `invocationPath` of its module record), so it finds the same class as `new bxModules.<name>.path.to.Class()`. Module names are case-insensitive. A module that is not loaded fails with `Module not loaded: <name>`. Only classes packaged with the module are found, as for `bxModules.<name>` names, and this works from source, from `.bxb` files and in native binaries. A script that uses no module has no module to look in, so there `Class@name` is looked up as an ordinary path and normally fails to compile as an unknown class.
 
+## VM-owned global services (native desktop)
+
+A module can publish a live BoxLang or native object for callers of `getBoxRuntime().getGlobalService(name)`. In `configure()`, set `variables.globalServices` to an array of instances. Each instance supplies `getName()` (nonempty string), `onStartup()` and `onShutdown(force)`. For example:
+
+```javascript
+function configure() {
+    variables.globalServices = [new bxModules.example.Ledger()];
+}
+```
+
+During activation, MatchBox registers each service by name and calls `onStartup()` before the declaring module's `onLoad()`. Duplicate names (including case variants) fail activation; a module cannot overwrite another module's service. `hasGlobalService(name)` checks the registration and `getGlobalService(name)` returns the same instance or null if absent. Neither method constructs a service. On normal module unload or activation rollback, MatchBox calls `onShutdown(false)` in reverse registration order and removes the entries, even if shutdown reports an error. The module's `onUnload()` runs after its services stop.
+
+This is module-owned registration on the **current VM**, not Java SPI discovery, process-wide mutable state, or a way to transfer closures between workers. Every worker that loads the module owns its own services. A module that needs one service shared by several workers must explicitly arrange an owner and dispatch calls to it. A `classProviders` entry alone does not register a service.
+
 ## Module components
 
 Top-level `components/*.bx` classes register their `invoke()` method. `@BoxComponent` uses the same filename/string/array alias rules as `@BoxBIF`. Invocation supplies named `context`, `attributes`, `body`, and `executionState` arguments, so declaration order does not matter. The live record exposes registered aliases under `moduleRecord.components`.

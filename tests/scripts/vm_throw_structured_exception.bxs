@@ -1,4 +1,23 @@
 try {
+    throw(type: "NamedExample", message: "expected detail");
+    throw "expected named throw() to stop execution";
+} catch (NamedExample e) {
+    assert e.message == "expected detail";
+}
+
+try { throw("offline", "App.Positional", "retry later"); }
+catch ("App.Positional" failure) { assert failure.message == "offline" && failure.detail == "retry later"; }
+
+trace = [];
+try {
+    try { throw(type:"App.Unavailable", message:"offline"); }
+    catch ("MCPAuthorizationRequired" auth) { trace.append("wrong"); }
+    finally { trace.append("finally"); }
+} catch (OtherType e) { trace.append("wrong"); }
+catch ("app" e) { trace.append(e.message); }
+assert trace.toList() == "finally,offline";
+
+try {
     throw("Boom");
     throw "expected throw() to stop execution";
 } catch (e) {

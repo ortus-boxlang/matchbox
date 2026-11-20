@@ -318,6 +318,33 @@ impl Span {
     }
 }
 
+/// Byte offset of the closing hash, ignoring hashes inside quoted arguments.
+/// If an outer delimiter follows a completed operand, the opening hash was literal.
+pub(crate) fn interpolation_end(expression: &str, outer: char) -> Option<usize> {
+    let mut chars = expression.char_indices().peekable();
+    let mut operand_expected = true;
+    while let Some((index, ch)) = chars.next() {
+        match ch {
+            '#' => return Some(index),
+            '\'' | '"' => {
+                if ch == outer && !operand_expected { return None; }
+                loop {
+                    let (_, next) = chars.next()?;
+                    if next == ch {
+                        if chars.peek().is_some_and(|(_, c)| *c == ch) { chars.next(); }
+                        else { break; }
+                    }
+                }
+                operand_expected = false;
+            }
+            ';' => return None,
+            c if c.is_whitespace() => (),
+            _ => operand_expected = "([{,:?=+-*/%&|!<>".contains(ch),
+        }
+    }
+    None
+}
+
 struct Lexer<'a> {
     source: &'a str,
     pos: usize,
@@ -886,61 +913,10 @@ impl<'a> Lexer<'a> {
                 break; // closing quote
             }
             if ch == '#' {
-                let mut lookahead = self.pos + 1;
-                let mut has_closing_hash = false;
-                while lookahead < self.source.len() {
-                    let next = self.source[lookahead..].chars().next().unwrap();
-                    if next == quote {
-                        break;
-                    }
-                    if next == '#' {
-                        has_closing_hash = true;
-                        break;
-                    }
-                    lookahead += next.len_utf8();
-                }
-                if !has_closing_hash {
-                    self.advance();
-                    continue;
-                }
                 self.advance();
-                if self.pos < self.source.len() && self.current_char() == '#' {
-                    self.advance();
-                    continue;
-                }
-                // Interpolation start — skip the expression inside
-                // (it will be re-parsed by parse_string_content)
-                let mut depth = 1;
-                while self.pos < self.source.len() && depth > 0 {
-                    let c = self.current_char();
-                    if c == '"' {
-                        self.advance();
-                        while self.pos < self.source.len() && self.current_char() != '"' {
-                            self.advance();
-                        }
-                        if self.pos < self.source.len() { self.advance(); }
-                        continue;
-                    }
-                    if c == '\'' {
-                        self.advance();
-                        while self.pos < self.source.len() && self.current_char() != '\'' {
-                            self.advance();
-                        }
-                        if self.pos < self.source.len() { self.advance(); }
-                        continue;
-                    }
-                    if c == '#' {
-                        self.advance();
-                        if self.pos < self.source.len() && self.current_char() == '#' {
-                            self.advance();
-                            continue;
-                        }
-                        depth -= 1;
-                        if depth == 0 { break; }
-                        depth += 1;
-                        continue;
-                    }
-                    self.advance();
+                if let Some(length) = interpolation_end(&self.source[self.pos..], quote) {
+                    let end = self.pos + length + 1;
+                    while self.pos < end { self.advance(); }
                 }
                 continue;
             }

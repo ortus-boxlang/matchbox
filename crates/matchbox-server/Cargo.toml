@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+matchbox_utility = { path = "../matchbox-utility" }
 axum = { version = "0.7", features = ["macros", "ws"] }
 tokio = { version = "1.0", features = ["full"] }
 tower-http = { version = "0.5", features = ["fs"] }

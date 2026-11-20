@@ -16,13 +16,15 @@ function f() {
     {
         a = a + 1;
         var b = 5;
-    }
+    };;
     return a + b;
 }
 expect( f(), 7, "a var declared in a block is visible after it" );
 
 { var inside = 3; if ( inside == 3 ) { z = "ok"; } }
 expect( z, "ok", "blocks nest with other statements" );
+
+for (var property in [{name:"works"}]) { assert property.name == "works"; }
 
 total = 0;
 for ( i = 1; i <= 3; i++ ) {

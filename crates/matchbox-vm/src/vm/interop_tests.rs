@@ -473,6 +473,7 @@ mod tests {
             modifiers: crate::types::ClassModifiers::default(),
             extends: None,
             implements: Vec::new(),
+            inherited_contracts: Vec::new(),
             constructor: BxCompiledFunction {
                 name: "init".to_string(),
                 bif: None,

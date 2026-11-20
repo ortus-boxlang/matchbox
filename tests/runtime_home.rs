@@ -84,6 +84,29 @@ fn matchbox_home_env_and_flag_choose_the_home() {
 }
 
 #[test]
+fn runtime_logger_uses_the_configured_named_sink_without_a_module() {
+    let (_dir, user_home, cwd) = layout();
+    fs::write(cwd.join("boxlang.json"), r#"{"logging":{"loggers":{"mcp":{"level":"INFO","encoder":"json"}}}}"#).unwrap();
+    fs::write(cwd.join("app.bxs"), r#"
+        rt = getBoxRuntime();
+        assert rt === getBoxRuntime();
+        logger = rt.getLoggingService().getLogger("MCP");
+        assert logger === getBoxRuntime().getLoggingService().getLogger("mcp.log");
+        assert logger.isInfoEnabled() && !logger.isDebugEnabled();
+        logger.debug("below threshold");
+        logger.info("named logger message");
+    "#).unwrap();
+    let (ok, _, err) = run(&cwd, &user_home, &["app.bxs"]);
+    assert!(ok, "{err}");
+    let log = fs::read_to_string(user_home.join(".matchbox/logs/mcp.log")).unwrap();
+    let lines: Vec<_> = log.lines().collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    let entry: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(entry["message"], "named logger message");
+    assert_eq!(entry["level"], "INFO");
+}
+
+#[test]
 fn write_log_and_the_log_component_follow_the_layered_config() {
     let (_dir, user_home, cwd) = layout();
     // ./boxlang.json overlays the home's config: application logs at DEBUG, orders is its own file.

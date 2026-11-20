@@ -567,7 +567,7 @@ impl<'a> TemplateParser<'a> {
                     self.pos += 1;
                     self.skip_to_close();
                     let body = self.parse_template_body(&["catch", "finally", "try"])?;
-                    catches.push(CatchBlock { exception_var: "e".to_string(), body });
+                    catches.push(CatchBlock { types: Vec::new(), exception_var: "e".to_string(), body });
                     continue;
                 }
                 if name == "finally" {

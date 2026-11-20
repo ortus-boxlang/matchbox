@@ -4,7 +4,7 @@ use crate::ast::{
     FunctionModifiers as AstFunctionModifiers, Literal, Statement, StatementKind, StringPart,
 };
 use crate::parser;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use matchbox_vm::Chunk;
 use matchbox_vm::types::{
     BxClass, BxCompiledFunction, BxInterface, ClassModifiers as VmClassModifiers, Constant,
@@ -75,6 +75,7 @@ pub struct Compiler {
     /// relative to the working directory are resolved against it, so a project builds the same
     /// from any directory.
     pub root_dir: Option<PathBuf>,
+    interface_stack: Vec<PathBuf>,
     /// Mappings (`/models` -> directory) from boxlang.json and Application.bx, set per thread by
     /// the front end. Searched after the working directory and sibling lookups.
     mappings: Vec<crate::mappings::Mapping>,
@@ -85,41 +86,15 @@ pub struct Compiler {
     /// Propagated to sub-compilers so that `new` expressions in functions/methods
     /// can still determine whether to emit an `init` invocation.
     class_has_init_map: HashMap<String, bool>,
-    current_function_is_static: bool,
+    /// Distinguishes static methods and static initializer bodies from instance code.
+    static_function_kind: Option<FunctionKind>,
     is_function: bool,
     is_component_body: bool,
 }
 
 impl Compiler {
     pub fn new(filename: &str) -> Self {
-        let source_dir = Path::new(filename).parent().map(|p| p.to_path_buf());
-        Compiler {
-            source_dependencies: Arc::new(AtomicBool::new(false)),
-            chunk: Chunk::new(filename),
-            locals: Vec::new(),
-            scope_depth: 0,
-            is_class: false,
-            class_name: None,
-            imports: HashMap::new(),
-            runtime_module_classes: false,
-            current_line: 0,
-            is_repl: false,
-            continue_patches: Vec::new(),
-            break_patches: Vec::new(),
-            loop_locals: Vec::new(),
-            jump_targets: Vec::new(),
-            pending_label: None,
-            catch_exception_slots: Vec::new(),
-            class_methods: HashSet::new(),
-            root_dir: source_dir.clone(),
-            mappings: crate::mappings::current_mappings(),
-            pending_parent_defs: Vec::new(),
-            source_dir,
-            class_has_init_map: HashMap::new(),
-            current_function_is_static: false,
-            is_function: false,
-            is_component_body: false,
-        }
+        Self::with_chunk(Chunk::new(filename))
     }
 
     pub fn with_chunk(chunk: Chunk) -> Self {
@@ -143,11 +118,12 @@ impl Compiler {
             catch_exception_slots: Vec::new(),
             class_methods: HashSet::new(),
             root_dir: source_dir.clone(),
+            interface_stack: Vec::new(),
             mappings: crate::mappings::current_mappings(),
             pending_parent_defs: Vec::new(),
             source_dir,
             class_has_init_map: HashMap::new(),
-            current_function_is_static: false,
+            static_function_kind: None,
             is_function: false,
             is_component_body: false,
         }
@@ -229,6 +205,9 @@ impl Compiler {
         self.current_line = stmt.line as u32;
         match &stmt.kind {
             StatementKind::Import { path, alias } => {
+                if let Some(package) = path.strip_suffix(".*") {
+                    return self.import_box_package(package);
+                }
                 let dotted_path = if let Some(pos) = path.find(':') {
                     &path[pos + 1..]
                 } else {
@@ -281,6 +260,7 @@ impl Compiler {
             } => {
                 let mut constructor_compiler = self.child_compiler(self.chunk.new_sub_chunk());
                 constructor_compiler.is_class = true;
+                constructor_compiler.class_name = Some(name.clone());
                 constructor_compiler.scope_depth = 1;
                 constructor_compiler.imports = self.imports.clone();
                 constructor_compiler.runtime_module_classes = self.runtime_module_classes;
@@ -290,6 +270,7 @@ impl Compiler {
 
                 let mut methods = HashMap::new();
                 let mut properties = Vec::new();
+                let mut static_body = Vec::new();
 
                 if class_modifiers.is_final && extends.is_some() {
                     bail!("Class {} is final and cannot extend another class", name);
@@ -307,6 +288,7 @@ impl Compiler {
                 }
 
                 // Collect method names so unqualified calls inside methods resolve correctly.
+                let mut signatures = Vec::new();
                 let mut class_method_names = HashSet::new();
                 for member in members.iter() {
                     if let ClassMember::Statement(inner_stmt) = member {
@@ -339,17 +321,22 @@ impl Compiler {
                             constructor_compiler.chunk.emit0(op::POP, stmt.line as u32);
                         }
                         ClassMember::Statement(inner_stmt) => match &inner_stmt.kind {
+                            StatementKind::StaticInitializer(body) => static_body.extend_from_slice(body),
                             StatementKind::FunctionDecl {
                                 name: func_name,
                                 attributes,
                                 modifiers,
-                                return_type: _,
+                                return_type,
                                 params,
                                 body,
                             } => {
-                                if let FunctionBody::Abstract = body {
-                                    bail!("Abstract functions only allowed in interfaces");
+                                let bodyless = matches!(body, FunctionBody::Abstract);
+                                if bodyless != modifiers.is_abstract || (bodyless && !class_modifiers.is_abstract) {
+                                    bail!("Abstract method {func_name} must have no body and be declared abstract on an abstract class");
                                 }
+                                signatures.push(Self::method_signature(func_name, return_type.as_deref(), params, modifiers, bodyless));
+                                if bodyless { continue; } // A contract is not a callable method.
+
                                 if let Some(parent_name) = extends.as_ref() {
                                     if let Some(parent_class) =
                                         self.find_class_constant(parent_name)?
@@ -427,6 +414,7 @@ impl Compiler {
                                 captured_scopes: Vec::new(),
                                 chunk: getter_chunk,
                             };
+                            signatures.push(Self::method_signature(&getter_name, None, &[], &Default::default(), false));
                             methods.insert(getter_name.to_lowercase(), func);
                         }
 
@@ -464,31 +452,26 @@ impl Compiler {
                 }
 
                 // Handle Interfaces (Traits and Contracts)
+                let mut inherited_contracts = Vec::new();
+                let mut implemented_interfaces = Vec::new();
                 for iface_name in implements {
-                    let iface_val =
-                        if let Some(alias_path) = self.imports.get(&iface_name.to_lowercase()) {
-                            let path = alias_path.clone();
-                            self.load_interface_from_path(&path)?
-                        } else if let Some(found) = self.chunk.constants.iter().find_map(|c| {
-                            if let Constant::Interface(i) = c {
-                                if i.name.to_lowercase() == iface_name.to_lowercase() {
-                                    return Some(Constant::Interface(i.clone()));
-                                }
-                            }
-                            None
-                        }) {
-                            found
-                        } else {
-                            // Last-ditch: try to load the interface from disk (e.g. sibling file).
-                            self.load_interface_from_path(iface_name)?
-                        };
-
-                    if let Constant::Interface(iface) = iface_val {
+                    let iface = self.resolve_interface(iface_name)?;
+                    implemented_interfaces.push(iface_name.to_lowercase());
+                    implemented_interfaces.extend(iface.ancestors.iter().cloned());
+                    {
                         for (method_name, method_opt) in &iface.methods {
                             if !methods.contains_key(method_name) {
-                                if let Some(default_impl) = method_opt {
-                                    methods.insert(method_name.clone(), default_impl.clone());
-                                } else {
+                                if let Some(implementation) = method_opt.as_ref().filter(|m| !m.modifiers.is_abstract) {
+                                    methods.insert(method_name.clone(), implementation.clone());
+                                } else if extends.is_some() && !signatures.iter().any(|s| s.name.eq_ignore_ascii_case(method_name)) {
+                                    if let Some(Constant::MethodSignatures(contract)) = method_opt.as_ref().and_then(|m| m.chunk.constants().last()) {
+                                        inherited_contracts.extend_from_slice(contract);
+                                    } else { bail!("Missing interface signature for {method_name}"); }
+                                } else if class_modifiers.is_abstract && !signatures.iter().any(|s| s.name.eq_ignore_ascii_case(method_name)) {
+                                    if let Some(Constant::MethodSignatures(contract)) = method_opt.as_ref().and_then(|m| m.chunk.constants().last()) {
+                                        signatures.extend_from_slice(contract);
+                                    } else { bail!("Missing interface signature for {method_name}"); }
+                                } else if !signatures.iter().any(|s| s.is_abstract && s.name.eq_ignore_ascii_case(method_name)) {
                                     bail!(
                                         "Class {} must implement abstract method {} from interface {}",
                                         name,
@@ -505,8 +488,19 @@ impl Compiler {
                     .chunk
                     .emit0(op::RETURN, stmt.line as u32);
 
+                if !signatures.is_empty() {
+                    constructor_compiler.chunk.add_constant(Constant::MethodSignatures(signatures));
+                }
+                if !static_body.is_empty() {
+                    constructor_compiler.class_methods = class_method_names;
+                    let initializer = constructor_compiler.compile_function(
+                        "<static>", &[], &FunctionBody::Block(static_body),
+                        AstFunctionModifiers { is_static: true, ..Default::default() }, FunctionKind::StaticInitializer,
+                    )?;
+                    constructor_compiler.chunk.add_constant(Constant::CompiledFunction(initializer));
+                }
                 let constructor = BxCompiledFunction {
-                    name: format!("{}.constructor", name),
+                    name: BxClass::constructor_name(name),
                     bif: None,
                     kind: FunctionKind::Udf,
                     arity: 0,
@@ -531,8 +525,10 @@ impl Compiler {
                         is_abstract: class_modifiers.is_abstract,
                         is_final: class_modifiers.is_final,
                     },
-                    extends: extends.as_ref().map(|s| s.to_lowercase()),
-                    implements: implements.iter().map(|s| s.to_lowercase()).collect(),
+                    extends: extends.as_ref().map(|s| self.imports.get(&s.to_lowercase())
+                        .filter(|path| self.is_runtime_module_class(path)).unwrap_or(s).to_lowercase()),
+                    implements: implemented_interfaces,
+                    inherited_contracts,
                     constructor,
                     methods: methods.into_iter().collect(),
                 };
@@ -546,21 +542,27 @@ impl Compiler {
                     .emit1(op::DEFINE_GLOBAL, name_idx as u32, stmt.line as u32);
                 Ok(())
             }
-            StatementKind::InterfaceDecl { name, members } => {
+            StatementKind::InterfaceDecl { name, extends, members } => {
                 let mut methods = HashMap::new();
+                let mut ancestors = Vec::new();
+                for parent_name in extends {
+                    let parent = self.resolve_interface(parent_name)?;
+                    for ancestor in std::iter::once(parent_name.to_lowercase()).chain(parent.ancestors) {
+                        if !ancestors.contains(&ancestor) { ancestors.push(ancestor); }
+                    }
+                    methods.extend(parent.methods);
+                }
                 for member in members {
                     if let StatementKind::FunctionDecl {
                         name: func_name,
                         attributes: _,
-                        modifiers: _,
-                        return_type: _,
+                        modifiers,
+                        return_type,
                         params,
                         body,
                     } = &member.kind
                     {
-                        let method = if let FunctionBody::Abstract = body {
-                            None
-                        } else {
+                        let method = {
                             let mut method_compiler =
                                 self.child_compiler(self.chunk.new_sub_chunk());
                             method_compiler.is_class = true;
@@ -568,13 +570,11 @@ impl Compiler {
                             method_compiler.runtime_module_classes = self.runtime_module_classes;
                             method_compiler.source_dir = self.source_dir.clone();
                             method_compiler.current_line = member.line;
-                            let func = method_compiler.compile_function(
-                                func_name,
-                                params,
-                                body,
-                                AstFunctionModifiers::default(),
-                                FunctionKind::Udf,
-                            )?;
+                            let mut flags = modifiers.clone();
+                            flags.is_abstract = matches!(body, FunctionBody::Abstract);
+                            let signature = Self::method_signature(func_name, return_type.as_deref(), params, &flags, flags.is_abstract);
+                            let mut func = method_compiler.compile_function(func_name, params, body, flags, FunctionKind::Udf)?;
+                            func.chunk.add_constant(Constant::MethodSignatures(vec![signature]));
                             Some(func)
                         };
                         methods.insert(func_name.to_lowercase(), method);
@@ -585,6 +585,7 @@ impl Compiler {
 
                 let iface = BxInterface {
                     name: name.clone(),
+                    ancestors,
                     methods: methods.into_iter().collect(),
                 };
 
@@ -675,6 +676,7 @@ impl Compiler {
                 self.break_patches[target].push(jump_idx);
                 Ok(())
             }
+            StatementKind::StaticInitializer(_) => bail!("Static initializer must belong to a class"),
             StatementKind::Block(body) => {
                 for inner in body {
                     self.compile_statement(inner, false)?;
@@ -695,7 +697,7 @@ impl Compiler {
                 })?;
                 self.chunk
                     .emit1(op::GET_LOCAL, slot as u32, stmt.line as u32);
-                self.chunk.emit0(op::THROW, stmt.line as u32);
+                self.chunk.emit0(op::RETHROW, stmt.line as u32);
                 Ok(())
             }
             StatementKind::Assert { condition, message } => {
@@ -728,9 +730,14 @@ impl Compiler {
                 Ok(())
             }
             StatementKind::Param { name, default } => {
-                let name_const = BoxString::new(name.as_str());
-                let name_idx = self.chunk.add_constant(Constant::String(name_const));
-                self.chunk.emit1(op::GET_GLOBAL, name_idx, stmt.line as u32);
+                let line = stmt.line;
+                let parts: Vec<&str> = name.split('.').collect();
+                let root = Expression::new(ExpressionKind::Identifier(parts[0].to_owned()), line);
+                let mut lookup = root.clone();
+                for part in &parts[1..] {
+                    lookup = Expression::new(ExpressionKind::SafeMemberAccess { base: Box::new(lookup), member: (*part).to_owned() }, line);
+                }
+                self.compile_expression(&lookup)?;
                 let jn_idx = self.chunk.code.len();
                 self.chunk.emit1(op::JUMP_IF_NULL, 0, stmt.line as u32);
                 // Variable exists — pop and skip to end
@@ -743,12 +750,19 @@ impl Compiler {
                     op::JUMP_IF_NULL as u32 | (((null_target - jn_idx - 1) as u32) << 8);
                 self.chunk.emit0(op::POP, stmt.line as u32);
                 if let Some(def) = default {
-                    self.compile_expression(def)?;
-                    let name_idx2 = self
-                        .chunk
-                        .add_constant(Constant::String(BoxString::new(name.as_str())));
-                    self.chunk
-                        .emit1(op::DEFINE_GLOBAL, name_idx2, stmt.line as u32);
+                    if parts.len() == 1 {
+                        self.compile_expression(&Expression::new(ExpressionKind::Assignment {
+                            target: crate::ast::AssignmentTarget::Identifier(parts[0].to_owned()), value: Box::new(def.clone()),
+                        }, line))?;
+                    } else {
+                        // Evaluate the default before creating parents; a failed default must not change the path.
+                        self.compile_expression(def)?;
+                        self.compile_param_parent(root, &parts[..parts.len()-1], line)?;
+                        self.chunk.emit0(op::SWAP, line);
+                        let key = self.chunk.add_constant(Constant::String(BoxString::new(parts.last().unwrap())));
+                        self.chunk.emit1(op::SET_MEMBER, key, line);
+                    }
+                    self.chunk.emit0(op::POP, line);
                 } else {
                     // No default — throw error
                     let err_idx =
@@ -911,14 +925,28 @@ impl Compiler {
                 } else {
                     self.chunk.code.len()
                 };
-                if !catches.is_empty() {
-                    let first_catch = &catches[0];
+                let mut completed = vec![jump_to_finally_idx];
+                let mut catch_all = false;
+                for catch in catches {
+                    let typed = !catch.types.is_empty() && !catch.types.iter().any(|t| t.eq_ignore_ascii_case("any"));
+                    let mismatch = if typed {
+                        let helper = self.chunk.add_constant(Constant::String(BoxString::new("__mb_catch_matches")));
+                        self.chunk.emit1(op::GET_GLOBAL, helper, stmt.line);
+                        self.chunk.emit0(op::OVER, stmt.line); // keep the original exception for a later clause
+                        let types = self.chunk.add_constant(Constant::StringArray(catch.types.clone()));
+                        self.chunk.emit1(op::CONSTANT, types, stmt.line);
+                        self.chunk.emit1(op::CALL, 2, stmt.line);
+                        let branch = self.chunk.code.len();
+                        self.chunk.emit1(op::JUMP_IF_FALSE, 0, stmt.line);
+                        self.chunk.emit0(op::POP, stmt.line);
+                        Some(branch)
+                    } else { None };
                     self.begin_scope();
-                    self.add_local(first_catch.exception_var.clone());
+                    self.add_local(catch.exception_var.clone());
                     let catch_slot = self.locals.len() - 1;
                     self.catch_exception_slots.push(catch_slot);
                     let catch_result = (|| -> Result<()> {
-                        for s in &first_catch.body {
+                        for s in &catch.body {
                             self.compile_statement(s, false)?;
                         }
                         Ok(())
@@ -929,13 +957,17 @@ impl Compiler {
                     // Keep the handler active while the catch body runs so a throw or
                     // return from catch still enters finally. Normal catch completion
                     // consumes it before falling through to the shared finalizer.
-                    self.chunk.emit0(op::POP_HANDLER, stmt.line as u32);
+                    self.chunk.emit0(op::POP_HANDLER, stmt.line);
+                    completed.push(self.chunk.code.len());
+                    self.chunk.emit1(op::JUMP, 0, stmt.line);
+                    if let Some(branch) = mismatch {
+                        self.chunk.code[branch] |= ((self.chunk.code.len() - branch - 1) as u32) << 8;
+                        self.chunk.emit0(op::POP, stmt.line);
+                    } else { catch_all = true; break; }
                 }
-
+                if !catches.is_empty() && !catch_all { self.chunk.emit0(op::RETHROW, stmt.line); }
                 let finally_target = self.chunk.code.len();
-                let jump_offset = finally_target - jump_to_finally_idx - 1;
-                self.chunk.code[jump_to_finally_idx] =
-                    op::JUMP as u32 | ((jump_offset as u32) << 8);
+                for jump in completed { self.chunk.code[jump] |= ((finally_target - jump - 1) as u32) << 8; }
 
                 self.chunk.code[push_handler_idx] =
                     op::PUSH_HANDLER as u32 | ((catch_target as u32) << 8);
@@ -954,6 +986,15 @@ impl Compiler {
                     self.chunk.emit0(op::END_FINALLY, stmt.line as u32);
                 }
 
+                Ok(())
+            }
+            StatementKind::FinalDecl { name, value } => {
+                if self.static_function_kind != Some(FunctionKind::StaticInitializer) {
+                    bail!("Final variable declarations outside static initializers are not yet supported");
+                }
+                self.compile_expression(value)?;
+                let key = self.chunk.add_constant(Constant::String(BoxString::new(name)));
+                self.chunk.emit1(op::DEFINE_FINAL_STATIC, key, stmt.line as u32);
                 Ok(())
             }
             StatementKind::VariableDecl { name, value } => {
@@ -1640,6 +1681,9 @@ impl Compiler {
     fn compile_expression(&mut self, expr: &Expression) -> Result<()> {
         self.current_line = expr.line;
         match &expr.kind {
+            ExpressionKind::DynamicNew { class_name, args } => {
+                self.compile_runtime_constructor(class_name, args, expr.line)
+            }
             ExpressionKind::New { class_path, args } => {
                 let lower_path = class_path.to_lowercase();
                 let mut resolved_path = self
@@ -1699,22 +1743,10 @@ impl Compiler {
                 if resolved_path.to_ascii_lowercase().starts_with("bx:") {
                     resolved_path = resolved_path[3..].to_owned();
                 }
-                if self.is_runtime_module_class(&resolved_path) {
-                    let callback = self.chunk.add_constant(Constant::String(BoxString::new("__mb_construct_box_class")));
-                    self.chunk.emit1(op::GET_GLOBAL, callback, expr.line);
-                    let class = self.chunk.add_constant(Constant::String(BoxString::new(&resolved_path)));
-                    self.chunk.emit1(op::CONSTANT, class, expr.line);
-                    let mut names = Vec::new();
-                    for arg in args {
-                        if matches!(arg.value.kind, ExpressionKind::Spread(_)) { bail!("Runtime class constructor spread arguments are not yet supported"); }
-                        self.compile_expression(&arg.value)?;
-                        names.push(arg.name.clone().unwrap_or_default());
-                    }
-                    self.chunk.emit1(op::ARRAY, args.len() as u32, expr.line);
-                    let names = self.chunk.add_constant(Constant::StringArray(names));
-                    self.chunk.emit1(op::CONSTANT, names, expr.line);
-                    self.chunk.emit1(op::CALL, 3, expr.line);
-                    return Ok(());
+                let bundled_self = self.runtime_module_classes && self.class_name.as_deref() == Some(resolved_path.as_str());
+                if bundled_self || self.is_runtime_module_class(&resolved_path) {
+                    let class_name = Expression::new(ExpressionKind::Literal(Literal::String(vec![StringPart::Text(resolved_path)])), expr.line);
+                    return self.compile_runtime_constructor(&class_name, args, expr.line);
                 }
 
                 let mut class_has_init = false;
@@ -1737,16 +1769,7 @@ impl Compiler {
                                 .as_deref()
                                 .is_some_and(|parent| self.class_chain_has_init(parent, 0));
                     }
-                    for (parent_name, parent_val) in std::mem::take(&mut self.pending_parent_defs) {
-                        let parent_idx = self.chunk.add_constant(parent_val);
-                        self.chunk.emit1(op::CONSTANT, parent_idx, expr.line);
-                        let name_idx = self
-                            .chunk
-                            .add_constant(Constant::String(BoxString::new(parent_name.as_str())));
-                        self.chunk.emit1(op::DEFINE_GLOBAL, name_idx, expr.line);
-                    }
-                    let class_idx = self.chunk.add_constant(class_val);
-                    self.chunk.emit1(op::CONSTANT, class_idx, expr.line);
+                    self.emit_loaded_class(class_val, expr.line);
                 } else {
                     if let Some(class) = self.find_class_constant(&resolved_path)? {
                         if class.modifiers.is_abstract {
@@ -2225,6 +2248,15 @@ impl Compiler {
                 self.compile_expression(expr)?;
                 Ok(())
             }
+            ExpressionKind::QualifiedClass(path) => {
+                if self.is_runtime_module_class(path) {
+                    self.compile_class_reference(path, expr.line);
+                } else {
+                    let class = self.load_class_from_path(path)?;
+                    self.emit_loaded_class(class, expr.line);
+                }
+                Ok(())
+            }
             ExpressionKind::Identifier(name) => {
                 let lower_name = name.to_lowercase();
                 let is_js_import = self
@@ -2232,8 +2264,12 @@ impl Compiler {
                     .get(&lower_name)
                     .map(|p| p.to_lowercase().starts_with("js:"))
                     == Some(true);
-                if lower_name == "this" {
-                    if self.current_function_is_static {
+                if lower_name == "static" {
+                    let owner = self.class_name.as_ref().context("Static scope requires a declaring class")?;
+                    let idx = self.chunk.add_constant(Constant::String(BoxString::new(&BxClass::constructor_name(owner))));
+                    self.chunk.emit1(op::GET_STATIC_SCOPE, idx, expr.line);
+                } else if lower_name == "this" {
+                    if self.static_function_kind.is_some() {
                         bail!("Cannot reference 'this' in a static function");
                     }
                     let idx = self
@@ -2610,8 +2646,8 @@ impl Compiler {
                         }
                         self.chunk.emit1(op::SET_MEMBER, name_idx as u32, expr.line);
                     }
-                    crate::ast::AssignmentTarget::Index { base: _, index: _ } => {
-                        bail!("Prefix ops on indexed targets not yet implemented");
+                    crate::ast::AssignmentTarget::Index { base, index } => {
+                        self.compile_index_update(base, index, operator, false, expr.line)?;
                     }
                 }
                 Ok(())
@@ -2661,11 +2697,28 @@ impl Compiler {
                         self.chunk.emit1(op::SET_MEMBER, name_idx as u32, expr.line);
                         self.chunk.emit0(op::POP, expr.line as u32);
                     }
-                    _ => bail!("Postfix ops only supported on identifiers and members currently"),
+                    ExpressionKind::ArrayAccess { base, index } => {
+                        self.compile_index_update(base, index, operator, true, expr.line)?;
+                    }
+                    _ => bail!("Invalid postfix target"),
                 }
                 Ok(())
             }
         }
+    }
+
+    /// Keep both lvalue operands for SET_INDEX; neither expression is re-evaluated.
+    fn compile_index_update(&mut self, base: &Expression, index: &Expression, operator: &str, postfix: bool, line: u32) -> Result<()> {
+        self.compile_expression(base)?;
+        self.compile_expression(index)?;
+        self.chunk.emit0(op::OVER, line);
+        self.chunk.emit0(op::OVER, line);
+        self.chunk.emit0(op::INDEX, line);
+        if postfix { self.chunk.emit1(op::DUP_TOP_UNDER, 2, line); }
+        self.chunk.emit0(if operator == "++" { op::INC } else { op::DEC }, line);
+        self.chunk.emit0(op::SET_INDEX, line);
+        if postfix { self.chunk.emit0(op::POP, line); }
+        Ok(())
     }
 
     fn compile_string_part(&mut self, part: &StringPart) -> Result<()> {
@@ -2679,6 +2732,14 @@ impl Compiler {
                 Ok(())
             }
             StringPart::Expression(expr) => self.compile_expression(expr),
+        }
+    }
+
+    fn method_signature(name: &str, result: Option<&str>, params: &[crate::ast::FunctionParam], flags: &AstFunctionModifiers, is_abstract: bool) -> matchbox_vm::types::MethodSignature {
+        matchbox_vm::types::MethodSignature {
+            name: name.to_ascii_lowercase(), result: result.unwrap_or("any").to_ascii_lowercase(),
+            parameters: params.iter().map(|p| (p.name.clone(), p.type_name.as_deref().unwrap_or("any").to_owned(), p.required)).collect(),
+            public_instance: !flags.is_static && !flags.access.as_deref().is_some_and(|a| a.eq_ignore_ascii_case("private")), is_abstract,
         }
     }
 
@@ -2703,7 +2764,7 @@ impl Compiler {
         sub_compiler.class_methods = self.class_methods.clone();
         sub_compiler.current_line = self.current_line;
         sub_compiler.class_has_init_map = self.class_has_init_map.clone();
-        sub_compiler.current_function_is_static = modifiers.is_static;
+        sub_compiler.static_function_kind = modifiers.is_static.then_some(kind);
 
         let mut min_arity = 0;
         for (i, param) in params.iter().enumerate() {
@@ -2761,18 +2822,22 @@ impl Compiler {
         // BoxLang: a `required` parameter without a default must be passed.
         if kind != FunctionKind::ComponentBody {
             for param in params.iter().filter(|p| p.required && p.default_value.is_none()) {
-                // Parameter and function names are identifiers: nothing to escape.
-                let message = format!(
-                    "Required argument [{}] is missing for function [{}]",
-                    param.name, name
-                );
-                let check = format!(
-                    "if ( isNull( {} ) ) {{ throw( type=\"Application\", message=\"{}\" ); }}",
-                    param.name, message
-                );
-                for stmt in matchbox_parser::parser::parse(&check, None)? {
-                    sub_compiler.compile_statement(&stmt, false)?;
-                }
+                // Build the guard directly: compiler-generated parameter names need not
+                // be source identifiers, and diagnostic text is a literal, not source.
+                let line = self.current_line;
+                let expr = |kind| Expression::new(kind, line);
+                let ident = |name: &str| expr(ExpressionKind::Identifier(name.into()));
+                let text = |s: &str| expr(ExpressionKind::Literal(Literal::String(vec![StringPart::Text(s.into())])));
+                let message = format!("Required argument [{}] is missing for function [{}]", param.name, name);
+                let failure = expr(ExpressionKind::Literal(Literal::Struct(vec![
+                    (text("type"), text("Application")), (text("message"), text(&message)),
+                ])));
+                sub_compiler.compile_statement(&Statement::new(StatementKind::If {
+                    condition: expr(ExpressionKind::FunctionCall { base: Box::new(ident("isNull")),
+                        args: vec![crate::ast::Argument { name: None, value: ident(&param.name) }] }),
+                    then_branch: vec![Statement::new(StatementKind::Throw(Some(failure)), line)],
+                    else_branch: None,
+                }, line), false)?;
             }
         }
 
@@ -2818,11 +2883,17 @@ impl Compiler {
                     .chunk
                     .emit0(op::RETURN, sub_compiler.current_line);
             }
+            FunctionBody::Abstract if modifiers.is_abstract => {} // Metadata only; never installed as a callable.
             FunctionBody::Abstract => {
                 bail!("Cannot compile an abstract function body");
             }
         }
 
+        // Keep declaration metadata on the callable itself, including closures/lambdas
+        // that do not belong to a class. Do not evaluate parameter defaults to inspect it.
+        if !matches!(kind, FunctionKind::ComponentBody | FunctionKind::StaticInitializer) {
+            sub_compiler.chunk.add_constant(Constant::MethodSignatures(vec![Self::method_signature(name, None, params, &modifiers, modifiers.is_abstract)]));
+        }
         Ok(BxCompiledFunction {
             name: name.to_string(),
             bif: None,
@@ -2897,25 +2968,78 @@ impl Compiler {
         None
     }
 
+    /// Leaves the parent of a missing param on the stack, creating only missing structs.
+    fn compile_param_parent(&mut self, root: Expression, parts: &[&str], line: u32) -> Result<()> {
+        self.compile_expression(&root)?;
+        for (index, part) in parts.iter().enumerate() {
+            let key = self.chunk.add_constant(Constant::String(BoxString::new(part)));
+            if index == 0 && matches!(part.to_ascii_lowercase().as_str(), "variables" | "this" | "static" | "arguments" | "local") { continue; }
+            if index > 0 {
+                self.chunk.emit0(op::DUP, line);
+                self.chunk.emit1(op::MEMBER, key, line);
+            }
+            let missing = self.chunk.code.len();
+            self.chunk.emit1(op::JUMP_IF_NULL, 0, line);
+            if index > 0 { self.chunk.emit0(op::SWAP, line); self.chunk.emit0(op::POP, line); }
+            let done = self.chunk.code.len();
+            self.chunk.emit1(op::JUMP, 0, line);
+            self.chunk.code[missing] |= ((self.chunk.code.len() - missing - 1) as u32) << 8;
+            self.chunk.emit0(op::POP, line);
+            if index == 0 {
+                self.compile_expression(&Expression::new(ExpressionKind::Assignment {
+                    target: crate::ast::AssignmentTarget::Identifier((*part).to_owned()),
+                    value: Box::new(Expression::new(ExpressionKind::Literal(Literal::Struct(vec![])), line)),
+                }, line))?;
+            } else {
+                self.chunk.emit1(op::STRUCT, 0, line);
+                self.chunk.emit1(op::SET_MEMBER, key, line);
+            }
+            self.chunk.code[done] |= ((self.chunk.code.len() - done - 1) as u32) << 8;
+        }
+        Ok(())
+    }
+
+    /// Evaluates the class name before its arguments, then constructs through the VM resolver.
+    fn compile_runtime_constructor(&mut self, class_name: &Expression, args: &[Argument], line: u32) -> Result<()> {
+        let callback = self.chunk.add_constant(Constant::String(BoxString::new("__mb_construct_box_class")));
+        self.chunk.emit1(op::GET_GLOBAL, callback, line);
+        self.compile_expression(class_name)?;
+        let mut names = Vec::with_capacity(args.len());
+        for arg in args {
+            if matches!(arg.value.kind, ExpressionKind::Spread(_)) { bail!("Runtime class constructor spread arguments are not yet supported"); }
+            self.compile_expression(&arg.value)?;
+            names.push(arg.name.clone().unwrap_or_default());
+        }
+        self.chunk.emit1(op::ARRAY, args.len() as u32, line);
+        let names = self.chunk.add_constant(Constant::StringArray(names));
+        self.chunk.emit1(op::CONSTANT, names, line);
+        self.chunk.emit1(op::CALL, 3, line);
+        Ok(())
+    }
+
     /// `super.method( args )`: run the parent's `method` with `this` bound to the current instance.
     fn compile_super_call(&mut self, method: &str, args: &[Argument], line: u32) -> Result<()> {
         let Some(class_name) = self.class_name.clone() else {
             bail!("'super' can only be used inside a class method");
         };
-        if args.iter().any(|arg| arg.name.is_some()) {
-            bail!("super.{method}() does not support named arguments");
-        }
-        self.compile_expression(&Expression::new(ExpressionKind::Identifier("__supercall".into()), line))?;
+        let named = args.iter().any(|arg| arg.name.is_some());
+        let helper = if named { "__supercallnamed" } else { "__supercall" };
+        self.compile_expression(&Expression::new(ExpressionKind::Identifier(helper.into()), line))?;
         let this_idx = self.chunk.add_constant(Constant::String(BoxString::new("this")));
         self.chunk.emit1(op::GET_PRIVATE, this_idx as u32, line);
         let class_idx = self.chunk.add_constant(Constant::String(BoxString::new(class_name.as_str())));
         self.chunk.emit1(op::CONSTANT, class_idx as u32, line);
         let method_idx = self.chunk.add_constant(Constant::String(BoxString::new(method)));
         self.chunk.emit1(op::CONSTANT, method_idx as u32, line);
+        if named {
+            let names = args.iter().map(|a| a.name.clone().unwrap_or_default()).collect();
+            let index = self.chunk.add_constant(Constant::StringArray(names));
+            self.chunk.emit1(op::CONSTANT, index, line);
+        }
         for arg in args {
             self.compile_expression(&arg.value)?;
         }
-        self.chunk.emit1(op::CALL, (args.len() + 3) as u32, line);
+        self.chunk.emit1(op::CALL, (args.len() + 3 + usize::from(named)) as u32, line);
         Ok(())
     }
 
@@ -3255,12 +3379,52 @@ impl Compiler {
         }
     }
 
+    /// Emits a source class value after installing its resolved parent classes.
+    fn emit_loaded_class(&mut self, class: Constant, line: u32) {
+        for (name, parent) in std::mem::take(&mut self.pending_parent_defs) {
+            let parent = self.chunk.add_constant(parent);
+            self.chunk.emit1(op::CONSTANT, parent, line);
+            let name = self.chunk.add_constant(Constant::String(BoxString::new(name.as_str())));
+            self.chunk.emit1(op::DEFINE_GLOBAL, name, line);
+        }
+        let class = self.chunk.add_constant(class);
+        self.chunk.emit1(op::CONSTANT, class, line);
+    }
+
     fn compile_class_reference(&mut self, path: &str, line: u32) {
         let callback = self.chunk.add_constant(Constant::String(BoxString::new("__mb_resolve_class")));
         self.chunk.emit1(op::GET_GLOBAL, callback, line);
         let name = self.chunk.add_constant(Constant::String(BoxString::new(path)));
         self.chunk.emit1(op::CONSTANT, name, line);
         self.chunk.emit1(op::CALL, 1, line);
+    }
+
+    /// Expand a BoxLang source package into ordinary import bindings. Only direct
+    /// children participate; explicit imports always take precedence. The resulting
+    /// paths are embedded in the compiled callers, not enumerated again at run time.
+    fn import_box_package(&mut self, package: &str) -> Result<()> {
+        let package = package.strip_prefix("bx:").unwrap_or(package);
+        if package.contains(':') { bail!("Wildcard imports require a BoxLang source package: {package}"); }
+        self.source_dependencies.store(true, Ordering::Relaxed);
+        let relative = PathBuf::from(package.replace('.', "/"));
+        let mut directories = vec![relative.clone()];
+        // Include mappings of the package itself as well as mappings of its ancestors.
+        directories.extend(crate::mappings::candidates(&self.mappings, &format!("{package}.*"))
+            .into_iter().filter_map(|candidate| candidate.parent().map(Path::to_owned)));
+        if let Some(root) = &self.root_dir { directories.push(root.join(relative)); }
+        let mut found = false;
+        for directory in directories.into_iter().filter(|path| path.is_dir()) {
+            found = true;
+            for entry in fs::read_dir(directory)? {
+                let path = entry?.path();
+                if !matches!(path.extension().and_then(|ext| ext.to_str()), Some("bx" | "bxs")) || !path.is_file() { continue; }
+                if let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) {
+                    self.imports.entry(name.to_lowercase()).or_insert_with(|| format!("{package}.{name}"));
+                }
+            }
+        }
+        if !found { bail!("Cannot locate BoxLang source package {package} for wildcard import"); }
+        Ok(())
     }
 
     fn is_runtime_module_class(&self, path: &str) -> bool {
@@ -3511,8 +3675,20 @@ impl Compiler {
         bail!("No class declaration found in {}", file_path.display());
     }
 
-    fn load_interface_from_path(&mut self, iface_path: &str) -> Result<Constant> {
+    fn resolve_interface(&mut self, name: &str) -> Result<BxInterface> {
+        let path = if let Some(path) = self.imports.get(&name.to_lowercase()) {
+            path.clone()
+        } else if let Some(interface) = self.chunk.constants.iter().find_map(|constant| match constant {
+            Constant::Interface(interface) if interface.name.eq_ignore_ascii_case(name) => Some(interface.clone()),
+            _ => None,
+        }) { return Ok(interface); } else { name.to_owned() };
+        self.load_interface_from_path(&path)
+    }
+
+    fn load_interface_from_path(&mut self, iface_path: &str) -> Result<BxInterface> {
         let file_path = self.resolve_source_file(iface_path)?;
+        let canonical = file_path.canonicalize()?;
+        if self.interface_stack.contains(&canonical) { bail!("Circular interface inheritance at {}", file_path.display()); }
 
         let source = fs::read_to_string(&file_path)?;
         let ast = crate::parser::parse(&source, file_path.to_str())
@@ -3528,6 +3704,8 @@ impl Compiler {
         sub_compiler.is_class = true;
         sub_compiler.current_line = self.current_line;
         sub_compiler.class_has_init_map = self.class_has_init_map.clone();
+        sub_compiler.interface_stack = self.interface_stack.clone();
+        sub_compiler.interface_stack.push(canonical);
 
         let mut chunk = sub_compiler.compile(&ast, &source)?;
         chunk.reconstruct_functions();
@@ -3539,8 +3717,8 @@ impl Compiler {
         self.propagate_js_imports(&sub_imports);
 
         for constant in chunk.constants() {
-            if let Constant::Interface(_) = constant {
-                return Ok(constant.clone());
+            if let Constant::Interface(interface) = constant {
+                return Ok(interface.clone());
             }
         }
 
@@ -3668,7 +3846,7 @@ impl DependencyTracker {
                 }
             }
             StatementKind::Labeled { body, .. } => self.track_statements(body),
-            StatementKind::Block(body) => self.track_statements(body),
+            StatementKind::Block(body) | StatementKind::StaticInitializer(body) => self.track_statements(body),
             StatementKind::Break(_) | StatementKind::Continue(_) | StatementKind::Rethrow => {}
             StatementKind::Assert { condition, message } => {
                 self.track_expression(condition);
@@ -3698,7 +3876,7 @@ impl DependencyTracker {
                     self.used_symbols.insert("_destructureobjectrest".to_string());
                 }
             }
-            StatementKind::VariableDecl { value, .. } => {
+            StatementKind::FinalDecl { value, .. } | StatementKind::VariableDecl { value, .. } => {
                 self.track_expression(value);
             }
             StatementKind::Expression(expr) => {
@@ -3727,6 +3905,10 @@ impl DependencyTracker {
 
     pub fn track_expression(&mut self, expr: &Expression) {
         match &expr.kind {
+            ExpressionKind::DynamicNew { class_name, args } => {
+                self.track_expression(class_name);
+                for arg in args { self.track_expression(&arg.value); }
+            }
             ExpressionKind::FunctionCall { base, args } => {
                 if let ExpressionKind::Identifier(name) = &base.kind {
                     self.used_symbols.insert(name.to_lowercase());

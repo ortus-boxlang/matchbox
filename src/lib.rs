@@ -262,7 +262,7 @@ fn collect_esp32_unsupported_features_in_stmt(
                 );
             }
         }
-        StatementKind::Labeled { body, .. } | StatementKind::Block(body) => {
+        StatementKind::Labeled { body, .. } | StatementKind::Block(body) | StatementKind::StaticInitializer(body) => {
             for statement in body {
                 collect_esp32_unsupported_features_in_stmt(
                     statement,
@@ -382,7 +382,7 @@ fn collect_esp32_unsupported_features_in_stmt(
                 }
             }
         }
-        StatementKind::VariableDecl { value, .. } | StatementKind::Expression(value) => {
+        StatementKind::FinalDecl { value, .. } | StatementKind::VariableDecl { value, .. } | StatementKind::Expression(value) => {
             collect_esp32_unsupported_features_in_expr(value, findings, embedded_web_enabled);
         }
         StatementKind::Assert { condition, message } => {
@@ -442,7 +442,10 @@ fn collect_esp32_unsupported_features_in_expr(
     use ast::{ExpressionKind, Literal, StringPart};
 
     match &expr.kind {
-        ExpressionKind::New { args, .. } => {
+        ExpressionKind::New { args, .. } | ExpressionKind::DynamicNew { args, .. } => {
+            if let ExpressionKind::DynamicNew { class_name, .. } = &expr.kind {
+                collect_esp32_unsupported_features_in_expr(class_name, findings, embedded_web_enabled);
+            }
             for arg in args {
                 collect_esp32_unsupported_features_in_expr(
                     &arg.value,
@@ -501,7 +504,7 @@ fn collect_esp32_unsupported_features_in_expr(
         ExpressionKind::Prefix { target, .. } => {
             collect_esp32_unsupported_features_in_target(target, findings, embedded_web_enabled);
         }
-        ExpressionKind::Identifier(_) => {}
+        ExpressionKind::Identifier(_) | ExpressionKind::QualifiedClass(_) => {}
         ExpressionKind::Spread(expr) => {
             collect_esp32_unsupported_features_in_expr(expr, findings, embedded_web_enabled);
         }
@@ -933,10 +936,7 @@ pub fn run() -> Result<()> {
             };
 
             let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                matchbox_server::run_server(server_args).await;
-            });
-            return Ok(());
+            return rt.block_on(matchbox_server::run_server(server_args));
         }
         #[cfg(not(feature = "server"))]
         {
@@ -1921,13 +1921,20 @@ fn process_file_with_args(
         if orig_target == Some("esp32") {
             validate_esp32_target(&ast, esp32_web)?;
         }
-        // Mappings (boxlang.json, Application.bx) apply to every class path resolved while compiling.
-        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
-        matchbox_compiler::mappings::set_mappings(app_descriptor::collect(source_path)?);
         // Discover modules from matchbox.toml (in CWD) and any --module flags.
         let cwd = std::env::current_dir()
             .unwrap_or_else(|_| source_path.parent().unwrap_or(Path::new(".")).to_path_buf());
         let modules_info = modules::discover_modules(&cwd, extra_module_paths)?;
+        #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+        {
+            // Module invocation paths exist without executing ModuleConfig. Apply explicit
+            // mappings last so an application's configured precedence is unchanged.
+            let mut mappings: Vec<_> = modules_info.iter().map(|module| matchbox_compiler::mappings::Mapping::new(
+                &format!("/bxModules/{}", module.name), &module.path, false,
+            )).collect();
+            mappings.extend(app_descriptor::collect(source_path)?);
+            matchbox_compiler::mappings::set_mappings(mappings);
+        }
         let embedded_manifest = if orig_target == Some("esp32") {
             let project_root = source_path.parent().unwrap_or(cwd.as_path());
             embedded::discover_embedded_app(project_root)?

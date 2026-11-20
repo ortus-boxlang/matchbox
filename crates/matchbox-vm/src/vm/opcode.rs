@@ -104,6 +104,13 @@ pub mod op {
     pub const FUNCTION_ENTER: u8 = 92;
     pub const DUP_BELOW: u8 = 93; // op0=n: copy stack[len-1-n] to just below the top n values
     pub const CTOR_FINISH: u8 = 94; // pops init() result; keeps the instance below it unless the result is non-null
+    /// Loads the static scope of the lexical class named by the constant operand.
+    pub const GET_STATIC_SCOPE: u8 = 95;
+    /// Pops the initializer value and makes the named static binding final.
+    pub const DEFINE_FINAL_STATIC: u8 = 96;
+    /// Copies the top value beneath it and the specified number of operands below it.
+    pub const DUP_TOP_UNDER: u8 = 97;
+    pub const RETHROW: u8 = 98;
 }
 
 pub fn opcode_name(op: u8) -> &'static str {
@@ -203,6 +210,10 @@ pub fn opcode_name(op: u8) -> &'static str {
         op::FUNCTION_ENTER => "FUNCTION_ENTER",
         op::DUP_BELOW => "DUP_BELOW",
         op::CTOR_FINISH => "CTOR_FINISH",
+        op::GET_STATIC_SCOPE => "GET_STATIC_SCOPE",
+        op::DEFINE_FINAL_STATIC => "DEFINE_FINAL_STATIC",
+        op::DUP_TOP_UNDER => "DUP_TOP_UNDER",
+        op::RETHROW => "RETHROW",
         _ => "UNKNOWN",
     }
 }

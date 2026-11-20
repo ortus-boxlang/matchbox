@@ -1,5 +1,6 @@
 interface I {
     function f();
 }
-class C implements="I" {
+interface Child extends="I" {}
+class C implements="Child" {
 }
