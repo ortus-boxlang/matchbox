@@ -915,6 +915,39 @@ println("unprefixed mapping OK");
 }
 
 #[test]
+fn module_qualified_class_names_resolve_in_new_and_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("module");
+    fs::create_dir_all(module.join("models")).unwrap();
+    // The module's name is "module"; its mapping, and so its invocation path, is "plain".
+    fs::write(module.join("ModuleConfig.bx"), r#"class { this.mapping = {name:"plain", usePrefix:false}; }"#).unwrap();
+    fs::write(module.join("models/Counter.bx"), "class { function next() { return 1; } }").unwrap();
+    fs::write(module.join("Root.bx"), "class { function where() { return \"root\"; } }").unwrap();
+    fs::write(dir.path().join("app.bxs"), r#"
+import models.Counter@module;
+import models.Counter@MODULE as Aliased;
+import Root@module;
+assert new Counter().next() == 1;
+assert new Aliased().next() == 1;
+assert new Root().where() == "root";
+assert new models.Counter@module().next() == 1;
+assert new models.Counter@MODULE().next() == 1;
+failures = 0;
+try { new models.Counter@missing(); } catch (any e) { failures++; assert e.message contains "Module not loaded: missing"; }
+try { new models.Nope@module(); } catch (any e) { failures++; }
+assert failures == 2;
+println("module class names OK");
+"#).unwrap();
+    let output = cli(dir.path(), &["--module", "module", "app.bxs"]); success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "module class names OK\n");
+    success(&cli(dir.path(), &["--target", "native", "--module", "module", "--output", "application", "app.bxs"]));
+    fs::remove_dir_all(module).unwrap();
+    let output = Command::new(dir.path().join("application")).current_dir(dir.path()).output().unwrap();
+    success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "module class names OK\n");
+}
+
+#[test]
 fn runtime_mappings_resolve_embedded_classes_in_configure_imports_and_constructors() {
     let dir = tempfile::tempdir().unwrap();
     let module = dir.path().join("module");

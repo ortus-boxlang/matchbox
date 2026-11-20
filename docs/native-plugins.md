@@ -139,6 +139,20 @@ Descriptor `configure()` can declare `interceptors = [{class: "interceptors.Prob
 
 Activation is marked only after `onLoad()` succeeds. Reverse-order cleanup includes partially configured modules when startup fails, continues if an `onUnload()` hook fails, and preserves the original startup/application error.
 
+## Module-qualified class names
+
+A class that lives in a module can be named `path.to.Class@moduleName`, as in BoxLang, in `new` and `import`:
+
+```boxlang
+import models.Counter@mymodule;            // used as Counter
+import models.Counter@mymodule as Total;
+counter = new Counter();
+other   = new models.Counter@mymodule();
+root    = new Root@mymodule();             // Root.bx in the module's root folder
+```
+
+The name is looked up in the module under its invocation path (`bxModules.<name>`, the `invocationPath` of its module record), so it finds the same class as `new bxModules.<name>.path.to.Class()`. Module names are case-insensitive. A module that is not loaded fails with `Module not loaded: <name>`. Only classes packaged with the module are found, as for `bxModules.<name>` names, and this works from source, from `.bxb` files and in native binaries. A script that uses no module has no module to look in, so there `Class@name` is looked up as an ordinary path and normally fails to compile as an unknown class.
+
 ## Module components
 
 Top-level `components/*.bx` classes register their `invoke()` method. `@BoxComponent` uses the same filename/string/array alias rules as `@BoxBIF`. Invocation supplies named `context`, `attributes`, `body`, and `executionState` arguments, so declaration order does not matter. The live record exposes registered aliases under `moduleRecord.components`.
