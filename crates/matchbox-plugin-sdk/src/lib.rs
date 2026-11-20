@@ -16,6 +16,8 @@ pub const BYTES_V1: &str = "matchbox.bytes.v1";
 pub const TYPES_V1: &str = "matchbox.types.v1";
 /// Name of the array and struct capability. See [`CollectionsV1`] and [`require_collections`].
 pub const COLLECTIONS_V1: &str = "matchbox.collections.v1";
+/// Name of the path capability. See [`PathsV1`] and [`require_paths`].
+pub const PATHS_V1: &str = "matchbox.paths.v1";
 /// Name of the whole-number capability. See [`IntegersV1`] and [`require_integers`].
 pub const INTEGERS_V1: &str = "matchbox.integers.v1";
 
@@ -161,6 +163,15 @@ pub struct IntegersV1 {
     pub int_new: unsafe extern "C" fn(Context, i64, *mut Value) -> i32,
     /// Reads a whole number: an integer, or a decimal with no fractional part within the `i64` range. Anything else fails.
     pub int_get: unsafe extern "C" fn(Context, Value, *mut i64) -> i32,
+}
+
+/// Additive capability: paths, resolved as BoxLang's `expandPath` does for the code that called the plugin.
+#[repr(C)]
+pub struct PathsV1 {
+    /// Writes a new string: `path` made absolute. A relative path starts in the folder of the calling file, `/` is the
+    /// application root, mappings (`boxlang.json`, `Application.bx`, modules) resolve into their folders, and a trailing
+    /// separator is kept. The file does not have to exist.
+    pub expand_path: unsafe extern "C" fn(Context, Text, *mut Value) -> i32,
 }
 
 /// The host interface passed to `matchbox_plugin_init_v1`.
@@ -334,6 +345,12 @@ impl<'a> Call<'a> {
     /// Creates a binary value from a copy of `bytes`. Requires [`BYTES_V1`].
     pub fn bytes_new(&self, api: &BytesV1, bytes: &[u8]) -> Result<Value, String> {
         self.value(|out| unsafe { (api.new)(self.context, Bytes::new(bytes), out) })
+    }
+    /// `path` made absolute as BoxLang's `expandPath` does: relative to the calling file, through mappings, with `/` as the
+    /// application root. Requires [`PATHS_V1`].
+    pub fn expand_path(&self, api: &PathsV1, path: &str) -> Result<String, String> {
+        let value = self.value(|out| unsafe { (api.expand_path)(self.context, Text::new(path), out) })?;
+        self.string(value)
     }
     /// Creates a whole number, shown without a decimal point (`5`, not `5.0`). Requires [`INTEGERS_V1`].
     pub fn int_new(&self, api: &IntegersV1, value: i64) -> Result<Value, String> {
@@ -555,6 +572,15 @@ pub unsafe fn require_collections(
     unsafe { require_capability(host, context, COLLECTIONS_V1).map(|api| &*api.cast()) }
 }
 
+/// Requests [`PATHS_V1`], for [`Call::expand_path`].
+/// The returned table is valid for the host process lifetime.
+///
+/// # Safety
+/// Must be called with the pointers supplied to matchbox_plugin_init_v1.
+pub unsafe fn require_paths(host: *const HostV1, context: Context) -> Result<&'static PathsV1, i32> {
+    unsafe { require_capability(host, context, PATHS_V1).map(|api| &*api.cast()) }
+}
+
 /// Requests [`INTEGERS_V1`], for [`Call::int_new`] and [`Call::integer`].
 /// The returned table is valid for the host process lifetime.
 ///
@@ -667,6 +693,7 @@ mod tests {
         assert_eq!(std::mem::offset_of!(CollectionsV1, struct_keys), 5 * pointer);
         assert_eq!(std::mem::size_of::<IntegersV1>(), 2 * pointer);
         assert_eq!(std::mem::offset_of!(IntegersV1, int_get), pointer);
+        assert_eq!(std::mem::size_of::<PathsV1>(), pointer);
         assert_eq!(std::mem::size_of::<Kind>(), 4);
     }
 }

@@ -11,6 +11,8 @@ static ROOT_API: OnceLock<&'static RootsV1> = OnceLock::new();
 static TYPES_API: OnceLock<&'static TypesV1> = OnceLock::new();
 static COLLECTIONS_API: OnceLock<&'static CollectionsV1> = OnceLock::new();
 static INTEGERS_API: OnceLock<&'static IntegersV1> = OnceLock::new();
+static PATHS_API: OnceLock<&'static PathsV1> = OnceLock::new();
+fn paths() -> Result<&'static PathsV1, String> { PATHS_API.get().copied().ok_or_else(|| "Missing paths capability".into()) }
 fn integers() -> Result<&'static IntegersV1, String> { INTEGERS_API.get().copied().ok_or_else(|| "Missing integers capability".into()) }
 fn types() -> Result<&'static TypesV1, String> { TYPES_API.get().copied().ok_or_else(|| "Missing types capability".into()) }
 fn collections() -> Result<&'static CollectionsV1, String> {
@@ -371,6 +373,16 @@ unsafe extern "C" fn grid(ctx: Context, api: *const ValuesV1, _: *mut c_void, ar
         })
     }
 }
+// fixtureExpandPath(path): the path resolved as expandPath does for the calling script
+unsafe extern "C" fn expand(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
+    unsafe {
+        guarded(ctx, api, out, || {
+            let call = Call::new(ctx, api, args, len);
+            let path = call.string(call.argument(0)?)?;
+            call.string_new(&call.expand_path(paths()?, &path)?)
+        })
+    }
+}
 // fixtureWhole(value): the whole number read with int_get, times two, made with int_new
 unsafe extern "C" fn whole(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
     unsafe {
@@ -401,6 +413,10 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
     }
     match unsafe { require_integers(host, ctx) } {
         Ok(integers) => { let _ = INTEGERS_API.set(integers); }
+        Err(status) => return status,
+    }
+    match unsafe { require_paths(host, ctx) } {
+        Ok(paths) => { let _ = PATHS_API.set(paths); }
         Err(status) => return status,
     }
     let host = unsafe { &*host };
@@ -448,6 +464,7 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
         (r#"{"name":"fixtureKinds","arguments":[{"name":"values","required":true}]}"#, kinds as Invoke),
         (r#"{"name":"fixtureOptions","arguments":[{"name":"options","required":true}]}"#, options as Invoke),
         (r#"{"name":"fixtureGrid","arguments":[{"name":"width","required":true},{"name":"height","required":true}]}"#, grid as Invoke),
+        (r#"{"name":"fixtureExpandPath","arguments":[{"name":"path","required":true}]}"#, expand as Invoke),
         (r#"{"name":"fixtureWhole","arguments":[{"name":"value","required":true}]}"#, whole as Invoke),
         (r#"{"name":"fixturePanic"}"#, panic_callback as Invoke),
         (r#"{"name":"fixtureBadHandle"}"#, bad_handle as Invoke),

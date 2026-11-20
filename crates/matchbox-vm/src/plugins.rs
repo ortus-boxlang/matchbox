@@ -79,6 +79,7 @@ unsafe extern "C" fn capability(name: Text) -> *const c_void {
         Some(TYPES_V1) => (&TYPES as *const TypesV1).cast(),
         Some(COLLECTIONS_V1) => (&COLLECTIONS as *const CollectionsV1).cast(),
         Some(INTEGERS_V1) => (&INTEGERS as *const IntegersV1).cast(),
+        Some(PATHS_V1) => (&PATHS as *const PathsV1).cast(),
         _ => std::ptr::null(),
     }
 }
@@ -736,6 +737,20 @@ unsafe extern "C" fn int_get(ctx: Context, value: Value, out: *mut i64) -> i32 {
     })();
     operation(ctx, result)
 }
+/// `PathsV1::expand_path`: BoxLang's `expandPath` for the code that called the plugin.
+unsafe extern "C" fn expand_path(ctx: Context, path: Text, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = unsafe { text(path) }.and_then(|path| crate::paths::expand_for_vm(&mut *ctx.vm, path));
+    match result {
+        Ok(expanded) => {
+            let id = ctx.vm.string_new(expanded);
+            output(ctx, BxValue::new_ptr(id), out)
+        }
+        Err(error) => operation(ctx, Err(error)),
+    }
+}
+/// The `matchbox.paths.v1` table handed to plugins.
+static PATHS: PathsV1 = PathsV1 { expand_path };
 /// The `matchbox.integers.v1` table handed to plugins.
 static INTEGERS: IntegersV1 = IntegersV1 { int_new, int_get };
 /// The `matchbox.types.v1` table handed to plugins.

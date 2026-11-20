@@ -210,6 +210,10 @@ Plugins are trusted arbitrary native code, not sandboxed. SHA-256 pins content; 
 
 The optional [`bx-matchbox-std`](../modules/bx-matchbox-std/README.md) package starts incremental standard-library migration with raw standard streams, TCP, timeouts, buffered exact/delimited reads, and strict UTF-8 decoding. It is explicitly selectable and embeddable, not automatically baked into every runtime. Parser inspection remains a core API; see [AST inspection](ast-inspection.md).
 
+## Paths
+
+`matchbox.paths.v1` is an additive capability with one operation, `expand_path`. It resolves a path exactly as `expandPath` does for the code that called the plugin: a relative path starts in the folder of the calling file, `/` is the application root, mappings from `boxlang.json`, `Application.bx` and modules resolve into their folders, and an `onMissingMapping` interceptor may answer. The file does not have to exist, and a trailing separator is kept. Plugin file functions should call it for every path they accept, so `tomlDeserializeFile( "/config/app.toml" )` finds the same file on every backend. SDK authors negotiate with `require_paths()` and call `Call::expand_path( api, "..." )`. Hosts lacking the capability fail initialization explicitly.
+
 ## Retained VM values
 
 `matchbox.roots.v1` is an additive capability; `HostV1`, `ValuesV1`, and the ABI major are unchanged, so existing prebuilt plugins need no rebuild. Plugins requiring roots request `require_roots(host, context)` during initialization; older hosts report the missing capability explicitly.

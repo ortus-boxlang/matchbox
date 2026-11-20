@@ -374,6 +374,12 @@ wholeFailures = 0;
 try { fixtureWhole(2.5); } catch (any e) { wholeFailures++; }
 try { fixtureWhole("x"); } catch (any e) { wholeFailures++; }
 assert wholeFailures == 2;
+// paths: the plugin resolves a path like expandPath does for the calling script
+here = getDirectoryFromPath( getCurrentTemplatePath() );
+assert fixtureExpandPath( "data.toml" ) == expandPath( "data.toml" );
+assert fixtureExpandPath( "data.toml" ) == here & "data.toml";
+assert fixtureExpandPath( "/data.toml" ) == expandPath( "/data.toml" );
+assert fixtureExpandPath( "sub/" ).endsWith( "/" );
 println("collections ok");
 "#,
     )
