@@ -83,6 +83,7 @@ unsafe extern "C" fn capability(name: Text) -> *const c_void {
         Some(INTEGERS_V1) => (&INTEGERS as *const IntegersV1).cast(),
         Some(PATHS_V1) => (&PATHS as *const PathsV1).cast(),
         Some(SETTINGS_V1) => (&SETTINGS as *const SettingsV1).cast(),
+        Some(DATETIME_V1) => (&DATETIME as *const DatetimeV1).cast(),
         _ => std::ptr::null(),
     }
 }
@@ -765,6 +766,55 @@ unsafe extern "C" fn expand_path(ctx: Context, path: Text, out: *mut Value) -> i
         Err(error) => operation(ctx, Err(error)),
     }
 }
+/// `DatetimeV1::datetime_is`: whether the value is a datetime.
+unsafe extern "C" fn datetime_is(ctx: Context, value: Value, out: *mut bool) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        if out.is_null() { return Err("Null output pointer".into()); }
+        let value = ctx.value(value)?;
+        unsafe { *out = ctx.vm.datetime_instant(value).is_some() };
+        Ok(())
+    })();
+    operation(ctx, result)
+}
+/// `DatetimeV1::datetime_new`: a datetime from Unix seconds, nanoseconds and an optional zone name.
+unsafe extern "C" fn datetime_new(ctx: Context, seconds: i64, nanos: u32, zone: Text, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        let instant = chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, nanos)
+            .ok_or_else(|| format!("Invalid datetime: {seconds} seconds and {nanos} nanoseconds"))?;
+        let zone = unsafe { text(zone)? };
+        Ok(if zone.is_empty() { ctx.vm.datetime_new(instant) } else { ctx.vm.datetime_new_with_timezone(instant, zone) })
+    })();
+    match result {
+        Ok(id) => output(ctx, BxValue::new_ptr(id), out),
+        Err(error) => operation(ctx, Err(error)),
+    }
+}
+/// `DatetimeV1::datetime_get`: Unix seconds, nanoseconds and the zone name (empty when none).
+unsafe extern "C" fn datetime_get(ctx: Context, value: Value, seconds: *mut i64, nanos: *mut u32, zone: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        if seconds.is_null() || nanos.is_null() { return Err("Null output pointer".into()); }
+        let value = ctx.value(value)?;
+        let instant = ctx.vm.datetime_instant(value).ok_or("Expected a datetime")?;
+        let name = ctx.vm.datetime_timezone(value).unwrap_or_default();
+        unsafe {
+            *seconds = instant.timestamp();
+            *nanos = instant.timestamp_subsec_nanos();
+        }
+        Ok(name)
+    })();
+    match result {
+        Ok(name) => {
+            let id = ctx.vm.string_new(name);
+            output(ctx, BxValue::new_ptr(id), zone)
+        }
+        Err(error) => operation(ctx, Err(error)),
+    }
+}
+/// The `matchbox.datetime.v1` table handed to plugins.
+static DATETIME: DatetimeV1 = DatetimeV1 { datetime_is, datetime_new, datetime_get };
 /// `SettingsV1::module_settings`: the settings struct of the module that supplied the plugin. It is the module's live
 /// settings, with `boxlang.json` overrides merged in, so a change a script makes to it is seen by the next call.
 unsafe extern "C" fn module_settings(ctx: Context, out: *mut Value) -> i32 {

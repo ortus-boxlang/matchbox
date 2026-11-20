@@ -253,6 +253,10 @@ pub trait BxVM {
     fn datetime_timezone(&self, _value: BxValue) -> Option<String> {
         None
     }
+    /// The instant a datetime value stands for, or `None` when `value` is not a datetime.
+    fn datetime_instant(&self, _value: BxValue) -> Option<chrono::DateTime<chrono::Utc>> {
+        None
+    }
     fn string_new(&mut self, s: String) -> usize;
     fn to_string(&self, val: BxValue) -> String;
     fn to_box_string(&self, val: BxValue) -> BoxString;

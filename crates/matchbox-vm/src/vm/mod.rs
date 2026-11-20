@@ -1756,6 +1756,10 @@ impl BxVM for VM {
         value.as_gc_id().and_then(|id| self.datetime_timezones.get(&id).cloned())
     }
 
+    fn datetime_instant(&self, value: BxValue) -> Option<DateTime<Utc>> {
+        self.datetime_value(value)
+    }
+
     fn string_new(&mut self, s: String) -> usize {
         self.heap.alloc(GcObject::String(BoxString::new(&s)))
     }

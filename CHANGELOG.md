@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Plugin SDK: dates and times**: the additive `matchbox.datetime.v1` capability. `Call::is_datetime()`, `Call::datetime_new( seconds, nanos, zone )` and `Call::datetime_get()` let a native plugin read and create datetime values (a UTC instant with an optional zone name), so a parser such as TOML or YAML returns real dates instead of strings. Documented in `docs/native-plugins.md`. The VM gains `BxVM::datetime_instant`.
 - **Plugin SDK: module settings**: the additive `matchbox.settings.v1` capability. `Call::module_settings()` returns the live settings struct of the module that supplied the plugin, with `boxlang.json` overrides merged, so a native backend honors the same configuration as its JVM module. `plugins::load_module` loads a plugin on behalf of a module (`plugins::load` has none). Documented in `docs/native-plugins.md`.
 - **Plugin SDK: paths**: the additive `matchbox.paths.v1` capability. `Call::expand_path()` resolves a path as `expandPath` does for the calling script (relative to its folder, through mappings, `/` as the application root), so a plugin's file functions find the same files as BoxLang code. Documented in `docs/native-plugins.md`.
 - **TUI**: `tui.set_mouse_motion( true )` makes `poll_event` report mouse motion as `{ type: "move", x, y }` (with or without a button held). Off by default, so existing loops see no change. Documented in `docs/tui.md`.

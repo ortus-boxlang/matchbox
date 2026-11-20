@@ -388,6 +388,20 @@ assert fixtureExpandPath( "sub/" ).endsWith( "/" );
 assert fixtureSetting( "width" ) == 32;
 assert fixtureSetting( "nested" ).first == 1 && fixtureSetting( "nested" ).second == 9;
 assert isNull( fixtureSetting( "missing" ) );
+// datetimes: an instant plus an optional zone name round-trips through the plugin
+moment = fixtureDateNew( 1700000000, 500000000, "UTC" );
+assert isDate( moment ) && fixtureIsDate( moment );
+assert year( moment ) == 2023;
+info = fixtureDateInfo( moment );
+assert info.seconds == 1700000000 && info.nanos == 500000000 && info.zone == "UTC";
+assert fixtureDateInfo( fixtureDateNew( 0 ) ).zone == "" && fixtureDateInfo( fixtureDateNew( -86400 ) ).seconds == -86400;
+assert fixtureIsDate( now() ) && fixtureDateInfo( now() ).seconds > 1700000000;
+assert !fixtureIsDate( "2023-11-14" ) && !fixtureIsDate( 5 ) && !fixtureIsDate( [] );
+dateFailures = 0;
+try { fixtureDateInfo( "2023-11-14" ); } catch (any e) { dateFailures++; }
+try { fixtureDateNew( 0, 1000000000 ); } catch (any e) { dateFailures++; }
+try { fixtureDateNew( 9223372036854775807 ); } catch (any e) { dateFailures++; }
+assert dateFailures == 3;
 println("collections ok");
 "#,
     )
