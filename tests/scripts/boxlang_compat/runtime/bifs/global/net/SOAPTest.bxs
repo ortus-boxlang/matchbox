@@ -1,7 +1,7 @@
 // boxlang_compat: ortus/boxlang/runtime/bifs/global/net/SOAPTest.java
 
 // The JVM fixture is the local calculator WSDL used by SOAPTest.setUpAll().
-calculatorWsdlUrl = "file://" & expandPath( "tests/fixtures/calculator.wsdl" );
+calculatorWsdlUrl = "file://" & expandPath( "/tests/fixtures/calculator.wsdl" );
 
 // testSoapClientCreation
 result = soap( calculatorWsdlUrl );
@@ -51,7 +51,7 @@ assert hasStats : "testClientStatistics statistics";
 // testMethodInvocation
 
 // testInvalidWSDL
-invalidWsdlUrl = "file://" & expandPath( "tests/fixtures/does-not-exist.wsdl" );
+invalidWsdlUrl = "file://" & expandPath( "/tests/fixtures/does-not-exist.wsdl" );
 try {
     ws = soap( invalidWsdlUrl );
     hasError = false;
