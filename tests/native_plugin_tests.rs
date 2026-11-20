@@ -339,6 +339,7 @@ retainState = null;
     assert!(vm.heap.get_opt(replacement.as_gc_id().unwrap()).is_none());
 }
 
+/// Verifies plugin value conversions and host services through direct and bundled execution.
 #[test]
 fn plugins_read_kinds_booleans_arrays_and_structs_and_return_nested_arrays() {
     let dir = tempfile::tempdir().unwrap();
@@ -383,7 +384,8 @@ here = getDirectoryFromPath( getCurrentTemplatePath() );
 assert fixtureExpandPath( "data.toml" ) == expandPath( "data.toml" );
 assert fixtureExpandPath( "data.toml" ) == here & "data.toml";
 assert fixtureExpandPath( "/data.toml" ) == expandPath( "/data.toml" );
-assert fixtureExpandPath( "sub/" ).endsWith( "/" );
+trailingPath = fixtureExpandPath( "sub/" );
+assert trailingPath.endsWith( "/" ) || trailingPath.endsWith( chr(92) );
 // settings: the plugin reads its own module's settings, defaults and boxlang.json overrides merged
 assert fixtureSetting( "width" ) == 32;
 assert fixtureSetting( "nested" ).first == 1 && fixtureSetting( "nested" ).second == 9;
