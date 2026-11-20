@@ -142,5 +142,5 @@ fileDelete(propPath);
 // ============================================================
 // contractPath
 // ============================================================
-result = contractPath(expandPath("."));
+result = contractPath(expandPath("/"));
 if (result != ".") { throw "contractPath round-trip failed: got '" & result & "'"; }

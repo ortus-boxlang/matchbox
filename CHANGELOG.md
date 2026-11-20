@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Native programs can use the terminal UI**: the native runner stub includes the TUI classes when MatchBox is built with `bif-tui`. Native Fusion builds are unchanged.
 
 ### Changed
+- **`expandPath` resolves like BoxLang.** A relative path starts in the folder of the file that calls it (it started in the working directory), `/` is the root mapping (the working directory unless a `/` mapping says otherwise), and the longest matching mapping from `boxlang.json` or `Application.bx` (`/mytest` matches `/mytest/x` but not `/mytestfoo`, case-insensitively) or a module (`/bxModules/<name>/`) resolves into its folder. An absolute path that exists, or sits under an existing top-level folder, is kept; an `onMissingMapping` interceptor may answer; anything else comes from the root. Symlinks are no longer resolved. The rules live in `matchbox_vm::paths` and the VM carries its mappings (`VM::set_path_mappings`, `BxVM::path_mappings`). A module bundle or native binary now stores the application's mappings, so rebuild them. Scripts that relied on `expandPath( "." )` being the working directory should use `expandPath( "/" )`.
 - `--bx-config` and `--bx-home` are now implemented. A missing `--bx-config` file is an error.
 
 ### Added

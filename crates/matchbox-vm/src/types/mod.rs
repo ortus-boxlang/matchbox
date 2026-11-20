@@ -113,6 +113,8 @@ impl BxValue {
 
 pub trait BxVM {
     fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>>;
+    /// The mappings `expandPath` resolves through: application, module and configuration mappings.
+    fn path_mappings(&self) -> Vec<crate::paths::PathMapping> { Vec::new() }
     fn current_receiver(&self) -> Option<BxValue>;
     fn execution_context(&mut self) -> Result<BxValue, String> { Err("Execution context unavailable".into()) }
     fn has_method_by_value(&self, _receiver: BxValue, _name: &str) -> bool { false }
