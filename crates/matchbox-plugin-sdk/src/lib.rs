@@ -16,6 +16,8 @@ pub const BYTES_V1: &str = "matchbox.bytes.v1";
 pub const TYPES_V1: &str = "matchbox.types.v1";
 /// Name of the array and struct capability. See [`CollectionsV1`] and [`require_collections`].
 pub const COLLECTIONS_V1: &str = "matchbox.collections.v1";
+/// Name of the typed error capability. See [`ErrorsV1`] and [`require_errors`].
+pub const ERRORS_V1: &str = "matchbox.errors.v1";
 /// Name of the struct options capability. See [`StructsV1`] and [`require_structs`].
 pub const STRUCTS_V1: &str = "matchbox.structs.v1";
 /// Name of the date and time capability. See [`DatetimeV1`] and [`require_datetime`].
@@ -169,6 +171,17 @@ pub struct IntegersV1 {
     pub int_new: unsafe extern "C" fn(Context, i64, *mut Value) -> i32,
     /// Reads a whole number: an integer, or a decimal with no fractional part within the `i64` range. Anything else fails.
     pub int_get: unsafe extern "C" fn(Context, Value, *mut i64) -> i32,
+}
+
+/// Additive capability: typed errors. A plain error from a plugin function surfaces in BoxLang as a generic
+/// `ExpressionException`; a typed one carries the exception type and detail the plugin chooses, so scripts can catch it by type
+/// as they can the JVM module's exception.
+#[repr(C)]
+pub struct ErrorsV1 {
+    /// Records the error the current function is about to fail with: an exception `type` (such as `TomlParseException`), the
+    /// `message` and a `detail`. Call it once, before returning the failure; the first error of a call wins. The function must
+    /// still fail (return a nonzero status, or `Err` through `guarded`) with the same message.
+    pub error_typed: unsafe extern "C" fn(Context, Text, Text, Text),
 }
 
 /// Additive capability: struct options. A struct is unordered and case-insensitive unless made otherwise; a parser that must
@@ -385,6 +398,13 @@ impl<'a> Call<'a> {
     /// Creates a binary value from a copy of `bytes`. Requires [`BYTES_V1`].
     pub fn bytes_new(&self, api: &BytesV1, bytes: &[u8]) -> Result<Value, String> {
         self.value(|out| unsafe { (api.new)(self.context, Bytes::new(bytes), out) })
+    }
+    /// Records a typed error for the current call and returns `message`, so a function written with [`guarded`] fails with
+    /// `return Err( call.error_typed( api, "TomlParseException", "Invalid key", "line 3, column 5" ) )`. Scripts see an exception
+    /// with that `type`, `message` and `detail`. Requires [`ERRORS_V1`].
+    pub fn error_typed(&self, api: &ErrorsV1, exception_type: &str, message: &str, detail: &str) -> String {
+        unsafe { (api.error_typed)(self.context, Text::new(exception_type), Text::new(message), Text::new(detail)) };
+        message.to_string()
     }
     /// Creates an empty struct that keeps insertion order (`ordered`) and/or treats keys that differ only in case as different
     /// keys (`case_sensitive`). Requires [`STRUCTS_V1`].
@@ -650,6 +670,15 @@ pub unsafe fn require_collections(
     unsafe { require_capability(host, context, COLLECTIONS_V1).map(|api| &*api.cast()) }
 }
 
+/// Requests [`ERRORS_V1`], for [`Call::error_typed`].
+/// The returned table is valid for the host process lifetime.
+///
+/// # Safety
+/// Must be called with the pointers supplied to matchbox_plugin_init_v1.
+pub unsafe fn require_errors(host: *const HostV1, context: Context) -> Result<&'static ErrorsV1, i32> {
+    unsafe { require_capability(host, context, ERRORS_V1).map(|api| &*api.cast()) }
+}
+
 /// Requests [`STRUCTS_V1`], for [`Call::struct_new_with`] and [`Call::struct_flags`].
 /// The returned table is valid for the host process lifetime.
 ///
@@ -800,6 +829,7 @@ mod tests {
         assert_eq!(std::mem::offset_of!(IntegersV1, int_get), pointer);
         assert_eq!(std::mem::size_of::<PathsV1>(), pointer);
         assert_eq!(std::mem::size_of::<SettingsV1>(), pointer);
+        assert_eq!(std::mem::size_of::<ErrorsV1>(), pointer);
         assert_eq!(std::mem::size_of::<StructsV1>(), 2 * pointer);
         assert_eq!(std::mem::offset_of!(StructsV1, struct_flags), pointer);
         assert_eq!(std::mem::size_of::<DatetimeV1>(), 3 * pointer);

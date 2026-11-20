@@ -416,6 +416,15 @@ structFailures = 0;
 try { fixtureStructFlags( [ 1 ] ); } catch (any e) { structFailures++; }
 try { fixtureStructFlags( "x" ); } catch (any e) { structFailures++; }
 assert structFailures == 2;
+// typed errors: the type, message and detail the plugin chose, catchable by type; a plain error stays generic
+try { fixtureTypedError( "TomlParseException", "Invalid key", "line 3, column 5" ); assert false; }
+catch ( any e ) { assert e.type == "TomlParseException" && e.message == "Invalid key" && e.detail == "line 3, column 5"; }
+byType = false;
+try { fixtureTypedError( "TomlParseException", "again" ); } catch ( TomlParseException e ) { byType = e.detail == ""; }
+assert byType;
+try { fixtureWhole( "x" ); assert false; } catch ( any e ) { assert e.type == "ExpressionException"; }
+try { fixtureTypedError( "TomlParseException", "first" ); assert false; } catch ( any e ) { assert e.message == "first"; }
+try { fixtureWhole( "x" ); assert false; } catch ( any e ) { assert e.type == "ExpressionException" && e.message != "first"; }
 println("collections ok");
 "#,
     )

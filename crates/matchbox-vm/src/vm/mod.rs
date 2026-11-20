@@ -1617,6 +1617,17 @@ impl BxVM for VM {
     }
 
     fn is_native_abort(&self, message: &str) -> bool { VM::is_native_abort(self, message) }
+    fn raise_typed_exception(&mut self, exception_type: &str, message: &str, detail: &str) -> Result<(), String> {
+        let exception = self.exception_from_message(exception_type, message.to_string(), None);
+        let id = exception.as_gc_id().ok_or("Exception was not created")?;
+        let detail = self.string_new(detail.to_string());
+        self.struct_set(id, "detail", BxValue::new_ptr(detail));
+        let root = self.heap.retain_value(exception)?;
+        // The existing path for BoxLang throws that cross a native call: it rethrows this value when the call returns
+        // `Err( message )` with the same message.
+        self.native_callback_exception = Some((message.to_string(), root));
+        Ok(())
+    }
     fn raise_abort(&mut self, kind: &str, cause: Option<String>) -> String { VM::raise_abort(self, kind, cause) }
     fn register_callback(&mut self, name: &str, callback: crate::types::NativeCallback) -> Result<(), String> {
         let id = self.heap.alloc(GcObject::NativeCallback(callback));

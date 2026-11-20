@@ -45,6 +45,8 @@ struct CallContext<'a> {
     /// The module whose package supplied the plugin, when there is one.
     module: Option<Rc<str>>,
     error: Option<String>,
+    /// The exception type and detail for `error`, when the plugin chose them.
+    typed: Option<(String, String)>,
 }
 impl CallContext<'_> {
     fn value(&self, handle: Value) -> Result<BxValue, String> {
@@ -85,6 +87,7 @@ unsafe extern "C" fn capability(name: Text) -> *const c_void {
         Some(SETTINGS_V1) => (&SETTINGS as *const SettingsV1).cast(),
         Some(DATETIME_V1) => (&DATETIME as *const DatetimeV1).cast(),
         Some(STRUCTS_V1) => (&STRUCTS as *const StructsV1).cast(),
+        Some(ERRORS_V1) => (&ERRORS as *const ErrorsV1).cast(),
         _ => std::ptr::null(),
     }
 }
@@ -272,6 +275,7 @@ fn invoke_function(
         functions: functions.clone(),
         module,
         error: None,
+        typed: None,
     };
     let mut out = 0;
     let status = unsafe {
@@ -285,9 +289,14 @@ fn invoke_function(
         )
     };
     if status != 0 || ctx.error.is_some() {
-        return Err(ctx
+        let message = ctx
             .error
-            .unwrap_or_else(|| format!("{}: native operation failed", function.name)));
+            .take()
+            .unwrap_or_else(|| format!("{}: native operation failed", function.name));
+        if let Some((exception_type, detail)) = ctx.typed.take() {
+            ctx.vm.raise_typed_exception(&exception_type, &message, &detail)?;
+        }
+        return Err(message);
     }
     ctx.value(out)
 }
@@ -767,6 +776,21 @@ unsafe extern "C" fn expand_path(ctx: Context, path: Text, out: *mut Value) -> i
         Err(error) => operation(ctx, Err(error)),
     }
 }
+/// `ErrorsV1::error_typed`: the exception type, message and detail the current call fails with. The first error wins.
+unsafe extern "C" fn error_typed(ctx: Context, exception_type: Text, message: Text, detail: Text) {
+    let ctx = unsafe { context(ctx) };
+    if ctx.error.is_some() { return; }
+    let parts = unsafe { (text(exception_type), text(message), text(detail)) };
+    match parts {
+        (Ok(exception_type), Ok(message), Ok(detail)) if !exception_type.is_empty() => {
+            ctx.error = Some(message.to_owned());
+            ctx.typed = Some((exception_type.to_owned(), detail.to_owned()));
+        }
+        _ => ctx.error = Some("Invalid typed error".into()),
+    }
+}
+/// The `matchbox.errors.v1` table handed to plugins.
+static ERRORS: ErrorsV1 = ErrorsV1 { error_typed };
 /// `StructsV1::struct_new_with`: an empty struct, optionally ordered and/or case-sensitive.
 unsafe extern "C" fn struct_new_with(ctx: Context, ordered: bool, case_sensitive: bool, out: *mut Value) -> i32 {
     let ctx = unsafe { context(ctx) };

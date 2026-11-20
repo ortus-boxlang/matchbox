@@ -15,6 +15,8 @@ static PATHS_API: OnceLock<&'static PathsV1> = OnceLock::new();
 static SETTINGS_API: OnceLock<&'static SettingsV1> = OnceLock::new();
 static DATETIME_API: OnceLock<&'static DatetimeV1> = OnceLock::new();
 static STRUCTS_API: OnceLock<&'static StructsV1> = OnceLock::new();
+static ERRORS_API: OnceLock<&'static ErrorsV1> = OnceLock::new();
+fn errors() -> Result<&'static ErrorsV1, String> { ERRORS_API.get().copied().ok_or_else(|| "Missing errors capability".into()) }
 fn structs() -> Result<&'static StructsV1, String> { STRUCTS_API.get().copied().ok_or_else(|| "Missing structs capability".into()) }
 fn datetime() -> Result<&'static DatetimeV1, String> { DATETIME_API.get().copied().ok_or_else(|| "Missing datetime capability".into()) }
 fn settings_api() -> Result<&'static SettingsV1, String> { SETTINGS_API.get().copied().ok_or_else(|| "Missing settings capability".into()) }
@@ -379,6 +381,18 @@ unsafe extern "C" fn grid(ctx: Context, api: *const ValuesV1, _: *mut c_void, ar
         })
     }
 }
+// fixtureTypedError(type, message, detail): fails with a typed exception
+unsafe extern "C" fn typed_error(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
+    unsafe {
+        guarded(ctx, api, out, || {
+            let call = Call::new(ctx, api, args, len);
+            let exception_type = call.string(call.argument(0)?)?;
+            let message = call.string(call.argument(1)?)?;
+            let detail = call.string(call.argument(2)?)?;
+            Err(call.error_typed(errors()?, &exception_type, &message, &detail))
+        })
+    }
+}
 // fixtureStructNew(ordered, caseSensitive): a struct with the keys b, A and a set in that order
 unsafe extern "C" fn struct_new_fixture(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
     unsafe {
@@ -498,6 +512,10 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
         Ok(integers) => { let _ = INTEGERS_API.set(integers); }
         Err(status) => return status,
     }
+    match unsafe { require_errors(host, ctx) } {
+        Ok(errors) => { let _ = ERRORS_API.set(errors); }
+        Err(status) => return status,
+    }
     match unsafe { require_structs(host, ctx) } {
         Ok(structs) => { let _ = STRUCTS_API.set(structs); }
         Err(status) => return status,
@@ -559,6 +577,7 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
         (r#"{"name":"fixtureKinds","arguments":[{"name":"values","required":true}]}"#, kinds as Invoke),
         (r#"{"name":"fixtureOptions","arguments":[{"name":"options","required":true}]}"#, options as Invoke),
         (r#"{"name":"fixtureGrid","arguments":[{"name":"width","required":true},{"name":"height","required":true}]}"#, grid as Invoke),
+        (r#"{"name":"fixtureTypedError","arguments":[{"name":"type","required":true},{"name":"message","required":true},{"name":"detail","default":""}]}"#, typed_error as Invoke),
         (r#"{"name":"fixtureStructNew","arguments":[{"name":"ordered","required":true},{"name":"caseSensitive","required":true}]}"#, struct_new_fixture as Invoke),
         (r#"{"name":"fixtureStructFlags","arguments":[{"name":"value","required":true}]}"#, struct_flags_fixture as Invoke),
         (r#"{"name":"fixtureIsDate","arguments":[{"name":"value","required":true}]}"#, is_date as Invoke),
