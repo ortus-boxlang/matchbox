@@ -17,6 +17,9 @@ struct Argument {
     name: String,
     #[serde(default)]
     required: bool,
+    /// Distinguish an explicitly supplied null from an omitted required argument.
+    #[serde(default)]
+    nullable: bool,
     #[serde(default)]
     default: serde_json::Value,
 }
@@ -30,6 +33,8 @@ struct Function {
     arguments: Vec<Argument>,
 }
 struct Registration {
+    /// Factories are declarations only; no VM code runs until resolution.
+    providers: Vec<(String, Invoke)>,
     functions: Vec<(Function, Invoke)>,
     error: Option<String>,
 }
@@ -77,6 +82,7 @@ unsafe fn context<'a>(ctx: Context) -> &'a mut CallContext<'a> {
 }
 unsafe extern "C" fn capability(name: Text) -> *const c_void {
     match unsafe { text(name) }.ok() {
+        Some(OBJECT_STATE_V1) => (&OBJECT_STATE as *const ObjectStateV1).cast(),
         Some(VALUES_V1) => (&VALUES as *const ValuesV1).cast(),
         Some(ROOTS_V1) => (&ROOTS as *const RootsV1).cast(),
         Some(BYTES_V1) => (&BYTES as *const BytesV1).cast(),
@@ -89,6 +95,26 @@ unsafe extern "C" fn capability(name: Text) -> *const c_void {
         Some(STRUCTS_V1) => (&STRUCTS as *const StructsV1).cast(),
         Some(ERRORS_V1) => (&ERRORS as *const ErrorsV1).cast(),
         _ => std::ptr::null(),
+    }
+}
+/// Offers the registration table only when a module will own the declarations.
+/// # Safety
+/// The name must be a valid ABI text view for this call.
+unsafe extern "C" fn module_capability(name: Text) -> *const c_void {
+    if unsafe { text(name) } == Ok(CLASS_PROVIDERS_V1) {
+        (&CLASS_PROVIDERS as *const ClassProvidersV1).cast()
+    } else {
+        unsafe { capability(name) }
+    }
+}
+/// Collects a factory for normal validation and registration during module activation.
+/// # Safety
+/// Use the registration context, a valid text view and a callback from this library.
+unsafe extern "C" fn declare_provider(ctx: Context, name: Text, factory: Invoke) -> i32 {
+    let registration = unsafe { &mut *ctx.cast::<Registration>() };
+    match unsafe { text(name) } {
+        Ok(name) => { registration.providers.push((name.to_owned(), factory)); 0 }
+        Err(error) => { registration.error = Some(error); 1 }
     }
 }
 unsafe extern "C" fn registration_error(ctx: Context, message: Text) {
@@ -147,14 +173,17 @@ unsafe extern "C" fn register(ctx: Context, descriptor: Text, invoke: Invoke) ->
 /// # Safety
 /// The selected library is trusted native code, capable of arbitrary process access.
 pub unsafe fn load(vm: &mut dyn BxVM, path: &Path) -> Result<(), String> {
-    unsafe { load_module(vm, path, None) }
+    unsafe { load_module(vm, path, None) }.map(|_| ())
 }
 
-/// Loads a plugin that belongs to `module`, so it can read that module's settings.
+/// Loads plugin functions and returns its module-owned class factories for later activation.
+/// Without a module, the class-provider capability is unavailable and the result is empty.
+/// # Errors
+/// Fails if the library cannot be loaded, initialization fails, or registration is rejected.
 ///
 /// # Safety
 /// The selected library is trusted native code, capable of arbitrary process access.
-pub unsafe fn load_module(vm: &mut dyn BxVM, path: &Path, module: Option<&str>) -> Result<(), String> {
+pub unsafe fn load_module(vm: &mut dyn BxVM, path: &Path, module: Option<&str>) -> Result<Vec<(String, NativeCallback)>, String> {
     let module: Option<Rc<str>> = module.map(Rc::from);
     let path = path
         .canonicalize()
@@ -181,11 +210,12 @@ pub unsafe fn load_module(vm: &mut dyn BxVM, path: &Path, module: Option<&str>) 
         unsafe { library.get::<Init>(b"matchbox_plugin_init_v1\0") }.map_err(|e| e.to_string())?;
     let host = HostV1 {
         abi_major: ABI_MAJOR,
-        capability,
+        capability: if module.is_some() { module_capability } else { capability },
         register,
         error: registration_error,
     };
     let mut registration = Registration {
+        providers: vec![],
         functions: vec![],
         error: None,
     };
@@ -217,7 +247,11 @@ pub unsafe fn load_module(vm: &mut dyn BxVM, path: &Path, module: Option<&str>) 
             vm.register_callback(&name, callback.clone())?;
         }
     }
-    Ok(())
+    Ok(registration.providers.into_iter().map(|(name, factory)| {
+        let function = Function { name: name.clone(), aliases: vec![], arguments: vec![] };
+        let factory = callback(library.clone(), functions.clone(), module.clone(), function, factory);
+        (name, factory)
+    }).collect())
 }
 fn callback(
     library: Rc<Library>,
@@ -247,7 +281,7 @@ fn invoke_function(
     }
     let mut values = Vec::new();
     for (index, argument) in function.arguments.iter().enumerate() {
-        let value = args.get(index).copied().filter(|v| !v.is_null());
+        let value = args.get(index).copied().filter(|v| argument.nullable || !v.is_null());
         let value = match value {
             Some(value) => value,
             None if argument.required => {
@@ -395,8 +429,7 @@ unsafe extern "C" fn struct_set(ctx: Context, object: Value, key: Text, value: V
 }
 struct PluginObject {
     kind: String,
-    data: *mut c_void,
-    drop: DropObject,
+    payload: Payload,
     methods: HashMap<String, NativeCallback>,
     _library: Rc<Library>,
 }
@@ -405,9 +438,16 @@ impl std::fmt::Debug for PluginObject {
         f.debug_tuple("PluginObject").field(&self.kind).finish()
     }
 }
+/// The library owns opaque data; the VM owns and traces a state struct.
+enum Payload {
+    /// Free the library allocation exactly once at collection.
+    Opaque(*mut c_void, DropObject),
+    /// An ordinary GC edge, not an external root.
+    State(BxValue),
+}
 impl Drop for PluginObject {
     fn drop(&mut self) {
-        unsafe { (self.drop)(self.data) };
+        if let Payload::Opaque(data, drop) = self.payload { unsafe { drop(data) }; }
     }
 }
 impl BxNativeObject for PluginObject {
@@ -416,7 +456,19 @@ impl BxNativeObject for PluginObject {
     }
     fn native_data(&self, kind: &str) -> Option<*mut c_void> {
         // Payload layouts are private to the library, not just a caller-chosen type name.
-        (kind == format!("{:p}:{}", Rc::as_ptr(&self._library), self.kind)).then_some(self.data)
+        match self.payload {
+            Payload::Opaque(data, _) if kind == format!("{:p}:{}", Rc::as_ptr(&self._library), self.kind) => Some(data),
+            _ => None,
+        }
+    }
+    fn native_state(&self, kind: &str) -> Option<BxValue> {
+        match self.payload {
+            Payload::State(value) if kind == format!("{:p}:{}", Rc::as_ptr(&self._library), self.kind) => Some(value),
+            _ => None,
+        }
+    }
+    fn trace(&self, tracer: &mut dyn crate::types::Tracer) {
+        if let Payload::State(value) = &self.payload { tracer.mark(value); }
     }
     fn get_property(&self, _name: &str) -> BxValue {
         BxValue::new_null()
@@ -442,10 +494,23 @@ unsafe extern "C" fn object_new(
     out: *mut Value,
 ) -> i32 {
     let ctx = unsafe { context(ctx) };
+    if data.is_null() { return operation(ctx, Err("Null object pointer".into())); }
+    unsafe { make_object(ctx, kind, Payload::Opaque(data, drop), methods, out) }
+}
+/// Creates a VM-traced state object without transferring native memory.
+/// # Safety
+/// Requires live invocation pointers and valid ABI text views.
+unsafe extern "C" fn state_object(ctx: Context, kind: Text, methods: Text, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let state = BxValue::new_ptr(ctx.vm.struct_new());
+    unsafe { make_object(ctx, kind, Payload::State(state), methods, out) }
+}
+/// Validates the method map before transferring ownership to the VM.
+/// # Safety
+/// Method and kind text views and the output pointer must be valid for this invocation.
+unsafe fn make_object(ctx: &mut CallContext<'_>, kind: Text, payload: Payload, methods: Text, out: *mut Value) -> i32 {
     let result = (|| {
-        if out.is_null() || data.is_null() {
-            return Err("Null object pointer".into());
-        }
+        if out.is_null() { return Err("Null object pointer".into()); }
         let kind = unsafe { text(kind)? }.to_owned();
         let methods: HashMap<String, String> =
             serde_json::from_str(unsafe { text(methods)? }).map_err(|e| e.to_string())?;
@@ -470,8 +535,7 @@ unsafe extern "C" fn object_new(
             .collect::<Result<HashMap<_, _>, String>>()?;
         let id = ctx.vm.native_object_new(Rc::new(RefCell::new(PluginObject {
             kind,
-            data,
-            drop,
+            payload,
             methods,
             _library: ctx.library.clone(),
         })));
@@ -502,6 +566,23 @@ unsafe extern "C" fn object_data(
     })();
     operation(ctx, result)
 }
+/// Borrows an object's state after checking both its type and originating provider.
+/// # Safety
+/// Requires live invocation pointers and a valid kind text view.
+unsafe extern "C" fn object_state(ctx: Context, receiver: Value, kind: Text, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        let kind = format!("{:p}:{}", Rc::as_ptr(&ctx.library), unsafe { text(kind)? });
+        let state = ctx.vm.native_object_state(ctx.value(receiver)?, &kind).ok_or("Incorrect native object state type")?;
+        if out.is_null() { return Err("Null state output".into()); }
+        output(ctx, state, out);
+        Ok(())
+    })();
+    operation(ctx, result)
+}
+static CLASS_PROVIDERS: ClassProvidersV1 = ClassProvidersV1 { declare: declare_provider };
+static OBJECT_STATE: ObjectStateV1 = ObjectStateV1 { new: state_object, state: object_state };
+
 /// Packaging-time download only; applications never fetch executable code at startup.
 pub fn download(url: &str) -> Result<Vec<u8>, String> {
     #[cfg(feature = "bif-http")]

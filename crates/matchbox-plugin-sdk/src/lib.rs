@@ -227,6 +227,27 @@ pub struct PathsV1 {
     pub expand_path: unsafe extern "C" fn(Context, Text, *mut Value) -> i32,
 }
 
+/// Registration-time capability. Only available when loading an owned module artifact.
+pub const CLASS_PROVIDERS_V1: &str = "matchbox.class-providers.v1";
+/// Registration calls for exact-name module-owned class factories.
+#[repr(C)]
+pub struct ClassProvidersV1 {
+    /// Declare an exact java: name and a zero-argument factory. The host invokes the factory
+    /// on resolution, not during registration, and removes the binding with its module.
+    pub declare: unsafe extern "C" fn(Context, Text, Invoke) -> i32,
+}
+
+/// Native objects with private, VM-traced struct slots instead of an opaque Rust payload.
+pub const OBJECT_STATE_V1: &str = "matchbox.object-state.v1";
+/// Invocation calls for native objects with VM-managed state.
+#[repr(C)]
+pub struct ObjectStateV1 {
+    /// Create an object with empty state and the usual object method map.
+    pub new: unsafe extern "C" fn(Context, Text, Text, *mut Value) -> i32,
+    /// Get the state struct, checking the provider and object kind.
+    pub state: unsafe extern "C" fn(Context, Value, Text, *mut Value) -> i32,
+}
+
 /// The host interface passed to `matchbox_plugin_init_v1`.
 ///
 /// Borrowed only during initialization. Returned capability tables remain valid for
@@ -239,6 +260,7 @@ pub struct HostV1 {
     pub capability: unsafe extern "C" fn(Text) -> *const c_void,
     /// Registers a function. The metadata is JSON:
     /// `{"name":"...","aliases":["..."],"arguments":[{"name":"...","required":true,"default":null}]}`.
+    /// Set `nullable:true` to permit explicit null, including for a required argument.
     /// Defaults are null, numbers, strings or booleans. Returns `0` on success.
     pub register: unsafe extern "C" fn(Context, Text, Invoke) -> i32,
     /// Reports an initialization error message.
@@ -549,6 +571,14 @@ impl<'a> Call<'a> {
             Err("Host struct operation failed".into())
         }
     }
+    /// Creates a plugin object with private GC-traced slots. No destructor or strong root needed.
+    pub fn state_object(&self, api: &ObjectStateV1, kind: &str, methods: &str) -> Result<Value, String> {
+        self.value(|out| unsafe { (api.new)(self.context, Text::new(kind), Text::new(methods), out) })
+    }
+    /// Borrows the object's slot struct as an invocation-local handle. Use struct_get/set on it.
+    pub fn object_state(&self, api: &ObjectStateV1, object: Value, kind: &str) -> Result<Value, String> {
+        self.value(|out| unsafe { (api.state)(self.context, object, Text::new(kind), out) })
+    }
     /// Creates a native object holding `data`. `kind` names the payload type (for example
     /// `"stats.total.v1"`); `methods` is JSON mapping method names to registered functions,
     /// which receive the object as their first argument. On success the host owns `data`
@@ -713,6 +743,19 @@ pub unsafe fn require_settings(host: *const HostV1, context: Context) -> Result<
 /// Must be called with the pointers supplied to matchbox_plugin_init_v1.
 pub unsafe fn require_paths(host: *const HostV1, context: Context) -> Result<&'static PathsV1, i32> {
     unsafe { require_capability(host, context, PATHS_V1).map(|api| &*api.cast()) }
+}
+
+/// Requests the module-only class registration table.
+/// # Safety
+/// Use only the pointers passed to plugin initialization.
+pub unsafe fn require_class_providers(host: *const HostV1, context: Context) -> Result<&'static ClassProvidersV1, i32> {
+    unsafe { require_capability(host, context, CLASS_PROVIDERS_V1).map(|api| &*api.cast()) }
+}
+/// Requests VM-traced object slots.
+/// # Safety
+/// Use only the pointers passed to plugin initialization.
+pub unsafe fn require_object_state(host: *const HostV1, context: Context) -> Result<&'static ObjectStateV1, i32> {
+    unsafe { require_capability(host, context, OBJECT_STATE_V1).map(|api| &*api.cast()) }
 }
 
 /// Requests [`INTEGERS_V1`], for [`Call::int_new`] and [`Call::integer`].

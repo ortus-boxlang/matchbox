@@ -307,6 +307,8 @@ struct ModuleActivation {
     record: Rc<crate::vm::gc::RootedValue>,
     targets: Vec<Rc<crate::vm::gc::RootedValue>>,
     global_services: Vec<String>,
+    /// Factories returned by the artifact, pending registration with the module record.
+    native_providers: Vec<(String, NativeCallback)>,
 }
 /// VM/thread-owned module lifetime. Hosts must unload before destroying the owning VM.
 /// Registrations/native libraries remain VM/process-owned; this is not hot reload.
@@ -396,12 +398,12 @@ impl LoadedModules {
                     construct(parent, modules, vm, cache, ready, prepared, services)?;
                 }
                 let module = &mut modules[index];
-                if let Some(artifact) = &module.artifact {
+                let native_providers = if let Some(artifact) = &module.artifact {
                     let path = artifact.extract(cache)?;
                     unsafe { crate::plugins::load_module(vm, &path, Some(&module.name)) }
                         .map_err(anyhow::Error::msg)
-                        .with_context(|| format!("Module {}", module.name))?;
-                }
+                        .with_context(|| format!("Module {}", module.name))?
+                } else { vec![] };
                 for class in &mut module.classes {
                     class.chunk.reconstruct_functions();
                     vm.interpret(class.chunk.clone())?;
@@ -432,6 +434,7 @@ impl LoadedModules {
                     record: vm.heap.retain_value(record).map_err(anyhow::Error::msg)?,
                     targets: Vec::new(),
                     global_services: Vec::new(),
+                    native_providers,
                 });
                 crate::module_services::register_classes(vm, module, record)?;
                 ready[index] = 2;
@@ -450,9 +453,10 @@ impl LoadedModules {
                     &services,
                 )?;
                 let module = &mut modules[index];
-                let activation = prepared[index]
+                let mut activation = prepared[index]
                     .take()
                     .context("Module descriptor did not create an instance")?;
+                let native_providers = std::mem::take(&mut activation.native_providers);
                 let instance = vm
                     .heap
                     .read_retained_value(&activation.instance)
@@ -495,6 +499,25 @@ impl LoadedModules {
                 let providers = vm
                     .instance_variable(instance, "classProviders")
                     .unwrap_or_else(|| BxValue::new_ptr(vm.array_new()));
+                if !vm.is_array_value(providers) { bail!("Module classProviders must be an array"); }
+                let providers = if native_providers.is_empty() { providers } else {
+                    // Build the effective record without mutating a descriptor-owned array.
+                    let source = providers.as_gc_id().unwrap();
+                    let combined = vm.array_new();
+                    for index in 0..vm.array_len(source) {
+                        let entry = vm.array_get(source, index);
+                        vm.array_push(combined, entry);
+                    }
+                    BxValue::new_ptr(combined)
+                };
+                for (name, factory) in native_providers {
+                    let entry = vm.struct_new();
+                    let name = BxValue::new_ptr(vm.string_new(name));
+                    let callable = vm.heap.alloc(crate::vm::gc::GcObject::NativeCallback(factory));
+                    vm.struct_set(entry, "name", name);
+                    vm.struct_set(entry, "provider", BxValue::new_ptr(callable));
+                    vm.array_push(providers.as_gc_id().unwrap(), BxValue::new_ptr(entry));
+                }
                 vm.register_class_providers(record, providers)?;
                 crate::module_services::set_record(vm, record, "classProviders", providers)?;
                 vm.struct_set(settings_id, &module.name, settings);

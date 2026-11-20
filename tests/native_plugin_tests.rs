@@ -457,6 +457,7 @@ fn module_contract_direct_bytecode_and_standalone() {
         r#"
 function ordinaryUserFunction() { return "user function"; }
 assert sharedDouble(value=4) == 8;
+assert isStruct(createObject("java", "org.matchbox.fixture.Slots").slots());
 assert fixtureCreate().info().value == 42;
 assert (3).info().value == -9;
 object = fixtureNew(VALUE=32);
@@ -1294,6 +1295,45 @@ reference = null;
     let instance = vm.call_function_value(constructor, vec![BxValue::new_number(17.0)], None).unwrap();
     let info = vm.call_method_value(instance, "info", vec![]).unwrap();
     assert_eq!(vm.struct_get(info.as_gc_id().unwrap(), "value").as_number(), 17.0);
+}
+
+#[test]
+fn plugin_declared_provider_owns_traced_slots_and_unregisters_on_unload() {
+    use matchbox_vm::bundle::{LoadedModules, Module};
+    let compile = |source: &str| {
+        let ast = matchbox_compiler::parser::parse(source, None).unwrap();
+        matchbox_compiler::compiler::Compiler::new("slots.bxs").compile(&ast, source).unwrap()
+    };
+    let module = |descriptor| Module {
+        parent_module: None, nested_modules: vec![], name: "fixture".into(), path: "/fixture".into(),
+        dependencies: vec![], instance: "config".into(), descriptor: compile(descriptor),
+        bifs: compile(""), bif_registrations: vec![], classes: vec![], components: vec![],
+        settings: serde_json::json!({}), artifact: Some(artifact()),
+    };
+    let mut vm = VM::new();
+    let cache = tempfile::tempdir().unwrap();
+    // Descriptor and plugin declarations share one namespace. A collision must
+    // unwind cleanly so a second activation on the same VM can register the name.
+    let conflict = module("class Config { function configure() { classProviders = [{name:'java:org.matchbox.fixture.Slots', provider:fixtureClass}]; } } config = new Config();");
+    let err = LoadedModules::load(&mut vm, vec![conflict], cache.path()).err().expect("duplicate must fail");
+    assert!(err.to_string().contains("already registered"), "{err}");
+    let loaded = LoadedModules::load(&mut vm, vec![module("class Config {} config = new Config();")], cache.path()).unwrap();
+    let lookup = || compile("cell = createObject('java','org.matchbox.fixture.Slots');");
+    vm.interpret(lookup()).unwrap();
+    let cell = vm.get_global("cell").unwrap();
+    let slots = vm.call_method_value(cell, "slots", vec![]).unwrap().as_gc_id().unwrap();
+    for _ in 0..16 { vm.collect_garbage_now(); }
+    let child = vm.struct_new();
+    vm.struct_set(slots, "child", BxValue::new_ptr(child));
+    vm.struct_set(child, "back", cell);
+    for _ in 0..16 { vm.collect_garbage_now(); }
+    assert_eq!(vm.struct_get(child, "back"), cell);
+    vm.insert_global("cell".into(), BxValue::new_null());
+    for _ in 0..16 { vm.collect_garbage_now(); }
+    assert!(vm.heap.get_opt(cell.as_gc_id().unwrap()).is_none());
+    assert!(vm.heap.get_opt(child).is_none());
+    loaded.unload(&mut vm).unwrap();
+    assert!(vm.interpret(lookup()).is_err());
 }
 
 #[test]

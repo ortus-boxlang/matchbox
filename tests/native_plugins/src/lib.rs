@@ -7,6 +7,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+static STATE_API: OnceLock<&'static ObjectStateV1> = OnceLock::new();
 static ROOT_API: OnceLock<&'static RootsV1> = OnceLock::new();
 static TYPES_API: OnceLock<&'static TypesV1> = OnceLock::new();
 static COLLECTIONS_API: OnceLock<&'static CollectionsV1> = OnceLock::new();
@@ -49,6 +50,18 @@ fn number_object(call: &Call<'_>, value: f64) -> Result<Value, String> {
             Err(error)
         }
     }
+}
+unsafe extern "C" fn state_class(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
+    unsafe { guarded(ctx, api, out, || {
+        let call = Call::new(ctx, api, args, len);
+        call.state_object(STATE_API.get().ok_or("Missing state capability")?, "fixture.slots", r#"{"slots":"fixtureGetSlots"}"#)
+    }) }
+}
+unsafe extern "C" fn slots(ctx: Context, api: *const ValuesV1, _: *mut c_void, args: *const Value, len: usize, out: *mut Value) -> i32 {
+    unsafe { guarded(ctx, api, out, || {
+        let call = Call::new(ctx, api, args, len);
+        call.object_state(STATE_API.get().ok_or("Missing state capability")?, call.argument(0)?, "fixture.slots")
+    }) }
 }
 unsafe extern "C" fn class_reference(
     ctx: Context,
@@ -496,6 +509,15 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
     if unsafe { require_values(host, ctx) }.is_err() {
         return 1;
     }
+    match unsafe { require_object_state(host, ctx) } {
+        Ok(state) => { let _ = STATE_API.set(state); }
+        Err(status) => return status,
+    }
+    // The fixture is also loaded as a standalone library in unrelated tests.
+    if !unsafe { ((*host).capability)(Text::new(CLASS_PROVIDERS_V1)) }.is_null() {
+        let providers = unsafe { require_class_providers(host, ctx).unwrap() };
+        if unsafe { (providers.declare)(ctx, Text::new("java:org.matchbox.fixture.Slots"), state_class) } != 0 { return 1; }
+    }
     let roots = match unsafe { require_roots(host, ctx) } {
         Ok(roots) => roots,
         Err(status) => return status,
@@ -556,6 +578,7 @@ pub unsafe extern "C" fn matchbox_plugin_init_v1(host: *const HostV1, ctx: Conte
         return 1;
     }
     let functions = [
+        (r#"{"name":"fixtureGetSlots","arguments":[{"name":"object","required":true}]}"#, slots as Invoke),
         (r#"{"name":"fixtureClass"}"#, class_reference as Invoke),
         (
             r#"{"name":"fixtureClassInit","arguments":[{"name":"class","required":true},{"name":"value","default":7}]}"#,

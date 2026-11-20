@@ -238,6 +238,8 @@ pub trait BxVM {
         Err("Value retention is not supported by this host".into())
     }
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize;
+    /// Returns the object's traced slot struct, or None for a different provider or type.
+    fn native_object_state(&self, _value: BxValue, _kind: &str) -> Option<BxValue> { None }
     fn native_object_data(&self, _value: BxValue, _kind: &str) -> Option<*mut std::ffi::c_void> { None }
     fn is_native_abort(&self, _message: &str) -> bool { false }
     /// Makes the error a native function is about to return with `message` surface as a BoxLang exception of
@@ -463,6 +465,8 @@ pub trait BxNativeObject: fmt::Debug {
     fn class_reference_instance(&self) -> Option<BxValue> { None }
     fn has_method(&self, name: &str) -> bool { self.delegated_callback(name).is_some() }
     fn delegated_callback(&self, _name: &str) -> Option<NativeCallback> { None }
+    /// Returns the internal slot struct only for the provider-qualified kind that owns it.
+    fn native_state(&self, _kind: &str) -> Option<BxValue> { None }
     fn native_data(&self, _kind: &str) -> Option<*mut std::ffi::c_void> { None }
     fn get_property(&self, name: &str) -> BxValue;
     /// Internal opt-in: pure, allocation-free scalar reads; no callbacks, GC

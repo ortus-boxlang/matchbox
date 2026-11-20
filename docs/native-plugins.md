@@ -105,6 +105,10 @@ This is BoxLang package-class resolution, distinct from the class-provider bound
 
 ### Module-owned Java class providers
 
+An installed plugin can declare a class directly: negotiate `matchbox.class-providers.v1` during initialization and call `(providers.declare)(ctx, Text::new("java:org.example.Counter"), factory)`. The factory is a zero-argument `Invoke` callback, **not** a named global BIF. Return a supported class reference (for example a native object with methods) from that callback. Do not construct BoxLang classes during plugin initialization. MatchBox installs the declarations after `configure()` alongside descriptor entries, with the same validation, duplicate-name rejection, record ownership and cleanup. A raw library load without a module lifecycle does not offer this capability.
+
+For a native object whose fields contain BoxLang values, negotiate `matchbox.object-state.v1`. `call.state_object(api, kind, methods)` creates an object with a private, initially empty VM struct. In its method callback, `call.object_state(api, receiver, kind)` returns the struct as a call-local handle, after verifying the library instance and type. Read or write slots with the ordinary struct API. The object traces the struct, so live objects preserve their fields and unreachable cycles are collectable. Do not keep the call-local struct handle or use a retained root as an object's field. Opaque Rust payloads with destructors remain available through `object_new`.
+
 After `configure()`, MatchBox registers the descriptor's variables-scope `classProviders` array. Each entry has an exact, case-sensitive `java:` class name and an ordinary zero-argument callable. Resolver prefixes and import aliases are case-insensitive. Duplicate names and invalid registrations fail; no wildcard provider or global `createObject()` replacement is involved.
 
 ```boxlang

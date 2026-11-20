@@ -1654,6 +1654,13 @@ impl BxVM for VM {
         Ok(())
     }
 
+    fn native_object_state(&self, value: BxValue, kind: &str) -> Option<BxValue> {
+        match self.heap.get_opt(value.as_gc_id()?)? {
+            GcObject::NativeObject(object) => object.try_borrow().ok()?.native_state(kind),
+            _ => None,
+        }
+    }
+
     fn native_object_data(&self, value: BxValue, kind: &str) -> Option<*mut std::ffi::c_void> {
         match self.heap.get_opt(value.as_gc_id()?)? {
             GcObject::NativeObject(object) => object.try_borrow().ok()?.native_data(kind),
