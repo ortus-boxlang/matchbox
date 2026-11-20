@@ -113,6 +113,8 @@ impl BxValue {
 
 pub trait BxVM {
     fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>>;
+    /// The mappings `expandPath` resolves through: application, module and configuration mappings.
+    fn path_mappings(&self) -> Vec<crate::paths::PathMapping> { Vec::new() }
     fn current_receiver(&self) -> Option<BxValue>;
     fn execution_context(&mut self) -> Result<BxValue, String> { Err("Execution context unavailable".into()) }
     fn has_method_by_value(&self, _receiver: BxValue, _name: &str) -> bool { false }
@@ -229,6 +231,12 @@ pub trait BxVM {
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize;
     fn native_object_data(&self, _value: BxValue, _kind: &str) -> Option<*mut std::ffi::c_void> { None }
     fn is_native_abort(&self, _message: &str) -> bool { false }
+    /// Makes the error a native function is about to return with `message` surface as a BoxLang exception of
+    /// `exception_type` with `detail`, instead of the generic `ExpressionException`. The function must then return
+    /// `Err( message )` unchanged.
+    fn raise_typed_exception(&mut self, _exception_type: &str, _message: &str, _detail: &str) -> Result<(), String> {
+        Err("Typed exceptions are unsupported by this host".into())
+    }
     fn raise_abort(&mut self, _kind: &str, _cause: Option<String>) -> String { "Abort control flow is unsupported by this host".into() }
     fn register_callback(&mut self, _name: &str, _callback: NativeCallback) -> Result<(), String> {
         Err("Native callbacks are not supported by this host".into())
@@ -249,6 +257,10 @@ pub trait BxVM {
         self.datetime_new(dt)
     }
     fn datetime_timezone(&self, _value: BxValue) -> Option<String> {
+        None
+    }
+    /// The instant a datetime value stands for, or `None` when `value` is not a datetime.
+    fn datetime_instant(&self, _value: BxValue) -> Option<chrono::DateTime<chrono::Utc>> {
         None
     }
     fn string_new(&mut self, s: String) -> usize;

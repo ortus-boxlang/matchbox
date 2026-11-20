@@ -42,7 +42,11 @@ struct CallContext<'a> {
     bytes: Vec<Vec<u8>>,
     library: Rc<Library>,
     functions: Rc<HashMap<String, (Function, Invoke)>>,
+    /// The module whose package supplied the plugin, when there is one.
+    module: Option<Rc<str>>,
     error: Option<String>,
+    /// The exception type and detail for `error`, when the plugin chose them.
+    typed: Option<(String, String)>,
 }
 impl CallContext<'_> {
     fn value(&self, handle: Value) -> Result<BxValue, String> {
@@ -79,6 +83,11 @@ unsafe extern "C" fn capability(name: Text) -> *const c_void {
         Some(TYPES_V1) => (&TYPES as *const TypesV1).cast(),
         Some(COLLECTIONS_V1) => (&COLLECTIONS as *const CollectionsV1).cast(),
         Some(INTEGERS_V1) => (&INTEGERS as *const IntegersV1).cast(),
+        Some(PATHS_V1) => (&PATHS as *const PathsV1).cast(),
+        Some(SETTINGS_V1) => (&SETTINGS as *const SettingsV1).cast(),
+        Some(DATETIME_V1) => (&DATETIME as *const DatetimeV1).cast(),
+        Some(STRUCTS_V1) => (&STRUCTS as *const StructsV1).cast(),
+        Some(ERRORS_V1) => (&ERRORS as *const ErrorsV1).cast(),
         _ => std::ptr::null(),
     }
 }
@@ -138,6 +147,15 @@ unsafe extern "C" fn register(ctx: Context, descriptor: Text, invoke: Invoke) ->
 /// # Safety
 /// The selected library is trusted native code, capable of arbitrary process access.
 pub unsafe fn load(vm: &mut dyn BxVM, path: &Path) -> Result<(), String> {
+    unsafe { load_module(vm, path, None) }
+}
+
+/// Loads a plugin that belongs to `module`, so it can read that module's settings.
+///
+/// # Safety
+/// The selected library is trusted native code, capable of arbitrary process access.
+pub unsafe fn load_module(vm: &mut dyn BxVM, path: &Path, module: Option<&str>) -> Result<(), String> {
+    let module: Option<Rc<str>> = module.map(Rc::from);
     let path = path
         .canonicalize()
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -194,7 +212,7 @@ pub unsafe fn load(vm: &mut dyn BxVM, path: &Path) -> Result<(), String> {
         let names: Vec<_> = std::iter::once(function.name.clone())
             .chain(function.aliases.iter().cloned())
             .collect();
-        let callback = callback(library.clone(), functions.clone(), function, invoke);
+        let callback = callback(library.clone(), functions.clone(), module.clone(), function, invoke);
         for name in names {
             vm.register_callback(&name, callback.clone())?;
         }
@@ -204,13 +222,14 @@ pub unsafe fn load(vm: &mut dyn BxVM, path: &Path) -> Result<(), String> {
 fn callback(
     library: Rc<Library>,
     functions: Rc<HashMap<String, (Function, Invoke)>>,
+    module: Option<Rc<str>>,
     function: Function,
     invoke: Invoke,
 ) -> NativeCallback {
     NativeCallback {
         parameters: function.arguments.iter().map(|a| a.name.clone()).collect(),
         callback: Rc::new(move |vm, args| {
-            invoke_function(vm, &library, &functions, &function, invoke, args)
+            invoke_function(vm, &library, &functions, module.clone(), &function, invoke, args)
         }),
     }
 }
@@ -218,6 +237,7 @@ fn invoke_function(
     vm: &mut dyn BxVM,
     library: &Rc<Library>,
     functions: &Rc<HashMap<String, (Function, Invoke)>>,
+    module: Option<Rc<str>>,
     function: &Function,
     invoke: Invoke,
     args: &[BxValue],
@@ -253,7 +273,9 @@ fn invoke_function(
         bytes: Vec::new(),
         library: library.clone(),
         functions: functions.clone(),
+        module,
         error: None,
+        typed: None,
     };
     let mut out = 0;
     let status = unsafe {
@@ -267,9 +289,14 @@ fn invoke_function(
         )
     };
     if status != 0 || ctx.error.is_some() {
-        return Err(ctx
+        let message = ctx
             .error
-            .unwrap_or_else(|| format!("{}: native operation failed", function.name)));
+            .take()
+            .unwrap_or_else(|| format!("{}: native operation failed", function.name));
+        if let Some((exception_type, detail)) = ctx.typed.take() {
+            ctx.vm.raise_typed_exception(&exception_type, &message, &detail)?;
+        }
+        return Err(message);
     }
     ctx.value(out)
 }
@@ -434,6 +461,7 @@ unsafe extern "C" fn object_new(
                     callback(
                         ctx.library.clone(),
                         ctx.functions.clone(),
+                        ctx.module.clone(),
                         function.clone(),
                         *invoke,
                     ),
@@ -736,6 +764,132 @@ unsafe extern "C" fn int_get(ctx: Context, value: Value, out: *mut i64) -> i32 {
     })();
     operation(ctx, result)
 }
+/// `PathsV1::expand_path`: BoxLang's `expandPath` for the code that called the plugin.
+unsafe extern "C" fn expand_path(ctx: Context, path: Text, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = unsafe { text(path) }.and_then(|path| crate::paths::expand_for_vm(&mut *ctx.vm, path));
+    match result {
+        Ok(expanded) => {
+            let id = ctx.vm.string_new(expanded);
+            output(ctx, BxValue::new_ptr(id), out)
+        }
+        Err(error) => operation(ctx, Err(error)),
+    }
+}
+/// `ErrorsV1::error_typed`: the exception type, message and detail the current call fails with. The first error wins.
+unsafe extern "C" fn error_typed(ctx: Context, exception_type: Text, message: Text, detail: Text) {
+    let ctx = unsafe { context(ctx) };
+    if ctx.error.is_some() { return; }
+    let parts = unsafe { (text(exception_type), text(message), text(detail)) };
+    match parts {
+        (Ok(exception_type), Ok(message), Ok(detail)) if !exception_type.is_empty() => {
+            ctx.error = Some(message.to_owned());
+            ctx.typed = Some((exception_type.to_owned(), detail.to_owned()));
+        }
+        _ => ctx.error = Some("Invalid typed error".into()),
+    }
+}
+/// The `matchbox.errors.v1` table handed to plugins.
+static ERRORS: ErrorsV1 = ErrorsV1 { error_typed };
+/// `StructsV1::struct_new_with`: an empty struct, optionally ordered and/or case-sensitive.
+unsafe extern "C" fn struct_new_with(ctx: Context, ordered: bool, case_sensitive: bool, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let mut options = Vec::new();
+    if ordered { options.push("ordered".to_string()); }
+    if case_sensitive { options.push("casesensitive".to_string()); }
+    let id = ctx.vm.struct_new_with_options(&options);
+    output(ctx, BxValue::new_ptr(id), out)
+}
+/// `StructsV1::struct_flags`: whether a struct is ordered and whether it is case-sensitive.
+unsafe extern "C" fn struct_flags(ctx: Context, object: Value, ordered: *mut bool, case_sensitive: *mut bool) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        if ordered.is_null() || case_sensitive.is_null() { return Err("Null output pointer".into()); }
+        let id = struct_id(ctx, object)?;
+        unsafe {
+            *ordered = ctx.vm.struct_is_ordered(id);
+            *case_sensitive = ctx.vm.struct_is_case_sensitive(id);
+        }
+        Ok(())
+    })();
+    operation(ctx, result)
+}
+/// The `matchbox.structs.v1` table handed to plugins.
+static STRUCTS: StructsV1 = StructsV1 { struct_new_with, struct_flags };
+/// `DatetimeV1::datetime_is`: whether the value is a datetime.
+unsafe extern "C" fn datetime_is(ctx: Context, value: Value, out: *mut bool) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        if out.is_null() { return Err("Null output pointer".into()); }
+        let value = ctx.value(value)?;
+        unsafe { *out = ctx.vm.datetime_instant(value).is_some() };
+        Ok(())
+    })();
+    operation(ctx, result)
+}
+/// `DatetimeV1::datetime_new`: a datetime from Unix seconds, nanoseconds and an optional zone name.
+unsafe extern "C" fn datetime_new(ctx: Context, seconds: i64, nanos: u32, zone: Text, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        let instant = chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, nanos)
+            .ok_or_else(|| format!("Invalid datetime: {seconds} seconds and {nanos} nanoseconds"))?;
+        let zone = unsafe { text(zone)? };
+        Ok(if zone.is_empty() { ctx.vm.datetime_new(instant) } else { ctx.vm.datetime_new_with_timezone(instant, zone) })
+    })();
+    match result {
+        Ok(id) => output(ctx, BxValue::new_ptr(id), out),
+        Err(error) => operation(ctx, Err(error)),
+    }
+}
+/// `DatetimeV1::datetime_get`: Unix seconds, nanoseconds and the zone name (empty when none).
+unsafe extern "C" fn datetime_get(ctx: Context, value: Value, seconds: *mut i64, nanos: *mut u32, zone: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        if seconds.is_null() || nanos.is_null() { return Err("Null output pointer".into()); }
+        let value = ctx.value(value)?;
+        let instant = ctx.vm.datetime_instant(value).ok_or("Expected a datetime")?;
+        let name = ctx.vm.datetime_timezone(value).unwrap_or_default();
+        unsafe {
+            *seconds = instant.timestamp();
+            *nanos = instant.timestamp_subsec_nanos();
+        }
+        Ok(name)
+    })();
+    match result {
+        Ok(name) => {
+            let id = ctx.vm.string_new(name);
+            output(ctx, BxValue::new_ptr(id), zone)
+        }
+        Err(error) => operation(ctx, Err(error)),
+    }
+}
+/// The `matchbox.datetime.v1` table handed to plugins.
+static DATETIME: DatetimeV1 = DatetimeV1 { datetime_is, datetime_new, datetime_get };
+/// `SettingsV1::module_settings`: the settings struct of the module that supplied the plugin. It is the module's live
+/// settings, with `boxlang.json` overrides merged in, so a change a script makes to it is seen by the next call.
+unsafe extern "C" fn module_settings(ctx: Context, out: *mut Value) -> i32 {
+    let ctx = unsafe { context(ctx) };
+    let result = (|| {
+        let module = ctx.module.clone().ok_or("This plugin was not loaded by a module, so it has no settings")?;
+        let all = ctx
+            .vm
+            .get_global_value("__matchbox_module_settings")
+            .and_then(|value| value.as_gc_id())
+            .ok_or("Module settings are not available")?;
+        if !ctx.vm.struct_key_exists(all, &module) {
+            return Err(format!("Module not loaded: {module}"));
+        }
+        Ok(ctx.vm.struct_get(all, &module))
+    })();
+    match result {
+        Ok(settings) => output(ctx, settings, out),
+        Err(error) => operation(ctx, Err(error)),
+    }
+}
+/// The `matchbox.settings.v1` table handed to plugins.
+static SETTINGS: SettingsV1 = SettingsV1 { module_settings };
+/// The `matchbox.paths.v1` table handed to plugins.
+static PATHS: PathsV1 = PathsV1 { expand_path };
 /// The `matchbox.integers.v1` table handed to plugins.
 static INTEGERS: IntegersV1 = IntegersV1 { int_new, int_get };
 /// The `matchbox.types.v1` table handed to plugins.

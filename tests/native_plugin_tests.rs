@@ -156,6 +156,10 @@ fn plugin_values_errors_and_object_lifetime() {
             .contains("panicked")
     );
     assert!(vm.call_function("fixtureBadHandle", vec![], None).is_err());
+    // A plugin that no module supplied has no settings to read.
+    let key = vm.string_new("width".into());
+    let error = vm.call_function("fixtureSetting", vec![BxValue::new_ptr(key)], None).unwrap_err().to_string();
+    assert!(error.contains("not loaded by a module"), "{error}");
     assert!(
         vm.call_function("fixtureInfo", vec![BxValue::new_number(1.0)], None)
             .is_err()
@@ -374,6 +378,53 @@ wholeFailures = 0;
 try { fixtureWhole(2.5); } catch (any e) { wholeFailures++; }
 try { fixtureWhole("x"); } catch (any e) { wholeFailures++; }
 assert wholeFailures == 2;
+// paths: the plugin resolves a path like expandPath does for the calling script
+here = getDirectoryFromPath( getCurrentTemplatePath() );
+assert fixtureExpandPath( "data.toml" ) == expandPath( "data.toml" );
+assert fixtureExpandPath( "data.toml" ) == here & "data.toml";
+assert fixtureExpandPath( "/data.toml" ) == expandPath( "/data.toml" );
+assert fixtureExpandPath( "sub/" ).endsWith( "/" );
+// settings: the plugin reads its own module's settings, defaults and boxlang.json overrides merged
+assert fixtureSetting( "width" ) == 32;
+assert fixtureSetting( "nested" ).first == 1 && fixtureSetting( "nested" ).second == 9;
+assert isNull( fixtureSetting( "missing" ) );
+// datetimes: an instant plus an optional zone name round-trips through the plugin
+moment = fixtureDateNew( 1700000000, 500000000, "UTC" );
+assert isDate( moment ) && fixtureIsDate( moment );
+assert year( moment ) == 2023;
+info = fixtureDateInfo( moment );
+assert info.seconds == 1700000000 && info.nanos == 500000000 && info.zone == "UTC";
+assert fixtureDateInfo( fixtureDateNew( 0 ) ).zone == "" && fixtureDateInfo( fixtureDateNew( -86400 ) ).seconds == -86400;
+assert fixtureIsDate( now() ) && fixtureDateInfo( now() ).seconds > 1700000000;
+assert !fixtureIsDate( "2023-11-14" ) && !fixtureIsDate( 5 ) && !fixtureIsDate( [] );
+dateFailures = 0;
+try { fixtureDateInfo( "2023-11-14" ); } catch (any e) { dateFailures++; }
+try { fixtureDateNew( 0, 1000000000 ); } catch (any e) { dateFailures++; }
+try { fixtureDateNew( 9223372036854775807 ); } catch (any e) { dateFailures++; }
+assert dateFailures == 3;
+// struct options: ordered keeps insertion order, case-sensitive keeps the spelling of keys that differ only in case
+sensitive = fixtureStructNew( true, true );
+assert arrayToList( sensitive.keyArray() ) == "b,A,a" && sensitive[ "A" ] == 2 && sensitive[ "a" ] == 3;
+assert fixtureStructFlags( sensitive ).ordered && fixtureStructFlags( sensitive ).caseSensitive;
+insensitive = fixtureStructNew( false, false );
+assert insensitive.len() == 2 && insensitive.a == 3;
+assert !fixtureStructFlags( insensitive ).ordered && !fixtureStructFlags( insensitive ).caseSensitive;
+assert fixtureStructFlags( fixtureStructNew( true, false ) ).ordered && !fixtureStructFlags( fixtureStructNew( true, false ) ).caseSensitive;
+assert !fixtureStructFlags( fixtureStructNew( false, true ) ).ordered && fixtureStructFlags( fixtureStructNew( false, true ) ).caseSensitive;
+assert fixtureStructNew( false, true ).len() == 3 && fixtureStructNew( true, false ).keyArray().len() == 2;
+structFailures = 0;
+try { fixtureStructFlags( [ 1 ] ); } catch (any e) { structFailures++; }
+try { fixtureStructFlags( "x" ); } catch (any e) { structFailures++; }
+assert structFailures == 2;
+// typed errors: the type, message and detail the plugin chose, catchable by type; a plain error stays generic
+try { fixtureTypedError( "TomlParseException", "Invalid key", "line 3, column 5" ); assert false; }
+catch ( any e ) { assert e.type == "TomlParseException" && e.message == "Invalid key" && e.detail == "line 3, column 5"; }
+byType = false;
+try { fixtureTypedError( "TomlParseException", "again" ); } catch ( TomlParseException e ) { byType = e.detail == ""; }
+assert byType;
+try { fixtureWhole( "x" ); assert false; } catch ( any e ) { assert e.type == "ExpressionException"; }
+try { fixtureTypedError( "TomlParseException", "first" ); assert false; } catch ( any e ) { assert e.message == "first"; }
+try { fixtureWhole( "x" ); assert false; } catch ( any e ) { assert e.type == "ExpressionException" && e.message != "first"; }
 println("collections ok");
 "#,
     )
@@ -864,6 +915,39 @@ println("unprefixed mapping OK");
 }
 
 #[test]
+fn module_qualified_class_names_resolve_in_new_and_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("module");
+    fs::create_dir_all(module.join("models")).unwrap();
+    // The module's name is "module"; its mapping, and so its invocation path, is "plain".
+    fs::write(module.join("ModuleConfig.bx"), r#"class { this.mapping = {name:"plain", usePrefix:false}; }"#).unwrap();
+    fs::write(module.join("models/Counter.bx"), "class { function next() { return 1; } }").unwrap();
+    fs::write(module.join("Root.bx"), "class { function where() { return \"root\"; } }").unwrap();
+    fs::write(dir.path().join("app.bxs"), r#"
+import models.Counter@module;
+import models.Counter@MODULE as Aliased;
+import Root@module;
+assert new Counter().next() == 1;
+assert new Aliased().next() == 1;
+assert new Root().where() == "root";
+assert new models.Counter@module().next() == 1;
+assert new models.Counter@MODULE().next() == 1;
+failures = 0;
+try { new models.Counter@missing(); } catch (any e) { failures++; assert e.message contains "Module not loaded: missing"; }
+try { new models.Nope@module(); } catch (any e) { failures++; }
+assert failures == 2;
+println("module class names OK");
+"#).unwrap();
+    let output = cli(dir.path(), &["--module", "module", "app.bxs"]); success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "module class names OK\n");
+    success(&cli(dir.path(), &["--target", "native", "--module", "module", "--output", "application", "app.bxs"]));
+    fs::remove_dir_all(module).unwrap();
+    let output = Command::new(dir.path().join("application")).current_dir(dir.path()).output().unwrap();
+    success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "module class names OK\n");
+}
+
+#[test]
 fn runtime_mappings_resolve_embedded_classes_in_configure_imports_and_constructors() {
     let dir = tempfile::tempdir().unwrap();
     let module = dir.path().join("module");
@@ -1099,7 +1183,7 @@ config = new Config();
 "#),
         bifs:compile(""), bif_registrations:vec![], classes:vec![], components:vec![], settings:serde_json::json!({}), artifact:None,
     };
-    let app = matchbox_vm::bundle::Application { modules:vec![module], chunk:compile(r#"
+    let app = matchbox_vm::bundle::Application { mappings: Default::default(), modules:vec![module], chunk:compile(r#"
 reference = createObject(className="org.matchbox.fixture.NativeCounter", type="java");
 assert reference.answer() == 42;
 assert new java:org.matchbox.fixture.NativeCounter(11).info().value == 11;
@@ -1155,11 +1239,11 @@ config = new Config();
         };
         let cache = tempfile::tempdir().unwrap();
         let script = if phase == "application" { "throw 'original application error';" } else { "" };
-        let app = matchbox_vm::bundle::Application { modules:vec![module(true)], chunk:compile(script) };
+        let app = matchbox_vm::bundle::Application { mappings: Default::default(), modules:vec![module(true)], chunk:compile(script) };
         let error = app.run(&mut vm, cache.path()).unwrap_err().to_string();
         assert!(error.contains(match phase { "duplicate" => "already registered", "startup" => "original startup error", "application" => "original application error", _ => "secondary unload error" }), "{phase}: {error}");
         // The same name can be registered again even after partial registration or failing unload.
-        let app = matchbox_vm::bundle::Application { modules:vec![module(false)], chunk:compile("assert createObject('java','org.matchbox.fixture.NativeCounter').init(9).info().value == 9;") };
+        let app = matchbox_vm::bundle::Application { mappings: Default::default(), modules:vec![module(false)], chunk:compile("assert createObject('java','org.matchbox.fixture.NativeCounter').init(9).info().value == 9;") };
         app.run(&mut vm, cache.path()).unwrap();
     }
 }
@@ -1775,7 +1859,7 @@ config = new Config();
             instance:"config".into(), descriptor, bifs:compile(""), bif_registrations:vec![], classes:vec![], components:vec![],
             settings:serde_json::json!({}), artifact:None,
         };
-        let app = matchbox_vm::bundle::Application { chunk:compile("throw \"original application error\";"), modules:vec![module] };
+        let app = matchbox_vm::bundle::Application { mappings: Default::default(), chunk:compile("throw \"original application error\";"), modules:vec![module] };
         let cache = tempfile::tempdir().unwrap();
         let error = app.run(&mut vm,cache.path()).unwrap_err().to_string();
         assert!(error.contains(if startup_failure { "Missing" } else { "original application error" }), "{error}");

@@ -1965,6 +1965,7 @@ fn process_file_with_args(
                 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
                 { matchbox_vm::bundle::Application {
                     chunk: chunk.clone(), modules: module_programs::prepare(&modules_info, matchbox_vm::bundle::TARGET)?,
+                    mappings: runtime_mappings(),
                 }.append_to(&[])? }
                 #[cfg(any(target_family = "wasm", target_os = "espidf"))]
                 { bail!("Module application envelopes currently require a desktop host"); }
@@ -2170,6 +2171,15 @@ pub fn run_chunk(chunk: Chunk, modules: &[modules::ModuleInfo]) -> Result<()> {
     run_chunk_with_args(chunk, modules, args)
 }
 
+/// The mappings found while compiling (`boxlang.json`, `Application.bx`), as the VM's `expandPath` sees them.
+#[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+fn runtime_mappings() -> Vec<matchbox_vm::paths::PathMapping> {
+    matchbox_compiler::mappings::current_mappings()
+        .into_iter()
+        .map(|m| matchbox_vm::paths::PathMapping::new(&m.name, m.path, m.external))
+        .collect()
+}
+
 fn run_chunk_with_args(
     chunk: Chunk,
     modules: &[modules::ModuleInfo],
@@ -2191,6 +2201,8 @@ fn run_chunk_with_args(
 
     let mut vm = vm::VM::new_with_bifs(external_bifs, native_classes);
     vm.set_cli_args(args);
+    #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
+    vm.set_path_mappings(runtime_mappings());
 
     #[cfg(feature = "jit")]
     vm.enable_jit();
@@ -2202,7 +2214,7 @@ fn run_chunk_with_args(
             if modules.iter().zip(&prepared).any(|(source, compiled)| source.has_native && compiled.artifact.is_none()) {
                 bail!("Source-only native modules require --target native; publish a prebuilt artifact for runtime loading");
             }
-            matchbox_vm::bundle::Application { chunk, modules: prepared }.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
+            matchbox_vm::bundle::Application { chunk, modules: prepared, mappings: runtime_mappings() }.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
         }
         #[cfg(any(target_family = "wasm", target_os = "espidf"))]
         { bail!("Runtime module initialization currently requires a desktop host"); }
@@ -2318,6 +2330,7 @@ fn produce_native_binary(
         #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
         { binary_bytes = matchbox_vm::bundle::Application {
             chunk: chunk.clone(), modules: module_programs::prepare(modules, module_programs::output_target(Some(target)))?,
+            mappings: runtime_mappings(),
         }.append_to(native_bytes)?; }
         #[cfg(any(target_family = "wasm", target_os = "espidf"))]
         { bail!("Native module packaging currently requires a desktop host"); }
@@ -2721,6 +2734,7 @@ use std::collections::HashMap;
         {
             let application = matchbox_vm::bundle::Application {
                 chunk: chunk.clone(), modules: module_programs::prepare(modules, matchbox_vm::bundle::TARGET)?,
+                mappings: runtime_mappings(),
             };
             let bytes = application.append_to(&[])?;
             code.push_str(&format!(r#"

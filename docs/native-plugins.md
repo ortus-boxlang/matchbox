@@ -139,6 +139,20 @@ Descriptor `configure()` can declare `interceptors = [{class: "interceptors.Prob
 
 Activation is marked only after `onLoad()` succeeds. Reverse-order cleanup includes partially configured modules when startup fails, continues if an `onUnload()` hook fails, and preserves the original startup/application error.
 
+## Module-qualified class names
+
+A class that lives in a module can be named `path.to.Class@moduleName`, as in BoxLang, in `new` and `import`:
+
+```boxlang
+import models.Counter@mymodule;            // used as Counter
+import models.Counter@mymodule as Total;
+counter = new Counter();
+other   = new models.Counter@mymodule();
+root    = new Root@mymodule();             // Root.bx in the module's root folder
+```
+
+The name is looked up in the module under its invocation path (`bxModules.<name>`, the `invocationPath` of its module record), so it finds the same class as `new bxModules.<name>.path.to.Class()`. Module names are case-insensitive. A module that is not loaded fails with `Module not loaded: <name>`. Only classes packaged with the module are found, as for `bxModules.<name>` names, and this works from source, from `.bxb` files and in native binaries. A script that uses no module has no module to look in, so there `Class@name` is looked up as an ordinary path and normally fails to compile as an unknown class.
+
 ## Module components
 
 Top-level `components/*.bx` classes register their `invoke()` method. `@BoxComponent` uses the same filename/string/array alias rules as `@BoxBIF`. Invocation supplies named `context`, `attributes`, `body`, and `executionState` arguments, so declaration order does not matter. The live record exposes registered aliases under `moduleRecord.components`.
@@ -209,6 +223,26 @@ Plugins are trusted arbitrary native code, not sandboxed. SHA-256 pins content; 
 `matchbox.bytes.v1` is an additive capability with `get` and `new` operations. Binary data is not passed through UTF-8 strings. `get` exposes a call-scoped borrowed byte view; `new` copies plugin bytes before returning. SDK authors negotiate with `require_bytes()` and use `Call::bytes()` / `Call::bytes_new()`. Hosts lacking this capability fail initialization explicitly; existing ValuesV1/RootsV1 tables and ABI major 1 remain unchanged.
 
 The optional [`bx-matchbox-std`](../modules/bx-matchbox-std/README.md) package starts incremental standard-library migration with raw standard streams, TCP, timeouts, buffered exact/delimited reads, and strict UTF-8 decoding. It is explicitly selectable and embeddable, not automatically baked into every runtime. Parser inspection remains a core API; see [AST inspection](ast-inspection.md).
+
+## Paths
+
+`matchbox.paths.v1` is an additive capability with one operation, `expand_path`. It resolves a path exactly as `expandPath` does for the code that called the plugin: a relative path starts in the folder of the calling file, `/` is the application root, mappings from `boxlang.json`, `Application.bx` and modules resolve into their folders, and an `onMissingMapping` interceptor may answer. The file does not have to exist, and a trailing separator is kept. Plugin file functions should call it for every path they accept, so `tomlDeserializeFile( "/config/app.toml" )` finds the same file on every backend. SDK authors negotiate with `require_paths()` and call `Call::expand_path( api, "..." )`. Hosts lacking the capability fail initialization explicitly.
+
+## Module settings
+
+`matchbox.settings.v1` is an additive capability with one operation, `module_settings`. It writes the settings struct of the module whose package supplied the plugin: the defaults `ModuleConfig.bx` declares with the overrides from `boxlang.json` (`modules.<name>.settings`) deep-merged in, the same struct `getModuleSettings( name )` returns. It is the live struct, so read it on every call instead of keeping a copy, and a script's change to a setting is seen by the next call. A plugin loaded without a module has no settings and the call fails. SDK authors negotiate with `require_settings()` and call `Call::module_settings( api )`, then read keys with `struct_get`. Precedence between per-call arguments, settings and built-in defaults stays the plugin's choice; mirror the JVM module (per-call options, then module settings, then defaults) for parity.
+
+## Dates and times
+
+`matchbox.datetime.v1` is an additive capability for datetime values, with `datetime_is`, `datetime_new` and `datetime_get`. A datetime is an instant on the UTC timeline, given as whole Unix seconds plus a nanosecond part (below 1,000,000,000), and an optional time zone name (`UTC`, `America/New_York`) that BoxLang uses when it formats the value. `datetime_new` takes an empty zone for a value with no zone of its own, and fails for an instant outside the supported range. `datetime_get` returns the seconds, nanoseconds and the zone as a new string, empty when there is none, and fails for a value that is not a datetime. A plugin that parses a calendar value with no offset (a TOML local date or time, for example) has to choose the zone itself; the JVM modules use the default zone. SDK authors negotiate with `require_datetime()` and use `Call::is_datetime`, `Call::datetime_new` and `Call::datetime_get`. Hosts lacking the capability fail initialization explicitly.
+
+## Struct options
+
+`matchbox.structs.v1` is an additive capability for structs with options. `struct_new_with( ordered, case_sensitive )` creates an empty struct: `ordered` keeps keys in insertion order, and `case_sensitive` makes keys that differ only in case separate keys and keeps the spelling of each. `struct_flags` reports both flags of an existing struct and fails for a value that is not a struct. The core `struct_new` stays unordered and case-insensitive, as BoxLang's own structs are. A parser that must keep a file's key order and spelling (TOML and YAML do) creates its structs with both flags on, matching the JVM modules. SDK authors negotiate with `require_structs()` and use `Call::struct_new_with` and `Call::struct_flags`; `struct_set`, `struct_get` and `struct_keys` then follow the struct's own rules. Hosts lacking the capability fail initialization explicitly.
+
+## Typed errors
+
+`matchbox.errors.v1` is an additive capability with one operation, `error_typed( type, message, detail )`. A plain failure from a plugin function reaches a script as a generic `ExpressionException`. A typed one reaches it as an exception with the `type`, `message` and `detail` the plugin chose, so `catch ( TomlParseException e )` and `e.type`/`e.detail` behave as they do for the JVM module's exception. Record the error once, then fail with the same message; the first error of a call wins, and a call that fails without recording one stays an `ExpressionException`. SDK authors negotiate with `require_errors()` and write `return Err( call.error_typed( api, "TomlParseException", "Invalid key", "line 3, column 5" ) )` inside `guarded`. Hosts lacking the capability fail initialization explicitly. The VM implements it with `BxVM::raise_typed_exception`, which hands the exception through the same retained-exception path BoxLang throws use across a native call.
 
 ## Retained VM values
 
