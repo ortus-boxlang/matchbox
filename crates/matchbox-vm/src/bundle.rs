@@ -262,6 +262,8 @@ pub struct Application {
     pub modules: Vec<Module>,
     /// The program's resource files (`crate::resources`), served from memory by the runner.
     pub resources: crate::resources::Resources,
+    /// The application's `expandPath` mappings (`boxlang.json`, `Application.bx`), fixed when it was built.
+    pub mappings: Vec<crate::paths::PathMapping>,
 }
 impl Application {
     pub fn from_executable(bytes: &[u8]) -> Result<Self> {
@@ -290,7 +292,10 @@ impl Application {
         if !self.resources.files.is_empty() {
             crate::resources::use_packed(std::mem::take(&mut self.resources));
         }
+        vm.set_path_mappings(std::mem::take(&mut self.mappings));
         let loaded = LoadedModules::load(vm, self.modules, cache)?;
+        let module_mappings = loaded.mappings(vm)?;
+        vm.add_path_mappings(module_mappings.into_iter().map(|m| crate::paths::PathMapping::new(&m.name, m.path, m.external)));
         self.chunk.reconstruct_functions();
         let result = vm.interpret(self.chunk);
         let shutdown = loaded.unload(vm);

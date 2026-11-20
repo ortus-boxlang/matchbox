@@ -906,25 +906,28 @@ pub fn directory_move(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
 
 #[cfg(feature = "bif-io")]
 pub fn expand_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    use crate::paths::{expand_path as expand, ExpandOptions};
     if args.is_empty() {
         return Err("expandPath() expects 1 argument".to_string());
     }
     let path_str = vm.to_string(args[0]);
-    let path = Path::new(&path_str);
     let has_trailing = path_str.ends_with('/') || path_str.ends_with('\\');
 
+    let mappings = vm.path_mappings();
+    let template = vm.current_chunk().map(|chunk| PathBuf::from(chunk.borrow().filename()));
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let expanded = if path.is_absolute() && path.exists() {
-        path.to_path_buf()
-    } else if path_str.starts_with(['/', '\\']) {
-        cwd.join(path_str.trim_start_matches(['/', '\\']))
-    } else if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    };
+    let options = ExpandOptions { template: template.as_deref(), ..ExpandOptions::default() };
+    let resolved = expand(&mappings, &cwd, &path_str, &options, &mut |missing: &str| {
+        // BoxLang's onMissingMapping: a handler puts the answer in `resolvedFilePath`.
+        let data = vm.struct_new();
+        let text = vm.string_new(missing.to_string());
+        vm.struct_set(data, "path", BxValue::new_ptr(text));
+        vm.struct_set(data, "resolvedFilePath", BxValue::new_null());
+        vm.announce("onMissingMapping", BxValue::new_ptr(data)).ok()?;
+        let answer = vm.struct_get(data, "resolvedFilePath");
+        (!answer.is_null()).then(|| PathBuf::from(vm.to_string(answer)))
+    });
 
-    let resolved = expanded.canonicalize().unwrap_or(expanded);
     let mut result = normalize_path_string(&resolved);
     if has_trailing && !result.ends_with(std::path::MAIN_SEPARATOR) {
         result.push(std::path::MAIN_SEPARATOR);

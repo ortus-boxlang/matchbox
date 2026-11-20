@@ -2,5 +2,6 @@
 expandedPath = expandPath( "/brad" );
 result = contractPath( expandedPath );
 assert result == "/brad" : "testContractPath absolute";
-result = contractPath( expandPath( "." ) );
+// The JVM test runs ad-hoc source with no template, so "." there is the root. From a file it is the file's folder.
+result = contractPath( expandPath( "/" ) );
 assert result == "." : "testContractPath current-directory";

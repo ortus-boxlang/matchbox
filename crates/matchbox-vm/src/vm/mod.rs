@@ -561,6 +561,7 @@ pub struct VM {
     global_namespace: u64,
     global_bifs: HashSet<Rc<str>>,
     struct_assignment_hooks: HashMap<usize, (Rc<gc::RootedValue>, crate::types::NativeCallback)>,
+    path_mappings: Vec<crate::paths::PathMapping>,
     pub script_variables: Rc<RefCell<HashMap<String, BxValue>>>,
     pub current_fiber_idx: Option<usize>,
     pub shapes: ShapeRegistry,
@@ -643,6 +644,8 @@ impl BxVM for VM {
         let function = BxValue::new_ptr(self.heap.alloc(GcObject::CompiledFunction(Rc::new(method))));
         self.call_function_value_named(function, args, None).map_err(|e| e.to_string())
     }
+
+    fn path_mappings(&self) -> Vec<crate::paths::PathMapping> { self.path_mappings.clone() }
 
     fn current_chunk(&self) -> Option<Rc<RefCell<crate::vm::chunk::Chunk>>> {
         if let Some(idx) = self.current_fiber_idx {
@@ -2618,6 +2621,20 @@ impl VM {
 
     /// Records the command line (executable first) and exposes it like BoxLang's CLI mode:
     /// `server.cli` (`args`, `parsed`, `executionPath`, `command`) and `server.boxlang.cliMode`.
+    /// Replaces the mappings `expandPath` resolves through. Later entries do not override earlier ones: the
+    /// longest matching name wins, as in BoxLang.
+    pub fn set_path_mappings(&mut self, mappings: Vec<crate::paths::PathMapping>) {
+        self.path_mappings = mappings;
+    }
+
+    /// Adds mappings, replacing any with the same name.
+    pub fn add_path_mappings(&mut self, mappings: impl IntoIterator<Item = crate::paths::PathMapping>) {
+        for mapping in mappings {
+            self.path_mappings.retain(|existing| existing.name != mapping.name);
+            self.path_mappings.push(mapping);
+        }
+    }
+
     pub fn set_cli_args(&mut self, args: Vec<String>) {
         use crate::types::BxVM as _;
         let user_args: Vec<String> = args.iter().skip(1).cloned().collect();
@@ -2662,6 +2679,7 @@ impl VM {
             global_namespace: next_global_namespace(),
             global_bifs: HashSet::new(),
             struct_assignment_hooks: HashMap::new(),
+            path_mappings: Vec::new(),
             script_variables: Self::new_variables_scope(),
             current_fiber_idx: None,
             shapes: ShapeRegistry::new(),
