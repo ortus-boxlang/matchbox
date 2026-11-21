@@ -3,8 +3,8 @@
 MatchBox can draw full-screen terminal applications. This page is the API contract: the JVM BoxLang implementation is
 meant to offer the same calls, so a program written for one runs on the other.
 
-Build with the `bif-tui` feature (`cargo build --features bif-tui`); native programs (`--target native`) include it when
-MatchBox was built with it.
+Build from source with the `bif-tui` feature (`cargo build --features bif-tui`); published stable and snapshot CLI builds
+also include it. Native programs (`--target native`) include it when MatchBox was built with it.
 
 ```boxlang
 tui = createObject( "rust", "tui.TUI" );
