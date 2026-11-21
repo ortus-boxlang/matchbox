@@ -2116,7 +2116,15 @@ fn strip_sources(chunk: &mut Chunk) {
 }
 
 /// Clears embedded source text from a chunk tree while preserving shared class constants.
+///
 /// `done` maps a shared class or interface to its stripped copy, so every user of it keeps sharing one.
+///
+/// # Arguments
+/// * `chunk` - The chunk whose source text is cleared, recursively including sub-chunks.
+/// * `done` - Map from a shared value's address to its already stripped copy.
+///
+/// # Returns
+/// Nothing; `chunk` is modified in place and `done` is extended with any newly stripped classes.
 fn strip_sources_shared(chunk: &mut Chunk, done: &mut HashMap<usize, types::Constant>) {
     chunk.source = String::new();
     for constant in chunk.constants.iter_mut() {

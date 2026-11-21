@@ -5,6 +5,12 @@
 use std::{fs, path::PathBuf, process::Command};
 
 /// Writes a fresh scratch project with the given source files and returns its directory.
+///
+/// # Arguments
+/// * `files` - Relative file names paired with their BoxLang source text.
+///
+/// # Returns
+/// The directory containing the written files, unique for this process and test.
 fn project(files: &[(&str, &str)]) -> PathBuf {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -22,18 +28,38 @@ fn project(files: &[(&str, &str)]) -> PathBuf {
 }
 
 /// Runs the MatchBox binary in `dir`; returns success, stdout and stderr.
+///
+/// # Arguments
+/// * `dir` - The scratch project directory to run in.
+/// * `args` - Command-line arguments passed to MatchBox, before the program name.
+///
+/// # Returns
+/// Whether MatchBox exited successfully, followed by its stdout and stderr as text.
 fn matchbox(dir: &PathBuf, args: &[&str]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_matchbox")).current_dir(dir).args(args).output().unwrap();
     (output.status.success(), String::from_utf8_lossy(&output.stdout).into_owned(), String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
 /// Counts occurrences of a class literal in compiled bytecode or a native binary.
+///
+/// # Arguments
+/// * `haystack` - The compiled bytes to search.
+/// * `needle` - The class literal whose copies are counted.
+///
+/// # Returns
+/// The number of times `needle` occurs in `haystack`.
 fn count(haystack: &[u8], needle: &[u8]) -> usize {
     haystack.windows(needle.len()).filter(|w| *w == needle).count()
 }
 
 /// `lib.Shared` is used by A and B (twice each), by `lib.Child` through `extends`, and by main.
 /// Before sharing, its literal landed in the bytecode once per use, nested uses included.
+///
+/// # Arguments
+/// None.
+///
+/// # Returns
+/// A scratch project directory containing that diamond of classes and its entry script.
 fn diamond() -> PathBuf {
     project(&[
         ("lib/Shared.bx", r#"class {
@@ -69,6 +95,12 @@ fn diamond() -> PathBuf {
 const EXPECTED: &str = "a1:SHARED-CLASS-LITERAL-7f3a\na2:SHARED-CLASS-LITERAL-7f3a\nchild+BASE-CLASS-LITERAL-91c2:SHARED-CLASS-LITERAL-7f3a\nb1:SHARED-CLASS-LITERAL-7f3a/a1:SHARED-CLASS-LITERAL-7f3a\nb2:BASE-CLASS-LITERAL-91c2:SHARED-CLASS-LITERAL-7f3a\nSHARED-CLASS-LITERAL-7f3a\n";
 
 /// Sharing does not change what the program prints.
+///
+/// # Arguments
+/// None.
+///
+/// # Returns
+/// Nothing; asserts that the program runs and prints [`EXPECTED`].
 #[test]
 fn a_class_used_many_times_runs_the_same() {
     let dir = diamond();
@@ -78,6 +110,12 @@ fn a_class_used_many_times_runs_the_same() {
 }
 
 /// Bytecode keeps one copy of each class and still runs from the `.bxb` file.
+///
+/// # Arguments
+/// None.
+///
+/// # Returns
+/// Nothing; asserts one literal per class in the bytecode and that it still prints [`EXPECTED`].
 #[test]
 fn bytecode_holds_each_class_once_and_runs() {
     let dir = diamond();
@@ -93,6 +131,12 @@ fn bytecode_holds_each_class_once_and_runs() {
 }
 
 /// A native binary keeps one copy of each class and still runs on its own.
+///
+/// # Arguments
+/// None.
+///
+/// # Returns
+/// Nothing; asserts one shared literal in the binary and that it prints [`EXPECTED`].
 #[test]
 fn a_native_binary_holds_each_class_once_and_runs() {
     let dir = diamond();
@@ -107,6 +151,12 @@ fn a_native_binary_holds_each_class_once_and_runs() {
 }
 
 /// Stripping source text must not undo the sharing of class constants.
+///
+/// # Arguments
+/// None.
+///
+/// # Returns
+/// Nothing; asserts one shared literal after `--strip-source` and that it prints [`EXPECTED`].
 #[test]
 fn strip_source_keeps_classes_shared() {
     let dir = diamond();
@@ -120,6 +170,12 @@ fn strip_source_keeps_classes_shared() {
 }
 
 /// A class that constructs itself during compilation reports a cycle, not a stack overflow.
+///
+/// # Arguments
+/// None.
+///
+/// # Returns
+/// Nothing; asserts that compilation fails with a circular class reference naming the file.
 #[test]
 fn a_class_file_that_needs_itself_is_a_clear_error() {
     let dir = project(&[
@@ -132,6 +188,12 @@ fn a_class_file_that_needs_itself_is_a_clear_error() {
 }
 
 /// Caching is per compile: a new MatchBox process sees an edited class file.
+///
+/// # Arguments
+/// None.
+///
+/// # Returns
+/// Nothing; asserts the first and second runs print the old and new values respectively.
 #[test]
 fn an_edited_class_file_is_read_again_by_the_next_compile() {
     let dir = project(&[

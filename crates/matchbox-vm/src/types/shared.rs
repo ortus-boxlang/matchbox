@@ -24,11 +24,23 @@ pub struct Shared<T>(Arc<T>);
 
 impl<T> Shared<T> {
     /// Wraps a value so every clone of this handle points at the same value.
+    ///
+    /// # Arguments
+    /// * `value` - The compiled class or interface to share.
+    ///
+    /// # Returns
+    /// A handle that owns `value` and can be cloned without copying it.
     pub fn new(value: T) -> Self {
         Shared(Arc::new(value))
     }
 
     /// A mutable reference, copying the value first when it is shared.
+    ///
+    /// # Arguments
+    /// * `self` - The handle whose value is to be changed.
+    ///
+    /// # Returns
+    /// A mutable reference to the value; other handles keep the old value when a copy is needed.
     pub fn make_mut(&mut self) -> &mut T
     where
         T: Clone,
@@ -37,6 +49,12 @@ impl<T> Shared<T> {
     }
 
     /// The value itself, copied when it is shared.
+    ///
+    /// # Arguments
+    /// * `self` - The handle to consume; this handle cannot be used afterwards.
+    ///
+    /// # Returns
+    /// The owned value, copied out if other handles still share it.
     pub fn into_inner(self) -> T
     where
         T: Clone,
@@ -45,11 +63,24 @@ impl<T> Shared<T> {
     }
 
     /// Both hold the very same value (not only equal ones).
+    ///
+    /// # Arguments
+    /// * `a` - The first handle to compare.
+    /// * `b` - The second handle to compare.
+    ///
+    /// # Returns
+    /// `true` when both handles point at one value, even if their values merely compare equal.
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.0, &b.0)
     }
 
     /// The address of the shared value: equal for clones, an identity key.
+    ///
+    /// # Arguments
+    /// * `self` - The handle whose value is identified.
+    ///
+    /// # Returns
+    /// The address of the shared value, used as a dedup key in bytecode and in source stripping.
     pub fn addr(&self) -> usize {
         Arc::as_ptr(&self.0) as *const () as usize
     }
@@ -57,6 +88,12 @@ impl<T> Shared<T> {
 
 impl<T> Clone for Shared<T> {
     /// Clones the handle, not the value: both handles hold the same compiled class.
+    ///
+    /// # Arguments
+    /// * `self` - The handle to clone.
+    ///
+    /// # Returns
+    /// A second handle to the very same value.
     fn clone(&self) -> Self {
         Shared(Arc::clone(&self.0))
     }
@@ -65,6 +102,12 @@ impl<T> Clone for Shared<T> {
 impl<T> Deref for Shared<T> {
     type Target = T;
     /// Reads through the handle as if it were the compiled class itself.
+    ///
+    /// # Arguments
+    /// * `self` - The handle to read through.
+    ///
+    /// # Returns
+    /// A reference to the shared value.
     fn deref(&self) -> &T {
         &self.0
     }
@@ -72,6 +115,13 @@ impl<T> Deref for Shared<T> {
 
 impl<T: PartialEq> PartialEq for Shared<T> {
     /// Equal when the handles share a value, or when the values themselves are equal.
+    ///
+    /// # Arguments
+    /// * `self` - The handle to compare.
+    /// * `other` - The handle to compare against.
+    ///
+    /// # Returns
+    /// `true` when both handles point at one value or their values compare equal.
     fn eq(&self, other: &Self) -> bool {
         Shared::ptr_eq(self, other) || *self.0 == *other.0
     }
@@ -79,6 +129,13 @@ impl<T: PartialEq> PartialEq for Shared<T> {
 
 impl<T: fmt::Debug> fmt::Debug for Shared<T> {
     /// Formats the value, not the handle, so debug output is unchanged.
+    ///
+    /// # Arguments
+    /// * `self` - The handle whose value is formatted.
+    /// * `f` - The formatter to write into.
+    ///
+    /// # Returns
+    /// The formatter's result: `Ok` when the value was written, otherwise its error.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
@@ -117,6 +174,16 @@ enum WireIn<T> {
 
 impl<T: Serialize + 'static> Serialize for Shared<T> {
     /// Writes a full definition the first time a value is seen and a reference afterwards.
+    ///
+    /// # Arguments
+    /// * `self` - The handle to serialize.
+    /// * `serializer` - The serializer used by [`encode`] or by a direct postcard call.
+    ///
+    /// # Returns
+    /// The serializer's output when a value or a reference was written.
+    ///
+    /// # Errors
+    /// Returns the serializer's error when the value or reference cannot be written.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let known = WRITING.with(|w| w.borrow().as_ref().and_then(|s| s.seen.get(&self.addr()).copied()));
         if let Some(index) = known {
@@ -137,6 +204,16 @@ impl<T: Serialize + 'static> Serialize for Shared<T> {
 
 impl<'de, T: Deserialize<'de> + 'static> Deserialize<'de> for Shared<T> {
     /// Reads a full definition, or reuses the value a reference points at in the read session.
+    ///
+    /// # Arguments
+    /// * `deserializer` - The deserializer used by [`decode`] or by a direct postcard call.
+    ///
+    /// # Returns
+    /// A handle to the newly read value, or to the earlier value named by a reference.
+    ///
+    /// # Errors
+    /// Returns the deserializer's error, or a custom error when a reference has no open read
+    /// session or points at a value that was not read.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match WireIn::<T>::deserialize(deserializer)? {
             WireIn::Def(value) => {
@@ -168,12 +245,27 @@ impl<'de, T: Deserialize<'de> + 'static> Deserialize<'de> for Shared<T> {
 struct Close(fn());
 impl Drop for Close {
     /// Ends the encode or decode session, including when the operation panics.
+    ///
+    /// # Arguments
+    /// * `self` - The guard whose cleanup function is called.
+    ///
+    /// # Returns
+    /// Nothing; the session's thread-local state is cleared as a side effect.
     fn drop(&mut self) {
         (self.0)()
     }
 }
 
 /// Serializes bytecode (a chunk, a bundle) with each shared class written once.
+///
+/// # Arguments
+/// * `value` - The bytecode value to serialize, with all of its shared handles.
+///
+/// # Returns
+/// The postcard bytes, with one full copy of each shared class and references for later uses.
+///
+/// # Errors
+/// Returns a postcard error when the value cannot be serialized.
 pub fn encode<T: Serialize>(value: &T) -> postcard::Result<Vec<u8>> {
     let outer = WRITING.with(|w| {
         let mut w = w.borrow_mut();
@@ -188,6 +280,15 @@ pub fn encode<T: Serialize>(value: &T) -> postcard::Result<Vec<u8>> {
 }
 
 /// Reads bytecode written by [`encode`].
+///
+/// # Arguments
+/// * `bytes` - The bytecode bytes to read.
+///
+/// # Returns
+/// The decoded value, with the sharing of classes and interfaces rebuilt.
+///
+/// # Errors
+/// Returns a postcard error for malformed bytes or a reference that has no matching definition.
 pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> postcard::Result<T> {
     let outer = READING.with(|r| {
         let mut r = r.borrow_mut();
@@ -213,6 +314,12 @@ mod tests {
     }
 
     /// Repeated handles are written once and decoded back as one shared value.
+    ///
+    /// # Arguments
+    /// None.
+    ///
+    /// # Returns
+    /// Nothing; asserts that the payload is small and the decoded handles are shared.
     #[test]
     fn a_shared_value_is_written_once_and_read_back_shared() {
         let s = Shared::new("x".repeat(1000));
@@ -226,6 +333,13 @@ mod tests {
     }
 
     /// Plain postcard writes stay readable, with one full copy per handle.
+    ///
+    /// # Arguments
+    /// None.
+    ///
+    /// # Returns
+    /// Nothing; asserts that a plain postcard payload is larger but still readable, with or
+    /// without a decode session.
     #[test]
     fn without_a_session_every_copy_is_full_and_still_reads() {
         let s = Shared::new("y".repeat(1000));
@@ -239,6 +353,12 @@ mod tests {
     }
 
     /// A reference needs the read session that `decode` opens.
+    ///
+    /// # Arguments
+    /// None.
+    ///
+    /// # Returns
+    /// Nothing; asserts that plain postcard rejects a reference that `decode` can read.
     #[test]
     fn a_reference_without_a_session_is_an_error() {
         let s = Shared::new("z".to_string());

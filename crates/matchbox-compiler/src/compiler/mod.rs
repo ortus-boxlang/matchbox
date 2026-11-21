@@ -64,6 +64,12 @@ pub struct CacheScope(());
 
 impl CacheScope {
     /// Opens a cache scope, creating the file cache for the outermost scope.
+    ///
+    /// # Arguments
+    /// None.
+    ///
+    /// # Returns
+    /// A scope that clears the cache when the outermost scope of the thread ends.
     pub fn open() -> Self {
         CACHE_DEPTH.with(|d| {
             if d.get() == 0 {
@@ -77,6 +83,12 @@ impl CacheScope {
 
 impl Drop for CacheScope {
     /// Closes this scope and discards the file cache when the outermost scope ends.
+    ///
+    /// # Arguments
+    /// * `self` - The scope being closed.
+    ///
+    /// # Returns
+    /// Nothing; dropping the outermost scope clears the thread's file cache.
     fn drop(&mut self) {
         CACHE_DEPTH.with(|d| {
             d.set(d.get() - 1);
@@ -88,6 +100,14 @@ impl Drop for CacheScope {
 }
 
 /// Identity of a loaded file in the cache: its kind, canonical path and importing imports.
+///
+/// # Arguments
+/// * `kind` - `"class"` or `"interface"`, the kind of loaded file.
+/// * `file` - The source file path, canonicalized for the key.
+/// * `imports` - Import bindings of the importing file; they affect the compiled result.
+///
+/// # Returns
+/// A string key that is equal for the same file compiled with the same imports.
 fn cache_key(kind: &str, file: &Path, imports: &HashMap<String, String>) -> String {
     // the importing file's imports reach the loaded file's compile, so they are part of the key
     let mut pairs: Vec<_> = imports.iter().collect();
@@ -97,11 +117,25 @@ fn cache_key(kind: &str, file: &Path, imports: &HashMap<String, String>) -> Stri
 }
 
 /// Returns a previously compiled class or interface file, if it is cached.
+///
+/// # Arguments
+/// * `key` - The key from [`cache_key`].
+///
+/// # Returns
+/// A clone of the cached class constant, its parent definitions and imports, or `None` when this
+/// compile has not loaded that file yet.
 fn cached_file(key: &str) -> Option<CachedFile> {
     FILE_CACHE.with(|c| c.borrow().as_ref().and_then(|c| c.files.get(key).cloned()))
 }
 
 /// Keeps a compiled class or interface file for the rest of the current cache scope.
+///
+/// # Arguments
+/// * `key` - The key from [`cache_key`].
+/// * `file` - The compiled constant, parent definitions and imports to store.
+///
+/// # Returns
+/// Nothing; later loads with the same key reuse `file`.
 fn remember_file(key: String, file: CachedFile) {
     FILE_CACHE.with(|c| {
         if let Some(c) = c.borrow_mut().as_mut() {
@@ -3145,6 +3179,14 @@ impl Compiler {
     }
 
     /// Finds a class by name in this chunk, loading a dotted name from its file if needed.
+    ///
+    /// # Arguments
+    /// * `self` - The compiler whose chunk and cache are searched.
+    /// * `class_name` - The class name, optionally dotted (a path to a class file).
+    ///
+    /// # Returns
+    /// The shared class, if one is defined in this chunk or can be loaded from a file. A class file
+    /// that fails to load is treated as not found.
     fn find_class_constant(&mut self, class_name: &str) -> Result<Option<Shared<BxClass>>> {
         let lower_name = class_name.to_lowercase();
         for constant in &self.chunk.constants {
@@ -3678,6 +3720,18 @@ impl Compiler {
     }
 
     /// Compiles a class file; returns its class and its imports after compiling.
+    ///
+    /// # Arguments
+    /// * `self` - The compiler that owns the chunk and cache.
+    /// * `class_path` - The class name as written in the source, used in error messages.
+    /// * `file_path` - The resolved path of the class file to compile.
+    ///
+    /// # Returns
+    /// The class constant and the import bindings collected while compiling that file.
+    ///
+    /// # Errors
+    /// Fails when the file cannot be read or parsed, contains no class, or needs a class that is
+    /// still being compiled (a circular class reference).
     fn compile_class_file(&mut self, class_path: &str, file_path: &Path) -> Result<(Constant, HashMap<String, String>)> {
         let file_path = file_path.to_path_buf();
         let source = fs::read_to_string(&file_path)?;
@@ -3790,6 +3844,16 @@ impl Compiler {
     }
 
     /// Resolves an interface name through imports, this chunk's constants or a source file.
+    ///
+    /// # Arguments
+    /// * `self` - The compiler whose imports and constants are searched.
+    /// * `name` - The interface name as written in an `implements` or `extends` clause.
+    ///
+    /// # Returns
+    /// The shared interface definition, reused from this chunk or loaded from its source file.
+    ///
+    /// # Errors
+    /// Fails when an imported interface file cannot be read, parsed or resolved.
     fn resolve_interface(&mut self, name: &str) -> Result<Shared<BxInterface>> {
         let path = if let Some(path) = self.imports.get(&name.to_lowercase()) {
             path.clone()
@@ -3801,6 +3865,17 @@ impl Compiler {
     }
 
     /// Loads an interface from a file once per cache scope, reusing a cached compile when possible.
+    ///
+    /// # Arguments
+    /// * `self` - The compiler that owns the cache and interface stack.
+    /// * `iface_path` - The import or path that names the interface source file.
+    ///
+    /// # Returns
+    /// The shared interface constant from the cache or from a fresh compile of that file.
+    ///
+    /// # Errors
+    /// Fails on a circular interface inheritance chain, a missing or unparsable file, or a file
+    /// that does not declare an interface.
     fn load_interface_from_path(&mut self, iface_path: &str) -> Result<Shared<BxInterface>> {
         let file_path = self.resolve_source_file(iface_path)?;
         let canonical = file_path.canonicalize()?;
@@ -3822,6 +3897,17 @@ impl Compiler {
     }
 
     /// Compiles an interface file; returns its constant and its imports after compiling.
+    ///
+    /// # Arguments
+    /// * `self` - The compiler that owns the chunk and cache.
+    /// * `iface_path` - The interface name as written in the source, used in error messages.
+    /// * `file_path` - The resolved path of the interface file to compile.
+    ///
+    /// # Returns
+    /// The interface constant and the import bindings collected while compiling that file.
+    ///
+    /// # Errors
+    /// Fails when the file cannot be read or parsed, or contains no interface declaration.
     fn compile_interface_file(&mut self, iface_path: &str, file_path: &Path) -> Result<(Constant, HashMap<String, String>)> {
         let file_path = file_path.to_path_buf();
         let canonical = file_path.canonicalize()?;
