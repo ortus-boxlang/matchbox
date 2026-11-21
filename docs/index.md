@@ -52,6 +52,7 @@ matchbox                          # Start REPL
 matchbox my_script.bxs            # Run interpreter
 matchbox --build my_script.bxs    # Compile to .bxb bytecode
 matchbox --target native app.bxs  # Standalone native binary
+matchbox --target native --resources data app.bxs  # ... with data/ packed in (resources/ is automatic)
 matchbox --target js     lib.bxs  # ES module + .wasm
 matchbox --target wasm   app.bxs  # Raw .wasm binary
 matchbox --target esp32  app.bxs  # Build and flash ESP32

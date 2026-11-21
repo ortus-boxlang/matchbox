@@ -968,6 +968,16 @@ pub fn run() -> Result<()> {
         .collect();
     let filename = cli.file.as_ref();
 
+    // Resources: resources/ next to the program and each --resources folder; read from disk when the
+    // program runs from source, packed into a native build.
+    let resource_folders: Vec<PathBuf> = cli.resources.iter().map(PathBuf::from).collect();
+    for folder in &resource_folders {
+        if !folder.is_dir() {
+            bail!("--resources {}: not a folder", folder.display());
+        }
+    }
+    matchbox_vm::resources::use_folders(matchbox_vm::resources::folders_for(filename.map(Path::new), &resource_folders));
+
     match filename {
         Some(name) => {
             let path = Path::new(name);
@@ -1050,6 +1060,8 @@ struct CliOptions {
     port: Option<String>,
     host: Option<String>,
     modules: Vec<String>,
+    /// `--resources DIR` (repeatable): folders packed with the program besides its `resources/`
+    resources: Vec<String>,
     file: Option<String>,
     script_args: Vec<String>,
     /// `--bx-*` options (BoxLang's runtime flags).
@@ -1129,7 +1141,7 @@ fn parse_cli(args: &[String]) -> std::result::Result<CliOptions, String> {
             "--strip-source" => cli.strip_source = true,
             "--serve" => cli.serve = true,
             option @ ("--target" | "--chip" | "--keep" | "--output" | "--webroot" | "--port"
-            | "--host" | "--module") => {
+            | "--host" | "--module" | "--resources") => {
                 i += 1;
                 let value = rest
                     .get(i)
@@ -1143,6 +1155,7 @@ fn parse_cli(args: &[String]) -> std::result::Result<CliOptions, String> {
                     "--webroot" => cli.webroot = Some(value),
                     "--port" => cli.port = Some(value),
                     "--host" => cli.host = Some(value),
+                    "--resources" => cli.resources.push(value),
                     _ => cli.modules.push(value),
                 }
             }
@@ -1212,6 +1225,8 @@ fn usage_text() -> String {
     let _ = writeln!(out, "  --no-shaking        Disable tree-shaking and include all prelude BIFs");
     let _ = writeln!(out, "  --no-std-lib        Exclude the standard library (prelude) entirely");
     let _ = writeln!(out, "  --output <path>     Set the output file path for compiled artifacts");
+    let _ = writeln!(out, "  --resources <dir>   Add a folder of resource files (repeatable; resources/ next to the program is always used)");
+    let _ = writeln!(out, "                      Read with resourceRead( path ); packed into native binaries");
     let _ = writeln!(out, "  --strip-source      Strip embedded source text from compiled output");
     let _ = writeln!(out, 
         "                      Errors still report file:line; native binaries fall back to disk for snippets"
@@ -1972,7 +1987,7 @@ fn process_file_with_args(
                 #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
                 { matchbox_vm::bundle::Application {
                     chunk: chunk.clone(), modules: module_programs::prepare(&modules_info, matchbox_vm::bundle::TARGET)?,
-                    mappings: runtime_mappings(),
+                    resources: Default::default(), mappings: runtime_mappings(),
                 }.append_to(&[])? }
                 #[cfg(any(target_family = "wasm", target_os = "espidf"))]
                 { bail!("Module application envelopes currently require a desktop host"); }
@@ -2249,7 +2264,7 @@ fn run_chunk_with_args(
             if modules.iter().zip(&prepared).any(|(source, compiled)| source.has_native && compiled.artifact.is_none()) {
                 bail!("Source-only native modules require --target native; publish a prebuilt artifact for runtime loading");
             }
-            matchbox_vm::bundle::Application { chunk, modules: prepared, mappings: runtime_mappings() }.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
+            matchbox_vm::bundle::Application { chunk, modules: prepared, resources: Default::default(), mappings: runtime_mappings() }.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
         }
         #[cfg(any(target_family = "wasm", target_os = "espidf"))]
         { bail!("Runtime module initialization currently requires a desktop host"); }
@@ -2357,18 +2372,19 @@ fn produce_native_binary(
     let mut binary_bytes = native_bytes.to_vec();
     let chunk_bytes = matchbox_vm::types::shared::encode(chunk)?;
     let chunk_len = chunk_bytes.len() as u64;
-    if modules.is_empty() {
+    let resources = matchbox_vm::resources::collect().map_err(|e| anyhow::anyhow!(e))?;
+    if modules.is_empty() && resources.files.is_empty() {
         binary_bytes.extend_from_slice(&chunk_bytes);
         binary_bytes.extend_from_slice(&chunk_len.to_le_bytes());
         binary_bytes.extend_from_slice(MAGIC_FOOTER);
     } else {
         #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
-        { binary_bytes = matchbox_vm::bundle::Application {
-            chunk: chunk.clone(), modules: module_programs::prepare(modules, module_programs::output_target(Some(target)))?,
-            mappings: runtime_mappings(),
-        }.append_to(native_bytes)?; }
+        {
+            let modules = if modules.is_empty() { Vec::new() } else { module_programs::prepare(modules, module_programs::output_target(Some(target)))? };
+            binary_bytes = matchbox_vm::bundle::Application { chunk: chunk.clone(), modules, resources, mappings: runtime_mappings() }.append_to(native_bytes)?;
+        }
         #[cfg(any(target_family = "wasm", target_os = "espidf"))]
-        { bail!("Native module packaging currently requires a desktop host"); }
+        { let _ = resources; bail!("Native module and resource packaging currently requires a desktop host"); }
     }
     let out_path = output.map(|p| p.to_path_buf()).unwrap_or_else(|| {
         if cfg!(windows) {
@@ -2769,6 +2785,7 @@ use std::collections::HashMap;
         {
             let application = matchbox_vm::bundle::Application {
                 chunk: chunk.clone(), modules: module_programs::prepare(modules, matchbox_vm::bundle::TARGET)?,
+                resources: matchbox_vm::resources::collect().map_err(|e| anyhow::anyhow!(e))?,
                 mappings: runtime_mappings(),
             };
             let bytes = application.append_to(&[])?;
@@ -4239,3 +4256,4 @@ mod fusion_feature_tests {
         assert!(fusion_vm_features("esp32").is_empty());
     }
 }
+
