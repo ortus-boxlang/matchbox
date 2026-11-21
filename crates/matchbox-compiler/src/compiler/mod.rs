@@ -63,6 +63,7 @@ thread_local! {
 pub struct CacheScope(());
 
 impl CacheScope {
+    /// Opens a cache scope, creating the file cache for the outermost scope.
     pub fn open() -> Self {
         CACHE_DEPTH.with(|d| {
             if d.get() == 0 {
@@ -75,6 +76,7 @@ impl CacheScope {
 }
 
 impl Drop for CacheScope {
+    /// Closes this scope and discards the file cache when the outermost scope ends.
     fn drop(&mut self) {
         CACHE_DEPTH.with(|d| {
             d.set(d.get() - 1);
@@ -85,6 +87,7 @@ impl Drop for CacheScope {
     }
 }
 
+/// Identity of a loaded file in the cache: its kind, canonical path and importing imports.
 fn cache_key(kind: &str, file: &Path, imports: &HashMap<String, String>) -> String {
     // the importing file's imports reach the loaded file's compile, so they are part of the key
     let mut pairs: Vec<_> = imports.iter().collect();
@@ -93,10 +96,12 @@ fn cache_key(kind: &str, file: &Path, imports: &HashMap<String, String>) -> Stri
     format!("{kind}|{}|{:?}", canonical.display(), pairs)
 }
 
+/// Returns a previously compiled class or interface file, if it is cached.
 fn cached_file(key: &str) -> Option<CachedFile> {
     FILE_CACHE.with(|c| c.borrow().as_ref().and_then(|c| c.files.get(key).cloned()))
 }
 
+/// Keeps a compiled class or interface file for the rest of the current cache scope.
 fn remember_file(key: String, file: CachedFile) {
     FILE_CACHE.with(|c| {
         if let Some(c) = c.borrow_mut().as_mut() {
@@ -3139,6 +3144,7 @@ impl Compiler {
                 .is_some_and(|parent| self.class_chain_has_init(parent, depth + 1))
     }
 
+    /// Finds a class by name in this chunk, loading a dotted name from its file if needed.
     fn find_class_constant(&mut self, class_name: &str) -> Result<Option<Shared<BxClass>>> {
         let lower_name = class_name.to_lowercase();
         for constant in &self.chunk.constants {
@@ -3783,6 +3789,7 @@ impl Compiler {
         bail!("No class declaration found in {}", file_path.display());
     }
 
+    /// Resolves an interface name through imports, this chunk's constants or a source file.
     fn resolve_interface(&mut self, name: &str) -> Result<Shared<BxInterface>> {
         let path = if let Some(path) = self.imports.get(&name.to_lowercase()) {
             path.clone()
@@ -3793,6 +3800,7 @@ impl Compiler {
         self.load_interface_from_path(&path)
     }
 
+    /// Loads an interface from a file once per cache scope, reusing a cached compile when possible.
     fn load_interface_from_path(&mut self, iface_path: &str) -> Result<Shared<BxInterface>> {
         let file_path = self.resolve_source_file(iface_path)?;
         let canonical = file_path.canonicalize()?;
@@ -3813,6 +3821,7 @@ impl Compiler {
         }
     }
 
+    /// Compiles an interface file; returns its constant and its imports after compiling.
     fn compile_interface_file(&mut self, iface_path: &str, file_path: &Path) -> Result<(Constant, HashMap<String, String>)> {
         let file_path = file_path.to_path_buf();
         let canonical = file_path.canonicalize()?;

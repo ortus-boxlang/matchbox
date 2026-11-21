@@ -24,6 +24,7 @@ enum ConstantKey {
 }
 
 impl ConstantKey {
+    /// Builds a dedup key; shared classes and interfaces are keyed by their identity.
     fn from_constant(c: &Constant) -> Option<Self> {
         match c {
             Constant::Number(f) => Some(ConstantKey::Number(f.to_bits())),

@@ -23,6 +23,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct Shared<T>(Arc<T>);
 
 impl<T> Shared<T> {
+    /// Wraps a value so every clone of this handle points at the same value.
     pub fn new(value: T) -> Self {
         Shared(Arc::new(value))
     }
@@ -55,6 +56,7 @@ impl<T> Shared<T> {
 }
 
 impl<T> Clone for Shared<T> {
+    /// Clones the handle, not the value: both handles hold the same compiled class.
     fn clone(&self) -> Self {
         Shared(Arc::clone(&self.0))
     }
@@ -62,18 +64,21 @@ impl<T> Clone for Shared<T> {
 
 impl<T> Deref for Shared<T> {
     type Target = T;
+    /// Reads through the handle as if it were the compiled class itself.
     fn deref(&self) -> &T {
         &self.0
     }
 }
 
 impl<T: PartialEq> PartialEq for Shared<T> {
+    /// Equal when the handles share a value, or when the values themselves are equal.
     fn eq(&self, other: &Self) -> bool {
         Shared::ptr_eq(self, other) || *self.0 == *other.0
     }
 }
 
 impl<T: fmt::Debug> fmt::Debug for Shared<T> {
+    /// Formats the value, not the handle, so debug output is unchanged.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
@@ -111,6 +116,7 @@ enum WireIn<T> {
 }
 
 impl<T: Serialize + 'static> Serialize for Shared<T> {
+    /// Writes a full definition the first time a value is seen and a reference afterwards.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let known = WRITING.with(|w| w.borrow().as_ref().and_then(|s| s.seen.get(&self.addr()).copied()));
         if let Some(index) = known {
@@ -130,6 +136,7 @@ impl<T: Serialize + 'static> Serialize for Shared<T> {
 }
 
 impl<'de, T: Deserialize<'de> + 'static> Deserialize<'de> for Shared<T> {
+    /// Reads a full definition, or reuses the value a reference points at in the read session.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match WireIn::<T>::deserialize(deserializer)? {
             WireIn::Def(value) => {
@@ -160,6 +167,7 @@ impl<'de, T: Deserialize<'de> + 'static> Deserialize<'de> for Shared<T> {
 /// Clears a session when it ends, also on a panic.
 struct Close(fn());
 impl Drop for Close {
+    /// Ends the encode or decode session, including when the operation panics.
     fn drop(&mut self) {
         (self.0)()
     }
@@ -204,6 +212,7 @@ mod tests {
         nested: Vec<Shared<String>>,
     }
 
+    /// Repeated handles are written once and decoded back as one shared value.
     #[test]
     fn a_shared_value_is_written_once_and_read_back_shared() {
         let s = Shared::new("x".repeat(1000));
@@ -216,6 +225,7 @@ mod tests {
         assert!(!Shared::ptr_eq(&back.a, &back.nested[1]));
     }
 
+    /// Plain postcard writes stay readable, with one full copy per handle.
     #[test]
     fn without_a_session_every_copy_is_full_and_still_reads() {
         let s = Shared::new("y".repeat(1000));
@@ -228,6 +238,7 @@ mod tests {
         assert_eq!(back, h);
     }
 
+    /// A reference needs the read session that `decode` opens.
     #[test]
     fn a_reference_without_a_session_is_an_error() {
         let s = Shared::new("z".to_string());
