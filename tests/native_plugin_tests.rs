@@ -1269,7 +1269,7 @@ config = new Config();
 "#),
         bifs:compile(""), bif_registrations:vec![], classes:vec![], components:vec![], settings:serde_json::json!({}), artifact:None,
     };
-    let app = matchbox_vm::bundle::Application { mappings: Default::default(), modules:vec![module], chunk:compile(r#"
+    let app = matchbox_vm::bundle::Application { mappings: Default::default(), resources: Default::default(), modules:vec![module], chunk:compile(r#"
 reference = createObject(className="org.matchbox.fixture.NativeCounter", type="java");
 assert reference.answer() == 42;
 assert new java:org.matchbox.fixture.NativeCounter(11).info().value == 11;
@@ -1325,11 +1325,11 @@ config = new Config();
         };
         let cache = tempfile::tempdir().unwrap();
         let script = if phase == "application" { "throw 'original application error';" } else { "" };
-        let app = matchbox_vm::bundle::Application { mappings: Default::default(), modules:vec![module(true)], chunk:compile(script) };
+        let app = matchbox_vm::bundle::Application { modules:vec![module(true)], chunk:compile(script), resources: Default::default(), mappings: Default::default() };
         let error = app.run(&mut vm, cache.path()).unwrap_err().to_string();
         assert!(error.contains(match phase { "duplicate" => "already registered", "startup" => "original startup error", "application" => "original application error", _ => "secondary unload error" }), "{phase}: {error}");
         // The same name can be registered again even after partial registration or failing unload.
-        let app = matchbox_vm::bundle::Application { mappings: Default::default(), modules:vec![module(false)], chunk:compile("assert createObject('java','org.matchbox.fixture.NativeCounter').init(9).info().value == 9;") };
+        let app = matchbox_vm::bundle::Application { mappings: Default::default(), resources: Default::default(), modules:vec![module(false)], chunk:compile("assert createObject('java','org.matchbox.fixture.NativeCounter').init(9).info().value == 9;") };
         app.run(&mut vm, cache.path()).unwrap();
     }
 }
@@ -1946,7 +1946,7 @@ config = new Config();
             instance:"config".into(), descriptor, bifs:compile(""), bif_registrations:vec![], classes:vec![], components:vec![],
             settings:serde_json::json!({}), artifact:None,
         };
-        let app = matchbox_vm::bundle::Application { mappings: Default::default(), chunk:compile("throw \"original application error\";"), modules:vec![module] };
+        let app = matchbox_vm::bundle::Application { chunk:compile("throw \"original application error\";"), modules:vec![module], resources: Default::default(), mappings: Default::default() };
         let cache = tempfile::tempdir().unwrap();
         let error = app.run(&mut vm,cache.path()).unwrap_err().to_string();
         assert!(error.contains(if startup_failure { "Missing" } else { "original application error" }), "{error}");

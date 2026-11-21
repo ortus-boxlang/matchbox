@@ -274,6 +274,7 @@ script_test!(vm_query_for_in, "vm_query_for_in.bxs");
 script_test!(vm_member_gaps, "vm_member_gaps.bxs");
 script_test!(vm_lock_blocks, "vm_lock_blocks.bxs");
 script_test!(vm_labeled_loops, "vm_labeled_loops.bxs");
+script_test!(vm_nested_for_loops, "vm_nested_for_loops.bxs");
 script_test!(vm_word_operators, "vm_word_operators.bxs");
 script_test!(vm_private_methods, "vm_private_methods.bxs");
 script_test!(vm_class_accessors, "vm_class_accessors.bxs");
