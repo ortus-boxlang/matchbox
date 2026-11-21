@@ -7,7 +7,7 @@ use std::fs;
 use postcard;
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
+const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x02"; // \x02: classes and interfaces are stored once (types::shared)
 
 // ---------------------------------------------------------------------------
 // WASM Entry Points (Web/Node)
@@ -50,7 +50,7 @@ mod wasm {
     #[wasm_bindgen]
     pub fn run_bytecode(bytecode: &[u8]) -> Result<String, JsValue> {
         console_error_panic_hook::set_once();
-        let mut chunk: Chunk = postcard::from_bytes(bytecode)
+        let mut chunk: Chunk = matchbox_vm::types::shared::decode(bytecode)
             .map_err(|e| JsValue::from_str(&format!("Deserialize Error: {}", e)))?;
         chunk.reconstruct_functions();
         
@@ -80,7 +80,7 @@ mod wasm {
 
         pub fn load_bytecode(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
             let res = (|| -> Result<()> {
-                let mut chunk: Chunk = postcard::from_bytes(bytes)?;
+                let mut chunk: Chunk = matchbox_vm::types::shared::decode(bytes)?;
                 chunk.reconstruct_functions();
                 let chunk_rc = Rc::new(RefCell::new(chunk.clone()));
                 self.chunk = Some(chunk_rc);
@@ -178,7 +178,7 @@ mod wasi_embed {
         if 12 + len > EMBED_CAPACITY {
             anyhow::bail!("Embedded bytecode length {} exceeds the embed capacity", len);
         }
-        let mut chunk: Chunk = postcard::from_bytes(&embed[12..12 + len])?;
+        let mut chunk: Chunk = matchbox_vm::types::shared::decode(&embed[12..12 + len])?;
         chunk.reconstruct_functions();
         Ok(Some(chunk))
     }
@@ -210,7 +210,7 @@ fn load_embedded_bytecode() -> Result<Chunk> {
     let chunk_start = len_start.checked_sub(len).ok_or_else(|| anyhow::anyhow!("Invalid embedded bytecode length"))?;
     let chunk_bytes = &bytes[chunk_start..len_start];
     
-    let mut chunk: Chunk = postcard::from_bytes(chunk_bytes)?;
+    let mut chunk: Chunk = matchbox_vm::types::shared::decode(chunk_bytes)?;
     chunk.reconstruct_functions();
     Ok(chunk)
 }
@@ -270,7 +270,7 @@ fn main() -> Result<()> {
                 application.run(&mut vm, &matchbox_vm::bundle::cache_root())?;
                 return Ok(());
             }
-            let mut chunk: Chunk = match postcard::from_bytes(&bytes) {
+            let mut chunk: Chunk = match matchbox_vm::types::shared::decode(&bytes) {
                 Ok(c) => c,
                 Err(e) => return Err(anyhow::anyhow!("Failed to deserialize app.bxb: {}", e)),
             };

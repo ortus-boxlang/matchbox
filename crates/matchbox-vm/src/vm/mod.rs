@@ -9686,7 +9686,8 @@ impl VM {
                 let id = self.gc_alloc(GcObject::CompiledFunction(Rc::new(f)))?;
                 Ok(BxValue::new_ptr(id))
             }
-            Constant::Class(mut c) => {
+            Constant::Class(c) => {
+                let mut c = c.into_inner();
                 c.constructor.chunk = c.constructor.chunk.clone_without_runtime_caches();
                 for (_, function) in &mut c.methods {
                     function.chunk = function.chunk.clone_without_runtime_caches();
@@ -9694,7 +9695,8 @@ impl VM {
                 let id = self.gc_alloc(GcObject::Class(Rc::new(RefCell::new(c))))?;
                 Ok(BxValue::new_ptr(id))
             }
-            Constant::Interface(mut i) => {
+            Constant::Interface(i) => {
+                let mut i = i.into_inner();
                 for (_, function) in &mut i.methods {
                     if let Some(function) = function {
                         function.chunk = function.chunk.clone_without_runtime_caches();

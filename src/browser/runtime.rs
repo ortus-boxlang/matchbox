@@ -48,7 +48,7 @@ fn new_vm() -> VM {{
 
 fn embedded_chunk() -> Result<Chunk, String> {{
     let bytecode: Vec<u8> = vec!{bytecode:?};
-    let mut chunk: Chunk = postcard::from_bytes(&bytecode).map_err(|e| e.to_string())?;
+    let mut chunk: Chunk = matchbox_vm::types::shared::decode(&bytecode).map_err(|e| e.to_string())?;
     chunk.reconstruct_functions();
     Ok(chunk)
 }}

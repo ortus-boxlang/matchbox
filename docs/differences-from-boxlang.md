@@ -97,6 +97,7 @@ These BoxLang language features exist in the JVM runtime but are not yet availab
 | ORM / Hibernate | ❌ | No persistence layer |
 | `writeDump()` / debugging | ❌ | Use `println()` |
 | Full regex support | ❌ | Not yet implemented |
+| A class file that creates itself at compile time | ⚠️ | `new lib.A()` inside `lib/A.bx` fails with `Circular class reference`; create it at run time instead |
 
 ---
 

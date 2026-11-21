@@ -16,7 +16,7 @@ use std::{
 };
 
 pub const TARGET: &str = env!("MATCHBOX_TARGET");
-pub const MAGIC: &[u8; 8] = b"MBMODS\0\x0B";
+pub const MAGIC: &[u8; 8] = b"MBMODS\0\x0C"; // \x0C: classes and interfaces are stored once (types::shared)
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SharedLibrary {
@@ -274,10 +274,10 @@ impl Application {
         let start = end
             .checked_sub(length)
             .context("Invalid native application length")?;
-        Ok(postcard::from_bytes(&bytes[start..end])?)
+        Ok(crate::types::shared::decode(&bytes[start..end])?)
     }
     pub fn append_to(&self, runner: &[u8]) -> Result<Vec<u8>> {
-        let payload = postcard::to_stdvec(self)?;
+        let payload = crate::types::shared::encode(self)?;
         let mut bytes = runner.to_vec();
         bytes.extend_from_slice(&payload);
         bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());

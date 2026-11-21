@@ -377,13 +377,13 @@ fn load_route_table() -> EmbeddedRouteTable {
         return EmbeddedRouteTable::default();
     }
 
-    postcard::from_bytes(EMBEDDED_ROUTE_TABLE_JSON).unwrap_or_default()
+    matchbox_vm::types::shared::decode(EMBEDDED_ROUTE_TABLE_JSON).unwrap_or_default()
 }
 
 pub fn load_executable_route_table() -> ExecutableRouteTable {
     let route_table = load_route_table();
     let application = route_table.application.and_then(|application| {
-        let mut chunk: Chunk = match postcard::from_bytes(&application.bytecode) {
+        let mut chunk: Chunk = match matchbox_vm::types::shared::decode(&application.bytecode) {
             Ok(chunk) => chunk,
             Err(error) => {
                 println!(
@@ -402,7 +402,7 @@ pub fn load_executable_route_table() -> ExecutableRouteTable {
     let mut routes = Vec::with_capacity(route_table.routes.len());
 
     for route in route_table.routes {
-        let mut chunk: Chunk = match postcard::from_bytes(&route.bytecode) {
+        let mut chunk: Chunk = match matchbox_vm::types::shared::decode(&route.bytecode) {
             Ok(chunk) => chunk,
             Err(error) => {
                 println!(
@@ -683,7 +683,7 @@ fn load_route_table_from_storage() -> Option<EmbeddedRouteTable> {
         }
 
         let payload = std::slice::from_raw_parts(data_ptr.add(4), len);
-        let parsed = postcard::from_bytes(payload).ok();
+        let parsed = matchbox_vm::types::shared::decode(payload).ok();
         esp_idf_sys::esp_partition_munmap(map_handle);
 
         if parsed.is_some() {

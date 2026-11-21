@@ -19,9 +19,18 @@ enum ConstantKey {
     Null,
     StringArray(Vec<String>),
     Function(String),
+    /// The same shared class or interface (see `types::Shared`)
+    Shared(usize),
 }
 
 impl ConstantKey {
+    /// Builds a dedup key; shared classes and interfaces are keyed by their identity.
+    ///
+    /// # Arguments
+    /// * `c` - The constant to key, by value for scalars and by shared identity for classes.
+    ///
+    /// # Returns
+    /// A key for constants that can be deduplicated, or `None` for constants that are kept as-is.
     fn from_constant(c: &Constant) -> Option<Self> {
         match c {
             Constant::Number(f) => Some(ConstantKey::Number(f.to_bits())),
@@ -30,7 +39,9 @@ impl ConstantKey {
             Constant::Null => Some(ConstantKey::Null),
             Constant::StringArray(v) => Some(ConstantKey::StringArray(v.clone())),
             Constant::CompiledFunction(f) => Some(ConstantKey::Function(f.name.clone())),
-            Constant::Class(_) | Constant::Interface(_) | Constant::MethodSignatures(_) => None,
+            Constant::Class(c) => Some(ConstantKey::Shared(c.addr())),
+            Constant::Interface(i) => Some(ConstantKey::Shared(i.addr())),
+            Constant::MethodSignatures(_) => None,
         }
     }
 }
