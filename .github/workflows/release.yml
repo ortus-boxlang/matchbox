@@ -216,8 +216,11 @@ jobs:
             echo "Building stub for $target..."
             
             # Setup linker for cross-compilation
-            # Keep runner BIFs aligned with the MatchBox CLI's default features.
+            # Keep runner BIFs aligned with the shipped CLI. The terminal UI needs a real terminal, so it is desktop-only.
             FEATURES="bif-io,bif-http,bif-crypto,bif-cli"
+            if [[ "$target" != wasm32-* ]]; then
+              FEATURES="$FEATURES,bif-tui"
+            fi
             if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
               export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
             elif [[ "$target" == "armv7-unknown-linux-gnueabihf" ]]; then
@@ -482,8 +485,8 @@ jobs:
             export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
           fi
           
-          # One full-featured CLI, including the existing cross-platform stubs.
-          cargo build --release --features cross-compile --target ${{ matrix.target }}
+          # One full-featured CLI, including the existing cross-platform stubs and the terminal UI.
+          cargo build --release --features cross-compile,bif-tui --target ${{ matrix.target }}
 
       - name: Verify CLI build metadata
         if: matrix.target == 'x86_64-unknown-linux-gnu'
@@ -493,6 +496,19 @@ jobs:
           printf '%s\n' "$VERSION_OUTPUT"
           grep -Fx "matchbox version $MATCHBOX_BUILD_VERSION" <<< "$VERSION_OUTPUT"
           grep -Fx "commit: $(git rev-parse --short HEAD)" <<< "$VERSION_OUTPUT"
+
+      - name: Verify terminal UI support
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/tui-probe.bxs" <<'EOF'
+          tui = createObject( "rust", "tui.TUI" );
+          tui.begin_frame();
+          tui.render_to_string( 2, 1 );
+          println( "matchbox-tui-ok" );
+          EOF
+          OUTPUT=$(target/${{ matrix.target }}/release/matchbox "$RUNNER_TEMP/tui-probe.bxs")
+          grep -Fx "matchbox-tui-ok" <<< "$OUTPUT"
 
       - name: Smoke test native runner BIFs
         if: matrix.target == 'x86_64-unknown-linux-gnu'
