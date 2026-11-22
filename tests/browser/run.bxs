@@ -1,0 +1,52 @@
+// Drives web/index.html in Chromium through bx-playwright and asserts on window.results.
+// Env: MB_BASE_URL (server root), MB_ONLY (optional comma list of test ids).
+// Run on BoxLang JVM with the bx-playwright module, not on MatchBox.
+baseURL = getSystemSetting( "MB_BASE_URL" )
+only = getSystemSetting( "MB_ONLY", "" )
+
+consoleLines = []
+page = playwright()
+page.onConsole( ( message ) => consoleLines.append( message.type & ": " & message.text ) )
+	.onPageError( ( error ) => consoleLines.append( "pageerror: " & error.message ) )
+	.visit( baseURL & "/index.html" & ( only.len() ? "?only=" & only : "" ) )
+
+deadline = getTickCount() + 60000
+while ( !page.evaluate( "window.done === true" ) ) {
+	if ( getTickCount() > deadline ) {
+		throw( message = "Timed out waiting for window.done. Console: " & consoleLines.toList( " | " ) )
+	}
+	page.wait( 100 )
+}
+results = deserializeJSON( page.evaluate( "JSON.stringify(window.results)" ) )
+page.quit()
+
+failures = []
+function check( id, cond, detail = "" ) {
+	if ( !cond ) {
+		failures.append( id & ": " & detail )
+	}
+}
+function ran( id ) {
+	return only == "" || listFindNoCase( only, id )
+}
+function result( id ) {
+	if ( !results.keyExists( id ) || !results[ id ].ok ) {
+		failures.append( id & ": " & ( results.keyExists( id ) ? results[ id ].error : "did not run" ) )
+		return javacast( "null", 0 )
+	}
+	return results[ id ].value
+}
+
+if ( ran( "ping" ) ) {
+	check( "ping", result( "ping" ) == "pong" )
+}
+
+noisy = consoleLines.filter( ( l ) => l.findNoCase( "scheduled pump failed" ) || l.findNoCase( "recursive use" ) || l.findNoCase( "pageerror" ) )
+check( "j_no_pump_errors", noisy.len() == 0, noisy.toList( " | " ) )
+
+if ( failures.len() ) {
+	println( "FAILED:" & char( 10 ) & failures.toList( char( 10 ) ) )
+	println( "CONSOLE:" & char( 10 ) & consoleLines.toList( char( 10 ) ) )
+	throw( message = "browser tests failed" )
+}
+println( "browser tests passed" )

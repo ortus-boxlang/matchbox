@@ -1,0 +1,4 @@
+bx:header statusCode=int( url.code ?: 404 ) statusText="Test";
+bx:header name="Content-Type" value="text/plain";
+bx:header name="X-Test" value="yes";
+writeOutput( "status " & ( url.code ?: 404 ) );

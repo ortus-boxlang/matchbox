@@ -1,0 +1,8 @@
+bx:header name="Content-Type" value="application/json";
+req = getHTTPRequestData( true );
+writeOutput( serializeJSON( {
+	method: req.method,
+	auth: req.headers.keyExists( "Authorization" ) ? req.headers[ "Authorization" ] : javacast( "null", 0 ),
+	ctype: req.headers.keyExists( "Content-Type" ) ? req.headers[ "Content-Type" ] : javacast( "null", 0 ),
+	body: req.content
+} ) );

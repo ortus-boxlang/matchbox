@@ -1,0 +1,107 @@
+<!doctype html>
+<html><body>
+<script type="module">
+// Drives the compiled spike module. Each test stores its result in window.results[id]
+// and never throws; run.bxs asserts on the values.
+window.results = {};
+window.done = false;
+const only = new URLSearchParams(location.search).get('only');
+const wanted = only ? only.split(',') : null;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const tests = {};
+const test = (id, fn) => { tests[id] = fn; };
+
+const mod = await import('./spike.js');
+await window.MatchBox.ready('spike');
+
+class BxSpike extends HTMLElement {
+  constructor() { super(); this.attachShadow({ mode: 'open' }); }
+}
+customElements.define('bx-spike', BxSpike);
+const newHost = () => { const h = document.createElement('bx-spike'); document.body.append(h); return h; };
+
+test('ping', async () => await mod.ping());
+
+test('a_fetch_json', async () => {
+  const get = await mod.getJson('/api/json.bxs');
+  const post = await mod.postJson('/api/echo.bxs', 'tok', { q: 'hi' });
+  return { get, post };
+});
+
+test('b_stream_incremental', async () => {
+  let ticks = 0;
+  const t = setInterval(() => ticks++, 50);
+  const seen = await mod.streamRaw('/api/stream.bxs');
+  clearInterval(t);
+  return { seen, ticks };
+});
+
+test('c_overlapping_streams', async () => {
+  const start = performance.now();
+  const [x, y] = await Promise.all([mod.streamDecode('/api/stream.bxs'), mod.streamDecode('/api/stream.bxs')]);
+  return { ms: performance.now() - start, x, y };
+});
+
+test('d_parallel_getjson', async () => {
+  const all = await Promise.all(Array.from({ length: 20 }, () => mod.getJson('/api/json.bxs')));
+  return all;
+});
+
+test('e_two_instances', async () => {
+  const m1 = await import('./spike.js?vm=1');
+  await window.MatchBox.ready('spike');
+  const h1 = newHost();
+  await m1.wire(h1);
+  const m2 = await import('./spike.js?vm=2');
+  const h2 = newHost();
+  await m2.wire(h2);
+  const out = [];
+  for (const [h, text] of [[h1, 'one'], [h2, 'two']]) {
+    const root = h.shadowRoot;
+    root.querySelector('input').value = text;
+    root.querySelector('button').click();
+    await sleep(50);
+    out.push(root.querySelector('div').textContent);
+  }
+  return out;
+});
+
+test('f_click_during_stream', async () => {
+  const h = newHost();
+  await mod.wire(h);
+  const stream = mod.streamDecode('/api/stream.bxs');
+  await sleep(300);
+  h.shadowRoot.querySelector('input').value = 'mid';
+  h.shadowRoot.querySelector('button').click();
+  await sleep(50);
+  const clicked = h.shadowRoot.querySelector('div').textContent;
+  const text = await stream;
+  return { clicked, text };
+});
+
+test('g_angle_strings', async () => {
+  const h = newHost();
+  const n = await mod.renderInto(h, 'Support bot', ['one', 'two', 'three']);
+  return { n, html: h.shadowRoot.innerHTML };
+});
+
+test('h_new_js_ctor', async () => mod.decodeBytes(new TextEncoder().encode('héllo')));
+
+test('i_http', async () => {
+  const get = await mod.httpGet('/api/json.bxs');
+  const post = await mod.httpPost('/api/echo.bxs', 'tok', { q: 'hi' });
+  const notFound = await mod.httpGet('/api/status.bxs?code=404');
+  const failed = await mod.httpFail('http://127.0.0.1:1/');
+  return { get, post, notFound, failed };
+});
+
+test('k_failing_fetch', async () => mod.failingFetch('http://127.0.0.1:1/'));
+
+for (const [id, fn] of Object.entries(tests)) {
+  if (wanted && !wanted.includes(id)) continue;
+  try { window.results[id] = { ok: true, value: await fn() }; }
+  catch (e) { window.results[id] = { ok: false, error: String(e && e.message || e) }; }
+}
+window.done = true;
+</script>
+</body></html>
