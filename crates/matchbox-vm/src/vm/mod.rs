@@ -596,6 +596,10 @@ pub struct VM {
     pub(crate) callback_registry: Rc<RefCell<HashMap<usize, BxValue>>>,
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
     pub(crate) next_callback_id: RefCell<usize>,
+    /// The Proxy bound to the `js` global. Browser functions such as `fetch` throw
+    /// "Illegal invocation" when called with it as `this`, so calls on it use the window instead.
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    pub(crate) js_root: Option<JsValue>,
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -2676,12 +2680,15 @@ impl VM {
             callback_registry: Rc::new(RefCell::new(HashMap::new())),
             #[cfg(all(target_arch = "wasm32", feature = "js"))]
             next_callback_id: RefCell::new(1),
+            #[cfg(all(target_arch = "wasm32", feature = "js"))]
+            js_root: None,
         };
 
         #[cfg(all(target_arch = "wasm32", feature = "js"))]
         {
             if let Some(js_root) = browser_js_root() {
-                let id = vm.heap.alloc(GcObject::JsValue(js_root));
+                let id = vm.heap.alloc(GcObject::JsValue(js_root.clone()));
+                vm.js_root = Some(js_root);
                 vm.insert_global("js".to_string(), BxValue::new_ptr(id));
             }
         }
@@ -9001,7 +9008,11 @@ impl VM {
                                 js_args.push(&self.bx_to_js(&arg));
                             }
                             self.fibers[fiber_idx].stack.pop(); // Pop the receiver
-                            match Reflect::apply(&func, &js, &js_args) {
+                            let this_val = match &self.js_root {
+                                Some(root) if Object::is(root, &js) => js_sys::global().into(),
+                                _ => js.clone(),
+                            };
+                            match Reflect::apply(&func, &this_val, &js_args) {
                                 Ok(val) => {
                                     let bx_val = self.js_to_bx(val);
                                     self.fibers[fiber_idx].stack.push(bx_val);

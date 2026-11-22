@@ -15,3 +15,32 @@ function renderInto(host, title, lines) {
 function decodeBytes(bytes) {
     return new js.TextDecoder().decode(bytes)
 }
+
+function getJson(url) {
+    var res = js.fetch(url).get()
+    return res.json().get()
+}
+
+function postJson(url, token, payload) {
+    var res = js.fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " & token },
+        body: serializeJSON(payload)
+    }).get()
+    return res.json().get()
+}
+
+function streamRaw(url) {
+    var res = js.fetch(url).get()
+    var reader = res.body.getReader()
+    var seen = []
+    var start = js.performance.now()
+    while (true) {
+        var chunk = reader.read().get()
+        if (chunk.done) {
+            break
+        }
+        seen.append({ ms: round(js.performance.now() - start), bytes: chunk.value.length })
+    }
+    return seen
+}

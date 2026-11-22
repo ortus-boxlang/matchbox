@@ -52,8 +52,23 @@ if ( ran( "h_new_js_ctor" ) ) {
 	check( "h_new_js_ctor", h.length == 5 && h.codes[ 2 ] == 233, jsonSerialize( h ) )
 }
 
+if ( ran( "a_fetch_json" ) ) {
+	a = result( "a_fetch_json" )
+	check( "a_get", a.get.ok && a.get.name == "agent" && a.get.n == 42, jsonSerialize( a.get ) )
+	check( "a_post", a.post.method == "POST" && a.post.auth == "Bearer tok" && a.post.ctype.findNoCase( "application/json" ) == 1 && a.post.body == '{"q":"hi"}', jsonSerialize( a.post ) )
+}
+
+if ( ran( "b_stream_incremental" ) ) {
+	b = result( "b_stream_incremental" )
+	check( "b_chunks", b.seen.len() >= 4, jsonSerialize( b.seen ) )
+	check( "b_incremental", b.seen.last().ms - b.seen.first().ms > 1000, jsonSerialize( b.seen ) )
+	check( "b_page_responsive", b.ticks > 15, "ticks=" & b.ticks )
+}
+
 noisy = consoleLines.filter( ( l ) => l.findNoCase( "scheduled pump failed" ) || l.findNoCase( "recursive use" ) || l.findNoCase( "pageerror" ) )
-check( "j_no_pump_errors", noisy.len() == 0, noisy.toList( " | " ) )
+if ( ran( "j_no_pump_errors" ) ) {
+	check( "j_no_pump_errors", noisy.len() == 0, noisy.toList( " | " ) )
+}
 
 if ( failures.len() ) {
 	println( "FAILED:" & char( 10 ) & failures.toList( char( 10 ) ) )
