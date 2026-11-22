@@ -85,7 +85,10 @@ test('g_angle_strings', async () => {
   return { n, html: h.shadowRoot.innerHTML };
 });
 
-test('h_new_js_ctor', async () => mod.decodeBytes(new TextEncoder().encode('héllo')));
+test('h_new_js_ctor', async () => {
+  const text = await mod.decodeBytes(new TextEncoder().encode('h\u00e9llo'));
+  return { length: text.length, codes: Array.from(text, (c) => c.charCodeAt(0)) };
+});
 
 test('i_http', async () => {
   const get = await mod.httpGet('/api/json.bxs');

@@ -11,3 +11,7 @@ function renderInto(host, title, lines) {
     host.shadowRoot.innerHTML = html
     return lines.len()
 }
+
+function decodeBytes(bytes) {
+    return new js.TextDecoder().decode(bytes)
+}

@@ -47,6 +47,11 @@ if ( ran( "g_angle_strings" ) ) {
 	check( "g_angle_strings", g.n == 3 && g.html.find( "<ul><li>one</li><li>two</li><li>three</li></ul>" ) > 0, g.html )
 }
 
+if ( ran( "h_new_js_ctor" ) ) {
+	h = result( "h_new_js_ctor" )
+	check( "h_new_js_ctor", h.length == 5 && h.codes[ 2 ] == 233, jsonSerialize( h ) )
+}
+
 noisy = consoleLines.filter( ( l ) => l.findNoCase( "scheduled pump failed" ) || l.findNoCase( "recursive use" ) || l.findNoCase( "pageerror" ) )
 check( "j_no_pump_errors", noisy.len() == 0, noisy.toList( " | " ) )
 

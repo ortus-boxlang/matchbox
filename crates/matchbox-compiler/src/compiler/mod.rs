@@ -1627,6 +1627,26 @@ impl Compiler {
                     resolved_path = class_path.clone();
                 }
 
+                // `new js.X(...)`: `js` is the browser global, so the path is a JS constructor
+                // (`js.X` or `js.a.b.X`), never a BoxLang class file. The VM's NEW handler runs
+                // Reflect::construct on it.
+                if let Some(js_path) = class_path
+                    .get(3..)
+                    .filter(|_| class_path[..3].eq_ignore_ascii_case("js."))
+                {
+                    if args.iter().any(|arg| arg.name.is_some()) { bail!("Cannot use named arguments on a JavaScript constructor."); }
+                    if args.iter().any(|arg| matches!(arg.value.kind, ExpressionKind::Spread(_))) { bail!("JavaScript constructor spread arguments are not yet supported"); }
+                    let js_global = self.chunk.add_constant(Constant::String(BoxString::new("js")));
+                    self.chunk.emit1(op::GET_GLOBAL, js_global, expr.line);
+                    for segment in js_path.split('.') {
+                        let idx = self.chunk.add_constant(Constant::String(BoxString::new(segment)));
+                        self.chunk.emit1(op::MEMBER, idx, expr.line);
+                    }
+                    for arg in args { self.compile_expression(&arg.value)?; }
+                    self.chunk.emit1(op::NEW, args.len() as u32, expr.line);
+                    return Ok(());
+                }
+
                 if resolved_path.to_lowercase().starts_with("java:") {
                     let java_class = &resolved_path[5..];
 

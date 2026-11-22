@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Test ids asserted by run.bxs. Grows as each fix lands.
-const ENABLED: &[&str] = &["ping", "g_angle_strings"];
+const ENABLED: &[&str] = &["ping", "g_angle_strings", "h_new_js_ctor"];
 
 fn tool(name: &str) -> Option<PathBuf> {
     Command::new("which")
