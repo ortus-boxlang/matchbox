@@ -1644,6 +1644,11 @@ impl BxVM for VM {
         self.heap.retain_value(value)
     }
 
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    fn js_promise_to_future(&mut self, promise: JsValue) -> Result<BxValue, String> {
+        Ok(self.bridge_js_promise_to_future(promise))
+    }
+
     fn read_retained_value(&self, root: &crate::vm::gc::RootedValue) -> Result<BxValue, String> {
         self.heap.read_retained_value(root)
     }

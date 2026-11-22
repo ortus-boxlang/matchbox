@@ -226,6 +226,12 @@ pub trait BxVM {
     fn read_retained_value(&self, _root: &crate::vm::gc::RootedValue) -> Result<BxValue, String> {
         Err("Value retention is not supported by this host".into())
     }
+    /// Turns a JavaScript Promise into a future that settles when the Promise does.
+    /// Only the browser VM supports this.
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    fn js_promise_to_future(&mut self, _promise: wasm_bindgen::JsValue) -> Result<BxValue, String> {
+        Err("JavaScript promises are not supported by this host".into())
+    }
     fn native_object_new(&mut self, obj: Rc<RefCell<dyn BxNativeObject>>) -> usize;
     fn native_object_data(&self, _value: BxValue, _kind: &str) -> Option<*mut std::ffi::c_void> { None }
     fn is_native_abort(&self, _message: &str) -> bool { false }

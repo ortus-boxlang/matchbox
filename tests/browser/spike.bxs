@@ -83,3 +83,36 @@ function failingFetch(url) {
         return "caught: " & e.message
     }
 }
+
+function httpGet(url) {
+    return jsonDeserialize(http({ url: url }).get())
+}
+
+function httpPost(url, token, payload) {
+    return jsonDeserialize(http({
+        url: url,
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " & token },
+        body: serializeJSON(payload)
+    }).get())
+}
+
+function httpFail(url) {
+    try {
+        http({ url: url }).get()
+        return "unexpected ok"
+    } catch (any e) {
+        return "caught: " & e.message
+    }
+}
+
+function httpUnsupported(url, option) {
+    var spec = { url: url }
+    spec[option] = true
+    try {
+        http(spec).get()
+        return "unexpected ok"
+    } catch (any e) {
+        return "caught: " & e.message
+    }
+}

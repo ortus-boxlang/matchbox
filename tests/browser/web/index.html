@@ -95,7 +95,8 @@ test('i_http', async () => {
   const post = await mod.httpPost('/api/echo.bxs', 'tok', { q: 'hi' });
   const notFound = await mod.httpGet('/api/status.bxs?code=404');
   const failed = await mod.httpFail('http://127.0.0.1:1/');
-  return { get, post, notFound, failed };
+  const unsupported = await mod.httpUnsupported('/api/json.bxs', 'noProxy');
+  return { get, post, notFound, failed, unsupported };
 });
 
 test('k_failing_fetch', async () => mod.failingFetch('http://127.0.0.1:1/'));

@@ -89,6 +89,17 @@ if ( ran( "d_parallel_getjson" ) ) {
 	check( "d_count", d.len() == 20 && d.every( ( item ) => item.n == 42 && item.name == "agent" ), jsonSerialize( d ) )
 }
 
+if ( ran( "i_http" ) ) {
+	i = result( "i_http" )
+	check( "i_get", i.get.status == 200 && jsonDeserialize( i.get.body ).n == 42 && i.get.file_content == i.get.body, jsonSerialize( i.get ) )
+	check( "i_get_headers", i.get.headers.keyExists( "content-type" ) && i.get.headers[ "content-type" ].len() >= 1, jsonSerialize( i.get.headers ) )
+	echoed = jsonDeserialize( i.post.body )
+	check( "i_post", i.post.status == 200 && echoed.method == "POST" && echoed.auth == "Bearer tok" && echoed.body == '{"q":"hi"}', i.post.body )
+	check( "i_status", i.notFound.status == 404, jsonSerialize( i.notFound ) )
+	check( "i_failure", i.failed.startsWith( "caught:" ), i.failed )
+	check( "i_unsupported", i.unsupported.find( "noProxy" ) > 0 && i.unsupported.find( "not supported" ) > 0, i.unsupported )
+}
+
 noisy = consoleLines.filter( ( l ) => l.findNoCase( "scheduled pump failed" ) || l.findNoCase( "recursive use" ) || l.findNoCase( "pageerror" ) )
 if ( ran( "j_no_pump_errors" ) ) {
 	check( "j_no_pump_errors", noisy.len() == 0, noisy.toList( " | " ) )
