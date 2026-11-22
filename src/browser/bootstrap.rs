@@ -39,6 +39,12 @@ const CALL_HELPER_JS: &str = r#"function __matchboxCall(vm, name, args) {
     });
 }
 
+if (typeof BoxLangVM !== "undefined") {
+    BoxLangVM.prototype.call = function(name, args) {
+        return __matchboxCall(this, name, args);
+    };
+}
+
 "#;
 
 pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String {
@@ -846,6 +852,7 @@ mod tests {
     fn stub_js_bootstrap_uses_load_bytecode_with_callback_bridge() {
         let bootstrap = render_stub_js_bootstrap(&vec!["hello".to_string()], "app", "AQID");
 
+        assert!(bootstrap.contains("BoxLangVM.prototype.call = function(name, args)"));
         assert!(bootstrap.contains("__matchboxBytecodeBase64 = \"AQID\""));
         assert!(bootstrap.contains("registerHost"));
         assert!(bootstrap.contains("vm.set_host_id(hostId)"));
