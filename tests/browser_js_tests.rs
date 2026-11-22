@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Test ids asserted by run.bxs. Grows as each fix lands.
-const ENABLED: &[&str] = &["ping", "a_fetch_json", "b_stream_incremental", "g_angle_strings", "h_new_js_ctor", "e_two_instances"];
+const ENABLED: &[&str] = &["ping", "a_fetch_json", "b_stream_incremental", "g_angle_strings", "h_new_js_ctor", "e_two_instances", "c_overlapping_streams", "d_parallel_getjson", "f_click_during_stream", "j_no_pump_errors"];
 
 fn tool(name: &str) -> Option<PathBuf> {
     Command::new("which")

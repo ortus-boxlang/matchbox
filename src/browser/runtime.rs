@@ -4,11 +4,13 @@ pub fn render_fusion_web_host_source(registration_calls: &str, bytecode: &[u8]) 
 use matchbox_vm::{{vm::{{HostFutureState, VM}}, types::{{BxNativeFunction, BxValue}}, Chunk}};
 use std::collections::HashMap;
 use console_error_panic_hook;
-use js_sys::{{Array, Function, Promise, Error}};
+use js_sys::{{Array, Error}};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
-use wasm_bindgen_futures::JsFuture;
 use web_sys::window;
+use matchbox_vm::types::BxVM;
+use matchbox_vm::vm::gc::RootedValue;
+use std::rc::Rc;
 
 fn as_js_error(message: impl Into<String>) -> JsValue {{
     Error::new(&message.into()).into()
@@ -19,25 +21,6 @@ fn log_error(message: impl Into<String>) {{
         let console = win.console();
         console.error_1(&JsValue::from_str(&message.into()));
     }}
-}}
-
-async fn yield_to_host() -> Result<(), JsValue> {{
-    let promise = Promise::new(&mut |resolve: Function, reject: Function| {{
-        let win: web_sys::Window = match window() {{
-            Some(win) => win,
-            None => {{
-                let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("window is unavailable"));
-                return;
-            }}
-        }};
-
-        if let Err(err) = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0) {{
-            let _ = reject.call1(&JsValue::NULL, &err);
-        }}
-    }});
-
-    let _ = JsFuture::from(promise).await?;
-    Ok(())
 }}
 
 fn new_vm() -> VM {{
@@ -56,6 +39,10 @@ fn embedded_chunk() -> Result<Chunk, String> {{
 #[wasm_bindgen]
 pub struct BoxLangVM {{
     vm: VM,
+    /// Calls started with `start` and not yet finished. Retained so the GC keeps
+    /// their futures alive while the host waits.
+    calls: HashMap<u32, Rc<RootedValue>>,
+    next_call: u32,
 }}
 
 #[wasm_bindgen]
@@ -64,7 +51,7 @@ impl BoxLangVM {{
     pub fn new() -> Result<BoxLangVM, JsValue> {{
         console_error_panic_hook::set_once();
         let vm = new_vm();
-        Ok(BoxLangVM {{ vm }})
+        Ok(BoxLangVM {{ vm, calls: HashMap::new(), next_call: 1 }})
     }}
 
     /// Run embedded bytecode. Must be called after the callback bridge is
@@ -95,7 +82,9 @@ impl BoxLangVM {{
             .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))
     }}
 
-    pub async fn call(&mut self, name: &str, args: Array) -> Result<JsValue, JsValue> {{
+    /// Starts `name(...args)` as its own fiber and returns a handle for `poll`.
+    /// Synchronous, so any number of calls can be in flight on one VM.
+    pub fn start(&mut self, name: &str, args: Array) -> Result<u32, JsValue> {{
         let func = match self.vm.get_global(name) {{
             Some(f) => f,
             None => {{
@@ -110,37 +99,44 @@ impl BoxLangVM {{
             bx_args.push(self.vm.js_to_bx(args.get(idx)));
         }}
 
-        let future = match self.vm.start_call_function_value(func, bx_args) {{
-            Ok(f) => f,
-            Err(e) => {{
-                let msg = format!("VM Runtime Error: {{}}", e);
-                log_error(&msg);
-                return Err(as_js_error(msg));
-            }}
-        }};
+        let future = self.vm.start_call_function_value(func, bx_args).map_err(|e| {{
+            let msg = format!("VM Runtime Error: {{}}", e);
+            log_error(&msg);
+            as_js_error(msg)
+        }})?;
+        let root = self.vm.retain_value(future).map_err(as_js_error)?;
+        let handle = self.next_call;
+        self.next_call += 1;
+        self.calls.insert(handle, root);
+        Ok(handle)
+    }}
 
-        loop {{
-            if let Err(e) = self.vm.pump_until_blocked() {{
-                let msg = format!("VM Runtime Error: {{}}", e);
-                log_error(&msg);
-                return Err(as_js_error(msg));
+    /// Returns `{{ done: false }}` while the call is running and `{{ done: true, value }}` when it
+    /// has finished. A failed call throws. A finished handle is released.
+    pub fn poll(&mut self, handle: u32) -> Result<JsValue, JsValue> {{
+        let root = self.calls.get(&handle)
+            .ok_or_else(|| as_js_error(format!("Unknown call handle {{}}", handle)))?;
+        let future = self.vm.read_retained_value(root).map_err(as_js_error)?;
+        let state = self.vm
+            .future_state(future)
+            .map_err(|e| as_js_error(format!("VM Runtime Error: {{}}", e)))?;
+        let result = js_sys::Object::new();
+        match state {{
+            HostFutureState::Pending => {{
+                js_sys::Reflect::set(&result, &"done".into(), &JsValue::FALSE)?;
             }}
-
-            match self.vm.future_state(future) {{
-                Ok(HostFutureState::Pending) => yield_to_host().await?,
-                Ok(HostFutureState::Completed(value)) => return Ok(self.vm.bx_to_js(&value)),
-                Ok(HostFutureState::Failed(error)) => {{
-                    let msg = self.vm.format_error_value(error);
-                    log_error(&msg);
-                    return Err(as_js_error(msg));
-                }}
-                Err(e) => {{
-                    let msg = format!("VM Runtime Error: {{}}", e);
-                    log_error(&msg);
-                    return Err(as_js_error(msg));
-                }}
+            HostFutureState::Completed(value) => {{
+                js_sys::Reflect::set(&result, &"done".into(), &JsValue::TRUE)?;
+                js_sys::Reflect::set(&result, &"value".into(), &self.vm.bx_to_js(&value))?;
+                self.calls.remove(&handle);
+            }}
+            HostFutureState::Failed(error) => {{
+                let msg = self.vm.format_error_value(error);
+                self.calls.remove(&handle);
+                return Err(as_js_error(msg));
             }}
         }}
+        Ok(result.into())
     }}
 }}
 "#,
@@ -166,9 +162,12 @@ mod tests {
         assert!(source.contains(".interpret_sync(chunk)"));
         assert!(source.contains("vm_ptr"));
         assert!(source.contains("fn pump(&mut self)"));
+        assert!(source.contains("fn start(&mut self"));
+        assert!(source.contains("fn poll(&mut self"));
         assert!(source.contains("start_call_function_value"));
         assert!(source.contains("pump_until_blocked"));
         assert!(source.contains("future_state"));
         assert!(source.contains("HostFutureState::Pending"));
+        assert!(!source.contains("pub async fn"));
     }
 }

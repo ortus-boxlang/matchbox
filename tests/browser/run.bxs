@@ -76,6 +76,19 @@ if ( ran( "f_click_during_stream" ) ) {
 	check( "f_stream", f.text.findNoCase( "word1" ) && f.text.findNoCase( "word6" ), f.text )
 }
 
+if ( ran( "c_overlapping_streams" ) ) {
+	c = result( "c_overlapping_streams" )
+	check( "c_time", c.ms < 2500, "ms=" & c.ms )
+	for ( key in [ "x", "y" ] ) {
+		check( "c_" & key, c[ key ].findNoCase( "word1" ) && c[ key ].findNoCase( "word6" ), c[ key ] )
+	}
+}
+
+if ( ran( "d_parallel_getjson" ) ) {
+	d = result( "d_parallel_getjson" )
+	check( "d_count", d.len() == 20 && d.every( ( item ) => item.n == 42 && item.name == "agent" ), jsonSerialize( d ) )
+}
+
 noisy = consoleLines.filter( ( l ) => l.findNoCase( "scheduled pump failed" ) || l.findNoCase( "recursive use" ) || l.findNoCase( "pageerror" ) )
 if ( ran( "j_no_pump_errors" ) ) {
 	check( "j_no_pump_errors", noisy.len() == 0, noisy.toList( " | " ) )

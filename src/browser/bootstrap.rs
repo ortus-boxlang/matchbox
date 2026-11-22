@@ -10,55 +10,36 @@ pub fn exported_function_names(ast: &[ast::Statement]) -> Vec<String> {
     functions
 }
 
-#[allow(dead_code)]
-pub fn render_pure_js_bootstrap(
-    functions: &[String],
-    b64_wasm: &str,
-    b64_bytecode: &str,
-) -> String {
-    let mut bootstrap = String::new();
-    bootstrap.push_str(&format!("const wasmBase64 = \"{}\";\n", b64_wasm));
-    bootstrap.push_str(&format!("const bytecodeBase64 = \"{}\";\n\n", b64_bytecode));
-
-    bootstrap.push_str("let vm = null;\n");
-    bootstrap.push_str("async function ensureInit() {\n");
-    bootstrap.push_str("    if (vm) return;\n");
-    bootstrap.push_str(
-        "    const wasmBinary = Uint8Array.from(atob(wasmBase64), c => c.charCodeAt(0));\n",
-    );
-    bootstrap.push_str("    await init(wasmBinary);\n");
-    bootstrap.push_str("    vm = new BoxLangVM();\n");
-    bootstrap.push_str(
-        "    const bytecodeBinary = Uint8Array.from(atob(bytecodeBase64), c => c.charCodeAt(0));\n",
-    );
-    bootstrap.push_str("    vm.load_bytecode(bytecodeBinary);\n");
-    bootstrap.push_str("}\n\n");
-
-    for func in functions {
-        bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
-        bootstrap.push_str("    await ensureInit();\n");
-        bootstrap.push_str(&format!("    try {{\n"));
-        bootstrap.push_str(&format!(
-            "        return await vm.call(\"{}\", args);\n",
-            func
-        ));
-        bootstrap.push_str(&format!("    }} catch (e) {{\n"));
-        bootstrap.push_str(&format!(
-            "        if (typeof console !== \"undefined\" && console.error) {{\n"
-        ));
-        bootstrap.push_str(&format!(
-            "            console.error(\"[matchbox] VM call to '{}' failed:\", e);\n",
-            func
-        ));
-        bootstrap.push_str(&format!("        }}\n"));
-        bootstrap.push_str(&format!("        if (e instanceof Error) throw e;\n"));
-        bootstrap.push_str(&format!("        throw new Error(String(e));\n"));
-        bootstrap.push_str(&format!("    }}\n"));
-        bootstrap.push_str("}\n\n");
-    }
-
-    bootstrap
+/// JS that runs one exported call as its own VM fiber. `start` is synchronous and returns a handle,
+/// so overlapping calls never hold a wasm-bindgen borrow across an await.
+const CALL_HELPER_JS: &str = r#"function __matchboxCall(vm, name, args) {
+    return new Promise((resolve, reject) => {
+        let handle;
+        try {
+            handle = vm.start(name, args);
+        } catch (error) {
+            reject(error);
+            return;
+        }
+        const step = () => {
+            try {
+                vm.pump();
+                const state = vm.poll(handle);
+                if (state.done) {
+                    resolve(state.value);
+                    return;
+                }
+            } catch (error) {
+                reject(error);
+                return;
+            }
+            setTimeout(step, 0);
+        };
+        step();
+    });
 }
+
+"#;
 
 pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String {
     let mut bootstrap = String::new();
@@ -366,12 +347,14 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
     bootstrap.push_str("    return await __matchboxReady;\n");
     bootstrap.push_str("}\n\n");
 
+    bootstrap.push_str(CALL_HELPER_JS);
+
     for func in functions {
         bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
         bootstrap.push_str("    const vm = await ensureInit();\n");
         bootstrap.push_str("    try {\n");
         bootstrap.push_str(&format!(
-            "        return await vm.call(\"{}\", args);\n",
+            "        return await __matchboxCall(vm, \"{}\", args);\n",
             func
         ));
         bootstrap.push_str("    } catch (callError) {\n");
@@ -753,12 +736,14 @@ pub fn render_stub_js_bootstrap(
     bootstrap.push_str("    return await __matchboxReady;\n");
     bootstrap.push_str("}\n\n");
 
+    bootstrap.push_str(CALL_HELPER_JS);
+
     for func in functions {
         bootstrap.push_str(&format!("export async function {}(...args) {{\n", func));
         bootstrap.push_str("    const vm = await ensureInit();\n");
         bootstrap.push_str("    try {\n");
         bootstrap.push_str(&format!(
-            "        return await vm.call(\"{}\", args);\n",
+            "        return await __matchboxCall(vm, \"{}\", args);\n",
             func
         ));
         bootstrap.push_str("    } catch (callError) {\n");
@@ -839,18 +824,6 @@ mod tests {
     }
 
     #[test]
-    fn pure_js_bootstrap_keeps_stub_loader_shape() {
-        let bootstrap =
-            render_pure_js_bootstrap(&vec!["hello".to_string()], "stub-wasm", "stub-bytecode");
-
-        assert!(bootstrap.contains("const wasmBase64 = \"stub-wasm\";"));
-        assert!(bootstrap.contains("const bytecodeBase64 = \"stub-bytecode\";"));
-        assert!(bootstrap.contains("vm.load_bytecode(bytecodeBinary);"));
-        assert!(bootstrap.contains("return await vm.call(\"hello\", args);"));
-        assert!(bootstrap.contains("if (e instanceof Error) throw e;"));
-    }
-
-    #[test]
     fn fusion_js_bootstrap_uses_async_vm_call_without_bytecode_loader() {
         let bootstrap = render_fusion_js_bootstrap(&vec!["hello".to_string()], "app");
 
@@ -862,7 +835,7 @@ mod tests {
         ));
         assert!(bootstrap.contains("vm = new BoxLangVM();"));
         assert!(bootstrap.contains("vm.init();"));
-        assert!(bootstrap.contains("return await vm.call(\"hello\", args);"));
+        assert!(bootstrap.contains("return await __matchboxCall(vm, \"hello\", args);"));
         assert!(bootstrap.contains("window.MatchBox.modules[\"app\"]"));
         assert!(bootstrap.contains("hello,"));
         assert!(!bootstrap.contains("load_bytecode"));
@@ -886,7 +859,7 @@ mod tests {
         assert!(bootstrap.contains("globalThis.__matchboxWasmModule"));
         assert!(bootstrap.contains("vm = new BoxLangVM();"));
         assert!(bootstrap.contains("vm.load_bytecode(bytecodeBytes);"));
-        assert!(bootstrap.contains("return await vm.call(\"hello\", args);"));
+        assert!(bootstrap.contains("return await __matchboxCall(vm, \"hello\", args);"));
         assert!(bootstrap.contains("window.MatchBox.modules[\"app\"]"));
         assert!(bootstrap.contains("hello,"));
         assert!(!bootstrap.contains("vm.init();"));
