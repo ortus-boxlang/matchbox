@@ -250,7 +250,7 @@ fn unwrap_matchbox_js_proxy(value: &JsValue) -> JsValue {
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
-fn schedule_browser_vm_pump(vm_ptr: usize) {
+fn schedule_browser_vm_pump(host_id: usize) {
     let global = js_sys::global();
     let matchbox = match Reflect::get(&global, &JsValue::from_str("MatchBox")) {
         Ok(value) if !value.is_undefined() && !value.is_null() => value,
@@ -263,7 +263,7 @@ fn schedule_browser_vm_pump(vm_ptr: usize) {
     };
 
     if let Ok(func) = schedule.dyn_into::<Function>() {
-        let _ = func.call1(&matchbox, &JsValue::from_f64(vm_ptr as f64));
+        let _ = func.call1(&matchbox, &JsValue::from_f64(host_id as f64));
     }
 }
 
@@ -600,6 +600,11 @@ pub struct VM {
     /// "Illegal invocation" when called with it as `this`, so calls on it use the window instead.
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
     pub(crate) js_root: Option<JsValue>,
+    /// Identifies this VM to the JavaScript host (`MatchBox.registerHost`). Callbacks, pump
+    /// scheduling and instance proxies are routed by it. A VM address cannot be used: every
+    /// wasm instance has its own memory, so two instances can have the same address.
+    #[cfg(all(target_arch = "wasm32", feature = "js"))]
+    pub host_id: usize,
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -2682,6 +2687,8 @@ impl VM {
             next_callback_id: RefCell::new(1),
             #[cfg(all(target_arch = "wasm32", feature = "js"))]
             js_root: None,
+            #[cfg(all(target_arch = "wasm32", feature = "js"))]
+            host_id: 0,
         };
 
         #[cfg(all(target_arch = "wasm32", feature = "js"))]
@@ -2818,7 +2825,7 @@ impl VM {
 
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
     fn bridge_js_promise_to_future(&mut self, promise: JsValue) -> BxValue {
-        let vm_ptr = self as *const VM as usize;
+        let host_id = self.host_id;
         let future = self.future_new();
         if let Some(id) = future.as_gc_id() {
             *self.pending_native_futures.entry(id).or_insert(0) += 1;
@@ -2833,7 +2840,7 @@ impl VM {
                 future: future_for_resolve,
                 thunk_id,
             });
-            schedule_browser_vm_pump(vm_ptr);
+            schedule_browser_vm_pump(host_id);
         }) as Box<dyn FnMut(JsValue)>);
 
         let future_for_reject = future;
@@ -2847,7 +2854,7 @@ impl VM {
                 future: future_for_reject,
                 thunk_id,
             });
-            schedule_browser_vm_pump(vm_ptr);
+            schedule_browser_vm_pump(host_id);
         }) as Box<dyn FnMut(JsValue)>);
 
         let promise = js_sys::Promise::from(promise);
@@ -9645,7 +9652,6 @@ impl VM {
                     js_obj.into()
                 }
                 GcObject::Instance(_) => {
-                    let vm_ptr = self as *const VM as usize;
                     let global = js_sys::global();
                     let matchbox = match Reflect::get(&global, &JsValue::from_str("MatchBox")) {
                         Ok(value) if !value.is_undefined() && !value.is_null() => value,
@@ -9661,7 +9667,7 @@ impl VM {
                     if let Ok(func) = create_proxy.dyn_into::<Function>() {
                         func.call2(
                             &matchbox,
-                            &JsValue::from_f64(vm_ptr as f64),
+                            &JsValue::from_f64(self.host_id as f64),
                             &JsValue::from_f64(id as f64),
                         )
                         .unwrap_or(JsValue::UNDEFINED)
@@ -9737,10 +9743,9 @@ impl VM {
                         self.callback_registry.borrow_mut().insert(id, val.clone());
                         *self.next_callback_id.borrow_mut() += 1;
 
-                        let vm_ptr = self as *const VM as usize;
                         let body = format!(
                             "return globalThis.MatchBox.invokeCallback({}, {}, this, Array.from(arguments));",
-                            vm_ptr, id
+                            self.host_id, id
                         );
                         match Function::new_no_args(&body).dyn_into::<Function>() {
                             Ok(f) => f.into(),
@@ -9767,13 +9772,12 @@ impl VM {
 
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
     pub fn unwrap_matchbox_instance(&self, val: &JsValue) -> Option<u32> {
-        let vm_ptr = self as *const VM as usize;
-        let js_vm_ptr = Reflect::get(val, &JsValue::from_str("__matchbox_vm_ptr"))
+        let js_host_id = Reflect::get(val, &JsValue::from_str("__matchbox_host_id"))
             .ok()
             .and_then(|v| v.as_f64())
             .map(|v| v as usize);
 
-        if js_vm_ptr == Some(vm_ptr) {
+        if js_host_id == Some(self.host_id) {
             Reflect::get(val, &JsValue::from_str("__matchbox_gc_id"))
                 .ok()
                 .and_then(|v| v.as_f64())

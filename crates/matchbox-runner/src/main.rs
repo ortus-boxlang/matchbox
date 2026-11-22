@@ -94,6 +94,11 @@ mod wasm {
             &self.vm as *const VM as usize
         }
 
+        /// Identifies this VM to the JS host. Call before `load_bytecode`.
+        pub fn set_host_id(&mut self, host_id: usize) {
+            self.vm.host_id = host_id;
+        }
+
         pub fn pump(&mut self) -> Result<(), JsValue> {
             self.vm
                 .pump_until_blocked()

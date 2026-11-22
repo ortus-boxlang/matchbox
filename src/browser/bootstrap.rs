@@ -62,77 +62,62 @@ pub fn render_pure_js_bootstrap(
 
 pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> String {
     let mut bootstrap = String::new();
-    bootstrap.push_str("if (typeof window !== \"undefined\") {\n");
-    bootstrap.push_str("    window.MatchBox = window.MatchBox || {};\n");
-    bootstrap.push_str(
-        "    window.MatchBox._callbackBridges = window.MatchBox._callbackBridges || new Map();\n",
-    );
-    bootstrap.push_str(
-        "    window.MatchBox._pumpBridges = window.MatchBox._pumpBridges || new Map();\n",
-    );
-    bootstrap.push_str("    window.MatchBox.registerCallbackBridge = window.MatchBox.registerCallbackBridge || function(vmPtr, bridge) {\n");
-    bootstrap.push_str("        window.MatchBox._callbackBridges.set(vmPtr, bridge);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.registerPumpBridge = window.MatchBox.registerPumpBridge || function(vmPtr, bridge) {\n");
-    bootstrap.push_str("        window.MatchBox._pumpBridges.set(vmPtr, bridge);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.unregisterCallbackBridge = window.MatchBox.unregisterCallbackBridge || function(vmPtr) {\n");
-    bootstrap.push_str("        window.MatchBox._callbackBridges.delete(vmPtr);\n");
-    bootstrap.push_str("        window.MatchBox._pumpBridges.delete(vmPtr);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.invokeCallback = window.MatchBox.invokeCallback || function(vmPtr, callbackId, thisVal, args) {\n");
-    bootstrap.push_str("        const bridge = window.MatchBox._callbackBridges.get(vmPtr);\n");
-    bootstrap.push_str("        if (!bridge) {\n");
-    bootstrap.push_str("            throw new Error(\"MatchBox callback bridge is not registered for VM \" + vmPtr);\n");
-    bootstrap.push_str("        }\n");
-    bootstrap.push_str("        return bridge(vmPtr, callbackId, thisVal, args);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str(
-        "    window.MatchBox.schedulePump = window.MatchBox.schedulePump || function(vmPtr) {\n",
-    );
-    bootstrap.push_str("        const bridge = window.MatchBox._pumpBridges.get(vmPtr);\n");
-    bootstrap.push_str("        if (!bridge) {\n");
-    bootstrap.push_str("            return;\n");
-    bootstrap.push_str("        }\n");
-    bootstrap.push_str("        const pump = () => {\n");
-    bootstrap.push_str("            const bridge = window.MatchBox._pumpBridges.get(vmPtr);\n");
-    bootstrap.push_str("            if (bridge) {\n");
-    bootstrap.push_str("                try {\n");
-    bootstrap.push_str("                    bridge();\n");
-    bootstrap.push_str("                } catch (error) {\n");
-    bootstrap
-        .push_str("                    if (typeof console !== \"undefined\" && console.error) {\n");
-    bootstrap.push_str(
-        "                        console.error(\"MatchBox scheduled pump failed\", error);\n",
-    );
-    bootstrap.push_str("                    }\n");
-    bootstrap.push_str("                }\n");
-    bootstrap.push_str("            }\n");
-    bootstrap.push_str("        };\n");
-    bootstrap.push_str("        if (typeof queueMicrotask === \"function\") {\n");
-    bootstrap.push_str("            queueMicrotask(pump);\n");
-    bootstrap.push_str("        } else {\n");
-    bootstrap.push_str("            setTimeout(pump, 0);\n");
-    bootstrap.push_str("        }\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.getInstanceProperty = window.MatchBox.getInstanceProperty || function(vmPtr, gcId, name) {\n");
-    bootstrap.push_str(
-        "        if (typeof _matchbox_get_instance_prop !== \"function\") return undefined;\n",
-    );
-    bootstrap.push_str("        return _matchbox_get_instance_prop(vmPtr, gcId, name);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.getInstanceKeys = window.MatchBox.getInstanceKeys || function(vmPtr, gcId) {\n");
-    bootstrap
-        .push_str("        if (typeof _matchbox_get_instance_keys !== \"function\") return [];\n");
-    bootstrap.push_str("        return _matchbox_get_instance_keys(vmPtr, gcId);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.setInstanceProperty = window.MatchBox.setInstanceProperty || function(vmPtr, gcId, name, value) {\n");
-    bootstrap
-        .push_str("        if (typeof _matchbox_set_instance_prop !== \"function\") return;\n");
-    bootstrap.push_str("        _matchbox_set_instance_prop(vmPtr, gcId, name, value);\n");
-    bootstrap.push_str("    };\n");
+    bootstrap.push_str(r#"if (typeof window !== "undefined") {
+    window.MatchBox = window.MatchBox || {};
+    window.MatchBox._hosts = window.MatchBox._hosts || new Map();
+    window.MatchBox._nextHostId = window.MatchBox._nextHostId || 1;
+    window.MatchBox.registerHost = window.MatchBox.registerHost || function(host) {
+        const hostId = window.MatchBox._nextHostId++;
+        window.MatchBox._hosts.set(hostId, host);
+        return hostId;
+    };
+    window.MatchBox.unregisterHost = window.MatchBox.unregisterHost || function(hostId) {
+        window.MatchBox._hosts.delete(hostId);
+    };
+    window.MatchBox._host = window.MatchBox._host || function(hostId) {
+        const host = window.MatchBox._hosts.get(hostId);
+        if (!host) {
+            throw new Error("MatchBox host is not registered: " + hostId);
+        }
+        return host;
+    };
+    window.MatchBox.invokeCallback = window.MatchBox.invokeCallback || function(hostId, callbackId, thisVal, args) {
+        return window.MatchBox._host(hostId).invoke(callbackId, thisVal, args);
+    };
+    window.MatchBox.schedulePump = window.MatchBox.schedulePump || function(hostId) {
+        if (!window.MatchBox._hosts.has(hostId)) {
+            return;
+        }
+        const pump = () => {
+            const host = window.MatchBox._hosts.get(hostId);
+            if (host) {
+                try {
+                    host.pump();
+                } catch (error) {
+                    if (typeof console !== "undefined" && console.error) {
+                        console.error("MatchBox scheduled pump failed", error);
+                    }
+                }
+            }
+        };
+        if (typeof queueMicrotask === "function") {
+            queueMicrotask(pump);
+        } else {
+            setTimeout(pump, 0);
+        }
+    };
+    window.MatchBox.getInstanceProperty = window.MatchBox.getInstanceProperty || function(hostId, gcId, name) {
+        return window.MatchBox._host(hostId).getProp(gcId, name);
+    };
+    window.MatchBox.getInstanceKeys = window.MatchBox.getInstanceKeys || function(hostId, gcId) {
+        return window.MatchBox._host(hostId).getKeys(gcId);
+    };
+    window.MatchBox.setInstanceProperty = window.MatchBox.setInstanceProperty || function(hostId, gcId, name, value) {
+        window.MatchBox._host(hostId).setProp(gcId, name, value);
+    };
+"#);
     bootstrap.push_str("    window.MatchBox.__matchbox_proxy_targets = window.MatchBox.__matchbox_proxy_targets || new WeakMap();\n");
-    bootstrap.push_str(r#"    window.MatchBox.wrapInstancePropertyValue = window.MatchBox.wrapInstancePropertyValue || function(vmPtr, gcId, prop, value, ownerReceiver) {
+    bootstrap.push_str(r#"    window.MatchBox.wrapInstancePropertyValue = window.MatchBox.wrapInstancePropertyValue || function(hostId, gcId, prop, value, ownerReceiver) {
         if (value == null || typeof value !== "object") return value;
         if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date || value instanceof RegExp || value instanceof Promise) {
             return value;
@@ -142,10 +127,10 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
             if (ownerReceiver != null && typeof ownerReceiver === "object") {
                 Reflect.set(ownerReceiver, prop, value, ownerReceiver);
             } else {
-                window.MatchBox.setInstanceProperty(vmPtr, gcId, prop, value);
+                window.MatchBox.setInstanceProperty(hostId, gcId, prop, value);
             }
         };
-        const wrapChild = child => window.MatchBox.wrapInstancePropertyValue(vmPtr, gcId, prop, child, ownerReceiver);
+        const wrapChild = child => window.MatchBox.wrapInstancePropertyValue(hostId, gcId, prop, child, ownerReceiver);
         for (const key of Reflect.ownKeys(value)) {
             const current = value[key];
             if (current != null && typeof current === "object") {
@@ -174,8 +159,8 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
         return proxy;
     };
 "#);
-    bootstrap.push_str("    window.MatchBox.createInstanceProxy = window.MatchBox.createInstanceProxy || function(vmPtr, gcId) {\n");
-    bootstrap.push_str("        const target = { __matchbox_vm_ptr: vmPtr, __matchbox_gc_id: gcId, __matchbox_cache: {} };\n");
+    bootstrap.push_str("    window.MatchBox.createInstanceProxy = window.MatchBox.createInstanceProxy || function(hostId, gcId) {\n");
+    bootstrap.push_str("        const target = { __matchbox_host_id: hostId, __matchbox_gc_id: gcId, __matchbox_cache: {} };\n");
     bootstrap.push_str("        return new Proxy(target, {\n");
     bootstrap.push_str("            get(target, prop, receiver) {\n");
     bootstrap.push_str("                if (typeof prop !== \"string\") return target[prop];\n");
@@ -183,18 +168,18 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
         .push_str("                if (prop.startsWith(\"__matchbox_\")) return target[prop];\n");
     bootstrap.push_str("                if (target.__matchbox_cache[prop]) return target.__matchbox_cache[prop];\n");
     bootstrap.push_str(
-        "                let val = window.MatchBox.getInstanceProperty(vmPtr, gcId, prop);\n",
+        "                let val = window.MatchBox.getInstanceProperty(hostId, gcId, prop);\n",
     );
     bootstrap.push_str("                if (val === undefined) {\n");
     bootstrap.push_str(
-        "                    const keys = window.MatchBox.getInstanceKeys(vmPtr, gcId);\n",
+        "                    const keys = window.MatchBox.getInstanceKeys(hostId, gcId);\n",
     );
     bootstrap.push_str("                    const lowerProp = prop.toLowerCase();\n");
     bootstrap.push_str(
         "                    const matchedKey = keys.find(k => k.toLowerCase() === lowerProp);\n",
     );
     bootstrap.push_str("                    if (matchedKey && matchedKey !== prop) {\n");
-    bootstrap.push_str("                        val = window.MatchBox.getInstanceProperty(vmPtr, gcId, matchedKey);\n");
+    bootstrap.push_str("                        val = window.MatchBox.getInstanceProperty(hostId, gcId, matchedKey);\n");
     bootstrap.push_str("                    }\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("                if (typeof val === \"function\") {\n");
@@ -206,7 +191,7 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
     );
     bootstrap.push_str("                    target.__matchbox_cache[prop] = val;\n");
     bootstrap.push_str("                } else if (val != null && typeof val === \"object\") {\n");
-    bootstrap.push_str("                    val = window.MatchBox.wrapInstancePropertyValue(vmPtr, gcId, prop, val, receiver);\n");
+    bootstrap.push_str("                    val = window.MatchBox.wrapInstancePropertyValue(hostId, gcId, prop, val, receiver);\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("                return val !== undefined ? val : target[prop];\n");
     bootstrap.push_str("            },\n");
@@ -214,12 +199,12 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
     bootstrap.push_str("                if (typeof prop !== \"string\") return false;\n");
     bootstrap.push_str("                if (prop.startsWith(\"__matchbox_\")) { target[prop] = value; return true; }\n");
     bootstrap
-        .push_str("                const keys = window.MatchBox.getInstanceKeys(vmPtr, gcId);\n");
+        .push_str("                const keys = window.MatchBox.getInstanceKeys(hostId, gcId);\n");
     bootstrap.push_str("                const lowerProp = prop.toLowerCase();\n");
     bootstrap.push_str(
         "                const matchedKey = keys.find(k => k.toLowerCase() === lowerProp);\n",
     );
-    bootstrap.push_str("                window.MatchBox.setInstanceProperty(vmPtr, gcId, matchedKey || prop, value);\n");
+    bootstrap.push_str("                window.MatchBox.setInstanceProperty(hostId, gcId, matchedKey || prop, value);\n");
     bootstrap.push_str("                target[prop] = value;\n");
     bootstrap.push_str("                return true;\n");
     bootstrap.push_str("            },\n");
@@ -227,11 +212,11 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
     bootstrap.push_str("                if (typeof prop !== \"string\") return prop in target;\n");
     bootstrap.push_str("                if (prop.startsWith(\"__matchbox_\")) return true;\n");
     bootstrap.push_str("                if (prop in target) return true;\n");
-    bootstrap.push_str("                return window.MatchBox.getInstanceProperty(vmPtr, gcId, prop) !== undefined;\n");
+    bootstrap.push_str("                return window.MatchBox.getInstanceProperty(hostId, gcId, prop) !== undefined;\n");
     bootstrap.push_str("            },\n");
     bootstrap.push_str("            ownKeys(target) {\n");
     bootstrap
-        .push_str("                const bxKeys = window.MatchBox.getInstanceKeys(vmPtr, gcId);\n");
+        .push_str("                const bxKeys = window.MatchBox.getInstanceKeys(hostId, gcId);\n");
     bootstrap.push_str("                const targetKeys = Reflect.ownKeys(target);\n");
     bootstrap.push_str("                const allKeys = new Set([...targetKeys, ...bxKeys]);\n");
     bootstrap.push_str("                return Array.from(allKeys);\n");
@@ -240,7 +225,7 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
     bootstrap.push_str("                if (typeof prop !== \"string\") return Reflect.getOwnPropertyDescriptor(target, prop);\n");
     bootstrap.push_str("                if (prop.startsWith(\"__matchbox_\")) return Reflect.getOwnPropertyDescriptor(target, prop);\n");
     bootstrap.push_str(
-        "                const value = window.MatchBox.getInstanceProperty(vmPtr, gcId, prop);\n",
+        "                const value = window.MatchBox.getInstanceProperty(hostId, gcId, prop);\n",
     );
     bootstrap.push_str("                if (value !== undefined) {\n");
     bootstrap.push_str("                    return {\n");
@@ -257,12 +242,12 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
     bootstrap.push_str("    if (typeof BoxLangVM !== \"undefined\" && BoxLangVM.prototype && typeof BoxLangVM.prototype.free === \"function\") {\n");
     bootstrap.push_str("        const __matchboxOriginalFree = BoxLangVM.prototype.free;\n");
     bootstrap.push_str("        BoxLangVM.prototype.free = function() {\n");
-    bootstrap.push_str("            const ptr = this.__matchbox_vm_ptr || this.__wbg_ptr;\n");
+    bootstrap.push_str("            const ptr = this.__matchbox_host_id;\n");
     bootstrap.push_str("            try {\n");
     bootstrap.push_str("                return __matchboxOriginalFree.call(this);\n");
     bootstrap.push_str("            } finally {\n");
-    bootstrap.push_str("                if (ptr && window.MatchBox.unregisterCallbackBridge) {\n");
-    bootstrap.push_str("                    window.MatchBox.unregisterCallbackBridge(ptr);\n");
+    bootstrap.push_str("                if (ptr && window.MatchBox.unregisterHost) {\n");
+    bootstrap.push_str("                    window.MatchBox.unregisterHost(ptr);\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("            }\n");
     bootstrap.push_str("        };\n");
@@ -350,16 +335,19 @@ pub fn render_fusion_js_bootstrap(functions: &[String], module_name: &str) -> St
     bootstrap.push_str("            await __wbg_init(typeof globalThis !== \"undefined\" && globalThis.__matchboxWasmModule !== undefined ? { module_or_path: globalThis.__matchboxWasmModule } : undefined);\n");
     bootstrap.push_str("            if (!vm) {\n");
     bootstrap.push_str("                vm = new BoxLangVM();\n");
-    bootstrap.push_str("                if (typeof window !== \"undefined\" && window.MatchBox && window.MatchBox.registerCallbackBridge) {\n");
-    bootstrap.push_str("                    const vmPtr = vm.vm_ptr();\n");
-    bootstrap.push_str("                    vm.__matchbox_vm_ptr = vmPtr;\n");
-    bootstrap.push_str("                    window.MatchBox.registerCallbackBridge(vmPtr, _matchbox_invoke_callback);\n");
-    bootstrap.push_str("                    if (window.MatchBox.registerPumpBridge && typeof vm.pump === \"function\") {\n");
-    bootstrap.push_str(
-        "                        window.MatchBox.registerPumpBridge(vmPtr, () => vm.pump());\n",
-    );
-    bootstrap.push_str("                    }\n");
-    bootstrap.push_str("                }\n");
+    bootstrap.push_str(r#"                if (typeof window !== "undefined" && window.MatchBox && window.MatchBox.registerHost) {
+                    const vmPtr = vm.vm_ptr();
+                    const hostId = window.MatchBox.registerHost({
+                        invoke: (callbackId, thisVal, args) => _matchbox_invoke_callback(vmPtr, callbackId, thisVal, args),
+                        pump: () => vm.pump(),
+                        getProp: (gcId, name) => _matchbox_get_instance_prop(vmPtr, gcId, name),
+                        getKeys: (gcId) => _matchbox_get_instance_keys(vmPtr, gcId),
+                        setProp: (gcId, name, value) => _matchbox_set_instance_prop(vmPtr, gcId, name, value),
+                    });
+                    vm.__matchbox_host_id = hostId;
+                    vm.set_host_id(hostId);
+                }
+"#);
     bootstrap.push_str("                try {\n");
     bootstrap.push_str("                    vm.init();\n");
     bootstrap.push_str("                } catch (initError) {\n");
@@ -461,77 +449,62 @@ pub fn render_stub_js_bootstrap(
     ));
 
     // Callback, pump, and instance bridge setup
-    bootstrap.push_str("if (typeof window !== \"undefined\") {\n");
-    bootstrap.push_str("    window.MatchBox = window.MatchBox || {};\n");
-    bootstrap.push_str(
-        "    window.MatchBox._callbackBridges = window.MatchBox._callbackBridges || new Map();\n",
-    );
-    bootstrap.push_str(
-        "    window.MatchBox._pumpBridges = window.MatchBox._pumpBridges || new Map();\n",
-    );
-    bootstrap.push_str("    window.MatchBox.registerCallbackBridge = window.MatchBox.registerCallbackBridge || function(vmPtr, bridge) {\n");
-    bootstrap.push_str("        window.MatchBox._callbackBridges.set(vmPtr, bridge);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.registerPumpBridge = window.MatchBox.registerPumpBridge || function(vmPtr, bridge) {\n");
-    bootstrap.push_str("        window.MatchBox._pumpBridges.set(vmPtr, bridge);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.unregisterCallbackBridge = window.MatchBox.unregisterCallbackBridge || function(vmPtr) {\n");
-    bootstrap.push_str("        window.MatchBox._callbackBridges.delete(vmPtr);\n");
-    bootstrap.push_str("        window.MatchBox._pumpBridges.delete(vmPtr);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.invokeCallback = window.MatchBox.invokeCallback || function(vmPtr, callbackId, thisVal, args) {\n");
-    bootstrap.push_str("        const bridge = window.MatchBox._callbackBridges.get(vmPtr);\n");
-    bootstrap.push_str("        if (!bridge) {\n");
-    bootstrap.push_str("            throw new Error(\"MatchBox callback bridge is not registered for VM \" + vmPtr);\n");
-    bootstrap.push_str("        }\n");
-    bootstrap.push_str("        return bridge(vmPtr, callbackId, thisVal, args);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str(
-        "    window.MatchBox.schedulePump = window.MatchBox.schedulePump || function(vmPtr) {\n",
-    );
-    bootstrap.push_str("        const bridge = window.MatchBox._pumpBridges.get(vmPtr);\n");
-    bootstrap.push_str("        if (!bridge) {\n");
-    bootstrap.push_str("            return;\n");
-    bootstrap.push_str("        }\n");
-    bootstrap.push_str("        const pump = () => {\n");
-    bootstrap.push_str("            const bridge = window.MatchBox._pumpBridges.get(vmPtr);\n");
-    bootstrap.push_str("            if (bridge) {\n");
-    bootstrap.push_str("                try {\n");
-    bootstrap.push_str("                    bridge();\n");
-    bootstrap.push_str("                } catch (error) {\n");
-    bootstrap
-        .push_str("                    if (typeof console !== \"undefined\" && console.error) {\n");
-    bootstrap.push_str(
-        "                        console.error(\"MatchBox scheduled pump failed\", error);\n",
-    );
-    bootstrap.push_str("                    }\n");
-    bootstrap.push_str("                }\n");
-    bootstrap.push_str("            }\n");
-    bootstrap.push_str("        };\n");
-    bootstrap.push_str("        if (typeof queueMicrotask === \"function\") {\n");
-    bootstrap.push_str("            queueMicrotask(pump);\n");
-    bootstrap.push_str("        } else {\n");
-    bootstrap.push_str("            setTimeout(pump, 0);\n");
-    bootstrap.push_str("        }\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.getInstanceProperty = window.MatchBox.getInstanceProperty || function(vmPtr, gcId, name) {\n");
-    bootstrap.push_str(
-        "        if (typeof _matchbox_get_instance_prop !== \"function\") return undefined;\n",
-    );
-    bootstrap.push_str("        return _matchbox_get_instance_prop(vmPtr, gcId, name);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.getInstanceKeys = window.MatchBox.getInstanceKeys || function(vmPtr, gcId) {\n");
-    bootstrap
-        .push_str("        if (typeof _matchbox_get_instance_keys !== \"function\") return [];\n");
-    bootstrap.push_str("        return _matchbox_get_instance_keys(vmPtr, gcId);\n");
-    bootstrap.push_str("    };\n");
-    bootstrap.push_str("    window.MatchBox.setInstanceProperty = window.MatchBox.setInstanceProperty || function(vmPtr, gcId, name, value) {\n");
-    bootstrap
-        .push_str("        if (typeof _matchbox_set_instance_prop !== \"function\") return;\n");
-    bootstrap.push_str("        _matchbox_set_instance_prop(vmPtr, gcId, name, value);\n");
-    bootstrap.push_str("    };\n");
+    bootstrap.push_str(r#"if (typeof window !== "undefined") {
+    window.MatchBox = window.MatchBox || {};
+    window.MatchBox._hosts = window.MatchBox._hosts || new Map();
+    window.MatchBox._nextHostId = window.MatchBox._nextHostId || 1;
+    window.MatchBox.registerHost = window.MatchBox.registerHost || function(host) {
+        const hostId = window.MatchBox._nextHostId++;
+        window.MatchBox._hosts.set(hostId, host);
+        return hostId;
+    };
+    window.MatchBox.unregisterHost = window.MatchBox.unregisterHost || function(hostId) {
+        window.MatchBox._hosts.delete(hostId);
+    };
+    window.MatchBox._host = window.MatchBox._host || function(hostId) {
+        const host = window.MatchBox._hosts.get(hostId);
+        if (!host) {
+            throw new Error("MatchBox host is not registered: " + hostId);
+        }
+        return host;
+    };
+    window.MatchBox.invokeCallback = window.MatchBox.invokeCallback || function(hostId, callbackId, thisVal, args) {
+        return window.MatchBox._host(hostId).invoke(callbackId, thisVal, args);
+    };
+    window.MatchBox.schedulePump = window.MatchBox.schedulePump || function(hostId) {
+        if (!window.MatchBox._hosts.has(hostId)) {
+            return;
+        }
+        const pump = () => {
+            const host = window.MatchBox._hosts.get(hostId);
+            if (host) {
+                try {
+                    host.pump();
+                } catch (error) {
+                    if (typeof console !== "undefined" && console.error) {
+                        console.error("MatchBox scheduled pump failed", error);
+                    }
+                }
+            }
+        };
+        if (typeof queueMicrotask === "function") {
+            queueMicrotask(pump);
+        } else {
+            setTimeout(pump, 0);
+        }
+    };
+    window.MatchBox.getInstanceProperty = window.MatchBox.getInstanceProperty || function(hostId, gcId, name) {
+        return window.MatchBox._host(hostId).getProp(gcId, name);
+    };
+    window.MatchBox.getInstanceKeys = window.MatchBox.getInstanceKeys || function(hostId, gcId) {
+        return window.MatchBox._host(hostId).getKeys(gcId);
+    };
+    window.MatchBox.setInstanceProperty = window.MatchBox.setInstanceProperty || function(hostId, gcId, name, value) {
+        window.MatchBox._host(hostId).setProp(gcId, name, value);
+    };
+"#);
     bootstrap.push_str("    window.MatchBox.__matchbox_proxy_targets = window.MatchBox.__matchbox_proxy_targets || new WeakMap();\n");
-    bootstrap.push_str(r#"    window.MatchBox.wrapInstancePropertyValue = window.MatchBox.wrapInstancePropertyValue || function(vmPtr, gcId, prop, value, ownerReceiver) {
+    bootstrap.push_str(r#"    window.MatchBox.wrapInstancePropertyValue = window.MatchBox.wrapInstancePropertyValue || function(hostId, gcId, prop, value, ownerReceiver) {
         if (value == null || typeof value !== "object") return value;
         if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date || value instanceof RegExp || value instanceof Promise) {
             return value;
@@ -541,10 +514,10 @@ pub fn render_stub_js_bootstrap(
             if (ownerReceiver != null && typeof ownerReceiver === "object") {
                 Reflect.set(ownerReceiver, prop, value, ownerReceiver);
             } else {
-                window.MatchBox.setInstanceProperty(vmPtr, gcId, prop, value);
+                window.MatchBox.setInstanceProperty(hostId, gcId, prop, value);
             }
         };
-        const wrapChild = child => window.MatchBox.wrapInstancePropertyValue(vmPtr, gcId, prop, child, ownerReceiver);
+        const wrapChild = child => window.MatchBox.wrapInstancePropertyValue(hostId, gcId, prop, child, ownerReceiver);
         for (const key of Reflect.ownKeys(value)) {
             const current = value[key];
             if (current != null && typeof current === "object") {
@@ -573,8 +546,8 @@ pub fn render_stub_js_bootstrap(
         return proxy;
     };
 "#);
-    bootstrap.push_str("    window.MatchBox.createInstanceProxy = window.MatchBox.createInstanceProxy || function(vmPtr, gcId) {\n");
-    bootstrap.push_str("        const target = { __matchbox_vm_ptr: vmPtr, __matchbox_gc_id: gcId, __matchbox_cache: {} };\n");
+    bootstrap.push_str("    window.MatchBox.createInstanceProxy = window.MatchBox.createInstanceProxy || function(hostId, gcId) {\n");
+    bootstrap.push_str("        const target = { __matchbox_host_id: hostId, __matchbox_gc_id: gcId, __matchbox_cache: {} };\n");
     bootstrap.push_str("        return new Proxy(target, {\n");
     bootstrap.push_str("            get(target, prop, receiver) {\n");
     bootstrap.push_str("                if (typeof prop !== \"string\") return target[prop];\n");
@@ -582,18 +555,18 @@ pub fn render_stub_js_bootstrap(
         .push_str("                if (prop.startsWith(\"__matchbox_\")) return target[prop];\n");
     bootstrap.push_str("                if (target.__matchbox_cache[prop]) return target.__matchbox_cache[prop];\n");
     bootstrap.push_str(
-        "                let val = window.MatchBox.getInstanceProperty(vmPtr, gcId, prop);\n",
+        "                let val = window.MatchBox.getInstanceProperty(hostId, gcId, prop);\n",
     );
     bootstrap.push_str("                if (val === undefined) {\n");
     bootstrap.push_str(
-        "                    const keys = window.MatchBox.getInstanceKeys(vmPtr, gcId);\n",
+        "                    const keys = window.MatchBox.getInstanceKeys(hostId, gcId);\n",
     );
     bootstrap.push_str("                    const lowerProp = prop.toLowerCase();\n");
     bootstrap.push_str(
         "                    const matchedKey = keys.find(k => k.toLowerCase() === lowerProp);\n",
     );
     bootstrap.push_str("                    if (matchedKey && matchedKey !== prop) {\n");
-    bootstrap.push_str("                        val = window.MatchBox.getInstanceProperty(vmPtr, gcId, matchedKey);\n");
+    bootstrap.push_str("                        val = window.MatchBox.getInstanceProperty(hostId, gcId, matchedKey);\n");
     bootstrap.push_str("                    }\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("                if (typeof val === \"function\") {\n");
@@ -605,7 +578,7 @@ pub fn render_stub_js_bootstrap(
     );
     bootstrap.push_str("                    target.__matchbox_cache[prop] = val;\n");
     bootstrap.push_str("                } else if (val != null && typeof val === \"object\") {\n");
-    bootstrap.push_str("                    val = window.MatchBox.wrapInstancePropertyValue(vmPtr, gcId, prop, val, receiver);\n");
+    bootstrap.push_str("                    val = window.MatchBox.wrapInstancePropertyValue(hostId, gcId, prop, val, receiver);\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("                return val !== undefined ? val : target[prop];\n");
     bootstrap.push_str("            },\n");
@@ -613,12 +586,12 @@ pub fn render_stub_js_bootstrap(
     bootstrap.push_str("                if (typeof prop !== \"string\") return false;\n");
     bootstrap.push_str("                if (prop.startsWith(\"__matchbox_\")) { target[prop] = value; return true; }\n");
     bootstrap
-        .push_str("                const keys = window.MatchBox.getInstanceKeys(vmPtr, gcId);\n");
+        .push_str("                const keys = window.MatchBox.getInstanceKeys(hostId, gcId);\n");
     bootstrap.push_str("                const lowerProp = prop.toLowerCase();\n");
     bootstrap.push_str(
         "                const matchedKey = keys.find(k => k.toLowerCase() === lowerProp);\n",
     );
-    bootstrap.push_str("                window.MatchBox.setInstanceProperty(vmPtr, gcId, matchedKey || prop, value);\n");
+    bootstrap.push_str("                window.MatchBox.setInstanceProperty(hostId, gcId, matchedKey || prop, value);\n");
     bootstrap.push_str("                target[prop] = value;\n");
     bootstrap.push_str("                return true;\n");
     bootstrap.push_str("            },\n");
@@ -627,13 +600,13 @@ pub fn render_stub_js_bootstrap(
     bootstrap.push_str("                if (prop.startsWith(\"__matchbox_\")) return true;\n");
     bootstrap.push_str("                if (prop in target) return true;\n");
     bootstrap
-        .push_str("                const keys = window.MatchBox.getInstanceKeys(vmPtr, gcId);\n");
+        .push_str("                const keys = window.MatchBox.getInstanceKeys(hostId, gcId);\n");
     bootstrap.push_str("                const lowerProp = prop.toLowerCase();\n");
     bootstrap.push_str("                return keys.some(k => k.toLowerCase() === lowerProp);\n");
     bootstrap.push_str("            },\n");
     bootstrap.push_str("            ownKeys(target) {\n");
     bootstrap
-        .push_str("                const bxKeys = window.MatchBox.getInstanceKeys(vmPtr, gcId);\n");
+        .push_str("                const bxKeys = window.MatchBox.getInstanceKeys(hostId, gcId);\n");
     bootstrap.push_str("                const targetKeys = Reflect.ownKeys(target);\n");
     bootstrap.push_str("                const allKeys = new Set([...targetKeys, ...bxKeys]);\n");
     bootstrap.push_str("                return Array.from(allKeys);\n");
@@ -642,7 +615,7 @@ pub fn render_stub_js_bootstrap(
     bootstrap.push_str("                if (typeof prop !== \"string\") return Reflect.getOwnPropertyDescriptor(target, prop);\n");
     bootstrap.push_str("                if (prop.startsWith(\"__matchbox_\")) return Reflect.getOwnPropertyDescriptor(target, prop);\n");
     bootstrap
-        .push_str("                const keys = window.MatchBox.getInstanceKeys(vmPtr, gcId);\n");
+        .push_str("                const keys = window.MatchBox.getInstanceKeys(hostId, gcId);\n");
     bootstrap.push_str("                if (keys.includes(prop)) {\n");
     bootstrap.push_str("                    return {\n");
     bootstrap.push_str("                        enumerable: true,\n");
@@ -658,12 +631,12 @@ pub fn render_stub_js_bootstrap(
     bootstrap.push_str("    if (typeof BoxLangVM !== \"undefined\" && BoxLangVM.prototype && typeof BoxLangVM.prototype.free === \"function\") {\n");
     bootstrap.push_str("        const __matchboxOriginalFree = BoxLangVM.prototype.free;\n");
     bootstrap.push_str("        BoxLangVM.prototype.free = function() {\n");
-    bootstrap.push_str("            const ptr = this.__matchbox_vm_ptr || this.__wbg_ptr;\n");
+    bootstrap.push_str("            const ptr = this.__matchbox_host_id;\n");
     bootstrap.push_str("            try {\n");
     bootstrap.push_str("                return __matchboxOriginalFree.call(this);\n");
     bootstrap.push_str("            } finally {\n");
-    bootstrap.push_str("                if (ptr && window.MatchBox.unregisterCallbackBridge) {\n");
-    bootstrap.push_str("                    window.MatchBox.unregisterCallbackBridge(ptr);\n");
+    bootstrap.push_str("                if (ptr && window.MatchBox.unregisterHost) {\n");
+    bootstrap.push_str("                    window.MatchBox.unregisterHost(ptr);\n");
     bootstrap.push_str("                }\n");
     bootstrap.push_str("            }\n");
     bootstrap.push_str("        };\n");
@@ -750,16 +723,19 @@ pub fn render_stub_js_bootstrap(
     bootstrap.push_str("            await __wbg_init(typeof globalThis !== \"undefined\" && globalThis.__matchboxWasmModule !== undefined ? { module_or_path: globalThis.__matchboxWasmModule } : undefined);\n");
     bootstrap.push_str("            if (!vm) {\n");
     bootstrap.push_str("                vm = new BoxLangVM();\n");
-    bootstrap.push_str("                if (typeof window !== \"undefined\" && window.MatchBox && window.MatchBox.registerCallbackBridge) {\n");
-    bootstrap.push_str("                    const vmPtr = vm.vm_ptr();\n");
-    bootstrap.push_str("                    vm.__matchbox_vm_ptr = vmPtr;\n");
-    bootstrap.push_str("                    window.MatchBox.registerCallbackBridge(vmPtr, _matchbox_invoke_callback);\n");
-    bootstrap.push_str("                    if (window.MatchBox.registerPumpBridge && typeof vm.pump === \"function\") {\n");
-    bootstrap.push_str(
-        "                        window.MatchBox.registerPumpBridge(vmPtr, () => vm.pump());\n",
-    );
-    bootstrap.push_str("                    }\n");
-    bootstrap.push_str("                }\n");
+    bootstrap.push_str(r#"                if (typeof window !== "undefined" && window.MatchBox && window.MatchBox.registerHost) {
+                    const vmPtr = vm.vm_ptr();
+                    const hostId = window.MatchBox.registerHost({
+                        invoke: (callbackId, thisVal, args) => _matchbox_invoke_callback(vmPtr, callbackId, thisVal, args),
+                        pump: () => vm.pump(),
+                        getProp: (gcId, name) => _matchbox_get_instance_prop(vmPtr, gcId, name),
+                        getKeys: (gcId) => _matchbox_get_instance_keys(vmPtr, gcId),
+                        setProp: (gcId, name, value) => _matchbox_set_instance_prop(vmPtr, gcId, name, value),
+                    });
+                    vm.__matchbox_host_id = hostId;
+                    vm.set_host_id(hostId);
+                }
+"#);
     bootstrap.push_str("                const bytecodeBytes = Uint8Array.from(atob(__matchboxBytecodeBase64), c => c.charCodeAt(0));\n");
     bootstrap.push_str("                try {\n");
     bootstrap.push_str("                    vm.load_bytecode(bytecodeBytes);\n");
@@ -878,7 +854,7 @@ mod tests {
     fn fusion_js_bootstrap_uses_async_vm_call_without_bytecode_loader() {
         let bootstrap = render_fusion_js_bootstrap(&vec!["hello".to_string()], "app");
 
-        assert!(bootstrap.contains("registerCallbackBridge"));
+        assert!(bootstrap.contains("registerHost"));
         assert!(bootstrap.contains("invokeCallback"));
         assert!(bootstrap.contains("BoxLangVM.prototype.free"));
         assert!(bootstrap.contains(
@@ -898,8 +874,8 @@ mod tests {
         let bootstrap = render_stub_js_bootstrap(&vec!["hello".to_string()], "app", "AQID");
 
         assert!(bootstrap.contains("__matchboxBytecodeBase64 = \"AQID\""));
-        assert!(bootstrap.contains("registerCallbackBridge"));
-        assert!(bootstrap.contains("registerPumpBridge"));
+        assert!(bootstrap.contains("registerHost"));
+        assert!(bootstrap.contains("vm.set_host_id(hostId)"));
         assert!(bootstrap.contains("invokeCallback"));
         assert!(bootstrap.contains("schedulePump"));
         assert!(bootstrap.contains("createInstanceProxy"));
