@@ -1,3 +1,13 @@
 function ping() {
     return "pong"
 }
+
+function renderInto(host, title, lines) {
+    var html = "<style>div{font:14px sans-serif}b{color:blue}</style><div><b>" & title & "</b><ul>"
+    for (var l in lines) {
+        html &= "<li>" & l & "</li>"
+    }
+    html &= "</ul></div>"
+    host.shadowRoot.innerHTML = html
+    return lines.len()
+}
