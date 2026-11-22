@@ -5,7 +5,8 @@ baseURL = getSystemSetting( "MB_BASE_URL" )
 only = getSystemSetting( "MB_ONLY", "" )
 
 consoleLines = []
-page = playwright()
+pw = playwright()
+page = pw.newPage()
 page.onConsole( ( message ) => consoleLines.append( message.type & ": " & message.text ) )
 	.onPageError( ( error ) => consoleLines.append( "pageerror: " & error.message ) )
 	.visit( baseURL & "/index.html" & ( only.len() ? "?only=" & only : "" ) )
@@ -17,8 +18,8 @@ while ( !page.evaluate( "window.done === true" ) ) {
 	}
 	page.wait( 100 )
 }
-results = deserializeJSON( page.evaluate( "JSON.stringify(window.results)" ) )
-page.quit()
+results = jsonDeserialize( page.evaluate( "JSON.stringify(window.results)" ) )
+pw.close()
 
 failures = []
 function check( id, cond, detail = "" ) {
