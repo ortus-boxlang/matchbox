@@ -1,0 +1,118 @@
+function ping() {
+    return "pong"
+}
+
+function renderInto(host, title, lines) {
+    var html = "<style>div{font:14px sans-serif}b{color:blue}</style><div><b>" & title & "</b><ul>"
+    for (var l in lines) {
+        html &= "<li>" & l & "</li>"
+    }
+    html &= "</ul></div>"
+    host.shadowRoot.innerHTML = html
+    return lines.len()
+}
+
+function decodeBytes(bytes) {
+    return new js.TextDecoder().decode(bytes)
+}
+
+function getJson(url) {
+    var res = js.fetch(url).get()
+    return res.json().get()
+}
+
+function postJson(url, token, payload) {
+    var res = js.fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " & token },
+        body: serializeJSON(payload)
+    }).get()
+    return res.json().get()
+}
+
+function streamRaw(url) {
+    var res = js.fetch(url).get()
+    var reader = res.body.getReader()
+    var seen = []
+    var start = js.performance.now()
+    while (true) {
+        var chunk = reader.read().get()
+        if (chunk.done) {
+            break
+        }
+        seen.append({ ms: round(js.performance.now() - start), bytes: chunk.value.length })
+    }
+    return seen
+}
+
+function streamDecode(url) {
+    var res = js.fetch(url).get()
+    var reader = res.body.getReader()
+    var decoder = new js.TextDecoder()
+    var all = ""
+    while (true) {
+        var chunk = reader.read().get()
+        if (chunk.done) {
+            break
+        }
+        all &= decoder.decode(chunk.value)
+    }
+    return all
+}
+
+function wire(host) {
+    var root = host.shadowRoot
+    var input = js.document.createElement("input")
+    var btn = js.document.createElement("button")
+    btn.textContent = "send"
+    var log = js.document.createElement("div")
+    btn.addEventListener("click", function (e) {
+        log.textContent = "you said: " & input.value
+    })
+    root.append(input)
+    root.append(btn)
+    root.append(log)
+    return "wired"
+}
+
+function failingFetch(url) {
+    try {
+        var res = js.fetch(url).get()
+        return "unexpected ok " & res.status
+    } catch (any e) {
+        return "caught: " & e.message
+    }
+}
+
+function httpGet(url) {
+    return jsonDeserialize(http({ url: url }).get())
+}
+
+function httpPost(url, token, payload) {
+    return jsonDeserialize(http({
+        url: url,
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " & token },
+        body: serializeJSON(payload)
+    }).get())
+}
+
+function httpFail(url) {
+    try {
+        http({ url: url }).get()
+        return "unexpected ok"
+    } catch (any e) {
+        return "caught: " & e.message
+    }
+}
+
+function httpUnsupported(url, option) {
+    var spec = { url: url }
+    spec[option] = true
+    try {
+        http(spec).get()
+        return "unexpected ok"
+    } catch (any e) {
+        return "caught: " & e.message
+    }
+}

@@ -1,0 +1,7 @@
+bx:header name="Content-Type" value="text/event-stream";
+bx:header name="Cache-Control" value="no-cache";
+for( i = 1; i <= 6; i++ ) {
+	writeOutput( 'data: {"token":"word#i#"}' & char( 10 ) & char( 10 ) );
+	bx:flush;
+	sleep( 250 );
+}

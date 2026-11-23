@@ -1,13 +1,48 @@
 #[cfg(feature = "bif-http")]
-use crate::types::{BxVM, BxValue, NativeFutureValue};
+use crate::types::{BxVM, BxValue};
+#[cfg(all(feature = "bif-http", not(target_arch = "wasm32")))]
+use crate::types::NativeFutureValue;
 
 #[cfg(all(feature = "bif-http", not(target_arch = "wasm32")))]
 use std::fs::File;
 #[cfg(feature = "bif-http")]
 use std::time::Duration;
 
+/// Runs one request with `fetch` and resolves to the same JSON text the native `http()` returns.
+/// Arguments: url, method, headers (object), body (string or undefined), timeoutMs (0 = none).
 #[cfg(all(feature = "bif-http", target_arch = "wasm32", feature = "js"))]
-use web_sys::{Request, RequestInit, RequestMode};
+const BROWSER_HTTP_JS: &str = r#"
+const controller = new AbortController();
+let timer = null;
+if (timeoutMs > 0) {
+    timer = setTimeout(() => controller.abort(new Error("http() timed out after " + (timeoutMs / 1000) + " seconds")), timeoutMs);
+}
+return (async () => {
+    try {
+        const res = await fetch(url, { method, headers, body, redirect: "follow", signal: controller.signal });
+        const text = await res.text();
+        const out = {};
+        res.headers.forEach((value, name) => { (out[name.toLowerCase()] ||= []).push(value); });
+        return JSON.stringify({ status: res.status, headers: out, file_content: text, body: text });
+    } finally {
+        if (timer !== null) clearTimeout(timer);
+    }
+})();
+"#;
+
+/// Options the browser cannot honour. Using one fails instead of being ignored.
+#[cfg(all(feature = "bif-http", target_arch = "wasm32"))]
+fn reject_unsupported_options(vm: &dyn BxVM, spec: usize) -> Result<(), String> {
+    for key in ["path", "connectionTimeout", "noProxy", "ipv4Only"] {
+        if vm.struct_key_exists(spec, key) {
+            return Err(format!("http() option '{key}' is not supported in the browser"));
+        }
+    }
+    if vm.struct_key_exists(spec, "redirect") && !vm.struct_get(spec, "redirect").as_bool() {
+        return Err("http() option 'redirect: false' is not supported in the browser: fetch hides redirect responses".to_string());
+    }
+    Ok(())
+}
 
 #[cfg(feature = "bif-http")]
 struct RequestOptions {
@@ -207,6 +242,8 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
             options.redirect = request_bool(vm, id, "redirect", options.redirect)?;
             options.no_proxy = request_bool(vm, id, "noProxy", options.no_proxy)?;
             options.ipv4_only = request_bool(vm, id, "ipv4Only", options.ipv4_only)?;
+            #[cfg(target_arch = "wasm32")]
+            reject_unsupported_options(vm, id)?;
             headers = request_headers(vm, id);
             body = request_body(vm, id);
         } else {
@@ -222,6 +259,8 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
             {
                 path = Some(vm.to_string(args[2]));
             }
+            #[cfg(target_arch = "wasm32")]
+            return Err("http() option 'path' is not supported in the browser".to_string());
         }
     }
 
@@ -277,18 +316,30 @@ pub fn http_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> 
 
     #[cfg(all(target_arch = "wasm32", feature = "js"))]
     {
-        let _ = (headers, body, options);
-        let opts = RequestInit::new();
-        opts.set_method(&method);
-        opts.set_mode(RequestMode::Cors);
+        use js_sys::{Array, Function, Object, Reflect};
+        use wasm_bindgen::JsValue;
 
-        let request = Request::new_with_str_and_init(&url, &opts)
-            .map_err(|e| format!("Failed to create request: {:?}", e))?;
-
-        let window = web_sys::window().ok_or("No global window object found")?;
-        let _request_promise = window.fetch_with_request(&request);
-
-        Err("http() on WASM (fetch) is only supported in async contexts. Return values are not yet synchronous on the web.".to_string())
+        let js_headers = Object::new();
+        for (name, value) in &headers {
+            Reflect::set(&js_headers, &JsValue::from_str(name), &JsValue::from_str(value))
+                .map_err(|e| format!("Invalid header '{name}': {e:?}"))?;
+        }
+        let js_body = match &body {
+            Some(text) => JsValue::from_str(text),
+            None => JsValue::UNDEFINED,
+        };
+        let timeout_ms = options.timeout.map_or(0.0, |d| d.as_secs_f64() * 1000.0);
+        let args = Array::of5(
+            &JsValue::from_str(&url),
+            &JsValue::from_str(&method),
+            &js_headers,
+            &js_body,
+            &JsValue::from_f64(timeout_ms),
+        );
+        let fetch = Function::new_with_args("url, method, headers, body, timeoutMs", BROWSER_HTTP_JS);
+        let promise = Reflect::apply(&fetch, &JsValue::NULL, &args)
+            .map_err(|e| format!("Failed to start request: {e:?}"))?;
+        vm.js_promise_to_future(promise)
     }
 
     #[cfg(all(target_arch = "wasm32", not(feature = "js")))]

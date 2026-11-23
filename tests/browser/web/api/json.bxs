@@ -1,0 +1,2 @@
+bx:header name="Content-Type" value="application/json";
+writeOutput( jsonSerialize( { ok: true, name: "agent", n: 42 } ) );

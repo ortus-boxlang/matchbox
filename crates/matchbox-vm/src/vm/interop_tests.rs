@@ -419,6 +419,9 @@ mod tests {
         use wasm_bindgen::prelude::Closure;
 
         let mut vm = VM::new();
+        // The mock bridge below passes the host id straight to `_matchbox_get_instance_prop`,
+        // which expects a VM address, so use the address as the host id.
+        vm.host_id = &vm as *const VM as usize;
 
         // 1. Mock globalThis.MatchBox
         let global = js_sys::global();
@@ -428,7 +431,7 @@ mod tests {
         // createInstanceProxy mock
         let create_proxy = Closure::wrap(Box::new(move |ptr: usize, id: u32| {
             let target = js_sys::Object::new();
-            Reflect::set(&target, &"__matchbox_vm_ptr".into(), &(ptr as f64).into()).unwrap();
+            Reflect::set(&target, &"__matchbox_host_id".into(), &(ptr as f64).into()).unwrap();
             Reflect::set(&target, &"__matchbox_gc_id".into(), &(id as f64).into()).unwrap();
 
             let handler = js_sys::Object::new();
@@ -437,7 +440,7 @@ mod tests {
                     if prop.as_string().is_some_and(|name| name.starts_with("__matchbox_")) {
                         return Reflect::get(&target, &prop).unwrap();
                     }
-                    let ptr = Reflect::get(&target, &"__matchbox_vm_ptr".into())
+                    let ptr = Reflect::get(&target, &"__matchbox_host_id".into())
                         .unwrap()
                         .as_f64()
                         .unwrap() as usize;

@@ -1,0 +1,113 @@
+// Drives web/index.html in Chromium through bx-playwright and asserts on window.results.
+// Env: MB_BASE_URL (server root), MB_ONLY (optional comma list of test ids).
+// Run on BoxLang JVM with the bx-playwright module, not on MatchBox.
+baseURL = getSystemSetting( "MB_BASE_URL" )
+only = getSystemSetting( "MB_ONLY", "" )
+
+consoleLines = []
+pw = playwright()
+page = pw.newPage()
+page.onConsole( ( message ) => consoleLines.append( message.type & ": " & message.text ) )
+	.onPageError( ( error ) => consoleLines.append( "pageerror: " & error.message ) )
+	.visit( baseURL & "/index.html" & ( only.len() ? "?only=" & only : "" ) )
+
+deadline = getTickCount() + 60000
+while ( !page.evaluate( "window.done === true" ) ) {
+	if ( getTickCount() > deadline ) {
+		throw( message = "Timed out waiting for window.done. Console: " & consoleLines.toList( " | " ) )
+	}
+	page.wait( 100 )
+}
+results = jsonDeserialize( page.evaluate( "JSON.stringify(window.results)" ) )
+pw.close()
+
+failures = []
+function check( id, cond, detail = "" ) {
+	if ( !cond ) {
+		failures.append( id & ": " & detail )
+	}
+}
+function ran( id ) {
+	return only == "" || listFindNoCase( only, id )
+}
+function result( id ) {
+	if ( !results.keyExists( id ) || !results[ id ].ok ) {
+		failures.append( id & ": " & ( results.keyExists( id ) ? results[ id ].error : "did not run" ) )
+		return javacast( "null", 0 )
+	}
+	return results[ id ].value
+}
+
+if ( ran( "ping" ) ) {
+	check( "ping", result( "ping" ) == "pong" )
+}
+
+if ( ran( "g_angle_strings" ) ) {
+	g = result( "g_angle_strings" )
+	check( "g_angle_strings", g.n == 3 && g.html.find( "<ul><li>one</li><li>two</li><li>three</li></ul>" ) > 0, g.html )
+}
+
+if ( ran( "h_new_js_ctor" ) ) {
+	h = result( "h_new_js_ctor" )
+	check( "h_new_js_ctor", h.length == 5 && h.codes[ 2 ] == 233, jsonSerialize( h ) )
+}
+
+if ( ran( "a_fetch_json" ) ) {
+	a = result( "a_fetch_json" )
+	check( "a_get", a.get.ok && a.get.name == "agent" && a.get.n == 42, jsonSerialize( a.get ) )
+	check( "a_post", a.post.method == "POST" && a.post.auth == "Bearer tok" && a.post.ctype.findNoCase( "application/json" ) == 1 && a.post.body == '{"q":"hi"}', jsonSerialize( a.post ) )
+}
+
+if ( ran( "b_stream_incremental" ) ) {
+	b = result( "b_stream_incremental" )
+	check( "b_chunks", b.seen.len() >= 4, jsonSerialize( b.seen ) )
+	check( "b_incremental", b.seen.last().ms - b.seen.first().ms > 1000, jsonSerialize( b.seen ) )
+	check( "b_page_responsive", b.ticks > 15, "ticks=" & b.ticks )
+}
+
+if ( ran( "e_two_instances" ) ) {
+	e = result( "e_two_instances" )
+	check( "e_two_instances", e.len() == 2 && e[ 1 ] == "you said: one" && e[ 2 ] == "you said: two", jsonSerialize( e ) )
+}
+
+if ( ran( "f_click_during_stream" ) ) {
+	f = result( "f_click_during_stream" )
+	check( "f_click", f.clicked == "you said: mid", jsonSerialize( f ) )
+	check( "f_stream", f.text.findNoCase( "word1" ) && f.text.findNoCase( "word6" ), f.text )
+}
+
+if ( ran( "c_overlapping_streams" ) ) {
+	c = result( "c_overlapping_streams" )
+	check( "c_time", c.ms < 2500, "ms=" & c.ms )
+	for ( key in [ "x", "y" ] ) {
+		check( "c_" & key, c[ key ].findNoCase( "word1" ) && c[ key ].findNoCase( "word6" ), c[ key ] )
+	}
+}
+
+if ( ran( "d_parallel_getjson" ) ) {
+	d = result( "d_parallel_getjson" )
+	check( "d_count", d.len() == 20 && d.every( ( item ) => item.n == 42 && item.name == "agent" ), jsonSerialize( d ) )
+}
+
+if ( ran( "i_http" ) ) {
+	i = result( "i_http" )
+	check( "i_get", i.get.status == 200 && jsonDeserialize( i.get.body ).n == 42 && i.get.file_content == i.get.body, jsonSerialize( i.get ) )
+	check( "i_get_headers", i.get.headers.keyExists( "content-type" ) && i.get.headers[ "content-type" ].len() >= 1, jsonSerialize( i.get.headers ) )
+	echoed = jsonDeserialize( i.post.body )
+	check( "i_post", i.post.status == 200 && echoed.method == "POST" && echoed.auth == "Bearer tok" && echoed.body == '{"q":"hi"}', i.post.body )
+	check( "i_status", i.notFound.status == 404, jsonSerialize( i.notFound ) )
+	check( "i_failure", i.failed.startsWith( "caught:" ), i.failed )
+	check( "i_unsupported", i.unsupported.find( "noProxy" ) > 0 && i.unsupported.find( "not supported" ) > 0, i.unsupported )
+}
+
+noisy = consoleLines.filter( ( l ) => l.findNoCase( "scheduled pump failed" ) || l.findNoCase( "recursive use" ) || l.findNoCase( "pageerror" ) )
+if ( ran( "j_no_pump_errors" ) ) {
+	check( "j_no_pump_errors", noisy.len() == 0, noisy.toList( " | " ) )
+}
+
+if ( failures.len() ) {
+	println( "FAILED:" & char( 10 ) & failures.toList( char( 10 ) ) )
+	println( "CONSOLE:" & char( 10 ) & consoleLines.toList( char( 10 ) ) )
+	throw( message = "browser tests failed" )
+}
+println( "browser tests passed" )

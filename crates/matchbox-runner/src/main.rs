@@ -16,35 +16,17 @@ const MAGIC_FOOTER: &[u8; 8] = b"BOXLANG\x01";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasm {
     use super::*;
-    use js_sys::{Array, Error, Function, Promise};
+    use js_sys::{Array, Error};
     use wasm_bindgen::JsValue;
     use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::window;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::collections::HashMap;
+    use matchbox_vm::types::BxVM;
+    use matchbox_vm::vm::gc::RootedValue;
 
     fn as_js_error(message: impl Into<String>) -> JsValue {
         Error::new(&message.into()).into()
-    }
-
-    async fn yield_to_host() -> Result<(), JsValue> {
-        let promise = Promise::new(&mut |resolve: Function, reject: Function| {
-            let win = match window() {
-                Some(win) => win,
-                None => {
-                    let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("window is unavailable"));
-                    return;
-                }
-            };
-
-            if let Err(err) = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0) {
-                let _ = reject.call1(&JsValue::NULL, &err);
-            }
-        });
-
-        let _ = JsFuture::from(promise).await?;
-        Ok(())
     }
 
     #[wasm_bindgen]
@@ -65,6 +47,10 @@ mod wasm {
     pub struct BoxLangVM {
         vm: VM,
         chunk: Option<Rc<RefCell<Chunk>>>,
+        /// Calls started with `start` and not yet finished. Retained so the GC keeps
+        /// their futures alive while the host waits.
+        calls: HashMap<u32, Rc<RootedValue>>,
+        next_call: u32,
     }
 
     #[wasm_bindgen]
@@ -75,6 +61,8 @@ mod wasm {
             BoxLangVM {
                 vm: VM::new(),
                 chunk: None,
+                calls: HashMap::new(),
+                next_call: 1,
             }
         }
 
@@ -94,41 +82,63 @@ mod wasm {
             &self.vm as *const VM as usize
         }
 
+        /// Identifies this VM to the JS host. Call before `load_bytecode`.
+        pub fn set_host_id(&mut self, host_id: usize) {
+            self.vm.host_id = host_id;
+        }
+
         pub fn pump(&mut self) -> Result<(), JsValue> {
             self.vm
                 .pump_until_blocked()
                 .map_err(|e| as_js_error(format!("Error: {}", e)))
         }
 
-        pub async fn call(&mut self, name: &str, args: Array) -> Result<JsValue, JsValue> {
+        /// Starts `name(...args)` as its own fiber and returns a handle for `poll`.
+        /// Synchronous, so any number of calls can be in flight on one VM.
+        pub fn start(&mut self, name: &str, args: Array) -> Result<u32, JsValue> {
+            let func = self.vm.get_global(name)
+                .ok_or_else(|| as_js_error(format!("Function {} not found", name)))?;
+
             let mut bx_args = Vec::new();
             for i in 0..args.length() {
                 bx_args.push(self.vm.js_to_bx(args.get(i)));
             }
 
-            let func = self.vm.get_global(name)
-                .ok_or_else(|| as_js_error(format!("Function {} not found", name)))?;
-
             let future = self.vm.start_call_function_value(func, bx_args)
                 .map_err(|e| as_js_error(format!("Error: {}", e)))?;
+            let root = self.vm.retain_value(future).map_err(as_js_error)?;
+            let handle = self.next_call;
+            self.next_call += 1;
+            self.calls.insert(handle, root);
+            Ok(handle)
+        }
 
-            loop {
-                self.vm
-                    .pump_until_blocked()
-                    .map_err(|e| as_js_error(format!("Error: {}", e)))?;
-
-                match self
-                    .vm
-                    .future_state(future)
-                    .map_err(|e| as_js_error(format!("Error: {}", e)))? {
-                    matchbox_vm::vm::HostFutureState::Pending => yield_to_host().await?,
-                    matchbox_vm::vm::HostFutureState::Completed(value) => return Ok(self.vm.bx_to_js(&value)),
-                    matchbox_vm::vm::HostFutureState::Failed(error) => {
-                        let message = self.vm.format_error_value(error);
-                        return Err(as_js_error(message));
-                    }
+        /// Returns `{ done: false }` while the call is running and `{ done: true, value }` when it
+        /// has finished. A failed call throws. A finished handle is released.
+        pub fn poll(&mut self, handle: u32) -> Result<JsValue, JsValue> {
+            let root = self.calls.get(&handle)
+                .ok_or_else(|| as_js_error(format!("Unknown call handle {}", handle)))?;
+            let future = self.vm.read_retained_value(root).map_err(as_js_error)?;
+            let state = self.vm
+                .future_state(future)
+                .map_err(|e| as_js_error(format!("Error: {}", e)))?;
+            let result = js_sys::Object::new();
+            match state {
+                matchbox_vm::vm::HostFutureState::Pending => {
+                    js_sys::Reflect::set(&result, &"done".into(), &JsValue::FALSE)?;
+                }
+                matchbox_vm::vm::HostFutureState::Completed(value) => {
+                    js_sys::Reflect::set(&result, &"done".into(), &JsValue::TRUE)?;
+                    js_sys::Reflect::set(&result, &"value".into(), &self.vm.bx_to_js(&value))?;
+                    self.calls.remove(&handle);
+                }
+                matchbox_vm::vm::HostFutureState::Failed(error) => {
+                    let message = self.vm.format_error_value(error);
+                    self.calls.remove(&handle);
+                    return Err(as_js_error(message));
                 }
             }
+            Ok(result.into())
         }
     }
 

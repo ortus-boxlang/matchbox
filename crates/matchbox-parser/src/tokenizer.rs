@@ -852,13 +852,23 @@ impl<'a> Lexer<'a> {
         self.advance(); // consume opening quote
         let xml_like_string = quote == '"' && self.source[self.pos..].trim_start().starts_with('<');
         let mut closed = false;
+        // A quote can only be an XML attribute quote while inside an open tag (`<` seen, `>` not yet).
+        // Outside a tag it always closes the string, so `"<ul>"` ends where it looks like it ends.
+        let mut in_xml_tag = false;
 
         loop {
             if self.pos >= self.source.len() {
                 break;
             }
             let ch = self.current_char();
-            let xml_attribute_quote = if xml_like_string {
+            if xml_like_string {
+                if ch == '<' {
+                    in_xml_tag = true;
+                } else if ch == '>' {
+                    in_xml_tag = false;
+                }
+            }
+            let xml_attribute_quote = if xml_like_string && in_xml_tag {
                 let mut lookahead = self.pos + ch.len_utf8();
                 let mut result = false;
                 while lookahead < self.source.len() {
@@ -1261,6 +1271,24 @@ fn keyword_or_ident(lexeme: &str) -> TokenKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xml_like_string_closes_before_next_line() {
+        for src in ["a = \"<ul>\"\nb = 1", "a = \"</ul>\"\nb = 1", "a = \"<li>\"\n  b = 1"] {
+            let lexed = lex(src);
+            let strings: Vec<_> = lexed.tokens.iter().filter(|t| t.kind == TokenKind::String).collect();
+            assert_eq!(strings.len(), 1, "{src}");
+            assert!(lexed.errors.is_empty(), "{src}: {:?}", lexed.errors);
+        }
+    }
+
+    #[test]
+    fn xml_like_string_keeps_attribute_quotes() {
+        let lexed = lex("a = \"<root foo=\"bar\" />\"\nb = 1");
+        let strings: Vec<_> = lexed.tokens.iter().filter(|t| t.kind == TokenKind::String).collect();
+        assert_eq!(strings.len(), 1);
+        assert!(lexed.errors.is_empty());
+    }
 
     #[test]
     fn empty_source() {
