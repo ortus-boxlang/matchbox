@@ -141,14 +141,14 @@ pub fn directory_create(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
 /// 1. `path` - the directory or symbolic link to delete.
 /// 2. `recursive` - when true, the contents are deleted first. When false, the directory must be empty.
 ///    Defaults to false.
-/// 3. `followLinks` - when true, a recursive delete descends into symbolic links to directories and
-///    deletes the contents of their targets as well. When false, a link is removed as a link and what it
-///    points to is never touched. Defaults to false.
+/// 3. `followLinks` - when true, a recursive delete descends into symbolic links to directories found
+///    inside the directory and deletes the contents of their targets as well. When false, a link is
+///    removed as a link and what it points to is never touched. Defaults to false.
 ///
 /// # Behavior
 ///
-/// - A symbolic link given as `path` is removed as a link, whatever the value of `recursive`, unless both
-///   `recursive` and `followLinks` are true.
+/// - A symbolic link given as `path` is removed as a link, whatever the values of `recursive` and
+///   `followLinks`. `followLinks` only applies to links found inside the directory.
 /// - `fs::remove_dir_all` is used for the default recursive case. It does not follow symbolic links, so
 ///   nested links are removed as links.
 /// - `followLinks=true` is destructive: the contents of every folder a link points to are deleted. A
@@ -175,11 +175,12 @@ pub fn directory_delete(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     let follow_links = bool_arg(args, 2, false);
     let is_link = is_symlink_path(path);
 
-    if recurse && follow_links {
-        remove_dir_following_links(path)?;
-    } else if is_link {
-        // A symbolic link is removed as a link. Whatever it points to is never touched.
+    if is_link {
+        // A symbolic link given as the path is removed as a link, even with followLinks. Whatever it
+        // points to is never touched.
         remove_dir_or_link(path)?;
+    } else if recurse && follow_links {
+        remove_dir_following_links(path)?;
     } else if recurse {
         // remove_dir_all does not follow symbolic links, nested links are removed as links
         fs::remove_dir_all(path).map_err(|e| e.to_string())?;
@@ -237,8 +238,8 @@ fn remove_dir_or_link(path: &Path) -> Result<(), String> {
 ///
 /// Every entry that resolves to a directory (a link to a directory included) is emptied first, then
 /// removed. Files and links to files are removed with `remove_file`, which removes the link and not its
-/// target. Finally `path` itself is removed with [`remove_dir_or_link`], so a link given as the top level
-/// path is removed as a link after its target has been emptied.
+/// target. Finally `path` itself is removed with [`remove_dir_or_link`]. `directoryDelete()` never calls this
+/// for a symbolic link given as the path, only for real directories.
 ///
 /// This is the opt-in `followLinks=true` behavior of `directoryDelete()`.
 ///
@@ -1211,8 +1212,10 @@ pub fn create_temp_file(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
 ///
 /// # Behavior
 ///
-/// - A link to a file counts as a file in the non recursive case, like the BoxLang JVM. A link to a
-///   directory is skipped when `recurse` is false.
+/// - A shallow copy (`recurse` false) copies files and symbolic links but not real sub directories. With
+///   `followLinks` false a link is copied as a link, even a link to a directory or a dangling link. With
+///   `followLinks` true only links to files are copied, as the files they point to. This matches the
+///   BoxLang JVM.
 /// - With `followLinks=true` a link cycle is detected by the directory walker and reported as an error.
 ///
 /// # Errors
@@ -1293,9 +1296,11 @@ pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
             let target = dest_path.join(entry.file_name());
             let file_type = entry.file_type().map_err(|e| e.to_string())?;
             let is_link = file_type.is_symlink();
-            // A link to a file counts as a file, like the BoxLang JVM. A link to a directory is skipped.
+            // Like the BoxLang JVM, a shallow copy takes files and links but not real sub directories. A link
+            // is copied as a link, even when it points to a directory or to nothing. With followLinks only
+            // links to files are copied, as the files they point to.
             let is_file = if is_link {
-                entry.path().is_file()
+                !follow_links || entry.path().is_file()
             } else {
                 file_type.is_file()
             };

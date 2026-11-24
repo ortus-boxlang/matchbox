@@ -154,6 +154,37 @@ directoryDelete( path = tree, recursive = true, followLinks = true );
 assert !directoryExists( tree ) : "testDeleteLinkCycle tree removed";
 assert directoryExists( root ) : "testDeleteLinkCycle parent kept";
 
+// testDeleteTopLevelLinkWithFollowLinks: a link given as the path is only removed as a link
+fileCreateSymlink( root & "/toplink2", outside );
+directoryDelete( root & "/toplink2", true, true );
+assert !fileIsSymlink( root & "/toplink2" ) : "testDeleteTopLevelLinkWithFollowLinks link removed";
+assert fileExists( outside & "/keep.txt" ) : "testDeleteTopLevelLinkWithFollowLinks keep";
+assert fileExists( outside & "/deep/inner.txt" ) : "testDeleteTopLevelLinkWithFollowLinks inner";
+
+// testShallowCopyLinks: links to directories and dangling links are copied as links, real directories are not
+shallow = root & "/shallow";
+directoryCreate( shallow & "/sub" );
+fileWrite( shallow & "/a.txt", "a" );
+fileCreateSymlink( shallow & "/dirLink", outside );
+fileCreateSymlink( shallow & "/dangling", root & "/nope" );
+directoryCopy( shallow, root & "/shallowCopy" );
+assert fileIsSymlink( root & "/shallowCopy/dirLink" ) : "testShallowCopyLinks dirLink";
+assert fileIsSymlink( root & "/shallowCopy/dangling" ) : "testShallowCopyLinks dangling";
+assert fileExists( root & "/shallowCopy/a.txt" ) : "testShallowCopyLinks file";
+assert !directoryExists( root & "/shallowCopy/sub" ) : "testShallowCopyLinks sub directory";
+
+// testCopyOverwritesLink: overwrite replaces a link at the destination
+other = root & "/other";
+directoryCreate( other );
+overwriteSrc = root & "/overwriteSrc";
+directoryCreate( overwriteSrc );
+fileCreateSymlink( overwriteSrc & "/lnk", outside );
+directoryCopy( overwriteSrc, root & "/overwriteDest", true );
+assert fileReadSymlink( root & "/overwriteDest/lnk" ) == outside : "testCopyOverwritesLink first";
+fileCreateSymlink( overwriteSrc & "/lnk", other, true );
+directoryCopy( overwriteSrc, root & "/overwriteDest", true, "*", true, true );
+assert fileReadSymlink( root & "/overwriteDest/lnk" ) == other : "testCopyOverwritesLink replaced";
+
 // testDeleteFollowLinks (opt in, empties the target)
 tree = root & "/tree4";
 directoryCreate( tree );
