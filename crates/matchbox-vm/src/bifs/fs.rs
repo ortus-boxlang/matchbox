@@ -151,8 +151,9 @@ pub fn directory_create(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
 ///   `recursive` and `followLinks` are true.
 /// - `fs::remove_dir_all` is used for the default recursive case. It does not follow symbolic links, so
 ///   nested links are removed as links.
-/// - `followLinks=true` is destructive and has no cycle guard. A link that points back at one of its own
-///   parents recurses until the stack or the filesystem gives up. This matches the BoxLang JVM.
+/// - `followLinks=true` is destructive: the contents of every folder a link points to are deleted. A
+///   link that leads back into the tree being deleted, or to a folder above it, is removed as a link
+///   and not followed, so link cycles cannot loop or delete the folder the tree lives in.
 ///
 /// # Returns
 ///
@@ -170,11 +171,7 @@ pub fn directory_delete(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     let path_str = vm.to_string(args[0]);
     let path = Path::new(&path_str);
 
-    let recurse = if args.len() > 1 {
-        args[1].as_bool()
-    } else {
-        false
-    };
+    let recurse = bool_arg(args, 1, false);
     let follow_links = bool_arg(args, 2, false);
     let is_link = is_symlink_path(path);
 
@@ -243,29 +240,55 @@ fn remove_dir_or_link(path: &Path) -> Result<(), String> {
 /// target. Finally `path` itself is removed with [`remove_dir_or_link`], so a link given as the top level
 /// path is removed as a link after its target has been emptied.
 ///
-/// This is the opt-in `followLinks=true` behavior of `directoryDelete()`. There is no protection against
-/// link cycles.
+/// This is the opt-in `followLinks=true` behavior of `directoryDelete()`.
+///
+/// # Link cycles
+///
+/// The real path of every directory that is currently being emptied is tracked. A link that resolves to
+/// one of them, or to a directory above one of them, is removed as a link and not descended into. That
+/// covers a link back into the tree (`tree/loop -> .`) and a link to a parent (`tree/up -> ..`), which
+/// would otherwise recurse forever or delete the folder the tree lives in, leaving it half deleted.
 ///
 /// # Errors
 ///
 /// Returns the I/O error text of the first entry that cannot be read or removed.
 #[cfg(feature = "bif-io")]
 fn remove_dir_following_links(path: &Path) -> Result<(), String> {
+    remove_dir_following_links_tracked(path, &mut Vec::new())
+}
+
+/// Implementation of [`remove_dir_following_links`]. `active` holds the real paths of the directories
+/// above `path` that are still being emptied.
+#[cfg(feature = "bif-io")]
+fn remove_dir_following_links_tracked(
+    path: &Path,
+    active: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let real_path = fs::canonicalize(path).map_err(|e| e.to_string())?;
+    if active.iter().any(|dir| dir.starts_with(&real_path)) {
+        // The path is a directory that is already being emptied, or one that contains it. Following it
+        // would loop or delete the folder we are inside, so only the link is removed.
+        return remove_dir_or_link(path);
+    }
+    active.push(real_path);
     for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
         let entry_path = entry.map_err(|e| e.to_string())?.path();
         if entry_path.is_dir() {
-            remove_dir_following_links(&entry_path)?;
+            remove_dir_following_links_tracked(&entry_path, active)?;
         } else {
             fs::remove_file(&entry_path).map_err(|e| e.to_string())?;
         }
     }
+    active.pop();
     remove_dir_or_link(path)
 }
 
 /// Creates a symbolic link at `link` that points to `target`.
 ///
 /// `target` is stored exactly as given. A relative target is therefore relative to the directory that
-/// holds the link, not to the current directory. The link path must not already exist.
+/// holds the link, not to the current directory. The link path must not already exist. The target is a
+/// [`Path`] and not a string so that a target whose name is not valid UTF-8 is preserved byte for byte
+/// when a link is copied.
 ///
 /// # Platform notes
 ///
@@ -279,20 +302,17 @@ fn remove_dir_following_links(path: &Path) -> Result<(), String> {
 ///
 /// Returns the I/O error text when the link cannot be created.
 #[cfg(feature = "bif-io")]
-fn make_symlink(target: &str, link: &Path) -> Result<(), String> {
+fn make_symlink(target: &Path, link: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(target, link).map_err(|e| e.to_string())
     }
     #[cfg(windows)]
     {
-        let target_path = Path::new(target);
-        let resolved = if target_path.is_absolute() {
-            target_path.to_path_buf()
+        let resolved = if target.is_absolute() {
+            target.to_path_buf()
         } else {
-            link.parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(target_path)
+            link.parent().unwrap_or_else(|| Path::new(".")).join(target)
         };
         if resolved.is_dir() {
             std::os::windows::fs::symlink_dir(target, link).map_err(|e| e.to_string())
@@ -333,13 +353,14 @@ fn copy_symlink(source: &Path, target: &Path, overwrite: bool) -> Result<(), Str
         }
         fs::remove_file(target).map_err(|e| e.to_string())?;
     }
-    make_symlink(&link_target.to_string_lossy(), target)
+    make_symlink(&link_target, target)
 }
 
 /// Lexically removes `.` and `..` segments from `path` without touching the filesystem.
 ///
 /// Symbolic links are not resolved, which is the same as `java.nio.file.Path.normalize()`. A `..` that
-/// has nothing left to pop is kept, so a relative path can still start with `..`. Used by
+/// follows a normal segment removes it. A `..` at the root of an absolute path is dropped, so `/../a`
+/// becomes `/a`. A `..` at the start of a relative path is kept, so `../../a` stays `../../a`. Used by
 /// `fileReadSymlink( path, resolve=true )`.
 #[cfg(feature = "bif-io")]
 fn normalize_path(path: &Path) -> PathBuf {
@@ -348,11 +369,14 @@ fn normalize_path(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    normalized.push("..");
+            Component::ParentDir => match normalized.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    normalized.pop();
                 }
-            }
+                // Nothing above the root to go up to
+                Some(Component::RootDir) | Some(Component::Prefix(_)) => {}
+                _ => normalized.push(".."),
+            },
             other => normalized.push(other.as_os_str()),
         }
     }
@@ -391,11 +415,7 @@ pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
         return Err("directoryList() expects at least 1 argument".to_string());
     }
     let path_str = vm.to_string(args[0]);
-    let recurse = if args.len() > 1 {
-        args[1].as_bool()
-    } else {
-        false
-    };
+    let recurse = bool_arg(args, 1, false);
 
     // The top-level path is always resolved. Links found while walking are only followed with followLinks.
     let follow_links = bool_arg(args, 6, false);
@@ -859,7 +879,7 @@ pub fn file_create_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValu
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
     }
-    make_symlink(&target, link_path).map_err(|e| {
+    make_symlink(Path::new(&target), link_path).map_err(|e| {
         format!(
             "Could not create the symbolic link [{}] pointing to [{}]: {}",
             link, target, e
@@ -1208,25 +1228,14 @@ pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     }
     let source = vm.to_string(args[0]);
     let dest = vm.to_string(args[1]);
-    let recurse = if args.len() > 2 {
-        args[2].as_bool()
-    } else {
-        false
-    };
+    let recurse = bool_arg(args, 2, false);
     let filter = args
         .get(3)
         .filter(|value| !value.is_null())
         .map(|value| vm.to_string(*value));
-    let create_path = if args.len() > 4 {
-        args[4].as_bool()
-    } else {
-        true
-    };
-    let overwrite = if args.len() > 5 {
-        args[5].as_bool()
-    } else {
-        false
-    };
+    // Arguments that are skipped by a named call arrive as null, so they keep their defaults here
+    let create_path = bool_arg(args, 4, true);
+    let overwrite = bool_arg(args, 5, false);
     // When false, a link inside the source is copied as a link. When true, what it points to is copied.
     let follow_links = bool_arg(args, 6, false);
 
@@ -1745,5 +1754,79 @@ mod tests {
     fn appends_the_host_separator_when_missing() {
         let result = with_trailing_separator("C:/Temp".to_string());
         assert!(result.ends_with(std::path::MAIN_SEPARATOR));
+    }
+}
+
+#[cfg(all(test, feature = "bif-io"))]
+mod symlink_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_path_removes_current_and_parent_segments() {
+        assert_eq!(
+            normalize_path(Path::new("/a/./b/../c")),
+            PathBuf::from("/a/c")
+        );
+    }
+
+    #[test]
+    fn normalize_path_stops_at_the_root_of_an_absolute_path() {
+        assert_eq!(
+            normalize_path(Path::new("/../target")),
+            PathBuf::from("/target")
+        );
+        assert_eq!(normalize_path(Path::new("/a/../../b")), PathBuf::from("/b"));
+    }
+
+    #[test]
+    fn normalize_path_keeps_leading_parents_of_a_relative_path() {
+        assert_eq!(
+            normalize_path(Path::new("../../a")),
+            PathBuf::from("../../a")
+        );
+        assert_eq!(
+            normalize_path(Path::new("a/../../b")),
+            PathBuf::from("../b")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_symlink_preserves_a_target_that_is_not_utf8() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let dir = std::env::temp_dir().join(format!("matchbox-symlink-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let odd_target = PathBuf::from(OsStr::from_bytes(b"target-\xff\xfe"));
+        let source = dir.join("source");
+        let copy = dir.join("copy");
+        make_symlink(&odd_target, &source).unwrap();
+
+        copy_symlink(&source, &copy, false).unwrap();
+
+        assert_eq!(fs::read_link(&copy).unwrap(), odd_target);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_following_links_survives_a_link_cycle() {
+        let dir = std::env::temp_dir().join(format!("matchbox-cycle-{}", Uuid::new_v4()));
+        let tree = dir.join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("a.txt"), "a").unwrap();
+        // tree/loop -> tree, and tree/up -> the folder above the tree
+        make_symlink(&tree, &tree.join("loop")).unwrap();
+        make_symlink(&dir, &tree.join("up")).unwrap();
+
+        // Both links lead back to the tree being deleted, so both are removed as links only
+        remove_dir_following_links(&tree).unwrap();
+
+        assert!(!tree.exists());
+        assert!(
+            dir.exists(),
+            "the folder above the tree must not be deleted"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

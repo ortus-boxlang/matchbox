@@ -17,7 +17,9 @@ assert findNoCase( "current", created ) > 0 : "testCreateIsRead returns link pat
 // testReadRelativeTarget
 fileCreateSymlink( root & "/rel", "outside" );
 assert fileReadSymlink( root & "/rel" ) == "outside" : "testReadRelativeTarget stored";
-assert fileReadSymlink( path = root & "/rel", resolve = true ) == outside : "testReadRelativeTarget resolved";
+// Compare with forward slashes, a resolved path uses the separator of the operating system
+resolved = replace( fileReadSymlink( path = root & "/rel", resolve = true ), "\", "/", "all" );
+assert resolved == replace( outside, "\", "/", "all" ) : "testReadRelativeTarget resolved";
 
 // testDanglingLink
 fileCreateSymlink( root & "/dangling", root & "/does-not-exist" );
@@ -131,6 +133,27 @@ assert !fileIsSymlink( dest & "/lnk" ) : "testCopyFollowLinks real directory";
 assert fileExists( dest & "/lnk/keep.txt" ) : "testCopyFollowLinks keep";
 assert fileExists( dest & "/lnk/deep/inner.txt" ) : "testCopyFollowLinks inner";
 
+// testNamedArgumentsInAnyOrder
+resolved = replace( fileReadSymlink( resolve = true, path = root & "/rel" ), "\", "/", "all" );
+assert resolved == replace( outside, "\", "/", "all" ) : "testNamedArguments reordered fileReadSymlink";
+r = directoryList( followLinks = true, recurse = true, path = tree, listInfo = "name" );
+assert arrayLen( r ) == 5 : "testNamedArguments reordered directoryList";
+
+// A skipped named argument keeps its default: createPath is true, so the destination is created
+dest = root & "/dest3";
+directoryCopy( source = tree, destination = dest, followLinks = true );
+assert fileExists( dest & "/a.txt" ) : "testNamedArguments createPath default";
+
+// testDeleteLinkCycle: links back into the tree and to the folder above it are removed as links
+tree = root & "/tree5";
+directoryCreate( tree );
+fileWrite( tree & "/a.txt", "a" );
+fileCreateSymlink( tree & "/loop", tree );
+fileCreateSymlink( tree & "/up", root );
+directoryDelete( path = tree, recursive = true, followLinks = true );
+assert !directoryExists( tree ) : "testDeleteLinkCycle tree removed";
+assert directoryExists( root ) : "testDeleteLinkCycle parent kept";
+
 // testDeleteFollowLinks (opt in, empties the target)
 tree = root & "/tree4";
 directoryCreate( tree );
@@ -138,5 +161,6 @@ fileCreateSymlink( tree & "/lnk", outside );
 directoryDelete( tree, true, true );
 assert !directoryExists( tree ) : "testDeleteFollowLinks tree removed";
 assert !fileExists( outside & "/keep.txt" ) : "testDeleteFollowLinks emptied target";
+
 
 directoryDelete( root, true );
