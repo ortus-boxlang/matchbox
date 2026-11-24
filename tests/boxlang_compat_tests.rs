@@ -607,6 +607,7 @@ compat_test!(bf_io_file_write, "runtime/bifs/global/io/FileWriteTest.bxs");
 compat_test!(bf_io_get_canonical_path, "runtime/bifs/global/io/GetCanonicalPathTest.bxs");
 compat_test!(bf_io_get_directory_from_path, "runtime/bifs/global/io/GetDirectoryFromPathTest.bxs");
 compat_test!(bf_io_property_file, "runtime/bifs/global/io/PropertyFileTest.bxs");
+compat_test!(bf_io_symlink, "runtime/bifs/global/io/SymlinkTest.bxs");
 
 // ---------------------------------------------------------------------------
 // runtime/bifs/global/zip — ortus/boxlang/runtime/bifs/global/zip/*.java

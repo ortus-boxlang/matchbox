@@ -145,14 +145,128 @@ pub fn directory_delete(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     } else {
         false
     };
+    let follow_links = bool_arg(args, 2, false);
+    let is_link = is_symlink_path(path);
 
-    if recurse {
+    if recurse && follow_links {
+        remove_dir_following_links(path)?;
+    } else if is_link {
+        // A symbolic link is removed as a link. Whatever it points to is never touched.
+        remove_dir_or_link(path)?;
+    } else if recurse {
+        // remove_dir_all does not follow symbolic links, nested links are removed as links
         fs::remove_dir_all(path).map_err(|e| e.to_string())?;
     } else {
         fs::remove_dir(path).map_err(|e| e.to_string())?;
     }
 
     Ok(BxValue::new_bool(true))
+}
+
+/// Optional boolean argument at `index`, or `default` when it is missing or null.
+#[cfg(feature = "bif-io")]
+fn bool_arg(args: &[BxValue], index: usize, default: bool) -> bool {
+    args.get(index)
+        .filter(|value| !value.is_null())
+        .map(|value| value.as_bool())
+        .unwrap_or(default)
+}
+
+/// True when the path itself is a symbolic link, even a dangling one.
+#[cfg(feature = "bif-io")]
+fn is_symlink_path(path: &Path) -> bool {
+    path.symlink_metadata()
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// Removes an empty directory, or a symbolic link without touching what it points to.
+#[cfg(feature = "bif-io")]
+fn remove_dir_or_link(path: &Path) -> Result<(), String> {
+    if is_symlink_path(path) {
+        // Directory links need remove_dir on Windows, remove_file everywhere else
+        fs::remove_file(path)
+            .or_else(|_| fs::remove_dir(path))
+            .map_err(|e| e.to_string())
+    } else {
+        fs::remove_dir(path).map_err(|e| e.to_string())
+    }
+}
+
+/// Recursive delete that descends into symbolic links to directories and empties their targets.
+#[cfg(feature = "bif-io")]
+fn remove_dir_following_links(path: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+        let entry_path = entry.map_err(|e| e.to_string())?.path();
+        if entry_path.is_dir() {
+            remove_dir_following_links(&entry_path)?;
+        } else {
+            fs::remove_file(&entry_path).map_err(|e| e.to_string())?;
+        }
+    }
+    remove_dir_or_link(path)
+}
+
+/// Creates a symbolic link at `link` pointing to `target`, stored exactly as given.
+#[cfg(feature = "bif-io")]
+fn make_symlink(target: &str, link: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).map_err(|e| e.to_string())
+    }
+    #[cfg(windows)]
+    {
+        let target_path = Path::new(target);
+        let resolved = if target_path.is_absolute() {
+            target_path.to_path_buf()
+        } else {
+            link.parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(target_path)
+        };
+        if resolved.is_dir() {
+            std::os::windows::fs::symlink_dir(target, link).map_err(|e| e.to_string())
+        } else {
+            std::os::windows::fs::symlink_file(target, link).map_err(|e| e.to_string())
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, link);
+        Err("Symlinks not supported on this platform".to_string())
+    }
+}
+
+/// Copies the symbolic link at `source` to `target` as a link pointing at the same place.
+#[cfg(feature = "bif-io")]
+fn copy_symlink(source: &Path, target: &Path, overwrite: bool) -> Result<(), String> {
+    let link_target = fs::read_link(source).map_err(|e| e.to_string())?;
+    if target.symlink_metadata().is_ok() {
+        if !overwrite {
+            return Ok(());
+        }
+        fs::remove_file(target).map_err(|e| e.to_string())?;
+    }
+    make_symlink(&link_target.to_string_lossy(), target)
+}
+
+/// Lexically removes `.` and `..` segments, without touching the filesystem.
+#[cfg(feature = "bif-io")]
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push("..");
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 #[cfg(feature = "bif-io")]
@@ -167,10 +281,17 @@ pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
         false
     };
 
+    // The top-level path is always resolved. Links found while walking are only followed with followLinks.
+    let follow_links = bool_arg(args, 6, false);
     let walker = if recurse {
-        WalkDir::new(&path_str).min_depth(1)
+        WalkDir::new(&path_str)
+            .follow_links(follow_links)
+            .min_depth(1)
     } else {
-        WalkDir::new(&path_str).min_depth(1).max_depth(1)
+        WalkDir::new(&path_str)
+            .follow_links(follow_links)
+            .min_depth(1)
+            .max_depth(1)
     };
 
     let list_info = args
@@ -350,6 +471,14 @@ fn directory_entries_to_query(entries: &[PathBuf]) -> QueryResult {
             name: "directory".to_string(),
             col_type: QueryColumnType::Varchar,
         },
+        QueryColumn {
+            name: "isLink".to_string(),
+            col_type: QueryColumnType::Boolean,
+        },
+        QueryColumn {
+            name: "linkTarget".to_string(),
+            col_type: QueryColumnType::Varchar,
+        },
     ];
     let rows = entries
         .iter()
@@ -377,6 +506,12 @@ fn directory_entries_to_query(entries: &[PathBuf]) -> QueryResult {
                 SqlValue::Text(file_attributes(path)),
                 SqlValue::Text(String::new()),
                 SqlValue::Text(directory),
+                SqlValue::Bool(is_symlink_path(path)),
+                SqlValue::Text(
+                    fs::read_link(path)
+                        .map(|target| target.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                ),
             ]
         })
         .collect();
@@ -502,12 +637,24 @@ pub fn file_info(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
         BxValue::new_bool(metadata.permissions().readonly()),
     );
 
+    // isLink and linkTarget match the BoxLang JVM keys. is_symlink and target are kept as aliases.
+    vm.struct_set(
+        struct_id,
+        "isLink",
+        BxValue::new_bool(metadata.file_type().is_symlink()),
+    );
+    let link_target = if metadata.file_type().is_symlink() {
+        fs::read_link(path)
+            .map(|target| target.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let target_id = vm.string_new(link_target.clone());
+    vm.struct_set(struct_id, "linkTarget", BxValue::new_ptr(target_id));
     if metadata.file_type().is_symlink() {
-        if let Ok(target) = fs::read_link(path) {
-            let target_str = target.to_string_lossy().to_string();
-            let s_id = vm.string_new(target_str);
-            vm.struct_set(struct_id, "target", BxValue::new_ptr(s_id));
-        }
+        let alias_id = vm.string_new(link_target);
+        vm.struct_set(struct_id, "target", BxValue::new_ptr(alias_id));
     }
 
     Ok(BxValue::new_ptr(struct_id))
@@ -516,30 +663,80 @@ pub fn file_info(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
 #[cfg(feature = "bif-io")]
 pub fn file_create_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
-        return Err("fileCreateSymlink() expects 2 arguments: (link, target)".to_string());
+        return Err(
+            "fileCreateSymlink() expects at least 2 arguments: (link, target, overwrite)"
+                .to_string(),
+        );
     }
     let link = vm.to_string(args[0]);
     let target = vm.to_string(args[1]);
+    let overwrite = bool_arg(args, 2, false);
+    let link_path = Path::new(&link);
 
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(target, link).map_err(|e| e.to_string())?;
+    if link_path.symlink_metadata().is_ok() {
+        if !overwrite {
+            return Err(format!(
+                "The path [{}] already exists and the overwrite argument is set to false.",
+                link
+            ));
+        }
+        if !is_symlink_path(link_path) && link_path.is_dir() {
+            return Err(format!(
+                "The path [{}] is a directory and cannot be replaced by a symbolic link.",
+                link
+            ));
+        }
+        fs::remove_file(link_path).map_err(|e| e.to_string())?;
     }
-    #[cfg(windows)]
-    {
-        let target_path = Path::new(&target);
-        if target_path.is_dir() {
-            std::os::windows::fs::symlink_dir(target, link).map_err(|e| e.to_string())?;
-        } else {
-            std::os::windows::fs::symlink_file(target, link).map_err(|e| e.to_string())?;
+    if let Some(parent) = link_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
     }
-    #[cfg(not(any(unix, windows)))]
-    {
-        return Err("Symlinks not supported on this platform".to_string());
-    }
+    make_symlink(&target, link_path).map_err(|e| {
+        format!(
+            "Could not create the symbolic link [{}] pointing to [{}]: {}",
+            link, target, e
+        )
+    })?;
 
-    Ok(BxValue::new_bool(true))
+    let absolute = std::path::absolute(link_path).unwrap_or_else(|_| link_path.to_path_buf());
+    let id = vm.string_new(absolute.to_string_lossy().to_string());
+    Ok(BxValue::new_ptr(id))
+}
+
+#[cfg(feature = "bif-io")]
+pub fn file_is_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() {
+        return Err("fileIsSymlink() expects 1 argument: (path)".to_string());
+    }
+    let path = vm.to_string(args[0]);
+    Ok(BxValue::new_bool(is_symlink_path(Path::new(&path))))
+}
+
+#[cfg(feature = "bif-io")]
+pub fn file_read_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    if args.is_empty() {
+        return Err("fileReadSymlink() expects at least 1 argument: (path, resolve)".to_string());
+    }
+    let path_str = vm.to_string(args[0]);
+    let resolve = bool_arg(args, 1, false);
+    let path = Path::new(&path_str);
+    if !is_symlink_path(path) {
+        return Err(format!("The path [{}] is not a symbolic link.", path_str));
+    }
+    let target = fs::read_link(path).map_err(|e| e.to_string())?;
+    let value = if resolve {
+        let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let parent = absolute.parent().unwrap_or_else(|| Path::new("."));
+        normalize_path(&parent.join(&target))
+            .to_string_lossy()
+            .to_string()
+    } else {
+        target.to_string_lossy().to_string()
+    };
+    let id = vm.string_new(value);
+    Ok(BxValue::new_ptr(id))
 }
 
 #[cfg(feature = "bif-io")]
@@ -807,6 +1004,8 @@ pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     } else {
         false
     };
+    // When false, a link inside the source is copied as a link. When true, what it points to is copied.
+    let follow_links = bool_arg(args, 6, false);
 
     let src_path = Path::new(&source);
     if !src_path.exists() || !src_path.is_dir() {
@@ -819,7 +1018,10 @@ pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     }
 
     if recurse {
-        for entry in WalkDir::new(src_path).min_depth(1) {
+        for entry in WalkDir::new(src_path)
+            .follow_links(follow_links)
+            .min_depth(1)
+        {
             let entry = entry.map_err(|e| e.to_string())?;
             let rel = entry
                 .path()
@@ -846,14 +1048,26 @@ pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
                         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                     }
                 }
-                fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
+                if entry.path_is_symlink() && !follow_links {
+                    copy_symlink(entry.path(), &target, overwrite)?;
+                } else {
+                    fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
+                }
             }
         }
     } else {
         for entry in fs::read_dir(src_path).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let target = dest_path.join(entry.file_name());
-            if entry.file_type().map_err(|e| e.to_string())?.is_file() {
+            let file_type = entry.file_type().map_err(|e| e.to_string())?;
+            let is_link = file_type.is_symlink();
+            // A link to a file counts as a file, like the BoxLang JVM. A link to a directory is skipped.
+            let is_file = if is_link {
+                entry.path().is_file()
+            } else {
+                file_type.is_file()
+            };
+            if is_file {
                 if filter
                     .as_deref()
                     .map(|pattern| !glob_matches(pattern, file_name(&entry.path())))
@@ -864,7 +1078,11 @@ pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
                 if target.exists() && !overwrite {
                     continue;
                 }
-                fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
+                if is_link && !follow_links {
+                    copy_symlink(&entry.path(), &target, overwrite)?;
+                } else {
+                    fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
+                }
             }
         }
     }
