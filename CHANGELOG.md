@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Symbolic link support matching the BoxLang JVM: `fileIsSymlink( path )`, `fileReadSymlink( path, resolve )`, an `overwrite` argument on `fileCreateSymlink()` (which now returns the link path), `isLink` and `linkTarget` keys on `fileInfo()` (the `is_symlink` and `target` keys remain as aliases), `isLink` and `linkTarget` columns in the `directoryList()` query, and a `followLinks` argument (default false) on `directoryList()`, `directoryCopy()` and `directoryDelete()`. `directoryCopy()` now copies links as links
+- Symbolic link support matching the BoxLang JVM (BL-2820): `fileIsSymlink( path )`, `fileReadSymlink( path, resolve )`, an `overwrite` argument on `fileCreateSymlink()` (which now returns the link path), `isLink` and `linkTarget` keys on `fileInfo()` (the `is_symlink` and `target` keys remain as aliases), `isLink` and `linkTarget` columns in the `directoryList()` query, and a `followLinks` argument (default false) on `directoryList()`, `directoryCopy()` and `directoryDelete()`. `directoryCopy()` now copies links as links
 
 ## [0.13.0] - 2026-11-10
 
