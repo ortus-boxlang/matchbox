@@ -132,6 +132,36 @@ pub fn directory_create(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `directoryDelete( path, recursive=false, followLinks=false )`.
+///
+/// Deletes a directory, or a symbolic link given as the path.
+///
+/// # Arguments
+///
+/// 1. `path` - the directory or symbolic link to delete.
+/// 2. `recursive` - when true, the contents are deleted first. When false, the directory must be empty.
+///    Defaults to false.
+/// 3. `followLinks` - when true, a recursive delete descends into symbolic links to directories and
+///    deletes the contents of their targets as well. When false, a link is removed as a link and what it
+///    points to is never touched. Defaults to false.
+///
+/// # Behavior
+///
+/// - A symbolic link given as `path` is removed as a link, whatever the value of `recursive`, unless both
+///   `recursive` and `followLinks` are true.
+/// - `fs::remove_dir_all` is used for the default recursive case. It does not follow symbolic links, so
+///   nested links are removed as links.
+/// - `followLinks=true` is destructive and has no cycle guard. A link that points back at one of its own
+///   parents recurses until the stack or the filesystem gives up. This matches the BoxLang JVM.
+///
+/// # Returns
+///
+/// `true` when the delete succeeded.
+///
+/// # Errors
+///
+/// Returns the I/O error text when the path does not exist, cannot be removed, or is a non-empty
+/// directory and `recursive` is false.
 #[cfg(feature = "bif-io")]
 pub fn directory_delete(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -163,7 +193,10 @@ pub fn directory_delete(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     Ok(BxValue::new_bool(true))
 }
 
-/// Optional boolean argument at `index`, or `default` when it is missing or null.
+/// Reads the optional boolean argument at `index`.
+///
+/// Returns `default` when the argument was not passed or was passed as `null`, so a caller can skip
+/// earlier optional arguments with `null` and still reach a later one.
 #[cfg(feature = "bif-io")]
 fn bool_arg(args: &[BxValue], index: usize, default: bool) -> bool {
     args.get(index)
@@ -172,7 +205,10 @@ fn bool_arg(args: &[BxValue], index: usize, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-/// True when the path itself is a symbolic link, even a dangling one.
+/// Tests whether `path` itself is a symbolic link.
+///
+/// Uses `symlink_metadata`, so the link is not followed. A dangling link (its target does not exist) is
+/// still a link and returns true. A path that does not exist returns false.
 #[cfg(feature = "bif-io")]
 fn is_symlink_path(path: &Path) -> bool {
     path.symlink_metadata()
@@ -181,6 +217,13 @@ fn is_symlink_path(path: &Path) -> bool {
 }
 
 /// Removes an empty directory, or a symbolic link without touching what it points to.
+///
+/// A symbolic link is removed with `remove_file`. If that fails, `remove_dir` is tried, because a
+/// symbolic link to a directory on Windows is removed as a directory. A real directory must be empty.
+///
+/// # Errors
+///
+/// Returns the I/O error text when the removal fails.
 #[cfg(feature = "bif-io")]
 fn remove_dir_or_link(path: &Path) -> Result<(), String> {
     if is_symlink_path(path) {
@@ -193,7 +236,19 @@ fn remove_dir_or_link(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Recursive delete that descends into symbolic links to directories and empties their targets.
+/// Recursively deletes `path`, descending into symbolic links to directories.
+///
+/// Every entry that resolves to a directory (a link to a directory included) is emptied first, then
+/// removed. Files and links to files are removed with `remove_file`, which removes the link and not its
+/// target. Finally `path` itself is removed with [`remove_dir_or_link`], so a link given as the top level
+/// path is removed as a link after its target has been emptied.
+///
+/// This is the opt-in `followLinks=true` behavior of `directoryDelete()`. There is no protection against
+/// link cycles.
+///
+/// # Errors
+///
+/// Returns the I/O error text of the first entry that cannot be read or removed.
 #[cfg(feature = "bif-io")]
 fn remove_dir_following_links(path: &Path) -> Result<(), String> {
     for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
@@ -207,7 +262,22 @@ fn remove_dir_following_links(path: &Path) -> Result<(), String> {
     remove_dir_or_link(path)
 }
 
-/// Creates a symbolic link at `link` pointing to `target`, stored exactly as given.
+/// Creates a symbolic link at `link` that points to `target`.
+///
+/// `target` is stored exactly as given. A relative target is therefore relative to the directory that
+/// holds the link, not to the current directory. The link path must not already exist.
+///
+/// # Platform notes
+///
+/// - Unix: `std::os::unix::fs::symlink`.
+/// - Windows: a directory link is created when the target resolves to a directory, otherwise a file link.
+///   A relative target is resolved against the link's parent for that check. Creating links needs the
+///   symbolic link privilege or developer mode, and fails with an I/O error without it.
+/// - Other platforms: always returns an error.
+///
+/// # Errors
+///
+/// Returns the I/O error text when the link cannot be created.
 #[cfg(feature = "bif-io")]
 fn make_symlink(target: &str, link: &Path) -> Result<(), String> {
     #[cfg(unix)]
@@ -237,7 +307,23 @@ fn make_symlink(target: &str, link: &Path) -> Result<(), String> {
     }
 }
 
-/// Copies the symbolic link at `source` to `target` as a link pointing at the same place.
+/// Copies the symbolic link at `source` to `target` as a link that points at the same place.
+///
+/// The stored target is read with `read_link` and reused unchanged, so a relative link keeps pointing at
+/// the same relative path from its new location.
+///
+/// # Arguments
+///
+/// - `source` - the symbolic link to copy.
+/// - `target` - the path of the new link.
+/// - `overwrite` - when `target` already exists, it is replaced if true and left alone if false. In the
+///   false case the call returns `Ok(())` without doing anything, which matches how `directoryCopy()`
+///   skips existing files.
+///
+/// # Errors
+///
+/// Returns the I/O error text when the link cannot be read, the existing path cannot be removed, or the
+/// new link cannot be created.
 #[cfg(feature = "bif-io")]
 fn copy_symlink(source: &Path, target: &Path, overwrite: bool) -> Result<(), String> {
     let link_target = fs::read_link(source).map_err(|e| e.to_string())?;
@@ -250,7 +336,11 @@ fn copy_symlink(source: &Path, target: &Path, overwrite: bool) -> Result<(), Str
     make_symlink(&link_target.to_string_lossy(), target)
 }
 
-/// Lexically removes `.` and `..` segments, without touching the filesystem.
+/// Lexically removes `.` and `..` segments from `path` without touching the filesystem.
+///
+/// Symbolic links are not resolved, which is the same as `java.nio.file.Path.normalize()`. A `..` that
+/// has nothing left to pop is kept, so a relative path can still start with `..`. Used by
+/// `fileReadSymlink( path, resolve=true )`.
 #[cfg(feature = "bif-io")]
 fn normalize_path(path: &Path) -> PathBuf {
     use std::path::Component;
@@ -269,6 +359,32 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
+/// Implements `directoryList( path, recurse=false, listInfo="path", filter, sort="name", type="all", followLinks=false )`.
+///
+/// Lists the contents of a directory.
+///
+/// # Arguments
+///
+/// 1. `path` - the directory to list. A symbolic link given here is always resolved.
+/// 2. `recurse` - list sub directories as well. Defaults to false.
+/// 3. `listInfo` - `"path"` for an array of paths (default), `"name"` for an array of names, or `"query"`
+///    for a query with the columns `name`, `size`, `type`, `dateLastModified`, `attributes`, `mode`,
+///    `directory`, `isLink` and `linkTarget`.
+/// 4. `filter` - a glob such as `*.txt`. An empty string matches nothing here, unlike the BoxLang JVM
+///    where it is ignored.
+/// 5. `sort` - a column name with an optional `asc` or `desc`, for example `"name desc"`.
+/// 6. `type` - `"all"` (default), `"file"` or `"dir"`. A link is classified by what it points to.
+/// 7. `followLinks` - when true, symbolic links found while walking are descended into. When false
+///    (default) a link is listed as an entry but its contents are not. Defaults to false.
+///
+/// # Returns
+///
+/// An array or a query, depending on `listInfo`. The query is not available on wasm32.
+///
+/// # Errors
+///
+/// Returns an error when no `path` is passed or, on wasm32, when a query is requested. A `path` that does
+/// not exist gives an empty result, and entries that cannot be read are skipped.
 #[cfg(feature = "bif-io")]
 pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -440,6 +556,17 @@ fn is_directory(path: &Path) -> bool {
     path.is_dir()
 }
 
+/// Builds the query returned by `directoryList( ..., listInfo="query" )`.
+///
+/// One row is produced per entry, in the order given, with these columns:
+///
+/// - `name`, `size` (bytes), `type` (`Dir` or `File`), `dateLastModified`, `attributes` and `mode`.
+/// - `directory` - the directory that holds the entry.
+/// - `isLink` - true when the entry is a symbolic link.
+/// - `linkTarget` - the target stored in the link, or an empty string when the entry is not a link.
+///
+/// `size`, `type` and `dateLastModified` describe what a link points to. A dangling link reports a size
+/// of 0 and an empty date.
 #[cfg(all(feature = "bif-io", not(target_arch = "wasm32")))]
 fn directory_entries_to_query(entries: &[PathBuf]) -> QueryResult {
     let columns = vec![
@@ -602,6 +729,24 @@ pub fn file_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `fileInfo( path )` and `getFileInfo( path )`.
+///
+/// Returns a struct that describes a file, a directory or a symbolic link. The path itself is inspected
+/// with `symlink_metadata`, so a link is described as a link.
+///
+/// # Keys
+///
+/// - `size`, `type` (`Dir` or `File`), `is_directory`, `is_file` and `is_readonly`.
+/// - `isLink` - true when the path is a symbolic link.
+/// - `linkTarget` - the stored target of the link, or an empty string when the path is not a link.
+/// - `is_symlink` and `target` - older names kept as aliases of `isLink` and `linkTarget`. `target` is only
+///   set for links.
+///
+/// `isLink` and `linkTarget` use the same keys as the BoxLang JVM.
+///
+/// # Errors
+///
+/// Returns the I/O error text when the path does not exist.
 #[cfg(feature = "bif-io")]
 pub fn file_info(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -660,6 +805,27 @@ pub fn file_info(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     Ok(BxValue::new_ptr(struct_id))
 }
 
+/// Implements `fileCreateSymlink( link, target, overwrite=false )`.
+///
+/// Creates a symbolic link at `link` that points to `target`.
+///
+/// # Arguments
+///
+/// 1. `link` - the path of the link to create. Missing parent directories are created.
+/// 2. `target` - what the link points to. It is stored exactly as given, so a relative target is relative
+///    to the directory that holds the link. The target does not have to exist.
+/// 3. `overwrite` - when true, an existing file or link at `link` is replaced. An existing directory is
+///    never replaced. Defaults to false.
+///
+/// # Returns
+///
+/// The absolute path of the new link as a string.
+///
+/// # Errors
+///
+/// Returns an error when `link` already exists and `overwrite` is false, when `link` is an existing
+/// directory, or when the link cannot be created, for example because the operating system does not
+/// allow the current user to create symbolic links.
 #[cfg(feature = "bif-io")]
 pub fn file_create_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -705,6 +871,15 @@ pub fn file_create_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValu
     Ok(BxValue::new_ptr(id))
 }
 
+/// Implements `fileIsSymlink( path )`.
+///
+/// Returns true when `path` is a symbolic link. The link is not followed, so a link whose target does not
+/// exist (a dangling link) still returns true. A regular file, a directory or a path that does not exist
+/// returns false and never raises an error.
+///
+/// # Errors
+///
+/// Returns an error only when no argument is passed.
 #[cfg(feature = "bif-io")]
 pub fn file_is_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -714,6 +889,25 @@ pub fn file_is_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, S
     Ok(BxValue::new_bool(is_symlink_path(Path::new(&path))))
 }
 
+/// Implements `fileReadSymlink( path, resolve=false )`.
+///
+/// Returns the target a symbolic link points to.
+///
+/// # Arguments
+///
+/// 1. `path` - the symbolic link to read.
+/// 2. `resolve` - when false (default) the target is returned exactly as stored in the link. When true, a
+///    relative target is resolved against the directory that holds the link and the result is an
+///    absolute, lexically normalized path. The target does not have to exist and links are not followed
+///    any further.
+///
+/// # Returns
+///
+/// The target as a string.
+///
+/// # Errors
+///
+/// Returns an error when `path` is not a symbolic link, including when it does not exist.
 #[cfg(feature = "bif-io")]
 pub fn file_read_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -976,6 +1170,35 @@ pub fn create_temp_file(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     Ok(BxValue::new_ptr(s_id))
 }
 
+/// Implements `directoryCopy( source, destination, recurse=false, filter, createPath=true, overwrite=false, followLinks=false )`.
+///
+/// Copies the files of a directory to another directory.
+///
+/// # Arguments
+///
+/// 1. `source` - the directory to copy. It must exist.
+/// 2. `destination` - the directory to copy into.
+/// 3. `recurse` - copy sub directories as well. When false only the files directly in `source` are copied.
+///    Defaults to false.
+/// 4. `filter` - a glob that file names must match. It is applied to files only, directories are not
+///    filtered.
+/// 5. `createPath` - create `destination` if it is missing. Defaults to true.
+/// 6. `overwrite` - replace files that already exist. When false an existing file is skipped. Defaults to
+///    false.
+/// 7. `followLinks` - when true, symbolic links are followed and what they point to is copied: a link to a
+///    directory becomes a real directory with the same contents. When false (default) a link is copied as a
+///    link that points at the same place. Defaults to false.
+///
+/// # Behavior
+///
+/// - A link to a file counts as a file in the non recursive case, like the BoxLang JVM. A link to a
+///   directory is skipped when `recurse` is false.
+/// - With `followLinks=true` a link cycle is detected by the directory walker and reported as an error.
+///
+/// # Errors
+///
+/// Returns an error when `source` is not an existing directory, or the I/O error text of the first entry
+/// that cannot be copied.
 #[cfg(feature = "bif-io")]
 pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
