@@ -8685,6 +8685,20 @@ impl VM {
                 "filter",
                 "entrypaths",
             ],
+            "directorydelete" => vec!["path", "recursive", "followlinks"],
+            "directorylist" => vec!["path", "recurse", "listinfo", "filter", "sort", "type", "followlinks"],
+            "directorycopy" => vec![
+                "source",
+                "destination",
+                "recurse",
+                "filter",
+                "createpath",
+                "overwrite",
+                "followlinks",
+            ],
+            "filecreatesymlink" => vec!["link", "target", "overwrite"],
+            "fileissymlink" => vec!["path"],
+            "filereadsymlink" => vec!["path", "resolve"],
             _ => return args,
         };
 

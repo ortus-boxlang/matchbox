@@ -1,0 +1,197 @@
+// boxlang_compat: ortus/boxlang/runtime/bifs/global/io/SymlinkTest.java
+// Symbolic links need OS support. Systems that cannot create links skip these tests in the JVM suite.
+root = createTempDirectory();
+outside = root & "/outside";
+directoryCreate( outside & "/deep", true );
+fileWrite( outside & "/keep.txt", "keep" );
+fileWrite( outside & "/deep/inner.txt", "inner" );
+
+// testCreateIsRead
+created = fileCreateSymlink( root & "/current", outside );
+assert fileIsSymlink( root & "/current" ) : "testCreateIsRead isLink";
+assert !fileIsSymlink( outside & "/keep.txt" ) : "testCreateIsRead notLink";
+assert !fileIsSymlink( root & "/nope" ) : "testCreateIsRead missing";
+assert fileReadSymlink( root & "/current" ) == outside : "testCreateIsRead target";
+assert findNoCase( "current", created ) > 0 : "testCreateIsRead returns link path";
+
+// testReadRelativeTarget
+fileCreateSymlink( root & "/rel", "outside" );
+assert fileReadSymlink( root & "/rel" ) == "outside" : "testReadRelativeTarget stored";
+// Compare with forward slashes, a resolved path uses the separator of the operating system
+resolved = replace( fileReadSymlink( path = root & "/rel", resolve = true ), "\", "/", "all" );
+assert resolved == replace( outside, "\", "/", "all" ) : "testReadRelativeTarget resolved";
+
+// testDanglingLink
+fileCreateSymlink( root & "/dangling", root & "/does-not-exist" );
+assert fileIsSymlink( root & "/dangling" ) : "testDanglingLink";
+
+// testReadNonLink
+threw = false;
+try {
+	fileReadSymlink( outside & "/keep.txt" );
+} catch ( any e ) {
+	threw = true;
+}
+assert threw : "testReadNonLink";
+
+// testOverwrite
+threw = false;
+try {
+	fileCreateSymlink( root & "/current", root );
+} catch ( any e ) {
+	threw = true;
+}
+assert threw : "testOverwrite throws without overwrite";
+fileCreateSymlink( root & "/current", root, true );
+assert fileReadSymlink( root & "/current" ) == root : "testOverwrite replaced";
+
+// testOverwriteDirectory
+threw = false;
+try {
+	fileCreateSymlink( outside, root, true );
+} catch ( any e ) {
+	threw = true;
+}
+assert threw : "testOverwriteDirectory throws";
+assert directoryExists( outside ) && !fileIsSymlink( outside ) : "testOverwriteDirectory kept directory";
+
+// testFileInfo
+fileCreateSymlink( root & "/info", outside );
+info = fileInfo( root & "/info" );
+assert info.isLink == true : "testFileInfo isLink";
+assert info.linkTarget == outside : "testFileInfo linkTarget";
+assert info.is_symlink == true : "testFileInfo is_symlink alias";
+assert info.target == outside : "testFileInfo target alias";
+info = fileInfo( outside & "/keep.txt" );
+assert info.isLink == false : "testFileInfo file isLink";
+assert info.linkTarget == "" : "testFileInfo file linkTarget";
+info = getFileInfo( root & "/info" );
+assert info.isLink == true : "testGetFileInfo isLink";
+
+// testDeleteNestedLink
+tree = root & "/tree";
+directoryCreate( tree );
+fileWrite( tree & "/a.txt", "a" );
+fileCreateSymlink( tree & "/lnk", outside );
+directoryDelete( tree, true );
+assert !directoryExists( tree ) : "testDeleteNestedLink tree removed";
+assert fileExists( outside & "/keep.txt" ) : "testDeleteNestedLink keep";
+assert fileExists( outside & "/deep/inner.txt" ) : "testDeleteNestedLink inner";
+
+// testDeleteTopLevelLink
+fileCreateSymlink( root & "/toplink", outside );
+directoryDelete( root & "/toplink", true );
+assert !fileIsSymlink( root & "/toplink" ) : "testDeleteTopLevelLink link removed";
+assert fileExists( outside & "/keep.txt" ) : "testDeleteTopLevelLink keep";
+
+// testDeleteFileAndDanglingLinks
+tree = root & "/tree2";
+directoryCreate( tree );
+fileCreateSymlink( tree & "/fileLink", outside & "/keep.txt" );
+fileCreateSymlink( tree & "/dangling", root & "/nope" );
+directoryDelete( tree, true );
+assert !directoryExists( tree ) : "testDeleteFileAndDanglingLinks tree removed";
+assert fileExists( outside & "/keep.txt" ) : "testDeleteFileAndDanglingLinks keep";
+
+// testListFollowLinks
+tree = root & "/tree3";
+directoryCreate( tree );
+fileWrite( tree & "/a.txt", "a" );
+fileCreateSymlink( tree & "/lnk", outside );
+r = directoryList( tree, true, "name" );
+assert arrayLen( r ) == 2 : "testListFollowLinks does not descend";
+r = directoryList( tree, true, "name", "*", "name", "all", true );
+assert arrayContains( r, "keep.txt" ) : "testListFollowLinks follows keep";
+assert arrayContains( r, "inner.txt" ) : "testListFollowLinks follows inner";
+
+// testListTopLevelLink
+fileCreateSymlink( root & "/toplist", outside );
+r = directoryList( root & "/toplist", false, "name" );
+assert arrayLen( r ) == 2 : "testListTopLevelLink count";
+r = directoryList( root & "/toplist", false, "path" );
+assert findNoCase( "toplist", r[ 1 ] ) > 0 : "testListTopLevelLink path";
+
+// testListQueryColumns
+q = directoryList( tree, false, "query", "*", "name" );
+assert q.recordCount == 2 : "testListQueryColumns count";
+assert q.isLink[ 1 ] == false : "testListQueryColumns file isLink";
+assert q.linkTarget[ 1 ] == "" : "testListQueryColumns file target";
+assert q.isLink[ 2 ] == true : "testListQueryColumns link isLink";
+assert q.linkTarget[ 2 ] == outside : "testListQueryColumns link target";
+
+// testCopyLinksAsLinks
+dest = root & "/dest";
+directoryCopy( tree, dest, true );
+assert fileIsSymlink( dest & "/lnk" ) : "testCopyLinksAsLinks link";
+assert fileReadSymlink( dest & "/lnk" ) == outside : "testCopyLinksAsLinks target";
+assert fileExists( dest & "/a.txt" ) : "testCopyLinksAsLinks file";
+
+// testCopyFollowLinks
+dest = root & "/dest2";
+directoryCopy( tree, dest, true, "*", true, false, true );
+assert !fileIsSymlink( dest & "/lnk" ) : "testCopyFollowLinks real directory";
+assert fileExists( dest & "/lnk/keep.txt" ) : "testCopyFollowLinks keep";
+assert fileExists( dest & "/lnk/deep/inner.txt" ) : "testCopyFollowLinks inner";
+
+// testNamedArgumentsInAnyOrder
+resolved = replace( fileReadSymlink( resolve = true, path = root & "/rel" ), "\", "/", "all" );
+assert resolved == replace( outside, "\", "/", "all" ) : "testNamedArguments reordered fileReadSymlink";
+r = directoryList( followLinks = true, recurse = true, path = tree, listInfo = "name" );
+assert arrayLen( r ) == 5 : "testNamedArguments reordered directoryList";
+
+// A skipped named argument keeps its default: createPath is true, so the destination is created
+dest = root & "/dest3";
+directoryCopy( source = tree, destination = dest, followLinks = true );
+assert fileExists( dest & "/a.txt" ) : "testNamedArguments createPath default";
+
+// testDeleteLinkCycle: links back into the tree and to the folder above it are removed as links
+tree = root & "/tree5";
+directoryCreate( tree );
+fileWrite( tree & "/a.txt", "a" );
+fileCreateSymlink( tree & "/loop", tree );
+fileCreateSymlink( tree & "/up", root );
+directoryDelete( path = tree, recursive = true, followLinks = true );
+assert !directoryExists( tree ) : "testDeleteLinkCycle tree removed";
+assert directoryExists( root ) : "testDeleteLinkCycle parent kept";
+
+// testDeleteTopLevelLinkWithFollowLinks: a link given as the path is only removed as a link
+fileCreateSymlink( root & "/toplink2", outside );
+directoryDelete( root & "/toplink2", true, true );
+assert !fileIsSymlink( root & "/toplink2" ) : "testDeleteTopLevelLinkWithFollowLinks link removed";
+assert fileExists( outside & "/keep.txt" ) : "testDeleteTopLevelLinkWithFollowLinks keep";
+assert fileExists( outside & "/deep/inner.txt" ) : "testDeleteTopLevelLinkWithFollowLinks inner";
+
+// testShallowCopyLinks: links to directories and dangling links are copied as links, real directories are not
+shallow = root & "/shallow";
+directoryCreate( shallow & "/sub" );
+fileWrite( shallow & "/a.txt", "a" );
+fileCreateSymlink( shallow & "/dirLink", outside );
+fileCreateSymlink( shallow & "/dangling", root & "/nope" );
+directoryCopy( shallow, root & "/shallowCopy" );
+assert fileIsSymlink( root & "/shallowCopy/dirLink" ) : "testShallowCopyLinks dirLink";
+assert fileIsSymlink( root & "/shallowCopy/dangling" ) : "testShallowCopyLinks dangling";
+assert fileExists( root & "/shallowCopy/a.txt" ) : "testShallowCopyLinks file";
+assert !directoryExists( root & "/shallowCopy/sub" ) : "testShallowCopyLinks sub directory";
+
+// testCopyOverwritesLink: overwrite replaces a link at the destination
+other = root & "/other";
+directoryCreate( other );
+overwriteSrc = root & "/overwriteSrc";
+directoryCreate( overwriteSrc );
+fileCreateSymlink( overwriteSrc & "/lnk", outside );
+directoryCopy( overwriteSrc, root & "/overwriteDest", true );
+assert fileReadSymlink( root & "/overwriteDest/lnk" ) == outside : "testCopyOverwritesLink first";
+fileCreateSymlink( overwriteSrc & "/lnk", other, true );
+directoryCopy( overwriteSrc, root & "/overwriteDest", true, "*", true, true );
+assert fileReadSymlink( root & "/overwriteDest/lnk" ) == other : "testCopyOverwritesLink replaced";
+
+// testDeleteFollowLinks (opt in, empties the target)
+tree = root & "/tree4";
+directoryCreate( tree );
+fileCreateSymlink( tree & "/lnk", outside );
+directoryDelete( tree, true, true );
+assert !directoryExists( tree ) : "testDeleteFollowLinks tree removed";
+assert !fileExists( outside & "/keep.txt" ) : "testDeleteFollowLinks emptied target";
+
+
+directoryDelete( root, true );

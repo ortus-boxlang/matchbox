@@ -130,9 +130,9 @@ const GATED: &[(&str, &[&str])] = &[
     ("bif-io", &[
         "contractpath", "createtempdirectory", "createtempfile", "directorycopy", "directorycreate", "directorydelete",
         "directoryexists", "directorylist", "directorymove", "directoryrename", "expandpath", "fileappend",
-        "fileclose", "filecopy", "filecreatesymlink", "filedelete", "fileexists", "filegetmimetype",
+        "fileclose", "filecopy", "filecreatesymlink", "filedelete", "fileexists", "filegetmimetype", "fileissymlink",
         "fileinfo", "fileiseof", "filemove", "fileopen", "filepublishexclusive", "fileread",
-        "filereadline", "fileseek", "filesetaccessmode", "filesetattribute", "filesetexecutable", "filesetlastmodified",
+        "filereadline", "filereadsymlink", "fileseek", "filesetaccessmode", "filesetattribute", "filesetexecutable", "filesetlastmodified",
         "filewrite", "filewriteexclusive", "filewriteline", "getcanonicalpath", "getdirectoryfrompath", "getfileinfo",
         "gettempdirectory", "gettempfile", "propertyfile",
     ]),
@@ -734,6 +734,14 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
         bifs.insert(
             "filecreatesymlink".to_string(),
             fs::file_create_symlink as BxNativeFunction,
+        );
+        bifs.insert(
+            "fileissymlink".to_string(),
+            fs::file_is_symlink as BxNativeFunction,
+        );
+        bifs.insert(
+            "filereadsymlink".to_string(),
+            fs::file_read_symlink as BxNativeFunction,
         );
         bifs.insert(
             "filesetexecutable".to_string(),
