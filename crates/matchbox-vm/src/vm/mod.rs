@@ -8701,6 +8701,20 @@ impl VM {
         })
     }
 
+    /// Maps the arguments of a named-argument call to a native BIF into positional order.
+    ///
+    /// `names[i]` is the argument name of `args[i]`, or empty for a positional
+    /// argument. `function_name` is the BIF's global name, which selects its
+    /// parameter list from a fixed table of lowercase BoxLang parameter names.
+    ///
+    /// Named arguments go to their parameter's slot, matched case-insensitively,
+    /// and `mask` is read as `format`. Positional arguments then fill the slots
+    /// from the start, in order, and replace a named value in the same slot.
+    /// Names with no matching parameter are dropped. Skipped slots hold null,
+    /// and trailing nulls are removed, so the BIF sees a shorter argument list.
+    ///
+    /// Returns `args` unchanged, in call order, when `function_name` is `None`
+    /// or the BIF has no entry in the table.
     fn reorder_native_arguments(
         &self,
         args: Vec<BxValue>,
