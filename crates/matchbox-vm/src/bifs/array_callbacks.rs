@@ -1,16 +1,16 @@
 //! Array higher-order BIFs. BoxLang passes `(value, index, array)` to every
 //! callback and `(accumulator, value, index, array)` to `arrayReduce`.
 
-use crate::types::{BxNativeFunction, BxVM, BxValue};
+use crate::types::{NativeBif, BxVM, BxValue};
 use std::collections::HashMap;
 
-pub fn register_array_callback_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert("arrayeach".to_string(), array_each as BxNativeFunction);
-    bifs.insert("arrayfilter".to_string(), array_filter as BxNativeFunction);
-    bifs.insert("arrayreduce".to_string(), array_reduce as BxNativeFunction);
-    bifs.insert("arraysome".to_string(), array_some as BxNativeFunction);
-    bifs.insert("arrayevery".to_string(), array_every as BxNativeFunction);
-    bifs.insert("arraynone".to_string(), array_none as BxNativeFunction);
+pub fn register_array_callback_bifs(bifs: &mut HashMap<String, NativeBif>) {
+    bifs.insert("arrayeach".to_string(), NativeBif { func: array_each, params: params!["array", "callback", "parallel" = Bool(false), "maxthreads", "ordered" = Bool(false), "virtual" = Bool(false)] });
+    bifs.insert("arrayfilter".to_string(), NativeBif { func: array_filter, params: params!["array", "callback", "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("arrayreduce".to_string(), NativeBif { func: array_reduce, params: params!["array", "callback", "initialvalue"] });
+    bifs.insert("arraysome".to_string(), NativeBif { func: array_some, params: params!["array", "callback", "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("arrayevery".to_string(), NativeBif { func: array_every, params: params!["array", "callback", "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("arraynone".to_string(), NativeBif { func: array_none, params: params!["array", "callback", "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
 }
 
 fn array_arg(vm: &dyn BxVM, args: &[BxValue], name: &str) -> Result<usize, String> {

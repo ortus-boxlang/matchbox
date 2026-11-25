@@ -331,6 +331,50 @@ pub trait BxVM {
 
 pub type BxNativeFunction = fn(&mut dyn BxVM, &[BxValue]) -> Result<BxValue, String>;
 
+/// A native BIF: its function and its BoxLang parameters, in declaration order.
+///
+/// The VM uses `params` to map a named-argument call onto positional
+/// arguments. A BIF with no parameters listed receives named arguments in
+/// call order.
+#[derive(Debug, Clone, Copy)]
+pub struct NativeBif {
+    /// The Rust function that implements the BIF.
+    pub func: BxNativeFunction,
+    /// The BIF's parameters, as BoxLang declares them.
+    pub params: &'static [NativeParam],
+}
+
+impl NativeBif {
+    /// Wraps a function that declares no parameters.
+    pub fn positional(func: BxNativeFunction) -> Self {
+        Self { func, params: &[] }
+    }
+}
+
+/// One parameter of a [`NativeBif`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeParam {
+    /// The lowercase parameter name. Named arguments match it case-insensitively.
+    pub name: &'static str,
+    /// The value a named call passes when it skips this parameter.
+    pub default: ParamDefault,
+}
+
+/// The default value of a [`NativeParam`], as BoxLang declares it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParamDefault {
+    /// No default: a skipped parameter is null.
+    None,
+    /// A boolean default.
+    Bool(bool),
+    /// A whole-number default.
+    Int(i64),
+    /// A decimal default.
+    Num(f64),
+    /// A string default.
+    Str(&'static str),
+}
+
 /// A native callable with owned context (for independently loaded plugins).
 #[derive(Clone)]
 pub struct NativeCallback {

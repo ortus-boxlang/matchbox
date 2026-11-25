@@ -329,8 +329,9 @@ impl EntryFilter {
 
 /// Reads an optional boolean argument, using `default` when it is missing or null.
 ///
-/// Named-argument calls leave skipped parameters as null, so null must mean
-/// "use the default" rather than `false`.
+/// A caller can pass null explicitly, and a named call skipping a parameter
+/// with no declared default passes null, so null means "use the default"
+/// rather than `false`.
 #[cfg(feature = "bif-io")]
 fn optional_bool(value: Option<&BxValue>, default: bool) -> bool {
     value

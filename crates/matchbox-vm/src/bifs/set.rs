@@ -1,4 +1,4 @@
-use crate::types::{BxNativeFunction, BxVM, BxValue};
+use crate::types::{NativeBif, BxVM, BxValue};
 use std::collections::HashMap;
 use std::cell::RefCell;
 
@@ -31,51 +31,51 @@ fn get_set_metadata(id: usize) -> SetMetadata {
     })
 }
 
-pub fn register_set_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert("setnew".to_string(), set_new as BxNativeFunction);
-    bifs.insert("setof".to_string(), set_of as BxNativeFunction);
-    bifs.insert("listtoset".to_string(), list_to_set as BxNativeFunction);
-    bifs.insert("objecttoset".to_string(), object_to_set as BxNativeFunction);
-    bifs.insert("toset".to_string(), to_set as BxNativeFunction);
-    bifs.insert("structkeyset".to_string(), struct_key_set as BxNativeFunction);
-    bifs.insert("structvalueset".to_string(), struct_value_set as BxNativeFunction);
+pub fn register_set_bifs(bifs: &mut HashMap<String, NativeBif>) {
+    bifs.insert("setnew".to_string(), NativeBif { func: set_new, params: params!["type" = Str("default"), "values", "casesensitive" = Bool(false), "issynchronized" = Bool(true)] });
+    bifs.insert("setof".to_string(), NativeBif { func: set_of, params: params![] });
+    bifs.insert("listtoset".to_string(), NativeBif { func: list_to_set, params: params!["list", "delimiter" = Str(","), "type", "casesensitive" = Bool(false)] });
+    bifs.insert("objecttoset".to_string(), NativeBif { func: object_to_set, params: params!["value", "type", "delimiter" = Str(",")] });
+    bifs.insert("toset".to_string(), NativeBif { func: to_set, params: params!["value", "type", "delimiter" = Str(",")] });
+    bifs.insert("structkeyset".to_string(), NativeBif { func: struct_key_set, params: params!["struct", "type" = Str("default")] });
+    bifs.insert("structvalueset".to_string(), NativeBif { func: struct_value_set, params: params!["struct", "type" = Str("default")] });
 
-    bifs.insert("boxsetadd".to_string(), box_set_add as BxNativeFunction);
-    bifs.insert("boxsetaddall".to_string(), box_set_add_all as BxNativeFunction);
-    bifs.insert("boxsetclear".to_string(), box_set_clear as BxNativeFunction);
-    bifs.insert("boxsetremove".to_string(), box_set_remove as BxNativeFunction);
-    bifs.insert("boxsetremoveall".to_string(), box_set_remove_all as BxNativeFunction);
-    bifs.insert("boxsetretainall".to_string(), box_set_retain_all as BxNativeFunction);
+    bifs.insert("boxsetadd".to_string(), NativeBif { func: box_set_add, params: params!["set", "value"] });
+    bifs.insert("boxsetaddall".to_string(), NativeBif { func: box_set_add_all, params: params!["set", "values"] });
+    bifs.insert("boxsetclear".to_string(), NativeBif { func: box_set_clear, params: params!["set"] });
+    bifs.insert("boxsetremove".to_string(), NativeBif { func: box_set_remove, params: params!["set", "value"] });
+    bifs.insert("boxsetremoveall".to_string(), NativeBif { func: box_set_remove_all, params: params!["set", "values"] });
+    bifs.insert("boxsetretainall".to_string(), NativeBif { func: box_set_retain_all, params: params!["set", "values"] });
 
-    bifs.insert("boxsetcontains".to_string(), box_set_contains as BxNativeFunction);
-    bifs.insert("boxsetiscasesensitive".to_string(), box_set_is_case_sensitive as BxNativeFunction);
-    bifs.insert("boxsetissynchronized".to_string(), box_set_is_synchronized as BxNativeFunction);
-    bifs.insert("boxsetcontainsall".to_string(), box_set_contains_all as BxNativeFunction);
-    bifs.insert("arraycontains".to_string(), array_contains as BxNativeFunction);
-    bifs.insert("arraycontainsnocase".to_string(), array_contains_nocase as BxNativeFunction);
-    bifs.insert("boxsetisempty".to_string(), box_set_is_empty as BxNativeFunction);
-    bifs.insert("boxsetequals".to_string(), box_set_equals as BxNativeFunction);
-    bifs.insert("boxsetissubsetof".to_string(), box_set_is_subset_of as BxNativeFunction);
-    bifs.insert("boxsetissupersetof".to_string(), box_set_is_superset_of as BxNativeFunction);
-    bifs.insert("boxsetisdisjointfrom".to_string(), box_set_is_disjoint_from as BxNativeFunction);
-    bifs.insert("boxsetfind".to_string(), box_set_find as BxNativeFunction);
+    bifs.insert("boxsetcontains".to_string(), NativeBif { func: box_set_contains, params: params!["set", "value"] });
+    bifs.insert("boxsetiscasesensitive".to_string(), NativeBif::positional(box_set_is_case_sensitive));
+    bifs.insert("boxsetissynchronized".to_string(), NativeBif::positional(box_set_is_synchronized));
+    bifs.insert("boxsetcontainsall".to_string(), NativeBif { func: box_set_contains_all, params: params!["set", "values"] });
+    bifs.insert("arraycontains".to_string(), NativeBif { func: array_contains, params: params!["array", "value", "substringmatch" = Bool(false)] });
+    bifs.insert("arraycontainsnocase".to_string(), NativeBif { func: array_contains_nocase, params: params!["array", "value", "substringmatch" = Bool(false)] });
+    bifs.insert("boxsetisempty".to_string(), NativeBif { func: box_set_is_empty, params: params!["set"] });
+    bifs.insert("boxsetequals".to_string(), NativeBif { func: box_set_equals, params: params!["set", "otherset"] });
+    bifs.insert("boxsetissubsetof".to_string(), NativeBif { func: box_set_is_subset_of, params: params!["set", "otherset"] });
+    bifs.insert("boxsetissupersetof".to_string(), NativeBif { func: box_set_is_superset_of, params: params!["set", "otherset"] });
+    bifs.insert("boxsetisdisjointfrom".to_string(), NativeBif { func: box_set_is_disjoint_from, params: params!["set", "otherset"] });
+    bifs.insert("boxsetfind".to_string(), NativeBif { func: box_set_find, params: params!["set", "callback"] });
 
-    bifs.insert("boxsetunion".to_string(), box_set_union as BxNativeFunction);
-    bifs.insert("boxsetintersection".to_string(), box_set_intersection as BxNativeFunction);
-    bifs.insert("boxsetdifference".to_string(), box_set_difference as BxNativeFunction);
-    bifs.insert("boxsetsymmetricdifference".to_string(), box_set_symmetric_difference as BxNativeFunction);
+    bifs.insert("boxsetunion".to_string(), NativeBif { func: box_set_union, params: params!["set", "otherset"] });
+    bifs.insert("boxsetintersection".to_string(), NativeBif { func: box_set_intersection, params: params!["set", "otherset"] });
+    bifs.insert("boxsetdifference".to_string(), NativeBif { func: box_set_difference, params: params!["set", "otherset"] });
+    bifs.insert("boxsetsymmetricdifference".to_string(), NativeBif { func: box_set_symmetric_difference, params: params!["set", "otherset"] });
 
-    bifs.insert("boxseteach".to_string(), box_set_each as BxNativeFunction);
-    bifs.insert("boxsetevery".to_string(), box_set_every as BxNativeFunction);
-    bifs.insert("boxsetsome".to_string(), box_set_some as BxNativeFunction);
-    bifs.insert("boxsetnone".to_string(), box_set_none as BxNativeFunction);
-    bifs.insert("boxsetfilter".to_string(), box_set_filter as BxNativeFunction);
-    bifs.insert("boxsetmap".to_string(), box_set_map as BxNativeFunction);
-    bifs.insert("boxsetreject".to_string(), box_set_reject as BxNativeFunction);
-    bifs.insert("boxsetreduce".to_string(), box_set_reduce as BxNativeFunction);
+    bifs.insert("boxseteach".to_string(), NativeBif { func: box_set_each, params: params!["set", "callback"] });
+    bifs.insert("boxsetevery".to_string(), NativeBif { func: box_set_every, params: params!["set", "callback"] });
+    bifs.insert("boxsetsome".to_string(), NativeBif { func: box_set_some, params: params!["set", "callback"] });
+    bifs.insert("boxsetnone".to_string(), NativeBif { func: box_set_none, params: params!["set", "callback"] });
+    bifs.insert("boxsetfilter".to_string(), NativeBif { func: box_set_filter, params: params!["set", "callback"] });
+    bifs.insert("boxsetmap".to_string(), NativeBif { func: box_set_map, params: params!["set", "callback"] });
+    bifs.insert("boxsetreject".to_string(), NativeBif { func: box_set_reject, params: params!["set", "callback"] });
+    bifs.insert("boxsetreduce".to_string(), NativeBif { func: box_set_reduce, params: params!["set", "callback", "initialvalue"] });
 
-    bifs.insert("boxsettoarray".to_string(), box_set_to_array as BxNativeFunction);
-    bifs.insert("boxsettolist".to_string(), box_set_to_list as BxNativeFunction);
+    bifs.insert("boxsettoarray".to_string(), NativeBif { func: box_set_to_array, params: params!["set"] });
+    bifs.insert("boxsettolist".to_string(), NativeBif { func: box_set_to_list, params: params!["set", "delimiter" = Str(",")] });
 }
 
 fn values_equal(vm: &dyn BxVM, a: BxValue, b: BxValue) -> bool {

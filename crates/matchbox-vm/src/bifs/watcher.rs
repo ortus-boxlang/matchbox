@@ -1,4 +1,4 @@
-use crate::types::{BxNativeFunction, BxNativeObject, BxVM, BxValue};
+use crate::types::{NativeBif, BxNativeObject, BxVM, BxValue};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -201,39 +201,18 @@ fn snapshot_paths(roots: &[PathBuf]) -> HashSet<PathBuf> {
         .collect()
 }
 
-pub fn register_watcher_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert(
-        "watcherExists".to_string(),
-        watcher_exists as BxNativeFunction,
-    );
-    bifs.insert("watcherGet".to_string(), watcher_get as BxNativeFunction);
-    bifs.insert(
-        "watcherGetAll".to_string(),
-        watcher_get_all as BxNativeFunction,
-    );
-    bifs.insert("watcherList".to_string(), watcher_list as BxNativeFunction);
-    bifs.insert("watcherNew".to_string(), watcher_new as BxNativeFunction);
-    bifs.insert(
-        "watcherRestart".to_string(),
-        watcher_restart as BxNativeFunction,
-    );
-    bifs.insert(
-        "watcherShutdown".to_string(),
-        watcher_shutdown as BxNativeFunction,
-    );
-    bifs.insert(
-        "watcherShutdownAll".to_string(),
-        watcher_shutdown_all as BxNativeFunction,
-    );
-    bifs.insert(
-        "watcherStart".to_string(),
-        watcher_start as BxNativeFunction,
-    );
-    bifs.insert("watcherStop".to_string(), watcher_stop as BxNativeFunction);
-    bifs.insert(
-        "watcherStopAll".to_string(),
-        watcher_stop_all as BxNativeFunction,
-    );
+pub fn register_watcher_bifs(bifs: &mut HashMap<String, NativeBif>) {
+    bifs.insert("watcherExists".to_string(), NativeBif { func: watcher_exists, params: params!["name"] });
+    bifs.insert("watcherGet".to_string(), NativeBif { func: watcher_get, params: params!["name"] });
+    bifs.insert("watcherGetAll".to_string(), NativeBif { func: watcher_get_all, params: params![] });
+    bifs.insert("watcherList".to_string(), NativeBif { func: watcher_list, params: params![] });
+    bifs.insert("watcherNew".to_string(), NativeBif { func: watcher_new, params: params!["name", "paths", "listener", "recursive" = Bool(true), "debounce" = Int(0), "throttle" = Int(0), "atomicwrites" = Bool(true), "delay" = Int(0), "errorthreshold" = Int(10), "force" = Bool(false)] });
+    bifs.insert("watcherRestart".to_string(), NativeBif { func: watcher_restart, params: params!["name"] });
+    bifs.insert("watcherShutdown".to_string(), NativeBif { func: watcher_shutdown, params: params!["name"] });
+    bifs.insert("watcherShutdownAll".to_string(), NativeBif { func: watcher_shutdown_all, params: params!["force" = Bool(false)] });
+    bifs.insert("watcherStart".to_string(), NativeBif { func: watcher_start, params: params!["name"] });
+    bifs.insert("watcherStop".to_string(), NativeBif { func: watcher_stop, params: params!["name", "force" = Bool(false)] });
+    bifs.insert("watcherStopAll".to_string(), NativeBif { func: watcher_stop_all, params: params!["force" = Bool(false)] });
 }
 
 fn watcher_name(vm: &dyn BxVM, args: &[BxValue]) -> Result<String, String> {

@@ -1,4 +1,4 @@
-use crate::types::{BxNativeFunction, BxVM, BxValue};
+use crate::types::{NativeBif, BxVM, BxValue};
 use std::collections::HashMap;
 
 const XML_KIND: &str = "__xml_kind";
@@ -6,23 +6,17 @@ const XML_DOCUMENT: &str = "DOCUMENT";
 const XML_ELEMENT: &str = "ELEMENT";
 const XML_ATTRIBUTE: &str = "ATTRIBUTE";
 
-pub fn register_xml_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert("xmlnew".to_string(), xml_new as BxNativeFunction);
-    bifs.insert("xmlparse".to_string(), xml_parse_bif as BxNativeFunction);
-    bifs.insert("xmlelemnew".to_string(), xml_elem_new as BxNativeFunction);
-    bifs.insert("xmlformat".to_string(), xml_format as BxNativeFunction);
-    bifs.insert("xmlsearch".to_string(), xml_search as BxNativeFunction);
-    bifs.insert(
-        "xmltransform".to_string(),
-        xml_transform as BxNativeFunction,
-    );
-    bifs.insert("xmlvalidate".to_string(), xml_validate as BxNativeFunction);
-    bifs.insert(
-        "xmlgetnodetype".to_string(),
-        xml_get_node_type as BxNativeFunction,
-    );
-    bifs.insert("xmlchildpos".to_string(), xml_child_pos as BxNativeFunction);
-    bifs.insert("xmlsize".to_string(), xml_size as BxNativeFunction);
+pub fn register_xml_bifs(bifs: &mut HashMap<String, NativeBif>) {
+    bifs.insert("xmlnew".to_string(), NativeBif { func: xml_new, params: params!["casesensitive" = Bool(false)] });
+    bifs.insert("xmlparse".to_string(), NativeBif { func: xml_parse_bif, params: params!["xml", "casesensitive" = Bool(true), "validator", "lenient"] });
+    bifs.insert("xmlelemnew".to_string(), NativeBif { func: xml_elem_new, params: params!["xml", "childname", "namespace"] });
+    bifs.insert("xmlformat".to_string(), NativeBif { func: xml_format, params: params!["string", "escapechars" = Bool(false)] });
+    bifs.insert("xmlsearch".to_string(), NativeBif { func: xml_search, params: params!["xmlnode", "xpath", "params"] });
+    bifs.insert("xmltransform".to_string(), NativeBif { func: xml_transform, params: params!["xml", "xsl", "parameters", "xmlsettings"] });
+    bifs.insert("xmlvalidate".to_string(), NativeBif { func: xml_validate, params: params!["xml", "validator"] });
+    bifs.insert("xmlgetnodetype".to_string(), NativeBif { func: xml_get_node_type, params: params!["xmlnode"] });
+    bifs.insert("xmlchildpos".to_string(), NativeBif { func: xml_child_pos, params: params!["elem", "childname", "n"] });
+    bifs.insert("xmlsize".to_string(), NativeBif::positional(xml_size));
 }
 
 fn string(vm: &mut dyn BxVM, value: impl Into<String>) -> BxValue {

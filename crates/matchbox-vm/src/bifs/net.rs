@@ -1,12 +1,9 @@
-use crate::types::{BxNativeFunction, BxNativeObject, BxVM, BxValue};
+use crate::types::{NativeBif, BxNativeObject, BxVM, BxValue};
 use std::path::Path;
 
-pub fn register_net_bifs(bifs: &mut std::collections::HashMap<String, BxNativeFunction>) {
-    bifs.insert(
-        "getlocalhostip".to_string(),
-        get_localhost_ip as BxNativeFunction,
-    );
-    bifs.insert("soap".to_string(), soap as BxNativeFunction);
+pub fn register_net_bifs(bifs: &mut std::collections::HashMap<String, NativeBif>) {
+    bifs.insert("getlocalhostip".to_string(), NativeBif { func: get_localhost_ip, params: params!["all" = Bool(false), "refresh" = Bool(false)] });
+    bifs.insert("soap".to_string(), NativeBif { func: soap, params: params!["url"] });
 }
 
 #[derive(Debug)]

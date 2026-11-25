@@ -407,14 +407,22 @@ pub fn get_box_context(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, 
     vm.execution_context()
 }
 
+/// Implements `runThreadInContext( applicationName, sessionId, context, callback )`.
+///
+/// Runs `callback` now, in the current context. The application, session and
+/// context arguments are accepted for BoxLang compatibility and not used.
+///
+/// # Errors
+/// Returns an error when no callback is given or the callback fails.
 pub fn run_thread_in_context(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.len() < 2 {
-        return Err("runThreadInContext() expects context and callback".to_string());
-    }
+    let callback = args
+        .get(3)
+        .filter(|value| !value.is_null())
+        .ok_or_else(|| "runThreadInContext() expects a callback".to_string())?;
     let chunk = vm
         .current_chunk()
         .ok_or_else(|| "No chunk context available".to_string())?;
-    vm.call_function_by_value(&args[1], Vec::new(), chunk)
+    vm.call_function_by_value(callback, Vec::new(), chunk)
 }
 
 pub fn box_module_reload(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {

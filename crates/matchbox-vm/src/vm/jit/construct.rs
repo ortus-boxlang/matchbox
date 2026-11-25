@@ -421,7 +421,7 @@ impl super::super::VM {
                 };
                 let value = self.private_value(fiber, name)?;
                 let id = value.as_gc_id()?;
-                if !matches!(self.heap.get_opt(id),Some(GcObject::NativeFunction(function)) if std::ptr::fn_addr_eq(*function,expected as crate::types::BxNativeFunction))
+                if !matches!(self.heap.get_opt(id),Some(GcObject::NativeFunction(function)) if std::ptr::fn_addr_eq(function.func,expected as crate::types::BxNativeFunction))
                 {
                     return None;
                 }
