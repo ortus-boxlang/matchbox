@@ -287,7 +287,7 @@ impl Chunk {
     }
 
     /// Emit a single-operand instruction (1 word).
-    /// Operand `a` occupies bits [31:8]; must fit in 24 bits for correct decoding.
+    /// Operand `a` occupies bits `[31:8]`; must fit in 24 bits for correct decoding.
     #[inline]
     pub fn emit1(&mut self, opcode: u8, a: u32, line: u32) {
         Arc::make_mut(&mut self.program)
@@ -298,7 +298,7 @@ impl Chunk {
     }
 
     /// Emit a two-operand instruction (2 words).
-    /// `a` in word0 bits [31:8], `b` in word1 (full 32 bits).
+    /// `a` in word0 bits `[31:8]`, `b` in word1 (full 32 bits).
     #[inline]
     pub fn emit2(&mut self, opcode: u8, a: u32, b: u32, line: u32) {
         Arc::make_mut(&mut self.program)
@@ -312,7 +312,7 @@ impl Chunk {
     }
 
     /// Emit a three-operand instruction (3 words).
-    /// `a` in word0 bits [31:8], `b` in word1, `c` in word2 (each full 32 bits except a which is 24-bit).
+    /// `a` in word0 bits `[31:8]`, `b` in word1, `c` in word2 (each full 32 bits except a which is 24-bit).
     #[inline]
     pub fn emit3(&mut self, opcode: u8, a: u32, b: u32, c: u32, line: u32) {
         Arc::make_mut(&mut self.program)

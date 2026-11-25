@@ -1298,8 +1298,8 @@ impl JitState {
 
     // ── Tier-3: array iterator loop ───────────────────────────────────────────
 
-    /// Returns Some(item_slot) if body[0] is SET_LOCAL_POP and body[1..] is
-    /// translatable (numeric ops only, no MEMBER). Returns None otherwise.
+    /// Returns `Some(item_slot)` if `body[0]` is `SET_LOCAL_POP` and `body[1..]` is
+    /// translatable (numeric ops only, no `MEMBER`). Returns `None` otherwise.
     fn body_is_iter_translatable(body_code: &[u32], constants: &HashMap<u32, f64>) -> Option<u32> {
         if body_code.is_empty() {
             return None;

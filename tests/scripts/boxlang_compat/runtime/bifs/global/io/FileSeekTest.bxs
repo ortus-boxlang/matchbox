@@ -1,6 +1,4 @@
 // boxlang_compat: ortus/boxlang/runtime/bifs/global/io/FileSeekTest.java
-// SKIPPED [boxlang_compat] (JVM-only, hard requirement): open BoxFile stream
-// and Java byte[] assertions remain omitted; the path error and alias execute below.
 p = createTempFile();
 fileWrite( p, "abcdefg" );
 threw = false;
@@ -17,4 +15,43 @@ try {
     threwAlias = true;
 }
 assert threwAlias : "testSkipBytesFile path-requires-open-file";
+fileDelete( p );
+
+p = createTempFile();
+fileWrite( p, "abcdefg" );
+f = fileOpen( p, "read" );
+fileSeek( f, 2 );
+assert f.readLine() == "cdefg" : "testSeekFile";
+f.close();
+
+f = fileOpen( p, "read" );
+fileSeek( f, 2 );
+fileSeek( f, 2 );
+assert f.readLine() == "efg" : "testSeekFileTwice";
+f.close();
+
+f = fileOpen( p, "read" );
+f.seek( 2 );
+assert f.readLine() == "cdefg" : "testSeekMember";
+f.close();
+
+b = fileOpen( p, "readbinary" );
+fileSkipBytes( b, 2 );
+result = b.read( 3 );
+assert isBinary( result ) : "testSkipBytesFile binary";
+assert len( result ) == 3 : "testSkipBytesFile length";
+assert charsetEncode( result, "utf-8" ) == "cde" : "testSkipBytesFile content";
+b.skipBytes( 0 );
+assert charsetEncode( b.read( 2 ), "utf-8" ) == "ab" : "testSkipBytesMember absolute";
+b.close();
+
+f = fileOpen( p, "read", "utf-8", false );
+threw = false;
+try {
+    fileSeek( f, 1 );
+} catch ( e ) {
+    threw = true;
+}
+assert threw : "testSeekNotSeekable";
+f.close();
 fileDelete( p );

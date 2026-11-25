@@ -96,6 +96,8 @@ mod array_callbacks;
 mod async_runtime;
 #[cfg(feature = "bif-datasource")]
 mod datasource;
+#[cfg(feature = "bif-io")]
+mod file_handle;
 mod fs;
 mod http;
 mod i18n;
@@ -133,7 +135,7 @@ const GATED: &[(&str, &[&str])] = &[
         "directoryexists", "directorylist", "directorymove", "directoryrename", "expandpath", "fileappend",
         "fileclose", "filecopy", "filecreatesymlink", "filedelete", "fileexists", "filegetmimetype",
         "fileinfo", "fileiseof", "filemove", "fileopen", "filepublishexclusive", "fileread", "filereadbinary",
-        "filereadline", "fileseek", "filesetaccessmode", "filesetattribute", "filesetexecutable", "filesetlastmodified",
+        "filereadline", "fileseek", "fileskipbytes", "filesetaccessmode", "filesetattribute", "filesetexecutable", "filesetlastmodified",
         "filewrite", "filewriteexclusive", "filewriteline", "getcanonicalpath", "getdirectoryfrompath", "getfileinfo",
         "gettempdirectory", "gettempfile", "propertyfile",
     ]),
@@ -806,6 +808,7 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
             fs::file_read_line as BxNativeFunction,
         );
         bifs.insert("fileseek".to_string(), fs::file_seek as BxNativeFunction);
+        bifs.insert("fileskipbytes".to_string(), fs::file_seek as BxNativeFunction);
         bifs.insert(
             "filesetaccessmode".to_string(),
             fs::file_set_access_mode as BxNativeFunction,

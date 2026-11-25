@@ -1,8 +1,19 @@
 // boxlang_compat: ortus/boxlang/runtime/bifs/global/io/FileCloseTest.java
-// SKIPPED [boxlang_compat] (JVM-only, hard requirement): closed BoxFile state
-// and readBinary() byte[] assertions remain omitted; the invalid path call executes below.
 p = createTempFile();
 fileWrite( p, "close file test" );
 fileClose( p );
 assert fileExists( p ) : "testBifWithInvalidFile path";
+fileDelete( p );
+
+p = createTempFile();
+fileWrite( p, "close file test" );
+f = fileOpen( p );
+assert isNull( fileClose( f ) ) : "testFileCloseReturnsNull";
+threw = false;
+try {
+    f.readLine();
+} catch ( e ) {
+    threw = true;
+}
+assert threw : "testReadAfterClose";
 fileDelete( p );

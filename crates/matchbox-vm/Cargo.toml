@@ -26,6 +26,8 @@ base64 = "0.22"
 
 # Optional dependencies for BIFs
 walkdir = { version = "2.5", optional = true }
+encoding_rs = { version = "0.8", optional = true }
+globset = { version = "0.4", optional = true }
 zip = { version = "2.2", optional = true }
 tar = { version = "0.4", optional = true }
 flate2 = { version = "1.0", optional = true }
@@ -73,7 +75,7 @@ debugger = []
 js = ["wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys", "getrandom/wasm_js", "uuid/js"]
 js-host-abi = []
 jit = ["cranelift-jit", "cranelift-frontend", "cranelift-codegen", "cranelift-module", "cranelift-native"]
-bif-io = ["walkdir", "fs_extra", "filetime"]
+bif-io = ["walkdir", "fs_extra", "filetime", "encoding_rs", "globset"]
 bif-http = ["reqwest", "rustls"]
 bif-zip = ["zip", "tar", "flate2", "bzip2"]
 bif-crypto = ["sha1", "md-5", "hmac", "digest", "aes", "cipher", "des", "blowfish"]

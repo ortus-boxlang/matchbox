@@ -12,7 +12,7 @@ use traits::{QueryColumn, QueryColumnType, SqlValue};
 /// A BoxLang query result object, stored column-major: `data[col_idx][row_idx]`.
 pub struct BxQuery {
     pub columns: Vec<QueryColumn>,
-    /// Column-major storage: data[col_idx][row_idx]
+    /// Column-major storage: `data[col_idx][row_idx]`
     pub data: Vec<Vec<SqlValue>>,
     pub record_count: usize,
     pub current_row: usize,

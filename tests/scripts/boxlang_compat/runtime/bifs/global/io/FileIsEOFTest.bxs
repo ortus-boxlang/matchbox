@@ -1,6 +1,4 @@
 // boxlang_compat: ortus/boxlang/runtime/bifs/global/io/FileIsEOFTest.java
-// SKIPPED [boxlang_compat] (JVM-only, hard requirement): open BoxFile stream
-// state assertions remain omitted; the path error executes below.
 p = createTempFile();
 fileWrite( p, "eof" );
 threw = false;
@@ -10,4 +8,31 @@ try {
     threw = true;
 }
 assert threw : "testReadFileEOF path-requires-open-file";
+fileDelete( p );
+
+p = createTempFile();
+fileWrite( p, "one" & chr( 10 ) & "two" );
+f = fileOpen( p, "read", "utf-8", true );
+assert fileIsEOF( f ) == false : "testReadFileEOF first";
+for ( i = 1; i <= 100; i++ ) {
+    f.readLine();
+}
+assert fileIsEOF( f ) : "testReadFileEOF last";
+fileClose( f );
+
+w = fileOpen( p, "write" );
+threw = false;
+try {
+    fileIsEOF( w );
+} catch ( e ) {
+    threw = true;
+}
+assert threw : "testWriteFileEOF";
+fileClose( w );
+
+b = fileOpen( p, "readbinary" );
+assert fileIsEOF( b ) == false : "testBinaryEOF first";
+fileRead( b );
+assert fileIsEOF( b ) : "testBinaryEOF last";
+fileClose( b );
 fileDelete( p );
