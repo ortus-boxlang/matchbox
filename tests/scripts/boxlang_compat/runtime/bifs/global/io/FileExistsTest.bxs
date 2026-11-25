@@ -4,3 +4,14 @@ fileWrite( p, "x" );
 assert fileExists( p ) : "testExists";
 fileDelete( p );
 assert fileExists( p ) == false : "testNotExists";
+
+dir = createTempDirectory();
+assert fileExists( dir ) == false : "testDirectoryIsNotAFile";
+fileWrite( dir & "/target.txt", "x" );
+fileCreateSymlink( dir & "/good-link", dir & "/target.txt" );
+assert fileExists( dir & "/good-link" ) : "testLinkToFile";
+fileCreateSymlink( dir & "/dir-link", dir );
+assert fileExists( dir & "/dir-link" ) == false : "testLinkToDirectory";
+fileCreateSymlink( dir & "/dangling-link", dir & "/missing.txt" );
+assert fileExists( dir & "/dangling-link" ) == false : "testDanglingLink";
+directoryDelete( dir, true );

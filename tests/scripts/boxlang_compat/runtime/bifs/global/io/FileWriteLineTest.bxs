@@ -1,10 +1,43 @@
 // boxlang_compat: ortus/boxlang/runtime/bifs/global/io/FileWriteLineTest.java
-// SKIPPED [boxlang_compat] (JVM-only, hard requirement): open BoxFile/member
-// assertions remain omitted; the string-path overload executes below.
 p = createTempFile();
 fileWriteLine( p, "box" );
 fileWriteLine( p, "lang" );
 result = fileRead( p );
 assert fileExists( p ) : "testWriteLineString exists";
 assert len( result ) > 0 : "testWriteLineString content";
+fileDelete( p );
+
+p = createTempFile();
+fileWriteLine( p, "box" );
+fileWriteLine( p, "lang" );
+assert fileRead( p ) == "box" & chr( 10 ) & "lang" : "testWriteLineSeparatorBefore";
+fileDelete( p );
+
+p = createTempFile();
+f = fileOpen( p, "write" );
+result = fileWriteLine( f, "box" );
+assert result.toString() == f.toString() : "testWriteLineReturnsFile";
+f.writeLine( "lang" );
+fileClose( f );
+assert fileRead( p ) == "box" & chr( 10 ) & "lang" : "testWriteLineMember";
+
+f = fileOpen( p, "append" );
+f.writeLine( "rocks!" );
+f.close();
+assert fileRead( p ) == "box" & chr( 10 ) & "lang" & chr( 10 ) & "rocks!" : "testWriteLineAppend";
+
+f = fileOpen( p, "write" );
+f.write( "!" );
+f.close();
+assert fileRead( p ) == "box" & chr( 10 ) & "lang" & chr( 10 ) & "rocks!!" : "testWriteModeDoesNotTruncate";
+
+r = fileOpen( p );
+threw = false;
+try {
+    fileWriteLine( r, "nope" );
+} catch ( e ) {
+    threw = true;
+}
+assert threw : "testWriteLineReadModeError";
+r.close();
 fileDelete( p );

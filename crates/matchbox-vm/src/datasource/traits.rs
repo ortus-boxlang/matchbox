@@ -39,7 +39,7 @@ pub struct QueryColumn {
 #[derive(Debug, Clone)]
 pub struct QueryResult {
     pub columns: Vec<QueryColumn>,
-    /// Row-major: rows[row_idx][col_idx]
+    /// Row-major: `rows[row_idx][col_idx]`
     pub rows: Vec<Vec<SqlValue>>,
 }
 

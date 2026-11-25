@@ -34,4 +34,52 @@ directoryDelete( destination, true );
 
 directoryCopy( source = source, destination = destination & "/a/b", recurse = true );
 assert fileExists( destination & "/a/b/test.txt" ) : "testNamedDefaultCreatePath";
+directoryDelete( destination, true );
+
+// An existing file is an error without overwrite, as in BoxLang.
+directoryCopy( source, destination );
+threw = false;
+try {
+    directoryCopy( source, destination );
+} catch ( e ) {
+    threw = true;
+}
+assert threw : "testExistingFileWithoutOverwriteThrows";
+directoryDelete( destination, true );
+
+// Glob alternatives and closure filters.
+directoryCopy( source, destination, true, "*.md|*.txt" );
+assert fileExists( destination & "/test.txt" ) : "testPipeFilter text";
+assert fileExists( destination & "/nested/further/test.md" ) : "testPipeFilter markdown";
+directoryDelete( destination, true );
+
+directoryCopy( source, destination, true, ( path ) => !path.endsWith( ".txt" ) );
+assert fileExists( destination & "/test.txt" ) == false : "testClosureFilter excluded";
+assert fileExists( destination & "/nested/further/test.md" ) : "testClosureFilter included";
+directoryDelete( destination, true );
+
+// Links are copied as links unless followLinks is true.
+fileCreateSymlink( source & "/link.txt", source & "/test.txt" );
+directoryCreate( base & "/shared" );
+fileWrite( base & "/shared/keep.txt", "keep" );
+fileCreateSymlink( source & "/lib", base & "/shared" );
+directoryCopy( source, destination, true );
+assert fileInfo( destination & "/link.txt" ).is_symlink : "testLinkCopiedAsLink file";
+assert fileInfo( destination & "/lib" ).is_symlink : "testLinkCopiedAsLink directory";
+directoryDelete( destination, true );
+
+directoryCopy( source, destination );
+assert fileInfo( destination & "/link.txt" ).is_symlink : "testShallowCopyKeepsLinks";
+directoryDelete( destination, true );
+
+directoryCopy( source = source, destination = destination, recurse = true, followLinks = true );
+assert fileInfo( destination & "/link.txt" ).is_symlink == false : "testFollowLinks file";
+assert fileInfo( destination & "/lib" ).is_symlink == false : "testFollowLinks directory";
+assert fileExists( destination & "/lib/keep.txt" ) : "testFollowLinks directory content";
+directoryDelete( destination, true );
+
+// A file source is copied as a file. As in BoxLang, createPath would first
+// create the destination as a directory, so it is turned off here.
+directoryCopy( source = source & "/test.txt", destination = base & "/copied.txt", createPath = false );
+assert fileRead( base & "/copied.txt" ) == "changed" : "testFileSource";
 directoryDelete( base, true );

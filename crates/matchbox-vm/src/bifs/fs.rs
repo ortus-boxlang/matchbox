@@ -8,13 +8,13 @@
 //! [`BxNativeFunction`]: crate::types::BxNativeFunction
 
 #[cfg(feature = "bif-io")]
-use crate::types::{BxNativeObject, BxVM, BxValue};
+use super::file_handle::{file_object_id, Charset, FileObject, Mode};
+#[cfg(feature = "bif-io")]
+use crate::types::{BxVM, BxValue};
 #[cfg(feature = "bif-io")]
 use chrono::{DateTime, Utc};
 #[cfg(feature = "bif-io")]
 use std::fs;
-#[cfg(feature = "bif-io")]
-use std::io::Write;
 #[cfg(all(feature = "bif-io", unix))]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(feature = "bif-io")]
@@ -31,82 +31,9 @@ use crate::datasource::{
 use std::{cell::RefCell, rc::Rc};
 
 #[cfg(feature = "bif-io")]
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+#[cfg(feature = "bif-io")]
 use walkdir::WalkDir;
-
-/// The file object returned by [`file_open`].
-///
-/// It holds only the path and mode. No operating-system handle stays open, so
-/// each method reopens the file by path.
-#[cfg(feature = "bif-io")]
-#[derive(Debug)]
-struct FileObject {
-    /// The path the file was opened with.
-    path: String,
-    /// The open mode (`read`, `readbinary`, `write` or `append`), or `closed`
-    /// after `close()`.
-    mode: String,
-}
-
-#[cfg(feature = "bif-io")]
-impl BxNativeObject for FileObject {
-    /// Returns null, because file objects expose no properties.
-    fn get_property(&self, _name: &str) -> BxValue {
-        BxValue::new_null()
-    }
-
-    /// Ignores the assignment, because file objects expose no properties.
-    fn set_property(&mut self, _name: &str, _value: BxValue) {}
-
-    /// Runs a file object method, matched case-insensitively.
-    ///
-    /// - `__is_file` returns `true` and lets other BIFs recognize file objects.
-    /// - `toString` returns the path.
-    /// - `readLine` returns the first line of the file, or null when it is empty.
-    /// - `writeLine( data )` appends `data` and a newline, then returns the object.
-    /// - `close` marks the object closed and returns null.
-    ///
-    /// # Errors
-    /// Returns an error for an unknown method, when `writeLine` gets no
-    /// argument, or when the file cannot be read or written.
-    fn call_method(
-        &mut self,
-        vm: &mut dyn BxVM,
-        id: usize,
-        name: &str,
-        args: &[BxValue],
-    ) -> Result<BxValue, String> {
-        match name.to_ascii_lowercase().as_str() {
-            "__is_file" => Ok(BxValue::new_bool(true)),
-            "tostring" => Ok(BxValue::new_ptr(vm.string_new(self.path.clone()))),
-            "readline" => {
-                let content = fs::read_to_string(&self.path).map_err(|error| error.to_string())?;
-                match content.lines().next() {
-                    Some(line) => Ok(BxValue::new_ptr(vm.string_new(line.to_string()))),
-                    None => Ok(BxValue::new_null()),
-                }
-            }
-            "writeline" => {
-                let data = args
-                    .first()
-                    .copied()
-                    .map(|value| vm.to_string(value))
-                    .ok_or_else(|| "fileWriteLine() expects 1 argument".to_string())?;
-                let mut file = fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(&self.path)
-                    .map_err(|error| error.to_string())?;
-                writeln!(file, "{}", data).map_err(|error| error.to_string())?;
-                Ok(BxValue::new_ptr(id))
-            }
-            "close" => {
-                self.mode = "closed".to_string();
-                Ok(BxValue::new_null())
-            }
-            _ => Err(format!("File method '{}' not found", name)),
-        }
-    }
-}
 
 /// Converts a path to text and normalizes it with [`normalize_path_text`].
 #[cfg(feature = "bif-io")]
@@ -213,49 +140,42 @@ pub fn directory_delete(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     Ok(BxValue::new_bool(true))
 }
 
-/// Implements `directoryList( path, recurse, listInfo, filter, sort, type )`.
+/// Implements `directoryList( path, recurse, listInfo, filter, sort, type, followLinks )`.
 ///
-/// Lists the entries of `path`, not including `path` itself.
+/// Lists the entries of `path`, not including `path` itself. A missing `path`
+/// gives an empty listing.
 ///
 /// - `recurse` (default `false`) also lists the contents of subdirectories.
 /// - `listInfo` (default `"path"`) selects the result: `"path"` gives an array
 ///   of full paths, `"name"` an array of entry names, and `"query"` a query
 ///   built by [`directory_entries_to_query`].
-/// - `filter` is a glob matched against each entry name with [`glob_matches`].
-///   A missing, null or blank filter lists every entry.
+/// - `filter` is a glob string or a closure, applied by [`EntryFilter`].
 /// - `sort` (default `"name"`) is applied by [`sort_directory_entries`].
 /// - `type` (default `"all"`) keeps only `"file"` or `"dir"` entries when given.
+///   Both follow symbolic links, so a link to a directory counts as `"dir"`.
+/// - `followLinks` (default `false`) makes a recursive listing walk into
+///   linked directories. A link given as `path` itself is always resolved, and
+///   entries under it are listed under `path`.
 ///
-/// Entries that cannot be read are skipped. Closure filters and `followLinks`
-/// are not supported.
+/// Entries that cannot be read, including link loops, are skipped.
 ///
 /// # Errors
-/// Returns an error when no path argument is given, or when `listInfo` is
-/// `"query"` on `wasm32`, where queries are not available.
+/// Returns an error when no path argument is given, when the filter is not a
+/// valid glob, when a filter closure fails, or when `listInfo` is `"query"` on
+/// `wasm32`, where queries are not available.
 #[cfg(feature = "bif-io")]
 pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
         return Err("directoryList() expects at least 1 argument".to_string());
     }
     let path_str = vm.to_string(args[0]);
-    let recurse = if args.len() > 1 {
-        args[1].as_bool()
-    } else {
-        false
-    };
-
-    let walker = if recurse {
-        WalkDir::new(&path_str).min_depth(1)
-    } else {
-        WalkDir::new(&path_str).min_depth(1).max_depth(1)
-    };
-
+    let recurse = optional_bool(args.get(1), false);
     let list_info = args
         .get(2)
         .filter(|value| !value.is_null())
         .map(|value| vm.to_string(*value).to_lowercase())
         .unwrap_or_else(|| "path".to_string());
-    let filter = glob_filter(vm, args.get(3));
+    let filter = EntryFilter::from_argument(vm, args.get(3))?;
     let sort = args
         .get(4)
         .filter(|value| !value.is_null())
@@ -266,23 +186,15 @@ pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
         .filter(|value| !value.is_null())
         .map(|value| vm.to_string(*value).to_lowercase())
         .unwrap_or_else(|| "all".to_string());
+    let follow_links = optional_bool(args.get(6), false);
 
-    let mut entries = walker
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.into_path())
-        .filter(|path| match item_type.as_str() {
+    let mut entries = list_entries(vm, Path::new(&path_str), recurse, follow_links, &filter, |path| {
+        match item_type.as_str() {
             "file" => path.is_file(),
             "dir" | "directory" => path.is_dir(),
             _ => true,
-        })
-        .filter(|path| {
-            filter
-                .as_deref()
-                .map(|pattern| glob_matches(pattern, file_name(path)))
-                .unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
+        }
+    })?;
 
     sort_directory_entries(&mut entries, &sort);
 
@@ -312,16 +224,107 @@ pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     Ok(BxValue::new_ptr(array_id))
 }
 
-/// Reads an optional glob filter argument.
+/// Walks `root` and returns the entries that pass `keep` and then `filter`.
 ///
-/// Returns `None` when the argument is missing, null, or blank, because an
-/// empty filter means "no filter" in BoxLang.
+/// `root` itself is not included. Without `recurse` only its direct entries
+/// are listed. Symbolic links inside `root` are only walked into when
+/// `follow_links` is true; a link given as `root` is always resolved. Entries
+/// that cannot be read, including link loops, are skipped.
+///
+/// # Errors
+/// Returns an error when a filter closure fails.
 #[cfg(feature = "bif-io")]
-fn glob_filter(vm: &mut dyn BxVM, value: Option<&BxValue>) -> Option<String> {
-    value
-        .filter(|value| !value.is_null())
-        .map(|value| vm.to_string(*value))
-        .filter(|pattern| !pattern.trim().is_empty())
+fn list_entries(
+    vm: &mut dyn BxVM,
+    root: &Path,
+    recurse: bool,
+    follow_links: bool,
+    filter: &EntryFilter,
+    keep: impl Fn(&Path) -> bool,
+) -> Result<Vec<PathBuf>, String> {
+    let mut walker = WalkDir::new(root).min_depth(1).follow_links(follow_links);
+    if !recurse {
+        walker = walker.max_depth(1);
+    }
+    let mut entries = Vec::new();
+    for path in walker.into_iter().filter_map(|entry| entry.ok()).map(|entry| entry.into_path()) {
+        if keep(&path) && filter.matches(vm, &path)? {
+            entries.push(path);
+        }
+    }
+    Ok(entries)
+}
+
+/// The `filter` argument of `directoryList()` and `directoryCopy()`.
+#[cfg(feature = "bif-io")]
+enum EntryFilter {
+    /// Keep every entry.
+    All,
+    /// Keep entries whose name matches any of the globs.
+    Globs(GlobSet),
+    /// Keep entries for which the closure, called with the full path, returns
+    /// a truthy value.
+    Closure(BxValue),
+}
+
+#[cfg(feature = "bif-io")]
+impl EntryFilter {
+    /// Builds a filter from a BIF argument, following BoxLang's rules.
+    ///
+    /// A function becomes [`EntryFilter::Closure`]. A string is split on `|`
+    /// into globs in Java syntax (`*`, `?`, `**`, `[abc]`, `[!abc]`, `{a,b}` and
+    /// `\` escapes), matched case-sensitively against the entry name. As in
+    /// BoxLang, a string of one character or fewer, such as `""` or `"*"`, is
+    /// no filter; a blank string is no filter too. A missing or null argument
+    /// is no filter.
+    ///
+    /// # Errors
+    /// Returns an error when a glob is not valid.
+    fn from_argument(vm: &mut dyn BxVM, value: Option<&BxValue>) -> Result<Self, String> {
+        let Some(value) = value.filter(|value| !value.is_null()) else {
+            return Ok(Self::All);
+        };
+        if vm.value_matches_type_name(*value, "function") {
+            return Ok(Self::Closure(*value));
+        }
+        let pattern = vm.to_string(*value);
+        if pattern.chars().count() <= 1 || pattern.trim().is_empty() {
+            return Ok(Self::All);
+        }
+        let mut builder = GlobSetBuilder::new();
+        for part in pattern.split('|').filter(|part| !part.is_empty()) {
+            let glob = GlobBuilder::new(part)
+                .literal_separator(true)
+                .backslash_escape(true)
+                .build()
+                .map_err(|error| format!("The filter [{pattern}] is not a valid glob: {error}"))?;
+            builder.add(glob);
+        }
+        builder
+            .build()
+            .map(Self::Globs)
+            .map_err(|error| format!("The filter [{pattern}] is not a valid glob: {error}"))
+    }
+
+    /// Reports whether `path` passes the filter.
+    ///
+    /// # Errors
+    /// Returns an error when a closure filter fails or no code context is
+    /// available to call it.
+    fn matches(&self, vm: &mut dyn BxVM, path: &Path) -> Result<bool, String> {
+        match self {
+            Self::All => Ok(true),
+            Self::Globs(globs) => Ok(globs.is_match(file_name(path))),
+            Self::Closure(closure) => {
+                let chunk = vm
+                    .current_chunk()
+                    .ok_or_else(|| "No code context is available to call the filter".to_string())?;
+                let argument = vm.string_new(path.to_string_lossy().into_owned());
+                let result = vm.call_function_by_value(closure, vec![BxValue::new_ptr(argument)], chunk)?;
+                Ok(vm.is_truthy(result))
+            }
+        }
+    }
 }
 
 /// Reads an optional boolean argument, using `default` when it is missing or null.
@@ -345,45 +348,6 @@ fn file_name(path: &Path) -> &str {
     path.file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default()
-}
-
-/// Reports whether `value` matches the glob `pattern` in full.
-///
-/// `*` matches any run of characters, including none, and `?` matches exactly
-/// one character. Every other character matches itself, case-sensitively.
-/// There are no character classes, escapes or `|` alternatives. An empty
-/// pattern matches only an empty value.
-#[cfg(feature = "bif-io")]
-fn glob_matches(pattern: &str, value: &str) -> bool {
-    let pattern = pattern.chars().collect::<Vec<_>>();
-    let value = value.chars().collect::<Vec<_>>();
-    let mut matches = vec![vec![false; value.len() + 1]; pattern.len() + 1];
-    matches[0][0] = true;
-
-    for pattern_index in 0..pattern.len() {
-        for value_index in 0..=value.len() {
-            if !matches[pattern_index][value_index] {
-                continue;
-            }
-            match pattern[pattern_index] {
-                '*' => {
-                    matches[pattern_index + 1][value_index] = true;
-                    if value_index < value.len() {
-                        matches[pattern_index][value_index + 1] = true;
-                    }
-                }
-                '?' if value_index < value.len() => {
-                    matches[pattern_index + 1][value_index + 1] = true;
-                }
-                character if value_index < value.len() && character == value[value_index] => {
-                    matches[pattern_index + 1][value_index + 1] = true;
-                }
-                _ => {}
-            }
-        }
-    }
-
-    matches[pattern.len()][value.len()]
 }
 
 /// Sorts directory entries in place by a BoxLang sort directive.
@@ -528,9 +492,8 @@ fn file_attributes(path: &Path) -> String {
 
 /// Implements `fileExists( path )`.
 ///
-/// Returns `true` when anything exists at `path`, without following symbolic
-/// links. A dangling link counts as existing. Unlike BoxLang, a directory also
-/// returns `true`.
+/// Returns `true` when `path` names an existing entry that is not a directory,
+/// following symbolic links, as BoxLang does. A dangling link returns `false`.
 ///
 /// # Errors
 /// Returns an error when no path argument is given.
@@ -540,9 +503,10 @@ pub fn file_exists(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
         return Err("fileExists() expects 1 argument".to_string());
     }
     let path_str = vm.to_string(args[0]);
-    let path = Path::new(&path_str);
-    // Use symlink_metadata to detect existence including symlinks
-    Ok(BxValue::new_bool(path.symlink_metadata().is_ok()))
+    let exists = fs::metadata(&path_str)
+        .map(|metadata| !metadata.is_dir())
+        .unwrap_or(false);
+    Ok(BxValue::new_bool(exists))
 }
 
 /// Implements `fileDelete( path )`.
@@ -707,24 +671,7 @@ pub fn file_create_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValu
     }
     let link = vm.to_string(args[0]);
     let target = vm.to_string(args[1]);
-
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(target, link).map_err(|e| e.to_string())?;
-    }
-    #[cfg(windows)]
-    {
-        let target_path = Path::new(&target);
-        if target_path.is_dir() {
-            std::os::windows::fs::symlink_dir(target, link).map_err(|e| e.to_string())?;
-        } else {
-            std::os::windows::fs::symlink_file(target, link).map_err(|e| e.to_string())?;
-        }
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        return Err("Symlinks not supported on this platform".to_string());
-    }
+    create_symlink(Path::new(&target), Path::new(&link)).map_err(|e| e.to_string())?;
 
     Ok(BxValue::new_bool(true))
 }
@@ -763,20 +710,38 @@ pub fn file_set_executable(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValu
     Ok(BxValue::new_bool(true))
 }
 
-/// Implements `fileRead( path )`.
+/// Implements `fileRead( file, charsetOrBufferSize, bufferSize )`.
 ///
-/// Returns the whole file as a string. Charset and buffer-size arguments are
-/// ignored.
+/// For a file object from [`file_open`], reads from the current position: up
+/// to `bufferSize` characters (or bytes in `readBinary` mode) when a buffer
+/// size is given, otherwise everything to the end of the file. As in BoxLang,
+/// a numeric second argument is the buffer size.
+///
+/// For a path, returns the whole file as a string; the charset and buffer
+/// size are ignored.
 ///
 /// # Errors
-/// Returns an error when no path argument is given, when the file cannot be
-/// read, or when it is not valid UTF-8.
+/// Returns an error when no argument is given, when a buffer size is negative,
+/// when a file object is not open in a read mode, when the file cannot be
+/// read, or when a path's content is not valid UTF-8.
 #[cfg(feature = "bif-io")]
 pub fn file_read(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.is_empty() {
-        return Err("fileRead() expects 1 argument".to_string());
+    let file = *args
+        .first()
+        .ok_or_else(|| "fileRead() expects at least 1 argument".to_string())?;
+    if let Some(id) = file_object_id(vm, file) {
+        let buffer_size = match (args.get(1), args.get(2)) {
+            (_, Some(size)) if !size.is_null() => Some(*size),
+            (Some(size), _) if size.is_int() || size.is_number() => Some(*size),
+            (Some(size), _) if !size.is_null() && vm.to_string(*size).trim().parse::<u64>().is_ok() => Some(*size),
+            _ => None,
+        };
+        return match buffer_size {
+            Some(size) => vm.native_object_call_method(id, "read", &[size]),
+            None => vm.native_object_call_method(id, "readall", &[]),
+        };
     }
-    let path_str = vm.to_string(args[0]);
+    let path_str = vm.to_string(file);
     let content = fs::read_to_string(path_str).map_err(|e| e.to_string())?;
     let s_id = vm.string_new(content);
     Ok(BxValue::new_ptr(s_id))
@@ -1075,25 +1040,31 @@ pub fn create_temp_file(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     Ok(BxValue::new_ptr(s_id))
 }
 
-/// Implements `directoryCopy( source, destination, recurse, filter, createPath, overwrite )`.
+/// Implements `directoryCopy( source, destination, recurse, filter, createPath, overwrite, followLinks )`.
 ///
-/// Copies the files in `source` into `destination` and returns null.
+/// Copies `source` into `destination` and returns null, as BoxLang does.
 ///
-/// - `recurse` (default `false`) also copies subdirectories. Without it, only
-///   the files directly in `source` are copied.
-/// - `filter` is a glob matched against file names with [`glob_matches`].
-///   Directories are always created. A missing, null or blank filter copies
-///   every file.
+/// - `recurse` (default `false`) copies the whole tree. Without it, only the
+///   files directly in `source` are copied, and symbolic links among them.
+/// - `filter` is a glob string or a closure, applied by [`EntryFilter`] to
+///   every entry. Parent directories of a copied file are always created, so a
+///   directory that fails the filter is still created when it holds a file
+///   that passes.
 /// - `createPath` (default `true`) creates `destination` when missing.
 /// - `overwrite` (default `false`) replaces files that already exist in
-///   `destination`. Otherwise they are skipped.
+///   `destination`. Without it, an existing file is an error.
+/// - `followLinks` (default `false`) copies what symbolic links point to and
+///   walks into linked directories. Without it, a link is copied as a link to
+///   the same target.
 ///
-/// `followLinks` is not supported.
+/// When `source` is a file rather than a directory, it is copied to
+/// `destination` as a file.
 ///
 /// # Errors
-/// Returns an error when fewer than two arguments are given, when `source` is
-/// not an existing directory, or when a directory or file cannot be created or
-/// copied.
+/// Returns an error when fewer than two arguments are given, when `source`
+/// does not exist, when the filter is not a valid glob or its closure fails,
+/// when a file exists in `destination` and `overwrite` is false, or when a
+/// directory, file or link cannot be created or copied.
 #[cfg(feature = "bif-io")]
 pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -1104,72 +1075,106 @@ pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     let source = vm.to_string(args[0]);
     let dest = vm.to_string(args[1]);
     let recurse = optional_bool(args.get(2), false);
-    let filter = glob_filter(vm, args.get(3));
+    let filter = EntryFilter::from_argument(vm, args.get(3))?;
     let create_path = optional_bool(args.get(4), true);
     let overwrite = optional_bool(args.get(5), false);
+    let follow_links = optional_bool(args.get(6), false);
 
     let src_path = Path::new(&source);
-    if !src_path.exists() || !src_path.is_dir() {
-        return Err(format!("Source directory does not exist: {}", source));
-    }
-
     let dest_path = Path::new(&dest);
     if create_path && !dest_path.exists() {
         fs::create_dir_all(dest_path).map_err(|e| e.to_string())?;
     }
 
-    if recurse {
-        for entry in WalkDir::new(src_path).min_depth(1) {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let rel = entry
-                .path()
-                .strip_prefix(src_path)
-                .map_err(|e| e.to_string())?;
-            let target = dest_path.join(rel);
-            if entry.file_type().is_dir() {
-                if !target.exists() {
-                    fs::create_dir_all(&target).map_err(|e| e.to_string())?;
-                }
-            } else {
-                if filter
-                    .as_deref()
-                    .map(|pattern| !glob_matches(pattern, file_name(entry.path())))
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-                if target.exists() && !overwrite {
-                    continue;
-                }
-                if let Some(parent) = target.parent() {
-                    if !parent.exists() {
-                        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                    }
-                }
-                fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
+    if !src_path.is_dir() {
+        if !src_path.exists() {
+            return Err(format!("The source [{}] does not exist", source));
+        }
+        copy_entry(src_path, dest_path, overwrite, true)?;
+        return Ok(BxValue::new_null());
+    }
+
+    let mut entries = list_entries(vm, src_path, recurse, follow_links, &filter, |path| {
+        recurse || path.is_file() || (!follow_links && path.is_symlink())
+    })?;
+    entries.sort();
+    for entry in entries {
+        let relative = entry.strip_prefix(src_path).map_err(|e| e.to_string())?;
+        let target = dest_path.join(relative);
+        if recurse {
+            if let Some(parent) = target.parent().filter(|parent| !parent.exists()) {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
         }
-    } else {
-        for entry in fs::read_dir(src_path).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let target = dest_path.join(entry.file_name());
-            if entry.file_type().map_err(|e| e.to_string())?.is_file() {
-                if filter
-                    .as_deref()
-                    .map(|pattern| !glob_matches(pattern, file_name(&entry.path())))
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-                if target.exists() && !overwrite {
-                    continue;
-                }
-                fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
-            }
+        let target_is_dir = fs::symlink_metadata(&target)
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false);
+        if !target_is_dir {
+            copy_entry(&entry, &target, overwrite, follow_links)?;
         }
     }
 
     Ok(BxValue::new_null())
+}
+
+/// Copies one entry to `target`, as Java's `Files.copy` does.
+///
+/// A symbolic link is copied as a link to the same target unless
+/// `follow_links` is true. A directory becomes a new empty directory; its
+/// contents are copied as their own entries. An existing `target` is replaced
+/// when `overwrite` is true.
+///
+/// # Errors
+/// Returns an error when `target` exists and `overwrite` is false, or when the
+/// entry cannot be read, removed or created.
+#[cfg(feature = "bif-io")]
+fn copy_entry(source: &Path, target: &Path, overwrite: bool, follow_links: bool) -> Result<(), String> {
+    if fs::symlink_metadata(target).is_ok() {
+        if !overwrite {
+            return Err(format!("The file [{}] already exists", target.display()));
+        }
+        fs::remove_file(target).map_err(|e| e.to_string())?;
+    }
+    if !follow_links && source.is_symlink() {
+        let link_target = fs::read_link(source).map_err(|e| e.to_string())?;
+        create_symlink(&link_target, target).map_err(|e| e.to_string())
+    } else if source.is_dir() {
+        fs::create_dir(target).map_err(|e| e.to_string())
+    } else {
+        fs::copy(source, target).map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
+/// Creates a symbolic link at `link` that points to `target`.
+///
+/// On Windows a directory link is created when `target` is a directory.
+///
+/// # Errors
+/// Returns an error when the link cannot be created, and always on platforms
+/// without symbolic links.
+#[cfg(feature = "bif-io")]
+fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        let resolved = link.parent().map(|parent| parent.join(target)).unwrap_or_else(|| target.to_path_buf());
+        if resolved.is_dir() {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, link);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Symlinks not supported on this platform",
+        ))
+    }
 }
 
 /// Implements `directoryMove( source, destination, createPath = true )`.
@@ -1218,7 +1223,6 @@ pub fn directory_move(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
 /// be expanded.
 #[cfg(feature = "bif-io")]
 pub fn expand_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    use crate::paths::{expand_path as expand, ExpandOptions};
     if args.is_empty() {
         return Err("expandPath() expects 1 argument".to_string());
     }
@@ -1230,20 +1234,18 @@ pub fn expand_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
 
 /// Implements `fileClose( file )`.
 ///
-/// Closes a file object from [`file_open`]. Any other value is ignored.
-/// Always returns null.
+/// Releases the handle of a file object from [`file_open`]. A path has no open
+/// handle, so it is accepted and nothing happens, as in BoxLang. Returns null.
 ///
 /// # Errors
 /// Returns an error when no argument is given.
 #[cfg(feature = "bif-io")]
 pub fn file_close(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.is_empty() {
-        return Err("fileClose() expects 1 argument".to_string());
-    }
-    if let Some(id) = args[0].as_gc_id() {
-        if vm.native_object_call_method(id, "close", &[]).is_ok() {
-            return Ok(BxValue::new_null());
-        }
+    let file = *args
+        .first()
+        .ok_or_else(|| "fileClose() expects 1 argument".to_string())?;
+    if let Some(id) = file_object_id(vm, file) {
+        vm.native_object_call_method(id, "close", &[])?;
     }
     Ok(BxValue::new_null())
 }
@@ -1331,109 +1333,117 @@ pub fn file_get_mime_type(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue
     Ok(BxValue::new_ptr(s_id))
 }
 
-/// Placeholder for `fileIsEOF( file )`, which needs real file handles.
+/// Implements `fileIsEOF( file )`.
+///
+/// Reports whether the position of a file object from [`file_open`] is at the
+/// end of the file.
 ///
 /// # Errors
-/// Always returns an error saying the BIF is not implemented yet.
+/// Returns an error when the argument is missing or is not a file object, when
+/// the object is open in a write mode or closed, or when the file cannot be read.
 #[cfg(feature = "bif-io")]
-pub fn file_is_eof(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
-    Err("fileIsEOF() is not yet implemented: file handle infrastructure required".to_string())
+pub fn file_is_eof(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    let id = open_file_argument(vm, args, "fileIsEOF")?;
+    vm.native_object_call_method(id, "iseof", &[])
 }
 
-/// Implements `fileOpen( path, mode = "read", charset = "utf-8" )`.
+/// Implements `fileOpen( file, mode = "read", charset = "utf-8", seekable )`.
 ///
-/// Checks that the file can be opened in `mode` and returns a [`FileObject`].
-/// The modes are `read`, `readBinary`, `write` (creates the file and empties
-/// it) and `append` (creates the file when missing). No handle stays open: the
-/// object's methods reopen the file by path. `charset` must be one of
-/// `utf-8`, `us-ascii`, `iso-8859-1`, `windows-1252` or their short aliases,
-/// but it is only validated, not applied.
+/// Opens the file and returns a file object holding an open handle (see
+/// [`FileObject`]). The modes are `read`, `readBinary`, `write` and `append`.
+/// The write modes create the file when it is missing and never empty it. Text
+/// reads decode with `charset` and text writes encode with it; the charsets
+/// are `utf-8`, `us-ascii`, `iso-8859-1` and `windows-1252`, with the short
+/// names `utf8`, `ascii` and `latin1`. `seekable` defaults to `true` for the
+/// read modes and `false` for the write modes.
 ///
 /// # Errors
-/// Returns an error when no path argument is given, when `mode` or `charset`
-/// is not supported, or when the file cannot be opened in that mode.
+/// Returns an error when no path is given, when `mode` or `charset` is not
+/// supported, or when the file cannot be opened in that mode.
 #[cfg(feature = "bif-io")]
 pub fn file_open(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.is_empty() {
-        return Err("fileOpen() expects at least 1 argument".to_string());
-    }
-    let path = vm.to_string(args[0]);
-    let mode = args
-        .get(1)
-        .map(|value| vm.to_string(*value).to_lowercase())
-        .unwrap_or_else(|| "read".to_string());
-    let charset = args
-        .get(2)
-        .map(|value| vm.to_string(*value).to_lowercase())
-        .unwrap_or_else(|| "utf-8".to_string());
-
-    if !matches!(
-        charset.as_str(),
-        "utf-8" | "utf8" | "us-ascii" | "ascii" | "iso-8859-1" | "latin1" | "windows-1252"
-    ) {
-        return Err(format!("Unsupported charset: {}", charset));
-    }
-
-    match mode.as_str() {
-        "read" | "readbinary" => {
-            fs::File::open(&path).map_err(|error| error.to_string())?;
+    let path = args
+        .first()
+        .map(|value| vm.to_string(*value))
+        .ok_or_else(|| "fileOpen() expects at least 1 argument".to_string())?;
+    let mode = match args.get(1).filter(|value| !value.is_null()) {
+        Some(value) => Mode::from_name(&vm.to_string(*value))?,
+        None => Mode::Read,
+    };
+    let charset = match args.get(2).filter(|value| !value.is_null()) {
+        Some(value) => {
+            let name = vm.to_string(*value);
+            Charset::from_name(&name).ok_or_else(|| format!("The charset [{name}] is invalid"))?
         }
-        "write" => {
-            fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&path)
-                .map_err(|error| error.to_string())?;
-        }
-        "append" => {
-            fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&path)
-                .map_err(|error| error.to_string())?;
-        }
-        _ => return Err(format!("Unsupported file mode: {}", mode)),
-    }
-
-    let id = vm.native_object_new(Rc::new(RefCell::new(FileObject { path, mode })));
+        None => Charset::Utf8,
+    };
+    let seekable = args
+        .get(3)
+        .filter(|value| !value.is_null())
+        .map(|value| value.as_bool());
+    let file = FileObject::open(&path, mode, charset, seekable)?;
+    let id = vm.native_object_new(Rc::new(RefCell::new(file)));
     Ok(BxValue::new_ptr(id))
 }
 
 /// Implements `fileReadLine( file )`.
 ///
-/// Accepts a file object from [`file_open`] or a path. Returns the first line
-/// of the file, or null for an empty file. There is no read position, so every
-/// call returns the first line.
+/// For a file object from [`file_open`], returns the next line and moves the
+/// position past it. For a path, opens the file, returns its first line and
+/// closes it again. A line ends at `\n`, `\r` or `\r\n`, which is not part of
+/// the result. Returns null at the end of the file.
 ///
 /// # Errors
-/// Returns an error when no argument is given, or when the file cannot be read
-/// as UTF-8 text.
+/// Returns an error when no argument is given, when a file object is not open
+/// in `read` mode, or when the file cannot be read.
 #[cfg(feature = "bif-io")]
 pub fn file_read_line(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
-    if args.is_empty() {
-        return Err("fileReadLine() expects 1 argument".to_string());
+    let file = *args
+        .first()
+        .ok_or_else(|| "fileReadLine() expects 1 argument".to_string())?;
+    if let Some(id) = file_object_id(vm, file) {
+        return vm.native_object_call_method(id, "readline", &[]);
     }
-    if let Some(id) = args[0].as_gc_id() {
-        if let Ok(value) = vm.native_object_call_method(id, "readline", &[]) {
-            return Ok(value);
-        }
-    }
-    let path = vm.to_string(args[0]);
-    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    match content.lines().next() {
-        Some(line) => Ok(BxValue::new_ptr(vm.string_new(line.to_string()))),
-        None => Ok(BxValue::new_null()),
-    }
+    let path = vm.to_string(file);
+    let line = FileObject::open(&path, Mode::Read, Charset::Utf8, None)?.read_line()?;
+    Ok(match line {
+        Some(line) => BxValue::new_ptr(vm.string_new(line)),
+        None => BxValue::new_null(),
+    })
 }
 
-/// Placeholder for `fileSeek( file, position )`, which needs real file handles.
+/// Implements `fileSeek( file, position )` and its alias `fileSkipBytes`.
+///
+/// Moves the position of a file object from [`file_open`]. In `read` mode it
+/// skips `position` characters forward from the current position; in the other
+/// modes it moves to byte `position` from the start. Returns null.
 ///
 /// # Errors
-/// Always returns an error saying the BIF is not implemented yet.
+/// Returns an error when the file argument is missing or is not a file
+/// object, when `position` is missing or negative, when the object was not
+/// opened as seekable, or when the file cannot be read or positioned.
 #[cfg(feature = "bif-io")]
-pub fn file_seek(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
-    Err("fileSeek() is not yet implemented: file handle infrastructure required".to_string())
+pub fn file_seek(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
+    let id = open_file_argument(vm, args, "fileSeek")?;
+    let position = *args
+        .get(1)
+        .ok_or_else(|| "fileSeek() expects 2 arguments: (file, position)".to_string())?;
+    vm.native_object_call_method(id, "seek", &[position])?;
+    Ok(BxValue::new_null())
+}
+
+/// Returns the heap id of the file object a handle-only BIF was given.
+///
+/// # Errors
+/// Returns an error when no argument is given or the first one is not a file
+/// object from [`file_open`].
+#[cfg(feature = "bif-io")]
+fn open_file_argument(vm: &mut dyn BxVM, args: &[BxValue], bif: &str) -> Result<usize, String> {
+    args.first()
+        .and_then(|file| file_object_id(vm, *file))
+        .ok_or_else(|| {
+            format!("{bif}() requires an existing file object to be passed that was created with fileOpen().")
+        })
 }
 
 /// Implements `fileSetAccessMode( path, mode )`.
@@ -1558,31 +1568,26 @@ pub fn file_set_last_modified(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxV
 
 /// Implements `fileWriteLine( file, data )`.
 ///
-/// Appends `data` and a newline. For a file object from [`file_open`] it
-/// returns that object. For a path it creates the file when missing and
+/// Writes `data` as a new line: when the file is not empty, a line separator
+/// is written first, so the file does not end with one, as in BoxLang. For a
+/// file object from [`file_open`] it returns that object. For a path it opens
+/// the file in `append` mode (creating it when missing), writes, closes it and
 /// returns null.
 ///
 /// # Errors
-/// Returns an error when fewer than two arguments are given, or when a path
-/// cannot be opened or written.
+/// Returns an error when fewer than two arguments are given, when a file
+/// object is not open in a write mode, or when the write fails.
 #[cfg(feature = "bif-io")]
 pub fn file_write_line(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
-        return Err("fileWriteLine() expects 2 arguments".to_string());
+        return Err("fileWriteLine() expects 2 arguments: (file, data)".to_string());
     }
-    let data = vm.to_string(args[1]);
-    if let Some(id) = args[0].as_gc_id() {
-        if let Ok(value) = vm.native_object_call_method(id, "writeline", &[args[1]]) {
-            return Ok(value);
-        }
+    if let Some(id) = file_object_id(vm, args[0]) {
+        return vm.native_object_call_method(id, "writeline", &[args[1]]);
     }
     let path = vm.to_string(args[0]);
-    let mut file = fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)
-        .map_err(|error| error.to_string())?;
-    writeln!(file, "{}", data).map_err(|error| error.to_string())?;
+    let data = vm.to_string(args[1]);
+    FileObject::open(&path, Mode::Append, Charset::Utf8, None)?.write_line(&data)?;
     Ok(BxValue::new_null())
 }
 

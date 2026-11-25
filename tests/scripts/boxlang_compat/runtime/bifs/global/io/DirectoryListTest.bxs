@@ -62,4 +62,44 @@ assert r.toList() == "f.txt" : "testNamedOutOfOrder";
 r = directoryList( path = d, listInfo = "name", sort = "name desc" );
 assert r.toList() == "sub,f.txt" : "testNamedSort";
 
+
+// Glob syntax, | alternatives and closure filters, as in BoxLang.
+g = base & "/globs";
+directoryCreate( g, true );
+for ( n in [ "a.txt", "b.csv", "c.md", "d1.log", "notes.TXT" ] ) {
+    fileWrite( g & "/" & n, n );
+}
+r = directoryList( g, false, "name", "*.txt|*.csv" );
+assert r.toList() == "a.txt,b.csv" : "testPipeSeparatedGlobs";
+r = directoryList( g, false, "name", "*.{md,log}" );
+assert r.toList() == "c.md,d1.log" : "testBraceGlob";
+r = directoryList( g, false, "name", "d[0-9].*" );
+assert r.toList() == "d1.log" : "testClassGlob";
+r = directoryList( g, false, "name", "?.txt" );
+assert r.toList() == "a.txt" : "testQuestionGlob";
+r = directoryList( g, false, "name", "*.txt" );
+assert r.toList() == "a.txt" : "testGlobIsCaseSensitive";
+r = directoryList( g, false, "name", "a" );
+assert arrayLen( r ) == 5 : "testOneCharacterFilterIsIgnored";
+r = directoryList( g, false, "name", ( path ) => path.endsWith( ".md" ) );
+assert r.toList() == "c.md" : "testClosureFilter";
+r = directoryList( path = g, listInfo = "name", filter = ( path ) => path.startsWith( g ) && path.endsWith( "notes.TXT" ) );
+assert r.toList() == "notes.TXT" : "testClosureFilterGetsFullPath";
+
+// followLinks walks into linked directories only when asked.
+l = base & "/links";
+directoryCreate( l & "/real", true );
+fileWrite( l & "/real/inside.txt", "x" );
+directoryCreate( l & "/top", true );
+fileCreateSymlink( l & "/top/linked", l & "/real" );
+r = directoryList( l & "/top", true, "name" );
+assert r.toList() == "linked" : "testRecurseDoesNotFollowLinks";
+r = directoryList( path = l & "/top", recurse = true, listInfo = "name", followLinks = true );
+assert r.toList() == "inside.txt,linked" : "testFollowLinks";
+fileCreateSymlink( l & "/rootlink", l & "/real" );
+r = directoryList( l & "/rootlink", false, "path" );
+assert r.toList() == l & "/rootlink/inside.txt" : "testRootLinkIsResolved";
+r = directoryList( l & "/top", false, "name", "", "name", "dir" );
+assert r.toList() == "linked" : "testLinkToDirectoryIsDir";
+
 directoryDelete( base, true );
