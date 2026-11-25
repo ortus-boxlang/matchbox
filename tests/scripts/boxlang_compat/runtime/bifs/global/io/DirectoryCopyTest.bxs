@@ -20,4 +20,18 @@ directoryDelete( destination, true );
 directoryCopy( source, destination, true, "*.md" );
 assert fileExists( destination & "/nested/further/test.md" ) : "testFilteredDirectoryCopy markdown";
 assert fileExists( destination & "/test.txt" ) == false : "testFilteredDirectoryCopy text-filtered";
+directoryDelete( destination, true );
+
+// Named arguments map by name, and skipped ones keep their defaults.
+directoryCopy( source = source, destination = destination, recurse = true, filter = "" );
+assert fileExists( destination & "/nested/further/test.md" ) : "testNamedEmptyFilterCopiesAll markdown";
+assert fileExists( destination & "/test.txt" ) : "testNamedEmptyFilterCopiesAll text";
+
+fileWrite( source & "/test.txt", "changed" );
+directoryCopy( source = source, destination = destination, overwrite = true );
+assert fileRead( destination & "/test.txt" ) == "changed" : "testNamedOverwrite";
+directoryDelete( destination, true );
+
+directoryCopy( source = source, destination = destination & "/a/b", recurse = true );
+assert fileExists( destination & "/a/b/test.txt" ) : "testNamedDefaultCreatePath";
 directoryDelete( base, true );

@@ -27,4 +27,39 @@ r = directoryList( base, true, "path", "*", "name desc", "file" );
 assert isArray( r ) : "testSortAndTypeDirectoryListBif array";
 assert arrayLen( r ) == 2 : "testSortAndTypeDirectoryListBif count";
 
+// An empty filter means no filter, and named arguments map by name.
+d = base & "/typed";
+directoryCreate( d & "/sub", true );
+fileWrite( d & "/f.txt", "f" );
+
+r = directoryList( d, false, "name", "", "name", "dir" );
+assert r.toList() == "sub" : "testEmptyFilterWithDirType";
+
+r = directoryList( d, false, "name", "*", "name", "dir" );
+assert r.toList() == "sub" : "testGlobFilterWithDirType";
+
+r = directoryList( d, false, "name", "" );
+assert r.toList() == "f.txt,sub" : "testEmptyFilterListsAll";
+
+r = directoryList( d, false, "name", "   " );
+assert r.toList() == "f.txt,sub" : "testBlankFilterListsAll";
+
+r = directoryList( path = d, recurse = false, listInfo = "name", type = "dir" );
+assert r.toList() == "sub" : "testNamedTypeDir";
+
+r = directoryList( path = d, recurse = false, listInfo = "name", type = "file" );
+assert r.toList() == "f.txt" : "testNamedTypeFile";
+
+r = directoryList( path = d, recurse = false, listInfo = "name", type = "all" );
+assert r.toList() == "f.txt,sub" : "testNamedTypeAll";
+
+r = directoryList( path = d, recurse = false, listInfo = "name" );
+assert r.toList() == "f.txt,sub" : "testNamedWithoutType";
+
+r = directoryList( type = "file", listInfo = "name", path = d );
+assert r.toList() == "f.txt" : "testNamedOutOfOrder";
+
+r = directoryList( path = d, listInfo = "name", sort = "name desc" );
+assert r.toList() == "sub,f.txt" : "testNamedSort";
+
 directoryDelete( base, true );

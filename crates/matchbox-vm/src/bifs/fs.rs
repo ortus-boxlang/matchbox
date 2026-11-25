@@ -178,10 +178,7 @@ pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
         .filter(|value| !value.is_null())
         .map(|value| vm.to_string(*value).to_lowercase())
         .unwrap_or_else(|| "path".to_string());
-    let filter = args
-        .get(3)
-        .filter(|value| !value.is_null())
-        .map(|value| vm.to_string(*value));
+    let filter = glob_filter(vm, args.get(3));
     let sort = args
         .get(4)
         .filter(|value| !value.is_null())
@@ -236,6 +233,30 @@ pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
         vm.array_push(array_id, BxValue::new_ptr(s_id));
     }
     Ok(BxValue::new_ptr(array_id))
+}
+
+/// Reads an optional glob filter argument.
+///
+/// Returns `None` when the argument is missing, null, or blank, because an
+/// empty filter means "no filter" in BoxLang.
+#[cfg(feature = "bif-io")]
+fn glob_filter(vm: &mut dyn BxVM, value: Option<&BxValue>) -> Option<String> {
+    value
+        .filter(|value| !value.is_null())
+        .map(|value| vm.to_string(*value))
+        .filter(|pattern| !pattern.trim().is_empty())
+}
+
+/// Reads an optional boolean argument, using `default` when it is missing or null.
+///
+/// Named-argument calls leave skipped parameters as null, so null must mean
+/// "use the default" rather than `false`.
+#[cfg(feature = "bif-io")]
+fn optional_bool(value: Option<&BxValue>, default: bool) -> bool {
+    value
+        .filter(|value| !value.is_null())
+        .map(|value| value.as_bool())
+        .unwrap_or(default)
 }
 
 #[cfg(feature = "bif-io")]
@@ -817,25 +838,10 @@ pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     }
     let source = vm.to_string(args[0]);
     let dest = vm.to_string(args[1]);
-    let recurse = if args.len() > 2 {
-        args[2].as_bool()
-    } else {
-        false
-    };
-    let filter = args
-        .get(3)
-        .filter(|value| !value.is_null())
-        .map(|value| vm.to_string(*value));
-    let create_path = if args.len() > 4 {
-        args[4].as_bool()
-    } else {
-        true
-    };
-    let overwrite = if args.len() > 5 {
-        args[5].as_bool()
-    } else {
-        false
-    };
+    let recurse = optional_bool(args.get(2), false);
+    let filter = glob_filter(vm, args.get(3));
+    let create_path = optional_bool(args.get(4), true);
+    let overwrite = optional_bool(args.get(5), false);
 
     let src_path = Path::new(&source);
     if !src_path.exists() || !src_path.is_dir() {
