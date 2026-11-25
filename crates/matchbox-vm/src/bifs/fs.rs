@@ -1,3 +1,12 @@
+//! File system BIFs: directories, files, paths and simple file objects.
+//!
+//! Each public function here is a native BIF with the [`BxNativeFunction`]
+//! signature, registered by name in [`super::register_all`] behind the
+//! `bif-io` feature. Arguments arrive in BoxLang parameter order; named
+//! arguments are mapped to that order by the VM before the call.
+//!
+//! [`BxNativeFunction`]: crate::types::BxNativeFunction
+
 #[cfg(feature = "bif-io")]
 use crate::types::{BxNativeObject, BxVM, BxValue};
 #[cfg(feature = "bif-io")]
@@ -24,21 +33,41 @@ use std::{cell::RefCell, rc::Rc};
 #[cfg(feature = "bif-io")]
 use walkdir::WalkDir;
 
+/// The file object returned by [`file_open`].
+///
+/// It holds only the path and mode. No operating-system handle stays open, so
+/// each method reopens the file by path.
 #[cfg(feature = "bif-io")]
 #[derive(Debug)]
 struct FileObject {
+    /// The path the file was opened with.
     path: String,
+    /// The open mode (`read`, `readbinary`, `write` or `append`), or `closed`
+    /// after `close()`.
     mode: String,
 }
 
 #[cfg(feature = "bif-io")]
 impl BxNativeObject for FileObject {
+    /// Returns null, because file objects expose no properties.
     fn get_property(&self, _name: &str) -> BxValue {
         BxValue::new_null()
     }
 
+    /// Ignores the assignment, because file objects expose no properties.
     fn set_property(&mut self, _name: &str, _value: BxValue) {}
 
+    /// Runs a file object method, matched case-insensitively.
+    ///
+    /// - `__is_file` returns `true` and lets other BIFs recognize file objects.
+    /// - `toString` returns the path.
+    /// - `readLine` returns the first line of the file, or null when it is empty.
+    /// - `writeLine( data )` appends `data` and a newline, then returns the object.
+    /// - `close` marks the object closed and returns null.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown method, when `writeLine` gets no
+    /// argument, or when the file cannot be read or written.
     fn call_method(
         &mut self,
         vm: &mut dyn BxVM,
@@ -79,11 +108,17 @@ impl BxNativeObject for FileObject {
     }
 }
 
+/// Converts a path to text and normalizes it with [`normalize_path_text`].
 #[cfg(feature = "bif-io")]
 fn normalize_path_string(path: &Path) -> String {
     normalize_path_text(path.to_string_lossy().as_ref())
 }
 
+/// Removes the Windows verbatim prefix from a path string.
+///
+/// On Windows, `\\?\UNC\server\share` becomes `\\server\share` and
+/// `\\?\C:\dir` becomes `C:\dir`. On other platforms the text is returned
+/// unchanged.
 #[cfg(feature = "bif-io")]
 fn normalize_path_text(path: &str) -> String {
     #[cfg(windows)]
@@ -99,6 +134,12 @@ fn normalize_path_text(path: &str) -> String {
     path.to_string()
 }
 
+/// Implements `directoryExists( path )`.
+///
+/// Returns `true` when `path` exists and is a directory.
+///
+/// # Errors
+/// Returns an error when no path argument is given.
 #[cfg(feature = "bif-io")]
 pub fn directory_exists(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -109,6 +150,15 @@ pub fn directory_exists(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     Ok(BxValue::new_bool(path.exists() && path.is_dir()))
 }
 
+/// Implements `directoryCreate( path, createPath = true )`.
+///
+/// With `createPath` true, missing parent directories are created as well, and
+/// an existing directory is not an error. With `createPath` false, only the last
+/// directory is created. Returns `true`.
+///
+/// # Errors
+/// Returns an error when no path argument is given, or when the directory
+/// cannot be created.
 #[cfg(feature = "bif-io")]
 pub fn directory_create(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -132,6 +182,14 @@ pub fn directory_create(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `directoryDelete( path, recurse = false )`.
+///
+/// With `recurse` true, the directory and everything in it are removed.
+/// Otherwise the directory must be empty. Returns `true`.
+///
+/// # Errors
+/// Returns an error when no path argument is given, or when the directory
+/// cannot be removed (missing, not empty without `recurse`, or no permission).
 #[cfg(feature = "bif-io")]
 pub fn directory_delete(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -155,6 +213,25 @@ pub fn directory_delete(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `directoryList( path, recurse, listInfo, filter, sort, type )`.
+///
+/// Lists the entries of `path`, not including `path` itself.
+///
+/// - `recurse` (default `false`) also lists the contents of subdirectories.
+/// - `listInfo` (default `"path"`) selects the result: `"path"` gives an array
+///   of full paths, `"name"` an array of entry names, and `"query"` a query
+///   built by [`directory_entries_to_query`].
+/// - `filter` is a glob matched against each entry name with [`glob_matches`].
+///   A missing, null or blank filter lists every entry.
+/// - `sort` (default `"name"`) is applied by [`sort_directory_entries`].
+/// - `type` (default `"all"`) keeps only `"file"` or `"dir"` entries when given.
+///
+/// Entries that cannot be read are skipped. Closure filters and `followLinks`
+/// are not supported.
+///
+/// # Errors
+/// Returns an error when no path argument is given, or when `listInfo` is
+/// `"query"` on `wasm32`, where queries are not available.
 #[cfg(feature = "bif-io")]
 pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -178,10 +255,7 @@ pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
         .filter(|value| !value.is_null())
         .map(|value| vm.to_string(*value).to_lowercase())
         .unwrap_or_else(|| "path".to_string());
-    let filter = args
-        .get(3)
-        .filter(|value| !value.is_null())
-        .map(|value| vm.to_string(*value));
+    let filter = glob_filter(vm, args.get(3));
     let sort = args
         .get(4)
         .filter(|value| !value.is_null())
@@ -238,6 +312,34 @@ pub fn directory_list(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     Ok(BxValue::new_ptr(array_id))
 }
 
+/// Reads an optional glob filter argument.
+///
+/// Returns `None` when the argument is missing, null, or blank, because an
+/// empty filter means "no filter" in BoxLang.
+#[cfg(feature = "bif-io")]
+fn glob_filter(vm: &mut dyn BxVM, value: Option<&BxValue>) -> Option<String> {
+    value
+        .filter(|value| !value.is_null())
+        .map(|value| vm.to_string(*value))
+        .filter(|pattern| !pattern.trim().is_empty())
+}
+
+/// Reads an optional boolean argument, using `default` when it is missing or null.
+///
+/// Named-argument calls leave skipped parameters as null, so null must mean
+/// "use the default" rather than `false`.
+#[cfg(feature = "bif-io")]
+fn optional_bool(value: Option<&BxValue>, default: bool) -> bool {
+    value
+        .filter(|value| !value.is_null())
+        .map(|value| value.as_bool())
+        .unwrap_or(default)
+}
+
+/// Returns the last component of `path`.
+///
+/// Returns an empty string when the path has no final component or the name
+/// is not valid UTF-8.
 #[cfg(feature = "bif-io")]
 fn file_name(path: &Path) -> &str {
     path.file_name()
@@ -245,6 +347,12 @@ fn file_name(path: &Path) -> &str {
         .unwrap_or_default()
 }
 
+/// Reports whether `value` matches the glob `pattern` in full.
+///
+/// `*` matches any run of characters, including none, and `?` matches exactly
+/// one character. Every other character matches itself, case-sensitively.
+/// There are no character classes, escapes or `|` alternatives. An empty
+/// pattern matches only an empty value.
 #[cfg(feature = "bif-io")]
 fn glob_matches(pattern: &str, value: &str) -> bool {
     let pattern = pattern.chars().collect::<Vec<_>>();
@@ -278,6 +386,12 @@ fn glob_matches(pattern: &str, value: &str) -> bool {
     matches[pattern.len()][value.len()]
 }
 
+/// Sorts directory entries in place by a BoxLang sort directive.
+///
+/// `sort` is a column name optionally followed by `asc` or `desc`, such as
+/// `"size desc"`. The columns are `size`, `date` (or `datelastmodified`),
+/// `type` (files before directories) and `name`. An unknown column sorts by
+/// name. Names compare case-sensitively.
 #[cfg(feature = "bif-io")]
 fn sort_directory_entries(entries: &mut [PathBuf], sort: &str) {
     let mut directives = sort.split_whitespace();
@@ -302,11 +416,15 @@ fn sort_directory_entries(entries: &mut [PathBuf], sort: &str) {
     });
 }
 
+/// Returns the size of `path` in bytes, or `0` when its metadata cannot be read.
 #[cfg(feature = "bif-io")]
 fn file_size(path: &Path) -> u64 {
     path.metadata().map(|metadata| metadata.len()).unwrap_or(0)
 }
 
+/// Returns the last modified time of `path`.
+///
+/// Returns the Unix epoch when the time cannot be read.
 #[cfg(feature = "bif-io")]
 fn file_modified(path: &Path) -> std::time::SystemTime {
     path.metadata()
@@ -314,11 +432,17 @@ fn file_modified(path: &Path) -> std::time::SystemTime {
         .unwrap_or(std::time::UNIX_EPOCH)
 }
 
+/// Reports whether `path` is a directory, following symbolic links.
 #[cfg(feature = "bif-io")]
 fn is_directory(path: &Path) -> bool {
     path.is_dir()
 }
 
+/// Builds the `directoryList( listInfo = "query" )` result for `entries`.
+///
+/// The columns are `name`, `size`, `type` (`"Dir"` or `"File"`),
+/// `dateLastModified` (RFC 3339 text), `attributes` (see [`file_attributes`]),
+/// `mode` (always empty) and `directory` (the parent directory).
 #[cfg(all(feature = "bif-io", not(target_arch = "wasm32")))]
 fn directory_entries_to_query(entries: &[PathBuf]) -> QueryResult {
     let columns = vec![
@@ -383,6 +507,10 @@ fn directory_entries_to_query(entries: &[PathBuf]) -> QueryResult {
     QueryResult { columns, rows }
 }
 
+/// Returns the attribute letters for `path`.
+///
+/// The result has `R` when the metadata can be read and `W` when the entry is
+/// also not read-only. It is empty when the metadata cannot be read.
 #[cfg(feature = "bif-io")]
 fn file_attributes(path: &Path) -> String {
     let mut attributes = String::new();
@@ -398,6 +526,14 @@ fn file_attributes(path: &Path) -> String {
     attributes
 }
 
+/// Implements `fileExists( path )`.
+///
+/// Returns `true` when anything exists at `path`, without following symbolic
+/// links. A dangling link counts as existing. Unlike BoxLang, a directory also
+/// returns `true`.
+///
+/// # Errors
+/// Returns an error when no path argument is given.
 #[cfg(feature = "bif-io")]
 pub fn file_exists(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -409,6 +545,13 @@ pub fn file_exists(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
     Ok(BxValue::new_bool(path.symlink_metadata().is_ok()))
 }
 
+/// Implements `fileDelete( path )`.
+///
+/// Removes the file at `path` and returns `true`.
+///
+/// # Errors
+/// Returns an error when no path argument is given, or when the file cannot be
+/// removed.
 #[cfg(feature = "bif-io")]
 pub fn file_delete(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -419,6 +562,15 @@ pub fn file_delete(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `fileMove( source, destination )`.
+///
+/// Renames `source` to `destination` and returns `true`. The move is atomic
+/// and only works within one file system. On Unix an existing destination file
+/// is replaced.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, or when the
+/// rename fails, for example across file systems.
 #[cfg(feature = "bif-io")]
 pub fn file_move(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -434,6 +586,17 @@ pub fn file_move(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `filePublishExclusive( source, destination )`.
+///
+/// Moves a finished file into place only when `destination` does not exist
+/// yet. It hard-links `source` to `destination`, so readers never see a
+/// partial file, and then removes `source`. Returns `true`.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, when
+/// `destination` already exists, when the paths are on different file
+/// systems, or when `source` cannot be removed. In that last case the new
+/// `destination` link is removed again.
 #[cfg(feature = "bif-io")]
 pub fn file_publish_exclusive(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -454,6 +617,13 @@ pub fn file_publish_exclusive(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxV
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `fileCopy( source, destination )`.
+///
+/// Copies the file, replacing `destination` if it exists, and returns `true`.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, or when the copy
+/// fails.
 #[cfg(feature = "bif-io")]
 pub fn file_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -467,6 +637,15 @@ pub fn file_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `fileInfo( path )` and its alias `getFileInfo( path )`.
+///
+/// Returns a struct with `size`, `type` (`"Dir"` or `"File"`), `is_directory`,
+/// `is_file`, `is_symlink` and `is_readonly`. Symbolic links are not followed:
+/// for a link the struct describes the link itself and adds `target`.
+///
+/// # Errors
+/// Returns an error when no path argument is given, or when the metadata
+/// cannot be read.
 #[cfg(feature = "bif-io")]
 pub fn file_info(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -513,6 +692,14 @@ pub fn file_info(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     Ok(BxValue::new_ptr(struct_id))
 }
 
+/// Implements `fileCreateSymlink( link, target )`.
+///
+/// Creates a symbolic link at `link` pointing to `target` and returns `true`.
+/// On Windows a directory link is created when `target` is a directory.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, when the link
+/// cannot be created, or on platforms without symbolic links.
 #[cfg(feature = "bif-io")]
 pub fn file_create_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -542,6 +729,14 @@ pub fn file_create_symlink(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValu
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `fileSetExecutable( path )`.
+///
+/// On Unix, adds the execute bit for owner, group and others. On other
+/// platforms it does nothing. Returns `true`.
+///
+/// # Errors
+/// Returns an error when no path argument is given, or on Unix when the
+/// permissions cannot be read or changed.
 #[cfg(feature = "bif-io")]
 pub fn file_set_executable(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -568,6 +763,14 @@ pub fn file_set_executable(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValu
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `fileRead( path )`.
+///
+/// Returns the whole file as a string. Charset and buffer-size arguments are
+/// ignored.
+///
+/// # Errors
+/// Returns an error when no path argument is given, when the file cannot be
+/// read, or when it is not valid UTF-8.
 #[cfg(feature = "bif-io")]
 pub fn file_read(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -602,6 +805,14 @@ pub fn file_read_binary(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     Ok(BxValue::new_ptr(vm.bytes_new(bytes)))
 }
 
+/// Implements `fileWrite( path, content )`.
+///
+/// Creates or replaces the file. Binary content is written as it is; any other
+/// value is written as its string form. Returns `true`.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, or when the file
+/// cannot be written.
 #[cfg(feature = "bif-io")]
 pub fn file_write(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -619,6 +830,16 @@ pub fn file_write(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `fileWriteExclusive( path, content, mode = "0600" )`.
+///
+/// Creates a new file and writes `content` to it, failing if the file already
+/// exists. On Unix the file gets the octal permission `mode`; elsewhere `mode`
+/// is ignored. Returns `true`.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, when `mode` is
+/// not an octal number (Unix only), when the file exists or cannot be created,
+/// or when the write fails.
 #[cfg(feature = "bif-io")]
 pub fn file_write_exclusive(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -652,6 +873,14 @@ pub fn file_write_exclusive(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxVal
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `fileAppend( path, content )`.
+///
+/// Appends the string form of `content` to the file, creating it when missing.
+/// No newline is added. Returns `true`.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, or when the file
+/// cannot be opened or written.
 #[cfg(feature = "bif-io")]
 pub fn file_append(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -670,6 +899,15 @@ pub fn file_append(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `contractPath( path )`.
+///
+/// Makes `path` relative to the current working directory. A path inside it
+/// becomes `/relative/path`, and the working directory itself becomes `.`. A
+/// path outside it is returned as given. Backslashes become forward slashes.
+///
+/// # Errors
+/// Returns an error when no path argument is given, or when the current
+/// working directory cannot be read.
 #[cfg(feature = "bif-io")]
 pub fn contract_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -690,6 +928,8 @@ pub fn contract_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
     Ok(BxValue::new_ptr(s_id))
 }
 
+/// Appends the platform path separator to `directory` unless it already ends
+/// with `/` or `\\`.
 #[cfg(feature = "bif-io")]
 fn with_trailing_separator(mut directory: String) -> String {
     if !directory.ends_with('/') && !directory.ends_with('\\') {
@@ -698,6 +938,12 @@ fn with_trailing_separator(mut directory: String) -> String {
     directory
 }
 
+/// Implements `getTempDirectory()`.
+///
+/// Returns the system temporary directory, ending with a path separator.
+///
+/// # Errors
+/// Returns an error when any argument is given.
 #[cfg(feature = "bif-io")]
 pub fn get_temp_directory(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if !args.is_empty() {
@@ -708,6 +954,15 @@ pub fn get_temp_directory(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue
     Ok(BxValue::new_ptr(vm.string_new(directory)))
 }
 
+/// Implements `createTempDirectory( directory, prefix )`.
+///
+/// Creates a new directory named `<prefix>_<nanoseconds>` inside `directory`
+/// and returns its canonical path. `directory` defaults to the system
+/// temporary directory and is created when missing. `prefix` defaults to
+/// `tmp`.
+///
+/// # Errors
+/// Returns an error when `directory` or the new directory cannot be created.
 #[cfg(feature = "bif-io")]
 pub fn create_temp_directory(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     let directory = if !args.is_empty() {
@@ -744,6 +999,18 @@ pub fn create_temp_directory(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxVa
     Ok(BxValue::new_ptr(s_id))
 }
 
+/// Implements `createTempFile( directory, prefix, extension )`.
+///
+/// Creates a new empty file named `<prefix>_<uuid><extension>` inside
+/// `directory` and returns its canonical path. `directory` defaults to the
+/// system temporary directory and is created when missing. `prefix` defaults
+/// to `tmp` and `extension` to `.tmp`. On Unix the file is readable and
+/// writable by its owner only.
+///
+/// # Errors
+/// Returns an error when `prefix` or `extension` contains a path separator,
+/// when `directory` cannot be created, when the file cannot be created, or
+/// when 16 attempts all hit existing names.
 #[cfg(feature = "bif-io")]
 pub fn create_temp_file(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     let directory = if !args.is_empty() {
@@ -808,6 +1075,25 @@ pub fn create_temp_file(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, 
     Ok(BxValue::new_ptr(s_id))
 }
 
+/// Implements `directoryCopy( source, destination, recurse, filter, createPath, overwrite )`.
+///
+/// Copies the files in `source` into `destination` and returns null.
+///
+/// - `recurse` (default `false`) also copies subdirectories. Without it, only
+///   the files directly in `source` are copied.
+/// - `filter` is a glob matched against file names with [`glob_matches`].
+///   Directories are always created. A missing, null or blank filter copies
+///   every file.
+/// - `createPath` (default `true`) creates `destination` when missing.
+/// - `overwrite` (default `false`) replaces files that already exist in
+///   `destination`. Otherwise they are skipped.
+///
+/// `followLinks` is not supported.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, when `source` is
+/// not an existing directory, or when a directory or file cannot be created or
+/// copied.
 #[cfg(feature = "bif-io")]
 pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -817,25 +1103,10 @@ pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     }
     let source = vm.to_string(args[0]);
     let dest = vm.to_string(args[1]);
-    let recurse = if args.len() > 2 {
-        args[2].as_bool()
-    } else {
-        false
-    };
-    let filter = args
-        .get(3)
-        .filter(|value| !value.is_null())
-        .map(|value| vm.to_string(*value));
-    let create_path = if args.len() > 4 {
-        args[4].as_bool()
-    } else {
-        true
-    };
-    let overwrite = if args.len() > 5 {
-        args[5].as_bool()
-    } else {
-        false
-    };
+    let recurse = optional_bool(args.get(2), false);
+    let filter = glob_filter(vm, args.get(3));
+    let create_path = optional_bool(args.get(4), true);
+    let overwrite = optional_bool(args.get(5), false);
 
     let src_path = Path::new(&source);
     if !src_path.exists() || !src_path.is_dir() {
@@ -901,6 +1172,15 @@ pub fn directory_copy(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     Ok(BxValue::new_null())
 }
 
+/// Implements `directoryMove( source, destination, createPath = true )`.
+///
+/// Renames `source` to `destination` and returns null. With `createPath` true,
+/// the parent directories of `destination` are created first. The move only
+/// works within one file system.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, when the parent
+/// directories cannot be created, or when the rename fails.
 #[cfg(feature = "bif-io")]
 pub fn directory_move(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -927,6 +1207,15 @@ pub fn directory_move(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     Ok(BxValue::new_null())
 }
 
+/// Implements `expandPath( path )`.
+///
+/// Resolves `path` to an absolute path with [`crate::paths::expand_for_vm`],
+/// relative to the calling file and using the VM's mappings and
+/// `onMissingMapping` interceptors. A trailing separator is kept.
+///
+/// # Errors
+/// Returns an error when no path argument is given, or when the path cannot
+/// be expanded.
 #[cfg(feature = "bif-io")]
 pub fn expand_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     use crate::paths::{expand_path as expand, ExpandOptions};
@@ -939,6 +1228,13 @@ pub fn expand_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Strin
     Ok(BxValue::new_ptr(s_id))
 }
 
+/// Implements `fileClose( file )`.
+///
+/// Closes a file object from [`file_open`]. Any other value is ignored.
+/// Always returns null.
+///
+/// # Errors
+/// Returns an error when no argument is given.
 #[cfg(feature = "bif-io")]
 pub fn file_close(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -952,6 +1248,15 @@ pub fn file_close(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String
     Ok(BxValue::new_null())
 }
 
+/// Implements `fileGetMimeType( path, strict = true )`.
+///
+/// Returns the MIME type for the file extension, from a fixed table, or
+/// `application/octet-stream` for an unknown extension. The file content is
+/// not inspected. With `strict` true the file must exist and not be empty.
+///
+/// # Errors
+/// Returns an error when no path argument is given, or when `strict` is true
+/// and the file is missing, empty or unreadable.
 #[cfg(feature = "bif-io")]
 pub fn file_get_mime_type(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -1026,11 +1331,27 @@ pub fn file_get_mime_type(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue
     Ok(BxValue::new_ptr(s_id))
 }
 
+/// Placeholder for `fileIsEOF( file )`, which needs real file handles.
+///
+/// # Errors
+/// Always returns an error saying the BIF is not implemented yet.
 #[cfg(feature = "bif-io")]
 pub fn file_is_eof(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     Err("fileIsEOF() is not yet implemented: file handle infrastructure required".to_string())
 }
 
+/// Implements `fileOpen( path, mode = "read", charset = "utf-8" )`.
+///
+/// Checks that the file can be opened in `mode` and returns a [`FileObject`].
+/// The modes are `read`, `readBinary`, `write` (creates the file and empties
+/// it) and `append` (creates the file when missing). No handle stays open: the
+/// object's methods reopen the file by path. `charset` must be one of
+/// `utf-8`, `us-ascii`, `iso-8859-1`, `windows-1252` or their short aliases,
+/// but it is only validated, not applied.
+///
+/// # Errors
+/// Returns an error when no path argument is given, when `mode` or `charset`
+/// is not supported, or when the file cannot be opened in that mode.
 #[cfg(feature = "bif-io")]
 pub fn file_open(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -1079,6 +1400,15 @@ pub fn file_open(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String>
     Ok(BxValue::new_ptr(id))
 }
 
+/// Implements `fileReadLine( file )`.
+///
+/// Accepts a file object from [`file_open`] or a path. Returns the first line
+/// of the file, or null for an empty file. There is no read position, so every
+/// call returns the first line.
+///
+/// # Errors
+/// Returns an error when no argument is given, or when the file cannot be read
+/// as UTF-8 text.
 #[cfg(feature = "bif-io")]
 pub fn file_read_line(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -1097,11 +1427,24 @@ pub fn file_read_line(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     }
 }
 
+/// Placeholder for `fileSeek( file, position )`, which needs real file handles.
+///
+/// # Errors
+/// Always returns an error saying the BIF is not implemented yet.
 #[cfg(feature = "bif-io")]
 pub fn file_seek(_vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {
     Err("fileSeek() is not yet implemented: file handle infrastructure required".to_string())
 }
 
+/// Implements `fileSetAccessMode( path, mode )`.
+///
+/// Sets the Unix permissions of `path` from a three-digit octal string such
+/// as `"644"`. On other platforms the mode is validated and then ignored.
+/// Returns `true`.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, when `mode` is
+/// not three octal digits, or on Unix when the permissions cannot be changed.
 #[cfg(feature = "bif-io")]
 pub fn file_set_access_mode(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -1132,6 +1475,16 @@ pub fn file_set_access_mode(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxVal
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `fileSetAttribute( path, attribute )`.
+///
+/// `readonly` makes the file read-only. `normal` (or `default`) sets mode
+/// `664` on Unix and does nothing elsewhere. `archive`, `hidden` and `system`
+/// are accepted and ignored. Returns `true`.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, when the file
+/// does not exist, when the attribute is not one of the above, or when the
+/// permissions cannot be changed.
 #[cfg(feature = "bif-io")]
 pub fn file_set_attribute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -1171,6 +1524,14 @@ pub fn file_set_attribute(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `fileSetLastModified( path, date )`.
+///
+/// Sets the modification time of `path`. `date` is either milliseconds since
+/// the Unix epoch or an RFC 3339 date-time string. Returns `true`.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, when `date`
+/// cannot be parsed, or when the time cannot be set.
 #[cfg(feature = "bif-io")]
 pub fn file_set_last_modified(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -1195,6 +1556,15 @@ pub fn file_set_last_modified(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxV
     Ok(BxValue::new_bool(true))
 }
 
+/// Implements `fileWriteLine( file, data )`.
+///
+/// Appends `data` and a newline. For a file object from [`file_open`] it
+/// returns that object. For a path it creates the file when missing and
+/// returns null.
+///
+/// # Errors
+/// Returns an error when fewer than two arguments are given, or when a path
+/// cannot be opened or written.
 #[cfg(feature = "bif-io")]
 pub fn file_write_line(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
@@ -1216,6 +1586,14 @@ pub fn file_write_line(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, S
     Ok(BxValue::new_null())
 }
 
+/// Implements `getCanonicalPath( path )`.
+///
+/// Returns the absolute path with symbolic links and `.`/`..` resolved. A
+/// directory gets a trailing separator. When the path cannot be resolved, for
+/// example because it does not exist, it is returned unchanged.
+///
+/// # Errors
+/// Returns an error when no path argument is given.
 #[cfg(feature = "bif-io")]
 pub fn get_canonical_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -1240,6 +1618,14 @@ pub fn get_canonical_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue
     }
 }
 
+/// Implements `getDirectoryFromPath( path )`.
+///
+/// Returns the directory part of `path`, including the trailing separator. A
+/// path that already ends with `/` or `\\` is returned as given. A path with
+/// no separator, or an empty path, gives `/`. The path is not checked on disk.
+///
+/// # Errors
+/// Returns an error when no path argument is given.
 #[cfg(feature = "bif-io")]
 pub fn get_directory_from_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
@@ -1267,6 +1653,15 @@ pub fn get_directory_from_path(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<Bx
     Ok(BxValue::new_ptr(s_id))
 }
 
+/// Implements `propertyFile( path )`.
+///
+/// Reads a Java-style properties file into a struct of strings. Blank lines,
+/// lines starting with `#` or `!`, and lines without `=` are skipped. Keys and
+/// values are trimmed. Line continuations, `:` separators and escapes are not
+/// supported. With no path, or an empty path, an empty struct is returned.
+///
+/// # Errors
+/// Returns an error when the file cannot be read as UTF-8 text.
 #[cfg(feature = "bif-io")]
 pub fn property_file(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.is_empty() {
