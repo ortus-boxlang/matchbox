@@ -1,0 +1,50 @@
+// Named arguments to native BIFs map to their BoxLang parameters, in any order. A skipped
+// parameter gets its BoxLang default (or null), so the BIF sees what BoxLang would pass.
+function expect( actual, expected, label ) {
+	if ( actual != expected ) {
+		throw( message = label & ": expected [" & expected & "] got [" & actual & "]" );
+	}
+}
+
+// --- Strings ---
+expect( mid( count = 3, start = 2, string = "boxlang" ), "oxl", "mid: out of order" );
+expect( left( string = "boxlang", count = 3 ), "box", "left: named" );
+expect( replace( string = "a-a-a", substring1 = "a", obj = "b" ), "b-a-a", "replace: default scope is one" );
+expect( replace( scope = "all", obj = "b", substring1 = "a", string = "a-a-a" ), "b-b-b", "replace: scope by name" );
+expect( reverse( STRING = "abc" ), "cba", "names are case-insensitive" );
+
+// --- Lists: skipped delimiter gets its default ---
+expect( listLen( list = "a,,b", includeEmptyFields = true ), 3, "listLen: skipped delimiter defaults to comma" );
+expect( listLen( list = "a;b;c", delimiter = ";" ), 3, "listLen: delimiter by name" );
+expect( listGetAt( position = 2, list = "a,b,c" ), "b", "listGetAt: out of order" );
+expect( listAppend( value = "c", list = "a,b" ), "a,b,c", "listAppend: out of order" );
+
+// --- Arrays ---
+expect( arrayToList( array = [ 1, 2, 3 ], delimiter = "|" ), "1|2|3", "arrayToList: named" );
+out = [];
+arrayEach( callback = ( item ) => out.append( item * 2 ), array = [ 1, 2 ] );
+expect( out.toList(), "2,4", "arrayEach: out of order" );
+
+// --- Unknown names are dropped ---
+expect( left( string = "boxlang", count = 2, notAParameter = 99 ), "bo", "unknown named argument is ignored" );
+
+// --- Files: a skipped middle parameter takes its default ---
+base = createTempDirectory();
+directoryCreate( base & "/sub" );
+fileWrite( base & "/f.txt", "x" );
+expect( directoryList( path = base, listInfo = "name", type = "dir" ).toList(), "sub", "directoryList: type by name" );
+expect( directoryList( type = "file", path = base, listInfo = "name" ).toList(), "f.txt", "directoryList: out of order" );
+directoryDelete( base, true );
+
+// --- Threads: the parameter after attributes is name ---
+t = threadNew( runnable = () => 1, name = "named-arg-thread" );
+threadJoin( "named-arg-thread" );
+expect( isThreadAlive( "named-arg-thread" ), false, "threadNew: name by name" );
+
+// --- BIFs that now read the BoxLang argument positions ---
+expect( listCompact( "||a||b||", "||", true ), "a||b", "listCompact: multiCharacterDelimiter is the third argument" );
+expect( listCompact( list = "||a||", delimiter = "||", multiCharacterDelimiter = true ), "a", "listCompact: named" );
+expect( listItemTrim( " a ,, b ", ",", true ), "a,,b", "listItemTrim: includeEmptyFields is the third argument" );
+expect( listItemTrim( list = " a ,, b ", includeEmptyFields = false ), "a,b", "listItemTrim: named, skipped delimiter" );
+
+println( "native named args ok" );

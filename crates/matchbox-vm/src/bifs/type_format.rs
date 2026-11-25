@@ -1,5 +1,5 @@
 use super::parse_datetime_input;
-use crate::types::{BxNativeFunction, BxVM, BxValue};
+use crate::types::{NativeBif, BxVM, BxValue};
 use chrono::NaiveTime;
 
 fn is_closure_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -775,73 +775,31 @@ fn apply_number_mask(number: f64, mask: &str) -> String {
     format!("{}{}", prefix, result)
 }
 
-pub fn register_type_format_bifs(bifs: &mut std::collections::HashMap<String, BxNativeFunction>) {
-    bifs.insert("isclosure".to_string(), is_closure_bif as BxNativeFunction);
-    bifs.insert(
-        "iscustomfunction".to_string(),
-        is_custom_function_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "isdateobject".to_string(),
-        is_date_object_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "isdebugmode".to_string(),
-        is_debug_mode_bif as BxNativeFunction,
-    );
-    bifs.insert("isdefined".to_string(), is_defined_bif as BxNativeFunction);
-    bifs.insert("isempty".to_string(), is_empty_bif as BxNativeFunction);
-    bifs.insert("arrayisempty".to_string(), is_empty_bif as BxNativeFunction);
-    bifs.insert(
-        "isfileobject".to_string(),
-        is_file_object_bif as BxNativeFunction,
-    );
-    bifs.insert("isipv6".to_string(), is_ipv6_bif as BxNativeFunction);
-    bifs.insert(
-        "isleapyear".to_string(),
-        is_leap_year_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "islocalhost".to_string(),
-        is_local_host_bif as BxNativeFunction,
-    );
-    bifs.insert("isquery".to_string(), is_query_bif as BxNativeFunction);
-    bifs.insert("isrange".to_string(), is_range_bif as BxNativeFunction);
-    bifs.insert("isvalid".to_string(), is_valid_bif as BxNativeFunction);
-    bifs.insert("isxml".to_string(), is_xml_bif as BxNativeFunction);
-    bifs.insert(
-        "isxmlattribute".to_string(),
-        is_xml_attribute_bif as BxNativeFunction,
-    );
-    bifs.insert("isxmldoc".to_string(), is_xml_doc_bif as BxNativeFunction);
-    bifs.insert(
-        "isxmlelement".to_string(),
-        is_xml_element_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "isxmlelem".to_string(),
-        is_xml_element_bif as BxNativeFunction,
-    );
-    bifs.insert("isxmlnode".to_string(), is_xml_node_bif as BxNativeFunction);
-    bifs.insert("isxmlroot".to_string(), is_xml_root_bif as BxNativeFunction);
-    bifs.insert(
-        "booleanformat".to_string(),
-        boolean_format_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "truefalseformat".to_string(),
-        boolean_format_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "decimalformat".to_string(),
-        decimal_format_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "numberformat".to_string(),
-        number_format_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "lsnumberformat".to_string(),
-        number_format_bif as BxNativeFunction,
-    );
+pub fn register_type_format_bifs(bifs: &mut std::collections::HashMap<String, NativeBif>) {
+    bifs.insert("isclosure".to_string(), NativeBif { func: is_closure_bif, params: params!["object"] });
+    bifs.insert("iscustomfunction".to_string(), NativeBif { func: is_custom_function_bif, params: params!["object", "type"] });
+    bifs.insert("isdateobject".to_string(), NativeBif { func: is_date_object_bif, params: params!["value"] });
+    bifs.insert("isdebugmode".to_string(), NativeBif { func: is_debug_mode_bif, params: params![] });
+    bifs.insert("isdefined".to_string(), NativeBif { func: is_defined_bif, params: params!["variable"] });
+    bifs.insert("isempty".to_string(), NativeBif { func: is_empty_bif, params: params!["value"] });
+    bifs.insert("arrayisempty".to_string(), NativeBif { func: is_empty_bif, params: params!["value"] });
+    bifs.insert("isfileobject".to_string(), NativeBif { func: is_file_object_bif, params: params!["object"] });
+    bifs.insert("isipv6".to_string(), NativeBif { func: is_ipv6_bif, params: params!["hostname"] });
+    bifs.insert("isleapyear".to_string(), NativeBif { func: is_leap_year_bif, params: params!["year"] });
+    bifs.insert("islocalhost".to_string(), NativeBif { func: is_local_host_bif, params: params!["ip"] });
+    bifs.insert("isquery".to_string(), NativeBif { func: is_query_bif, params: params!["value"] });
+    bifs.insert("isrange".to_string(), NativeBif { func: is_range_bif, params: params!["value"] });
+    bifs.insert("isvalid".to_string(), NativeBif { func: is_valid_bif, params: params!["type", "value", "min", "max", "pattern" = Str("")] });
+    bifs.insert("isxml".to_string(), NativeBif { func: is_xml_bif, params: params!["value"] });
+    bifs.insert("isxmlattribute".to_string(), NativeBif { func: is_xml_attribute_bif, params: params!["value"] });
+    bifs.insert("isxmldoc".to_string(), NativeBif { func: is_xml_doc_bif, params: params!["value"] });
+    bifs.insert("isxmlelement".to_string(), NativeBif::positional(is_xml_element_bif));
+    bifs.insert("isxmlelem".to_string(), NativeBif { func: is_xml_element_bif, params: params!["value"] });
+    bifs.insert("isxmlnode".to_string(), NativeBif { func: is_xml_node_bif, params: params!["value"] });
+    bifs.insert("isxmlroot".to_string(), NativeBif { func: is_xml_root_bif, params: params!["value"] });
+    bifs.insert("booleanformat".to_string(), NativeBif { func: boolean_format_bif, params: params!["value"] });
+    bifs.insert("truefalseformat".to_string(), NativeBif { func: boolean_format_bif, params: params!["value"] });
+    bifs.insert("decimalformat".to_string(), NativeBif { func: decimal_format_bif, params: params!["number", "length" = Int(2)] });
+    bifs.insert("numberformat".to_string(), NativeBif { func: number_format_bif, params: params!["number", "mask", "locale"] });
+    bifs.insert("lsnumberformat".to_string(), NativeBif { func: number_format_bif, params: params!["number", "mask", "locale"] });
 }

@@ -1,4 +1,4 @@
-use crate::types::{BxNativeFunction, BxVM, BxValue};
+use crate::types::{NativeBif, BxVM, BxValue};
 use std::collections::HashMap;
 
 const DEFAULT_LOCALE: &str = "__default_locale";
@@ -155,36 +155,18 @@ fn struct_set_string(vm: &mut dyn BxVM, id: usize, key: &str, value: &str) {
     vm.struct_set(id, key, value);
 }
 
-pub fn register_i18n_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert("getlocale".to_string(), get_locale as BxNativeFunction);
-    bifs.insert("setlocale".to_string(), set_locale as BxNativeFunction);
-    bifs.insert("clearlocale".to_string(), clear_locale as BxNativeFunction);
-    bifs.insert(
-        "currencyformat".to_string(),
-        currency_format as BxNativeFunction,
-    );
-    bifs.insert(
-        "lscurrencyformat".to_string(),
-        currency_format as BxNativeFunction,
-    );
-    bifs.insert(
-        "getlocaledisplayname".to_string(),
-        get_locale_display_name as BxNativeFunction,
-    );
-    bifs.insert(
-        "getlocaleinfo".to_string(),
-        get_locale_info as BxNativeFunction,
-    );
-    bifs.insert("iscurrency".to_string(), is_currency as BxNativeFunction);
-    bifs.insert("lsiscurrency".to_string(), is_currency as BxNativeFunction);
-    bifs.insert(
-        "parsecurrency".to_string(),
-        parse_currency as BxNativeFunction,
-    );
-    bifs.insert(
-        "lsparsecurrency".to_string(),
-        parse_currency as BxNativeFunction,
-    );
+pub fn register_i18n_bifs(bifs: &mut HashMap<String, NativeBif>) {
+    bifs.insert("getlocale".to_string(), NativeBif { func: get_locale, params: params![] });
+    bifs.insert("setlocale".to_string(), NativeBif { func: set_locale, params: params!["locale"] });
+    bifs.insert("clearlocale".to_string(), NativeBif { func: clear_locale, params: params![] });
+    bifs.insert("currencyformat".to_string(), NativeBif { func: currency_format, params: params!["number", "type" = Str("local"), "locale"] });
+    bifs.insert("lscurrencyformat".to_string(), NativeBif { func: currency_format, params: params!["number", "type" = Str("local"), "locale"] });
+    bifs.insert("getlocaledisplayname".to_string(), NativeBif { func: get_locale_display_name, params: params!["locale", "dsplocale"] });
+    bifs.insert("getlocaleinfo".to_string(), NativeBif { func: get_locale_info, params: params!["locale", "dsplocale"] });
+    bifs.insert("iscurrency".to_string(), NativeBif { func: is_currency, params: params!["number", "locale"] });
+    bifs.insert("lsiscurrency".to_string(), NativeBif { func: is_currency, params: params!["number", "locale"] });
+    bifs.insert("parsecurrency".to_string(), NativeBif { func: parse_currency, params: params!["string", "locale"] });
+    bifs.insert("lsparsecurrency".to_string(), NativeBif { func: parse_currency, params: params!["string", "locale"] });
 }
 
 fn get_locale(vm: &mut dyn BxVM, _args: &[BxValue]) -> Result<BxValue, String> {

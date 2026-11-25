@@ -1,4 +1,4 @@
-use crate::types::{BxNativeFunction, BxVM, BxValue};
+use crate::types::{NativeBif, BxVM, BxValue};
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Timelike, Utc};
 use std::collections::HashMap;
 use std::iter::Peekable;
@@ -6,97 +6,46 @@ use std::str::Chars;
 
 use super::{datetime_from_parts, parse_datetime_input, parse_timezone_offset};
 
-pub fn register_math_datetime_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert(
-        "incrementvalue".to_string(),
-        increment_value as BxNativeFunction,
-    );
-    bifs.insert(
-        "decrementvalue".to_string(),
-        decrement_value as BxNativeFunction,
-    );
-    bifs.insert("fix".to_string(), fix_bif as BxNativeFunction);
-    bifs.insert("formatbasen".to_string(), format_base_n as BxNativeFunction);
-    bifs.insert("inputbasen".to_string(), input_base_n as BxNativeFunction);
-    bifs.insert("sgn".to_string(), sgn_bif as BxNativeFunction);
-    bifs.insert("sqr".to_string(), sqr_bif as BxNativeFunction);
-    bifs.insert(
-        "precisionevaluate".to_string(),
-        precision_evaluate as BxNativeFunction,
-    );
-    bifs.insert("createtime".to_string(), create_time as BxNativeFunction);
-    bifs.insert(
-        "createtimespan".to_string(),
-        create_time_span as BxNativeFunction,
-    );
-    bifs.insert("datecompare".to_string(), date_compare as BxNativeFunction);
-    bifs.insert("dateconvert".to_string(), date_convert as BxNativeFunction);
-    bifs.insert("datepart".to_string(), date_part as BxNativeFunction);
-    bifs.insert(
-        "gettimezoneinfo".to_string(),
-        get_timezone_info as BxNativeFunction,
-    );
-    bifs.insert("settimezone".to_string(), set_timezone as BxNativeFunction);
-    bifs.insert(
-        "cleartimezone".to_string(),
-        clear_timezone as BxNativeFunction,
-    );
-    bifs.insert(
-        "createodbcdatetime".to_string(),
-        create_odbc_date_time as BxNativeFunction,
-    );
-    bifs.insert(
-        "createodbcdate".to_string(),
-        create_odbc_date as BxNativeFunction,
-    );
-    bifs.insert(
-        "createodbctime".to_string(),
-        create_odbc_time as BxNativeFunction,
-    );
-    bifs.insert("timeunits".to_string(), time_units as BxNativeFunction);
-    bifs.insert("year".to_string(), year_bif as BxNativeFunction);
-    bifs.insert("quarter".to_string(), quarter_bif as BxNativeFunction);
-    bifs.insert("month".to_string(), month_bif as BxNativeFunction);
-    bifs.insert(
-        "monthasstring".to_string(),
-        month_as_string_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "monthshortasstring".to_string(),
-        month_short_as_string_bif as BxNativeFunction,
-    );
-    bifs.insert("day".to_string(), day_bif as BxNativeFunction);
-    bifs.insert(
-        "daysinmonth".to_string(),
-        days_in_month_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "daysinyear".to_string(),
-        days_in_year_bif as BxNativeFunction,
-    );
-    bifs.insert("dayofweek".to_string(), day_of_week_bif as BxNativeFunction);
-    bifs.insert(
-        "dayofweekasstring".to_string(),
-        day_of_week_as_string_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "dayofweekshortasstring".to_string(),
-        day_of_week_short_as_string_bif as BxNativeFunction,
-    );
-    bifs.insert("dayofyear".to_string(), day_of_year_bif as BxNativeFunction);
-    bifs.insert(
-        "firstdayofmonth".to_string(),
-        first_day_of_month_bif as BxNativeFunction,
-    );
-    bifs.insert("week".to_string(), week_bif as BxNativeFunction);
-    bifs.insert("hour".to_string(), hour_bif as BxNativeFunction);
-    bifs.insert("minute".to_string(), minute_bif as BxNativeFunction);
-    bifs.insert("second".to_string(), second_bif as BxNativeFunction);
-    bifs.insert(
-        "millisecond".to_string(),
-        millisecond_bif as BxNativeFunction,
-    );
-    bifs.insert("nanosecond".to_string(), nanosecond_bif as BxNativeFunction);
+pub fn register_math_datetime_bifs(bifs: &mut HashMap<String, NativeBif>) {
+    bifs.insert("incrementvalue".to_string(), NativeBif { func: increment_value, params: params!["number"] });
+    bifs.insert("decrementvalue".to_string(), NativeBif { func: decrement_value, params: params!["number"] });
+    bifs.insert("fix".to_string(), NativeBif { func: fix_bif, params: params!["number"] });
+    bifs.insert("formatbasen".to_string(), NativeBif { func: format_base_n, params: params!["number", "radix"] });
+    bifs.insert("inputbasen".to_string(), NativeBif { func: input_base_n, params: params!["string", "radix"] });
+    bifs.insert("sgn".to_string(), NativeBif { func: sgn_bif, params: params!["number"] });
+    bifs.insert("sqr".to_string(), NativeBif { func: sqr_bif, params: params!["value"] });
+    bifs.insert("precisionevaluate".to_string(), NativeBif::positional(precision_evaluate));
+    bifs.insert("createtime".to_string(), NativeBif { func: create_time, params: params!["hour" = Int(0), "minute" = Int(0), "second" = Int(0), "millisecond" = Int(0), "timezone"] });
+    bifs.insert("createtimespan".to_string(), NativeBif { func: create_time_span, params: params!["days", "hours", "minutes", "seconds", "milliseconds" = Int(0)] });
+    bifs.insert("datecompare".to_string(), NativeBif { func: date_compare, params: params!["date1", "date2", "datepart"] });
+    bifs.insert("dateconvert".to_string(), NativeBif { func: date_convert, params: params!["conversiontype", "date"] });
+    bifs.insert("datepart".to_string(), NativeBif { func: date_part, params: params!["datepart", "date", "timezone"] });
+    bifs.insert("gettimezoneinfo".to_string(), NativeBif { func: get_timezone_info, params: params!["timezone", "locale"] });
+    bifs.insert("settimezone".to_string(), NativeBif { func: set_timezone, params: params!["timezone"] });
+    bifs.insert("cleartimezone".to_string(), NativeBif { func: clear_timezone, params: params![] });
+    bifs.insert("createodbcdatetime".to_string(), NativeBif { func: create_odbc_date_time, params: params!["date", "timezone"] });
+    bifs.insert("createodbcdate".to_string(), NativeBif { func: create_odbc_date, params: params!["date", "timezone"] });
+    bifs.insert("createodbctime".to_string(), NativeBif { func: create_odbc_time, params: params!["date", "timezone"] });
+    bifs.insert("timeunits".to_string(), NativeBif { func: time_units, params: params!["date", "timezone", "locale"] });
+    bifs.insert("year".to_string(), NativeBif { func: year_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("quarter".to_string(), NativeBif { func: quarter_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("month".to_string(), NativeBif { func: month_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("monthasstring".to_string(), NativeBif { func: month_as_string_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("monthshortasstring".to_string(), NativeBif { func: month_short_as_string_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("day".to_string(), NativeBif { func: day_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("daysinmonth".to_string(), NativeBif { func: days_in_month_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("daysinyear".to_string(), NativeBif { func: days_in_year_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("dayofweek".to_string(), NativeBif { func: day_of_week_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("dayofweekasstring".to_string(), NativeBif { func: day_of_week_as_string_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("dayofweekshortasstring".to_string(), NativeBif { func: day_of_week_short_as_string_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("dayofyear".to_string(), NativeBif { func: day_of_year_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("firstdayofmonth".to_string(), NativeBif { func: first_day_of_month_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("week".to_string(), NativeBif { func: week_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("hour".to_string(), NativeBif { func: hour_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("minute".to_string(), NativeBif { func: minute_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("second".to_string(), NativeBif { func: second_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("millisecond".to_string(), NativeBif { func: millisecond_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("nanosecond".to_string(), NativeBif { func: nanosecond_bif, params: params!["date", "timezone", "locale"] });
 }
 
 // ============================================================================

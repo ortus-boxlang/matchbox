@@ -1,28 +1,19 @@
-use crate::types::{BxNativeFunction, BxVM, BxValue};
+use crate::types::{NativeBif, BxVM, BxValue};
 use std::collections::HashMap;
 
-pub fn register_binary_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert(
-        "binarydecode".to_string(),
-        binary_decode as BxNativeFunction,
-    );
-    bifs.insert(
-        "binaryencode".to_string(),
-        binary_encode as BxNativeFunction,
-    );
-    bifs.insert("bitand".to_string(), bit_and as BxNativeFunction);
-    bifs.insert("bitor".to_string(), bit_or as BxNativeFunction);
-    bifs.insert("bitxor".to_string(), bit_xor as BxNativeFunction);
-    bifs.insert("bitnot".to_string(), bit_not as BxNativeFunction);
-    bifs.insert(
-        "bitmaskclear".to_string(),
-        bit_mask_clear as BxNativeFunction,
-    );
-    bifs.insert("bitmaskread".to_string(), bit_mask_read as BxNativeFunction);
-    bifs.insert("bitmaskset".to_string(), bit_mask_set as BxNativeFunction);
-    bifs.insert("bitsh".to_string(), bit_sh as BxNativeFunction);
-    bifs.insert("bitshln".to_string(), bit_sh_left as BxNativeFunction);
-    bifs.insert("bitshrn".to_string(), bit_sh_right as BxNativeFunction);
+pub fn register_binary_bifs(bifs: &mut HashMap<String, NativeBif>) {
+    bifs.insert("binarydecode".to_string(), NativeBif { func: binary_decode, params: params!["string", "encoding"] });
+    bifs.insert("binaryencode".to_string(), NativeBif { func: binary_encode, params: params!["binary", "encoding"] });
+    bifs.insert("bitand".to_string(), NativeBif { func: bit_and, params: params!["number1", "number2"] });
+    bifs.insert("bitor".to_string(), NativeBif { func: bit_or, params: params!["number1", "number2"] });
+    bifs.insert("bitxor".to_string(), NativeBif { func: bit_xor, params: params!["number1", "number2"] });
+    bifs.insert("bitnot".to_string(), NativeBif { func: bit_not, params: params!["number"] });
+    bifs.insert("bitmaskclear".to_string(), NativeBif { func: bit_mask_clear, params: params!["number", "start", "length"] });
+    bifs.insert("bitmaskread".to_string(), NativeBif { func: bit_mask_read, params: params!["number", "start", "length"] });
+    bifs.insert("bitmaskset".to_string(), NativeBif { func: bit_mask_set, params: params!["number", "mask", "start", "length"] });
+    bifs.insert("bitsh".to_string(), NativeBif { func: bit_sh, params: params!["number", "count"] });
+    bifs.insert("bitshln".to_string(), NativeBif { func: bit_sh_left, params: params!["number", "count"] });
+    bifs.insert("bitshrn".to_string(), NativeBif { func: bit_sh_right, params: params!["number", "count"] });
 }
 
 fn binary_decode(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {

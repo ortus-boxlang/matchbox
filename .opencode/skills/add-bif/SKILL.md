@@ -209,11 +209,21 @@ fn <bif_name>_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String
 }
 ```
 
-Register the BIF in the `register_all()` function:
+Register the BIF in the `register_all()` function as a `NativeBif`, with its parameters copied from the JVM `declaredArguments`, in the same order:
 
 ```rust
-bifs.insert("<bif_name>".to_string(), <bif_name>_bif as BxNativeFunction);
+bifs.insert("<bif_name>".to_string(), NativeBif {
+    func: <bif_name>_bif,
+    params: params!["string", "delimiter" = Str(","), "includeemptyfields" = Bool(false)],
+});
 ```
+
+The parameter list is what makes named arguments work:
+
+- Write each name in lowercase. Named arguments match it case-insensitively.
+- Copy the JVM default as `= Bool(..)`, `Int(..)`, `Num(..)` or `Str(..)`. Leave it off when the JVM default is `null` or a runtime object such as `new Struct()`.
+- A named call that skips a parameter passes its default (or null), so the BIF must read every argument at the **JVM position**. Do not reorder arguments in Rust.
+- Use `NativeBif::positional(func)` only for internal or MatchBox-only BIFs with no BoxLang declaration. Named arguments then arrive in call order.
 
 #### Register as Member Method (if applicable)
 
@@ -509,7 +519,7 @@ if vm.is_struct_value(args[0]) {
 
 ```rust
 // BIF names are registered in lowercase
-bifs.insert("mybif".to_string(), my_bif as BxNativeFunction);
+bifs.insert("mybif".to_string(), NativeBif { func: my_bif, params: params!["value"] });
 
 // Method names in resolve_member_method are matched lowercase
 "mybif" => Some("mybif".to_string()),
@@ -701,7 +711,7 @@ fn struct_equals_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Str
 }
 
 # Register:
-bifs.insert("structequals".to_string(), struct_equals_bif as BxNativeFunction);
+bifs.insert("structequals".to_string(), NativeBif { func: struct_equals_bif, params: params!["struct1", "struct2"] });
 
 # In crates/matchbox-vm/src/vm/mod.rs, under GcObject::Struct(_):
 "equals" => Some("structequals".to_string()),
@@ -815,9 +825,9 @@ fn compare_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
 // ... more BIFs
 
 // 2. Register all in register_all() in one block
-bifs.insert("ltrim".to_string(), ltrim_bif as BxNativeFunction);
-bifs.insert("rtrim".to_string(), rtrim_bif as BxNativeFunction);
-bifs.insert("compare".to_string(), compare_bif as BxNativeFunction);
+bifs.insert("ltrim".to_string(), NativeBif { func: ltrim_bif, params: params!["string"] });
+bifs.insert("rtrim".to_string(), NativeBif { func: rtrim_bif, params: params!["string"] });
+bifs.insert("compare".to_string(), NativeBif { func: compare_bif, params: params!["string1", "string2"] });
 
 // 3. Register all methods in resolve_member_method() together
 "ltrim" => Some("ltrim".to_string()),
@@ -907,6 +917,11 @@ fn kebab_case_bif(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String
 - BIF not registered in `register_all()`
 - Check spelling (must be lowercase)
 - Ensure function signature matches `BxNativeFunction` type
+
+### Named arguments land in the wrong place
+
+- The `params!` list must follow the JVM `declaredArguments` order exactly
+- The BIF must read `args[n]` at the same position as `params!` entry `n`
 
 ### Test fails with "Method not found"
 

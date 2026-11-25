@@ -2777,14 +2777,15 @@ impl VM {
         }
 
         // Register standard BIFs
-        for (name, func) in crate::bifs::register_all() {
-            let id = vm.heap.alloc(GcObject::NativeFunction(func));
+        for (name, bif) in crate::bifs::register_all() {
+            let id = vm.heap.alloc(GcObject::NativeFunction(bif));
             vm.register_global_bif(name, BxValue::new_ptr(id));
         }
 
-        // Register external/plugin BIFs
+        // Register external/plugin BIFs. They declare no parameters, so named
+        // arguments reach them in call order.
         for (name, func) in external_bifs {
-            let id = vm.heap.alloc(GcObject::NativeFunction(func));
+            let id = vm.heap.alloc(GcObject::NativeFunction(crate::types::NativeBif::positional(func)));
             vm.register_global_bif(name, BxValue::new_ptr(id));
         }
 
@@ -3761,7 +3762,7 @@ impl VM {
                     let f = *f;
                     let previous_gc = self.gc_suspended;
                     self.gc_suspended = true;
-                    let res = self.native_exception_scope(|vm| f(vm, &args)).map_err(|e| anyhow::anyhow!(e));
+                    let res = self.native_exception_scope(|vm| (f.func)(vm, &args)).map_err(|e| anyhow::anyhow!(e));
                     self.gc_suspended = previous_gc;
                     let future = self.future_new();
                     match res {
@@ -8249,15 +8250,14 @@ impl VM {
                     } else { args };
                     self.invoke_callback(&callback, &args).map_err(anyhow::Error::msg)
                 }
-                GcObject::NativeFunction(f) => {
-                    let f = *f;
+                GcObject::NativeFunction(bif) => {
+                    let bif = *bif;
                     let args = if let Some(names) = names {
-                        let name = self.native_global_name(func);
-                        self.reorder_native_arguments(args, names, name.as_deref())
+                        self.map_native_arguments(args, names, bif.params)
                     } else { args };
                     let previous_gc = self.gc_suspended;
                     self.gc_suspended = true;
-                    let res = self.native_exception_scope(|vm| f(vm, &args)).map_err(|e| anyhow::anyhow!(e));
+                    let res = self.native_exception_scope(|vm| (bif.func)(vm, &args)).map_err(|e| anyhow::anyhow!(e));
                     self.gc_suspended = previous_gc;
                     res
                 }
@@ -8694,203 +8694,64 @@ impl VM {
         Ok(values)
     }
 
-    fn native_global_name(&self, value: BxValue) -> Option<String> {
-        self.global_names.iter().find_map(|(name_id, idx)| {
-            (self.global_values[*idx] == value)
-                .then(|| self.interner.resolve(*name_id).to_string())
-        })
+
+    /// Maps the arguments of a named-argument call onto a native BIF's parameters.
+    ///
+    /// `names[i]` is the name of `args[i]`, or empty for a positional argument.
+    /// Positional arguments fill the first slots in order. A named argument goes
+    /// to the parameter with that name, matched case-insensitively; a name with
+    /// no matching parameter is dropped. Every slot up to the last one given is
+    /// then filled: a skipped parameter gets its declared default, or null when
+    /// it has none, so the BIF sees what BoxLang would pass. Slots after the last
+    /// one given are left off, as in a positional call.
+    ///
+    /// A BIF with no declared parameters gets `args` unchanged, in call order.
+    fn map_native_arguments(&mut self, args: Vec<BxValue>, names: Vec<String>, params: &[crate::types::NativeParam]) -> Vec<BxValue> {
+        if params.is_empty() {
+            return args;
+        }
+        let mut slots: Vec<Option<BxValue>> = vec![None; params.len()];
+        let mut position = 0;
+        for (index, value) in args.into_iter().enumerate() {
+            let name = names.get(index).map(String::as_str).unwrap_or("");
+            let slot = if name.is_empty() {
+                let slot = position;
+                position += 1;
+                Some(slot)
+            } else {
+                params.iter().position(|param| param.name.eq_ignore_ascii_case(name))
+            };
+            if let Some(slot) = slot.filter(|slot| *slot < slots.len()) {
+                slots[slot] = Some(value);
+            }
+        }
+        let Some(last) = slots.iter().rposition(Option::is_some) else {
+            return Vec::new();
+        };
+        slots.truncate(last + 1);
+        slots
+            .into_iter()
+            .zip(params)
+            .map(|(value, param)| value.unwrap_or_else(|| self.native_param_default(param.default)))
+            .collect()
     }
 
-    /// Maps the arguments of a named-argument call to a native BIF into positional order.
-    ///
-    /// `names[i]` is the argument name of `args[i]`, or empty for a positional
-    /// argument. `function_name` is the BIF's global name, which selects its
-    /// parameter list from a fixed table of lowercase BoxLang parameter names.
-    ///
-    /// Named arguments go to their parameter's slot, matched case-insensitively,
-    /// and `mask` is read as `format`. Positional arguments then fill the slots
-    /// from the start, in order, and replace a named value in the same slot.
-    /// Names with no matching parameter are dropped. Skipped slots hold null,
-    /// and trailing nulls are removed, so the BIF sees a shorter argument list.
-    ///
-    /// Returns `args` unchanged, in call order, when `function_name` is `None`
-    /// or the BIF has no entry in the table.
-    fn reorder_native_arguments(
-        &self,
-        args: Vec<BxValue>,
-        names: Vec<String>,
-        function_name: Option<&str>,
-    ) -> Vec<BxValue> {
-        let Some(function_name) = function_name else {
-            return args;
-        };
-
-        let params: Vec<&str> = match function_name.to_ascii_lowercase().as_str() {
-            "arrayeach" | "arraymap" | "arrayfilter" | "arraysome" | "arrayevery" | "arraynone" => {
-                vec!["array", "callback", "parallel", "maxthreads", "virtual"]
-            }
-            "arrayreduce" => vec!["array", "callback", "initialvalue"],
-            "boxannounce" => vec!["state", "data", "poolname"],
-            "dateformat" | "datetimeformat" | "timeformat" => vec!["date", "format", "timezone", "locale"],
-            "createdatetime" | "createdate" => vec!["year", "month", "day", "hour", "minute", "second", "millisecond", "timezone"],
-            "parsedatetime" => vec!["date", "format", "timezone", "locale"],
-            "gettoken" => vec!["list", "position", "delimiter"],
-            "listavg" => vec!["list", "delimiter"],
-            "listchangedelims" => {
-                vec!["list", "newdelimiter", "delimiters", "includeemptyfields"]
-            }
-            "listcontains" | "listcontainsnocase" => vec![
-                "list",
-                "value",
-                "delimiter",
-                "includeemptyfields",
-                "multicharacterdelimiter",
-            ],
-            "listcompact" => vec!["list", "delimiters", "includeemptyfields", "multicharacterdelimiter"],
-            "listeach" | "listevery" | "listmap" | "listnone" | "listsome" => vec![
-                "list",
-                "callback",
-                "delimiter",
-                "includeemptyfields",
-                "parallel",
-                "virtual",
-                "maxthreads",
-            ],
-            "listfilter" => vec![
-                "list",
-                "filter",
-                "delimiter",
-                "includeemptyfields",
-                "parallel",
-                "virtual",
-                "maxthreads",
-            ],
-            "listqualify" => vec![
-                "list",
-                "qualifier",
-                "delimiter",
-                "elements",
-                "includeemptyfields",
-            ],
-            "listreduce" | "listreduceright" => {
-                vec!["list", "callback", "initialvalue", "delimiter"]
-            }
-            "listremoveduplicates" => vec!["list", "delimiter", "ignorecase"],
-            "listvaluecount" | "listvaluecountnocase" => {
-                vec!["list", "value", "delimiter"]
-            }
-            "listtoarray" => vec![
-                "list",
-                "delimiter",
-                "includeemptyfields",
-                "multicharacterdelimiter",
-            ],
-            "listlen" => vec!["list", "delimiter", "includeemptyfields", "multicharacterdelimiter"],
-            "listgetat" => vec![
-                "list",
-                "position",
-                "delimiter",
-                "includeemptyfields",
-                "multicharacterdelimiter",
-            ],
-            "listappend" => vec![
-                "list",
-                "value",
-                "delimiter",
-                "includeemptyfields",
-                "multicharacterdelimiter",
-            ],
-            "listrest" => vec![
-                "list",
-                "delimiter",
-                "includeemptyfields",
-                "multicharacterdelimiter",
-                "offset",
-            ],
-            "createobject" => vec!["type", "classname", "properties", "externalonly", "classloader"],
-            "structkeytranslate" => vec!["struct", "deep", "retainkeys"],
-            "stringbuildernew" => vec!["value", "capacity"],
-            "setnew" => vec!["type", "values", "casesensitive", "issynchronized"],
-            "listtoset" => vec!["list", "delimiter", "type", "casesensitive"],
-            "getlocaledisplayname" | "getlocaleinfo" => vec!["locale", "dsplocale"],
-            "asyncallapply" => vec!["items", "mapper", "timeout", "timeunit"],
-            "threadnew" => vec!["runnable", "name", "virtual"],
-            "boxast" => vec!["source", "filepath", "returntype", "sourcetype", "recover", "includetokens"],
-            "boxastvisit" => vec!["tree", "visitor", "state"],
-            "runthreadincontext" => vec!["context", "callback"],
-            "lock" => vec!["name", "timeout", "type"],
-            "compress" => vec![
-                "format",
-                "source",
-                "destination",
-                "includebasefolder",
-                "overwrite",
-                "prefix",
-                "filter",
-                "recurse",
-                "compressionlevel",
-            ],
-            "directorylist" => vec![
-                "path",
-                "recurse",
-                "listinfo",
-                "filter",
-                "sort",
-                "type",
-                "followlinks",
-            ],
-            "directorycopy" => vec![
-                "source",
-                "destination",
-                "recurse",
-                "filter",
-                "createpath",
-                "overwrite",
-                "followlinks",
-            ],
-            "extract" => vec![
-                "format",
-                "source",
-                "destination",
-                "overwrite",
-                "recurse",
-                "filter",
-                "entrypaths",
-            ],
-            _ => return args,
-        };
-
-        let mut final_args = vec![BxValue::new_null(); params.len()];
-        let mut positional_args = Vec::new();
-        for (index, value) in args.into_iter().enumerate() {
-            if index < names.len() && !names[index].is_empty() {
-                let name = if names[index].eq_ignore_ascii_case("mask") {
-                    "format"
-                } else {
-                    names[index].as_str()
-                };
-                if let Some(param_index) = params
-                    .iter()
-                    .position(|param| *param == name.to_ascii_lowercase())
-                {
-                    final_args[param_index] = value;
-                }
-            } else {
-                positional_args.push(value);
+    /// Builds the value a named call passes for a skipped native parameter.
+    fn native_param_default(&mut self, default: crate::types::ParamDefault) -> BxValue {
+        use crate::types::ParamDefault;
+        match default {
+            ParamDefault::None => BxValue::new_null(),
+            ParamDefault::Bool(value) => BxValue::new_bool(value),
+            ParamDefault::Int(value) => match i32::try_from(value) {
+                Ok(value) => BxValue::new_int(value),
+                Err(_) => BxValue::new_number(value as f64),
+            },
+            ParamDefault::Num(value) => BxValue::new_number(value),
+            ParamDefault::Str(value) => {
+                let id = crate::types::BxVM::string_new(self, value.to_string());
+                BxValue::new_ptr(id)
             }
         }
-        for (index, value) in positional_args.into_iter().enumerate() {
-            if index < final_args.len() {
-                final_args[index] = value;
-            }
-        }
-        while final_args
-            .last()
-            .is_some_and(BxValue::is_null)
-        {
-            final_args.pop();
-        }
-        final_args
     }
 
     fn execute_call(
@@ -9006,12 +8867,11 @@ impl VM {
                     }
                     args.reverse();
                     if let Some(names) = names {
-                        let native_name = self.native_global_name(func_val);
-                        args = self.reorder_native_arguments(args, names, native_name.as_deref());
+                        args = self.map_native_arguments(args, names, func.params);
                     }
                     self.fibers[fiber_idx].stack.pop(); // Pop the function object
 
-                    match self.native_exception_scope(|vm| func(vm, &args)) {
+                    match self.native_exception_scope(|vm| (func.func)(vm, &args)) {
                         Ok(val) => {
                             self.fibers[fiber_idx].stack.push(val);
                             Ok(())
@@ -9603,7 +9463,7 @@ impl VM {
                         let mut final_args = vec![receiver];
                         final_args.extend(args);
 
-                        match self.native_exception_scope(|vm| bif(vm, &final_args)) {
+                        match self.native_exception_scope(|vm| (bif.func)(vm, &final_args)) {
                             Ok(res) => {
                                 self.fibers[fiber_idx].stack.push(res);
                                 return Ok(());

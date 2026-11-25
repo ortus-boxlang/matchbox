@@ -1,4 +1,4 @@
-use crate::types::{BxNativeFunction, BxNativeObject, BxVM, BxValue};
+use crate::types::{NativeBif, BxNativeObject, BxVM, BxValue};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -60,18 +60,12 @@ impl BxNativeObject for CacheNameObject {
     }
 }
 
-pub fn register_cache_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert("cache".to_string(), cache as BxNativeFunction);
-    bifs.insert("cacheFilter".to_string(), cache_filter as BxNativeFunction);
-    bifs.insert("cacheNames".to_string(), cache_names as BxNativeFunction);
-    bifs.insert(
-        "cacheProviders".to_string(),
-        cache_providers as BxNativeFunction,
-    );
-    bifs.insert(
-        "cacheService".to_string(),
-        cache_service as BxNativeFunction,
-    );
+pub fn register_cache_bifs(bifs: &mut HashMap<String, NativeBif>) {
+    bifs.insert("cache".to_string(), NativeBif { func: cache, params: params!["cachename" = Str("default")] });
+    bifs.insert("cacheFilter".to_string(), NativeBif { func: cache_filter, params: params!["filter", "useregex" = Bool(false)] });
+    bifs.insert("cacheNames".to_string(), NativeBif { func: cache_names, params: params![] });
+    bifs.insert("cacheProviders".to_string(), NativeBif { func: cache_providers, params: params![] });
+    bifs.insert("cacheService".to_string(), NativeBif { func: cache_service, params: params![] });
 }
 
 fn cache(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {

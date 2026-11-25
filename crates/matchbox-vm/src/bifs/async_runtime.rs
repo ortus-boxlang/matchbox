@@ -1,4 +1,4 @@
-use crate::types::{BxNativeFunction, BxNativeObject, BxVM, BxValue, FutureStatus};
+use crate::types::{NativeBif, BxNativeObject, BxVM, BxValue, FutureStatus};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -68,72 +68,30 @@ impl BxNativeObject for ExecutorObject {
     }
 }
 
-pub fn register_async_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert("futurenew".to_string(), future_new as BxNativeFunction);
-    bifs.insert(
-        "futurecompleteexceptionally".to_string(),
-        future_complete_exceptionally as BxNativeFunction,
-    );
-    bifs.insert(
-        "futurecompleteontimeout".to_string(),
-        future_complete_on_timeout as BxNativeFunction,
-    );
-    bifs.insert(
-        "futurejoinordefault".to_string(),
-        future_join_or_default as BxNativeFunction,
-    );
-    bifs.insert(
-        "futuregetordefault".to_string(),
-        future_get_or_default as BxNativeFunction,
-    );
-    bifs.insert(
-        "futureortimeout".to_string(),
-        future_or_timeout as BxNativeFunction,
-    );
-    bifs.insert(
-        "futureiscompletedexceptionally".to_string(),
-        future_is_completed_exceptionally as BxNativeFunction,
-    );
-    bifs.insert("futureisdone".to_string(), future_is_done as BxNativeFunction);
-    bifs.insert(
-        "futureexceptionally".to_string(),
-        future_exceptionally as BxNativeFunction,
-    );
-    bifs.insert("futurethen".to_string(), future_then as BxNativeFunction);
-    bifs.insert(
-        "futuregetasattempt".to_string(),
-        future_get_as_attempt as BxNativeFunction,
-    );
-    bifs.insert(
-        "asyncallapply".to_string(),
-        async_all_apply as BxNativeFunction,
-    );
-    bifs.insert("executornew".to_string(), executor_new as BxNativeFunction);
-    bifs.insert("executorget".to_string(), executor_get as BxNativeFunction);
-    bifs.insert(
-        "executordelete".to_string(),
-        executor_delete as BxNativeFunction,
-    );
-    bifs.insert("executorhas".to_string(), executor_has as BxNativeFunction);
-    bifs.insert("threadnew".to_string(), thread_new as BxNativeFunction);
-    bifs.insert("threadjoin".to_string(), thread_join as BxNativeFunction);
-    bifs.insert(
-        "threadterminate".to_string(),
-        thread_terminate as BxNativeFunction,
-    );
-    bifs.insert(
-        "threadinterrupt".to_string(),
-        thread_interrupt as BxNativeFunction,
-    );
-    bifs.insert(
-        "isthreadalive".to_string(),
-        is_thread_alive as BxNativeFunction,
-    );
-    bifs.insert(
-        "isthreadinterrupted".to_string(),
-        is_thread_interrupted as BxNativeFunction,
-    );
-    bifs.insert("isinthread".to_string(), is_in_thread as BxNativeFunction);
+pub fn register_async_bifs(bifs: &mut HashMap<String, NativeBif>) {
+    bifs.insert("futurenew".to_string(), NativeBif { func: future_new, params: params!["value", "executor"] });
+    bifs.insert("futurecompleteexceptionally".to_string(), NativeBif::positional(future_complete_exceptionally));
+    bifs.insert("futurecompleteontimeout".to_string(), NativeBif::positional(future_complete_on_timeout));
+    bifs.insert("futurejoinordefault".to_string(), NativeBif::positional(future_join_or_default));
+    bifs.insert("futuregetordefault".to_string(), NativeBif::positional(future_get_or_default));
+    bifs.insert("futureortimeout".to_string(), NativeBif::positional(future_or_timeout));
+    bifs.insert("futureiscompletedexceptionally".to_string(), NativeBif::positional(future_is_completed_exceptionally));
+    bifs.insert("futureisdone".to_string(), NativeBif::positional(future_is_done));
+    bifs.insert("futureexceptionally".to_string(), NativeBif::positional(future_exceptionally));
+    bifs.insert("futurethen".to_string(), NativeBif::positional(future_then));
+    bifs.insert("futuregetasattempt".to_string(), NativeBif::positional(future_get_as_attempt));
+    bifs.insert("asyncallapply".to_string(), NativeBif { func: async_all_apply, params: params!["items", "mapper", "errorhandler", "executor", "timeout" = Int(0), "timeunit" = Str("SECONDS")] });
+    bifs.insert("executornew".to_string(), NativeBif { func: executor_new, params: params!["name", "type", "maxthreads" = Int(10)] });
+    bifs.insert("executorget".to_string(), NativeBif { func: executor_get, params: params!["name" = Str("io-tasks")] });
+    bifs.insert("executordelete".to_string(), NativeBif { func: executor_delete, params: params!["name"] });
+    bifs.insert("executorhas".to_string(), NativeBif { func: executor_has, params: params!["name"] });
+    bifs.insert("threadnew".to_string(), NativeBif { func: thread_new, params: params!["runnable", "attributes", "name" = Str(""), "priority" = Str("normal"), "virtual" = Bool(false)] });
+    bifs.insert("threadjoin".to_string(), NativeBif { func: thread_join, params: params!["threadname" = Str(""), "timeout" = Int(0)] });
+    bifs.insert("threadterminate".to_string(), NativeBif { func: thread_terminate, params: params!["threadname"] });
+    bifs.insert("threadinterrupt".to_string(), NativeBif { func: thread_interrupt, params: params!["name" = Str("")] });
+    bifs.insert("isthreadalive".to_string(), NativeBif { func: is_thread_alive, params: params!["name"] });
+    bifs.insert("isthreadinterrupted".to_string(), NativeBif { func: is_thread_interrupted, params: params!["name"] });
+    bifs.insert("isinthread".to_string(), NativeBif { func: is_in_thread, params: params![] });
 }
 
 fn future_new(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
@@ -246,11 +204,21 @@ fn future_get_as_attempt(_vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue
     Ok(args[0])
 }
 
+/// Implements `asyncAllApply( items, mapper, errorHandler, executor, timeout, timeUnit )`.
+///
+/// Applies `mapper` to each item of an array or struct and returns the results.
+/// `errorHandler`, `executor` and `timeUnit` are accepted and not used yet.
+///
+/// # Errors
+/// Returns an error when items or the mapper are missing, when a positive
+/// `timeout` of 500 or less is given (the mapping is treated as timed out), or
+/// when the mapper fails.
 fn async_all_apply(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     if args.len() < 2 {
         return Err("asyncAllApply() expects items and a mapper".to_string());
     }
-    if args.len() >= 3 && !args[2].is_null() && args[2].as_number() <= 500.0 {
+    let timeout = args.get(4).filter(|value| !value.is_null() && value.as_number() > 0.0);
+    if timeout.is_some_and(|value| value.as_number() <= 500.0) {
         return Err("asyncAllApply() timed out".to_string());
     }
 
@@ -375,12 +343,20 @@ fn set_thread_status(vm: &mut dyn BxVM, name: &str, status: &str) -> Result<(), 
     Ok(())
 }
 
+/// Implements `threadNew( runnable, attributes, name, priority, virtual )`.
+///
+/// Starts `runnable` on a new thread named `name` (a generated name when it is
+/// missing) and returns its future. `attributes`, `priority` and `virtual` are
+/// accepted for BoxLang compatibility and not used.
+///
+/// # Errors
+/// Returns an error when no runnable is given or the thread cannot be started.
 fn thread_new(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, String> {
     let callback = args
         .first()
         .ok_or_else(|| "threadNew() expects a runnable".to_string())?;
     let name = args
-        .get(1)
+        .get(2)
         .filter(|value| !value.is_null())
         .map(|value| vm.to_string(*value))
         .unwrap_or_else(|| format!("thread-{}", vm_key(vm)));

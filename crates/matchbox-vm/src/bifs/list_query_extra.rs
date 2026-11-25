@@ -3,103 +3,58 @@ use super::{join_list, parse_list_items};
 use crate::datasource::BxQuery;
 #[cfg(all(feature = "bif-datasource", not(target_arch = "wasm32")))]
 use crate::datasource::traits::QueryColumn;
-use crate::types::{BxNativeFunction, BxVM, BxValue};
+use crate::types::{NativeBif, BxVM, BxValue};
 #[cfg(all(feature = "bif-datasource", not(target_arch = "wasm32")))]
 use std::cell::RefCell;
 use std::collections::HashMap;
 #[cfg(all(feature = "bif-datasource", not(target_arch = "wasm32")))]
 use std::rc::Rc;
 
-pub fn register_list_query_extra_bifs(bifs: &mut HashMap<String, BxNativeFunction>) {
-    bifs.insert("gettoken".to_string(), get_token as BxNativeFunction);
-    bifs.insert("listavg".to_string(), list_avg as BxNativeFunction);
-    bifs.insert(
-        "listchangedelims".to_string(),
-        list_change_delims as BxNativeFunction,
-    );
-    bifs.insert("listcompact".to_string(), list_compact as BxNativeFunction);
-    bifs.insert(
-        "listcontains".to_string(),
-        list_contains as BxNativeFunction,
-    );
-    bifs.insert(
-        "listcontainsnocase".to_string(),
-        list_contains_nocase as BxNativeFunction,
-    );
-    bifs.insert("listeach".to_string(), list_each as BxNativeFunction);
-    bifs.insert("listevery".to_string(), list_every as BxNativeFunction);
-    bifs.insert("listfilter".to_string(), list_filter as BxNativeFunction);
-    bifs.insert(
-        "listgetendings".to_string(),
-        list_get_endings as BxNativeFunction,
-    );
-    bifs.insert(
-        "listindexexists".to_string(),
-        list_index_exists as BxNativeFunction,
-    );
-    bifs.insert(
-        "listinsertat".to_string(),
-        list_insert_at as BxNativeFunction,
-    );
-    bifs.insert(
-        "listitemtrim".to_string(),
-        list_item_trim as BxNativeFunction,
-    );
-    bifs.insert("listmap".to_string(), list_map as BxNativeFunction);
-    bifs.insert("listnone".to_string(), list_none as BxNativeFunction);
-    bifs.insert("listprepend".to_string(), list_prepend as BxNativeFunction);
-    bifs.insert("listqualify".to_string(), list_qualify as BxNativeFunction);
-    bifs.insert("listreduce".to_string(), list_reduce as BxNativeFunction);
-    bifs.insert(
-        "listreduceright".to_string(),
-        list_reduce_right as BxNativeFunction,
-    );
-    bifs.insert(
-        "listremoveduplicates".to_string(),
-        list_remove_duplicates as BxNativeFunction,
-    );
-    bifs.insert("listsetat".to_string(), list_set_at as BxNativeFunction);
-    bifs.insert("listsome".to_string(), list_some as BxNativeFunction);
-    bifs.insert(
-        "listvaluecount".to_string(),
-        list_value_count as BxNativeFunction,
-    );
-    bifs.insert(
-        "listvaluecountnocase".to_string(),
-        list_value_count_nocase as BxNativeFunction,
-    );
-    bifs.insert("stringeach".to_string(), string_each as BxNativeFunction);
-    bifs.insert("stringevery".to_string(), string_every as BxNativeFunction);
-    bifs.insert(
-        "stringfilter".to_string(),
-        string_filter as BxNativeFunction,
-    );
-    bifs.insert("stringmap".to_string(), string_map as BxNativeFunction);
-    bifs.insert("stringnone".to_string(), string_none as BxNativeFunction);
-    bifs.insert(
-        "stringreduce".to_string(),
-        string_reduce as BxNativeFunction,
-    );
-    bifs.insert(
-        "stringreduceright".to_string(),
-        string_reduce_right as BxNativeFunction,
-    );
-    bifs.insert("stringsome".to_string(), string_some as BxNativeFunction);
-    bifs.insert("stringsort".to_string(), string_sort as BxNativeFunction);
+pub fn register_list_query_extra_bifs(bifs: &mut HashMap<String, NativeBif>) {
+    bifs.insert("gettoken".to_string(), NativeBif { func: get_token, params: params!["string", "index", "delimiter" = Str(",")] });
+    bifs.insert("listavg".to_string(), NativeBif { func: list_avg, params: params!["list", "delimiter" = Str(","), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listchangedelims".to_string(), NativeBif { func: list_change_delims, params: params!["list", "newdelimiter", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listcompact".to_string(), NativeBif { func: list_compact, params: params!["list", "delimiter" = Str(","), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listcontains".to_string(), NativeBif { func: list_contains, params: params!["list", "value", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listcontainsnocase".to_string(), NativeBif { func: list_contains_nocase, params: params!["list", "value", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listeach".to_string(), NativeBif { func: list_each, params: params!["list", "callback", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "parallel" = Bool(false), "maxthreads", "ordered" = Bool(false), "virtual" = Bool(false)] });
+    bifs.insert("listevery".to_string(), NativeBif { func: list_every, params: params!["list", "callback", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("listfilter".to_string(), NativeBif { func: list_filter, params: params!["list", "filter", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("listgetendings".to_string(), NativeBif { func: list_get_endings, params: params!["list", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listindexexists".to_string(), NativeBif { func: list_index_exists, params: params!["list", "index", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listinsertat".to_string(), NativeBif { func: list_insert_at, params: params!["list", "position", "value", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listitemtrim".to_string(), NativeBif { func: list_item_trim, params: params!["list", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listmap".to_string(), NativeBif { func: list_map, params: params!["list", "callback", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("listnone".to_string(), NativeBif { func: list_none, params: params!["list", "callback", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("listprepend".to_string(), NativeBif { func: list_prepend, params: params!["list", "value", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listqualify".to_string(), NativeBif { func: list_qualify, params: params!["list", "qualifier", "delimiter" = Str(","), "elements" = Str("all"), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listreduce".to_string(), NativeBif { func: list_reduce, params: params!["list", "callback", "initialvalue", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(true)] });
+    bifs.insert("listreduceright".to_string(), NativeBif { func: list_reduce_right, params: params!["list", "callback", "initialvalue", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listremoveduplicates".to_string(), NativeBif { func: list_remove_duplicates, params: params!["list", "delimiter" = Str(","), "ignorecase" = Bool(false), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listsetat".to_string(), NativeBif { func: list_set_at, params: params!["list", "position", "value", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listsome".to_string(), NativeBif { func: list_some, params: params!["list", "callback", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("listvaluecount".to_string(), NativeBif { func: list_value_count, params: params!["list", "value", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listvaluecountnocase".to_string(), NativeBif { func: list_value_count_nocase, params: params!["list", "value", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("stringeach".to_string(), NativeBif { func: string_each, params: params!["list", "callback", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "parallel" = Bool(false), "maxthreads", "ordered" = Bool(false), "virtual" = Bool(false)] });
+    bifs.insert("stringevery".to_string(), NativeBif { func: string_every, params: params!["list", "callback", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("stringfilter".to_string(), NativeBif { func: string_filter, params: params!["list", "filter", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("stringmap".to_string(), NativeBif { func: string_map, params: params!["list", "callback", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("stringnone".to_string(), NativeBif::positional(string_none));
+    bifs.insert("stringreduce".to_string(), NativeBif { func: string_reduce, params: params!["list", "callback", "initialvalue", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(true)] });
+    bifs.insert("stringreduceright".to_string(), NativeBif { func: string_reduce_right, params: params!["list", "callback", "initialvalue", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("stringsome".to_string(), NativeBif { func: string_some, params: params!["list", "callback", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("stringsort".to_string(), NativeBif { func: string_sort, params: params!["list", "sorttype", "sortorder" = Str("asc"), "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "localesensitive" = Bool(false), "callback"] });
     #[cfg(all(feature = "bif-datasource", not(target_arch = "wasm32")))]
     {
-        bifs.insert("queryeach".to_string(), query_each as BxNativeFunction);
-        bifs.insert("queryevery".to_string(), query_every as BxNativeFunction);
-        bifs.insert("queryfilter".to_string(), query_filter as BxNativeFunction);
-        bifs.insert("querymap".to_string(), query_map as BxNativeFunction);
-        bifs.insert("querynone".to_string(), query_none as BxNativeFunction);
-        bifs.insert("queryreduce".to_string(), query_reduce as BxNativeFunction);
-        bifs.insert(
-            "queryregisterfunction".to_string(),
-            query_register_function as BxNativeFunction,
-        );
-        bifs.insert("querysome".to_string(), query_some as BxNativeFunction);
-        bifs.insert("querysort".to_string(), query_sort as BxNativeFunction);
+        bifs.insert("queryeach".to_string(), NativeBif { func: query_each, params: params!["query", "callback", "parallel" = Bool(false), "maxthreads", "ordered" = Bool(false), "virtual" = Bool(false)] });
+        bifs.insert("queryevery".to_string(), NativeBif { func: query_every, params: params!["query", "closure", "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+        bifs.insert("queryfilter".to_string(), NativeBif { func: query_filter, params: params!["query", "callback", "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+        bifs.insert("querymap".to_string(), NativeBif { func: query_map, params: params!["query", "callback", "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+        bifs.insert("querynone".to_string(), NativeBif { func: query_none, params: params!["query", "callback", "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+        bifs.insert("queryreduce".to_string(), NativeBif { func: query_reduce, params: params!["query", "callback", "initialvalue"] });
+        bifs.insert("queryregisterfunction".to_string(), NativeBif { func: query_register_function, params: params!["name", "function", "returntype" = Str("Object"), "type" = Str("scalar")] });
+        bifs.insert("querysome".to_string(), NativeBif { func: query_some, params: params!["query", "callback", "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+        bifs.insert("querysort".to_string(), NativeBif { func: query_sort, params: params!["query", "sortfunc"] });
     }
 }
 
@@ -168,7 +123,7 @@ pub fn list_compact(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, Stri
         return Err("listCompact() expects at least 1 argument".to_string());
     }
     let delimiter = gd(args, 1, vm);
-    let multi = args.get(3).is_some_and(BxValue::as_bool);
+    let multi = args.get(2).is_some_and(BxValue::as_bool);
     let items = parse_list_items(&vm.to_string(args[0]), delimiter.clone(), true, multi);
     let filtered: Vec<String> = if multi {
         items.into_iter().filter(|s| !s.trim().is_empty()).collect()
@@ -349,8 +304,8 @@ pub fn list_item_trim(vm: &mut dyn BxVM, args: &[BxValue]) -> Result<BxValue, St
     let items = parse_list_items(
         &vm.to_string(args[0]),
         delim.clone(),
+        args.get(2).is_some_and(BxValue::as_bool),
         args.get(3).is_some_and(BxValue::as_bool),
-        args.get(4).is_some_and(BxValue::as_bool),
     );
     let trimmed: Vec<String> = items.iter().map(|s| s.trim().to_string()).collect();
     Ok(BxValue::new_ptr(

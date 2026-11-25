@@ -84,7 +84,8 @@ pub enum GcObject {
     Instance(BxInstance),
     Future(BxFuture),
     CompiledFunction(Rc<BxCompiledFunction>),
-    NativeFunction(BxNativeFunction),
+    /// A native BIF and its declared parameters.
+    NativeFunction(crate::types::NativeBif),
     NativeCallback(crate::types::NativeCallback),
     Class(Rc<RefCell<BxClass>>),
     Interface(Rc<RefCell<BxInterface>>),

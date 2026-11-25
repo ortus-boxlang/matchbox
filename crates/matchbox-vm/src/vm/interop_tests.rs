@@ -241,12 +241,12 @@ mod tests {
     fn test_bx_function_to_js_callback() {
         let mut vm = VM::new();
         // Create a BoxLang callable (NativeFunction is easiest to set up in this test)
-        let id = vm.heap.alloc(GcObject::NativeFunction(|_vm, args| {
+        let id = vm.heap.alloc(GcObject::NativeFunction(crate::types::NativeBif::positional(|_vm, args| {
             if args.is_empty() {
                 return Ok(BxValue::new_int(0));
             }
             Ok(BxValue::new_int(args[0].as_int() * 2))
-        }));
+        })));
         let bx_func = BxValue::new_ptr(id);
 
         let js_val = vm.bx_to_js(&bx_func);
@@ -291,7 +291,7 @@ mod tests {
         let callback_id = 77usize;
         let bx_func = BxValue::new_ptr(
             vm.heap
-                .alloc(GcObject::NativeFunction(|vm, _args| Ok(vm.future_new()))),
+                .alloc(GcObject::NativeFunction(crate::types::NativeBif::positional(|vm, _args| Ok(vm.future_new())))),
         );
         vm.callback_registry
             .borrow_mut()

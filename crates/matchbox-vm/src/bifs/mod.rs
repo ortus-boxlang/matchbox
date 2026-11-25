@@ -1,5 +1,26 @@
+/// Builds the `&'static` parameter list of a [`NativeBif`].
+///
+/// Each entry is a lowercase parameter name, optionally followed by
+/// `= Variant(value)` naming its [`ParamDefault`](crate::types::ParamDefault):
+///
+/// ```ignore
+/// params!["path", "recurse" = Bool(false), "listinfo" = Str("path")]
+/// ```
+///
+/// It expands to struct literals only, so the list is promoted to a static.
+macro_rules! params {
+    ($($name:literal $(= $variant:ident($value:expr))?),* $(,)?) => {
+        &[$($crate::types::NativeParam {
+            name: $name,
+            default: params!(@default $($variant($value))?),
+        }),*]
+    };
+    (@default) => { $crate::types::ParamDefault::None };
+    (@default $variant:ident($value:expr)) => { $crate::types::ParamDefault::$variant($value) };
+}
+
 mod ast_visit;
-use crate::types::{BxNativeFunction, BxNativeObject, BxVM, BxValue, Tracer};
+use crate::types::{NativeBif, BxNativeObject, BxVM, BxValue, Tracer};
 use chrono::{
     DateTime, Datelike, Duration, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
 };
@@ -186,484 +207,265 @@ mod gated_tests {
     }
 }
 
-pub fn register_all() -> HashMap<String, BxNativeFunction> {
+pub fn register_all() -> HashMap<String, NativeBif> {
     let mut bifs = HashMap::new();
 
-    bifs.insert(
-        "systemexecute".to_string(),
-        system_execute::system_execute as BxNativeFunction,
-    );
-    bifs.insert(
-        "systemoutput".to_string(),
-        system_output::system_output as BxNativeFunction,
-    );
-    bifs.insert("boxannounce".to_string(), system::box_announce as BxNativeFunction);
-    bifs.insert("boxast".to_string(), system::box_ast as BxNativeFunction);
-    bifs.insert("boxastvisit".to_string(), ast_visit::visit as BxNativeFunction);
-    bifs.insert(
-        "boxmodulereload".to_string(),
-        system::box_module_reload as BxNativeFunction,
-    );
-    bifs.insert("trace".to_string(), system::trace as BxNativeFunction);
-    bifs.insert("__bxlogwrite".to_string(), system::log_write as BxNativeFunction);
-    bifs.insert("__bxlogapplication".to_string(), system::log_application as BxNativeFunction);
-    bifs.insert(
-        "getfunctioncalledname".to_string(),
-        system::get_function_called_name as BxNativeFunction,
-    );
-    bifs.insert("getboxcontext".to_string(), system::get_box_context as BxNativeFunction);
-    bifs.insert(
-        "runthreadincontext".to_string(),
-        system::run_thread_in_context as BxNativeFunction,
-    );
-    bifs.insert("lock".to_string(), system::lock as BxNativeFunction);
-    bifs.insert("__supercall".to_string(), system::super_call as BxNativeFunction);
-    bifs.insert("__mb_catch_matches".into(), system::catch_matches as BxNativeFunction);
-    bifs.insert("__supercallnamed".to_string(), system::super_call_named as BxNativeFunction);
-    bifs.insert("getbasetagdata".to_string(), system::get_base_tag_data as BxNativeFunction);
-    bifs.insert("getbasetaglist".to_string(), system::get_base_tag_list as BxNativeFunction);
-    bifs.insert("getbasetemplatepath".to_string(), system::get_base_template_path as BxNativeFunction);
-    bifs.insert("getcurrenttemplatepath".to_string(), system::get_current_template_path as BxNativeFunction);
-    bifs.insert("getboxversioninfo".to_string(), system::get_box_version_info as BxNativeFunction);
-    bifs.insert("getcomponentlist".to_string(), system::get_component_list as BxNativeFunction);
-    bifs.insert("getfunctionlist".to_string(), system::get_function_list as BxNativeFunction);
+    bifs.insert("systemexecute".to_string(), NativeBif { func: system_execute::system_execute, params: params!["name", "arguments", "timeout", "terminateontimeout" = Bool(false), "directory", "output", "error", "inheritenvironment" = Bool(true), "environment", "online", "iscancelled", "mergeerrors" = Bool(false)] });
+    bifs.insert("systemoutput".to_string(), NativeBif { func: system_output::system_output, params: params!["obj", "addnewline" = Bool(false), "doerrorstream" = Bool(false)] });
+    bifs.insert("boxannounce".to_string(), NativeBif { func: system::box_announce, params: params!["state", "data", "poolname" = Str("global")] });
+    bifs.insert("boxast".to_string(), NativeBif { func: system::box_ast, params: params!["source", "filepath", "returntype" = Str("struct"), "sourcetype" = Str("script"), "recover" = Bool(false), "includetokens" = Bool(false)] });
+    bifs.insert("boxastvisit".to_string(), NativeBif { func: ast_visit::visit, params: params!["tree", "visitor", "state"] });
+    bifs.insert("boxmodulereload".to_string(), NativeBif { func: system::box_module_reload, params: params!["module"] });
+    bifs.insert("trace".to_string(), NativeBif { func: system::trace, params: params!["text", "category" = Str(""), "type" = Str("Information"), "extrainfo" = Str(""), "abort" = Bool(false)] });
+    bifs.insert("__bxlogwrite".to_string(), NativeBif::positional(system::log_write));
+    bifs.insert("__bxlogapplication".to_string(), NativeBif::positional(system::log_application));
+    bifs.insert("getfunctioncalledname".to_string(), NativeBif { func: system::get_function_called_name, params: params![] });
+    bifs.insert("getboxcontext".to_string(), NativeBif { func: system::get_box_context, params: params![] });
+    bifs.insert("runthreadincontext".to_string(), NativeBif { func: system::run_thread_in_context, params: params!["applicationname", "sessionid", "context", "callback"] });
+    bifs.insert("lock".to_string(), NativeBif { func: system::lock, params: params!["name", "timeout", "type"] });
+    bifs.insert("__supercall".to_string(), NativeBif::positional(system::super_call));
+    bifs.insert("__mb_catch_matches".into(), NativeBif::positional(system::catch_matches));
+    bifs.insert("__supercallnamed".to_string(), NativeBif::positional(system::super_call_named));
+    bifs.insert("getbasetagdata".to_string(), NativeBif { func: system::get_base_tag_data, params: params!["tagname", "ancestorlevels" = Int(1)] });
+    bifs.insert("getbasetaglist".to_string(), NativeBif { func: system::get_base_tag_list, params: params![] });
+    bifs.insert("getbasetemplatepath".to_string(), NativeBif { func: system::get_base_template_path, params: params![] });
+    bifs.insert("getcurrenttemplatepath".to_string(), NativeBif { func: system::get_current_template_path, params: params![] });
+    bifs.insert("getboxversioninfo".to_string(), NativeBif { func: system::get_box_version_info, params: params![] });
+    bifs.insert("getcomponentlist".to_string(), NativeBif { func: system::get_component_list, params: params![] });
+    bifs.insert("getfunctionlist".to_string(), NativeBif { func: system::get_function_list, params: params![] });
     #[cfg(all(not(target_family = "wasm"), not(target_os = "espidf")))]
-    bifs.insert("getboxruntime".to_string(), system::get_box_runtime as BxNativeFunction);
-    bifs.insert("getmoduleinfo".to_string(), system::get_module_info as BxNativeFunction);
-    bifs.insert("getmodulelist".to_string(), system::get_module_list as BxNativeFunction);
-    bifs.insert("invoke".to_string(), system::invoke as BxNativeFunction);
-    bifs.insert(
-        "urlencodedformat".to_string(),
-        system::url_encoded_format as BxNativeFunction,
-    );
-    bifs.insert("encodeforhtml".to_string(), system::encode_for_html as BxNativeFunction);
-    bifs.insert("htmleditformat".to_string(), system::encode_for_html as BxNativeFunction);
-    bifs.insert(
-        "getfilefrompath".to_string(),
-        system::get_file_from_path as BxNativeFunction,
-    );
+    bifs.insert("getboxruntime".to_string(), NativeBif { func: system::get_box_runtime, params: params![] });
+    bifs.insert("getmoduleinfo".to_string(), NativeBif { func: system::get_module_info, params: params!["module"] });
+    bifs.insert("getmodulelist".to_string(), NativeBif { func: system::get_module_list, params: params![] });
+    bifs.insert("invoke".to_string(), NativeBif { func: system::invoke, params: params!["object", "method", "arguments"] });
+    bifs.insert("urlencodedformat".to_string(), NativeBif { func: system::url_encoded_format, params: params!["string"] });
+    bifs.insert("encodeforhtml".to_string(), NativeBif { func: system::encode_for_html, params: params!["string", "canonicalize" = Bool(false)] });
+    bifs.insert("htmleditformat".to_string(), NativeBif { func: system::encode_for_html, params: params!["string", "canonicalize" = Bool(false)] });
+    bifs.insert("getfilefrompath".to_string(), NativeBif { func: system::get_file_from_path, params: params!["path"] });
 
     // Math BIFs
-    bifs.insert("round".to_string(), round as BxNativeFunction);
-    bifs.insert("floor".to_string(), floor_bif as BxNativeFunction);
-    bifs.insert("int".to_string(), int_bif as BxNativeFunction);
-    bifs.insert("ceiling".to_string(), ceiling_bif as BxNativeFunction);
-    bifs.insert("abs".to_string(), abs_bif as BxNativeFunction);
-    bifs.insert("min".to_string(), min_bif as BxNativeFunction);
-    bifs.insert("max".to_string(), max_bif as BxNativeFunction);
-    bifs.insert("randrange".to_string(), rand_range as BxNativeFunction);
-    bifs.insert("rand".to_string(), rand as BxNativeFunction);
-    bifs.insert("randomize".to_string(), randomize as BxNativeFunction);
-    bifs.insert("pi".to_string(), pi as BxNativeFunction);
-    bifs.insert("log".to_string(), log_bif as BxNativeFunction);
-    bifs.insert("log10".to_string(), log10_bif as BxNativeFunction);
-    bifs.insert("exp".to_string(), exp_bif as BxNativeFunction);
-    bifs.insert("sin".to_string(), sin_bif as BxNativeFunction);
-    bifs.insert("cos".to_string(), cos_bif as BxNativeFunction);
-    bifs.insert("tan".to_string(), tan_bif as BxNativeFunction);
-    bifs.insert("asin".to_string(), asin_bif as BxNativeFunction);
-    bifs.insert("acos".to_string(), acos_bif as BxNativeFunction);
-    bifs.insert("atan".to_string(), atan_bif as BxNativeFunction);
-    bifs.insert("atn".to_string(), atan_bif as BxNativeFunction);
-    bifs.insert("atan2".to_string(), atan2_bif as BxNativeFunction);
+    bifs.insert("round".to_string(), NativeBif { func: round, params: params!["number", "precision" = Int(0)] });
+    bifs.insert("floor".to_string(), NativeBif { func: floor_bif, params: params!["number"] });
+    bifs.insert("int".to_string(), NativeBif { func: int_bif, params: params!["number"] });
+    bifs.insert("ceiling".to_string(), NativeBif { func: ceiling_bif, params: params!["number"] });
+    bifs.insert("abs".to_string(), NativeBif { func: abs_bif, params: params!["value"] });
+    bifs.insert("min".to_string(), NativeBif { func: min_bif, params: params!["number1", "number2"] });
+    bifs.insert("max".to_string(), NativeBif { func: max_bif, params: params!["number1", "number2"] });
+    bifs.insert("randrange".to_string(), NativeBif { func: rand_range, params: params!["number1", "number2", "algorithm"] });
+    bifs.insert("rand".to_string(), NativeBif { func: rand, params: params!["algorithm"] });
+    bifs.insert("randomize".to_string(), NativeBif { func: randomize, params: params!["seed", "algorithm"] });
+    bifs.insert("pi".to_string(), NativeBif { func: pi, params: params![] });
+    bifs.insert("log".to_string(), NativeBif { func: log_bif, params: params!["number", "base"] });
+    bifs.insert("log10".to_string(), NativeBif { func: log10_bif, params: params!["number"] });
+    bifs.insert("exp".to_string(), NativeBif { func: exp_bif, params: params!["number"] });
+    bifs.insert("sin".to_string(), NativeBif { func: sin_bif, params: params!["number"] });
+    bifs.insert("cos".to_string(), NativeBif { func: cos_bif, params: params!["number"] });
+    bifs.insert("tan".to_string(), NativeBif { func: tan_bif, params: params!["number"] });
+    bifs.insert("asin".to_string(), NativeBif { func: asin_bif, params: params!["number"] });
+    bifs.insert("acos".to_string(), NativeBif { func: acos_bif, params: params!["number"] });
+    bifs.insert("atan".to_string(), NativeBif { func: atan_bif, params: params!["number"] });
+    bifs.insert("atn".to_string(), NativeBif { func: atan_bif, params: params!["number"] });
+    bifs.insert("atan2".to_string(), NativeBif::positional(atan2_bif));
 
     // Array BIFs
-    bifs.insert("arrayappend".to_string(), array_append as BxNativeFunction);
-    bifs.insert(
-        "arrayappendmember".to_string(),
-        array_append_member as BxNativeFunction,
-    );
-    bifs.insert("arraymap".to_string(), array_map as BxNativeFunction);
-    bifs.insert("arraylen".to_string(), len as BxNativeFunction);
-    bifs.insert("arrayprepend".to_string(), array_prepend as BxNativeFunction);
-    bifs.insert("arraynew".to_string(), array_new as BxNativeFunction);
-    bifs.insert(
-        "arrayissynchronized".to_string(),
-        array_is_synchronized_bif as BxNativeFunction,
-    );
-    bifs.insert("arraypop".to_string(), array_pop_bif as BxNativeFunction);
-    bifs.insert(
-        "arraydeleteat".to_string(),
-        array_delete_at_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "arrayinsertat".to_string(),
-        array_insert_at_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "arrayclear".to_string(),
-        array_clear_bif as BxNativeFunction,
-    );
-    bifs.insert("arrayset".to_string(), array_set_bif as BxNativeFunction);
-    bifs.insert("arrayswap".to_string(), array_swap_bif as BxNativeFunction);
-    bifs.insert(
-        "arrayresize".to_string(),
-        array_resize_bif as BxNativeFunction,
-    );
-    bifs.insert("bytesnew".to_string(), bytes_new as BxNativeFunction);
-    bifs.insert("byteslen".to_string(), bytes_len_bif as BxNativeFunction);
-    bifs.insert("bytesget".to_string(), bytes_get_bif as BxNativeFunction);
-    bifs.insert("bytesset".to_string(), bytes_set_bif as BxNativeFunction);
-    bifs.insert("isbinary".to_string(), is_bytes_bif as BxNativeFunction);
-    bifs.insert("resourceread".to_string(), resource::resource_read as BxNativeFunction);
-    bifs.insert("resourcereadbinary".to_string(), resource::resource_read_binary as BxNativeFunction);
-    bifs.insert("resourceexists".to_string(), resource::resource_exists as BxNativeFunction);
-    bifs.insert("resourcelist".to_string(), resource::resource_list as BxNativeFunction);
+    bifs.insert("arrayappend".to_string(), NativeBif { func: array_append, params: params!["array", "value", "merge" = Bool(false)] });
+    bifs.insert("arrayappendmember".to_string(), NativeBif::positional(array_append_member));
+    bifs.insert("arraymap".to_string(), NativeBif { func: array_map, params: params!["array", "callback", "parallel" = Bool(false), "maxthreads", "virtual" = Bool(false)] });
+    bifs.insert("arraylen".to_string(), NativeBif { func: len, params: params!["value"] });
+    bifs.insert("arrayprepend".to_string(), NativeBif { func: array_prepend, params: params!["array", "value"] });
+    bifs.insert("arraynew".to_string(), NativeBif { func: array_new, params: params!["dimensions" = Int(1), "issynchronized" = Bool(true)] });
+    bifs.insert("arrayissynchronized".to_string(), NativeBif::positional(array_is_synchronized_bif));
+    bifs.insert("arraypop".to_string(), NativeBif { func: array_pop_bif, params: params!["array", "defaultvalue"] });
+    bifs.insert("arraydeleteat".to_string(), NativeBif { func: array_delete_at_bif, params: params!["array", "index"] });
+    bifs.insert("arrayinsertat".to_string(), NativeBif { func: array_insert_at_bif, params: params!["array", "position", "value"] });
+    bifs.insert("arrayclear".to_string(), NativeBif { func: array_clear_bif, params: params!["array"] });
+    bifs.insert("arrayset".to_string(), NativeBif { func: array_set_bif, params: params!["array", "start", "end", "value"] });
+    bifs.insert("arrayswap".to_string(), NativeBif { func: array_swap_bif, params: params!["array", "position1", "position2"] });
+    bifs.insert("arrayresize".to_string(), NativeBif { func: array_resize_bif, params: params!["array", "size"] });
+    bifs.insert("bytesnew".to_string(), NativeBif::positional(bytes_new));
+    bifs.insert("byteslen".to_string(), NativeBif::positional(bytes_len_bif));
+    bifs.insert("bytesget".to_string(), NativeBif::positional(bytes_get_bif));
+    bifs.insert("bytesset".to_string(), NativeBif::positional(bytes_set_bif));
+    bifs.insert("isbinary".to_string(), NativeBif { func: is_bytes_bif, params: params!["value"] });
+    bifs.insert("resourceread".to_string(), NativeBif::positional(resource::resource_read));
+    bifs.insert("resourcereadbinary".to_string(), NativeBif::positional(resource::resource_read_binary));
+    bifs.insert("resourceexists".to_string(), NativeBif::positional(resource::resource_exists));
+    bifs.insert("resourcelist".to_string(), NativeBif::positional(resource::resource_list));
 
     // Struct BIFs
-    bifs.insert("structnew".to_string(), struct_new as BxNativeFunction);
-    bifs.insert(
-        "structinsert".to_string(),
-        struct_insert_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structupdate".to_string(),
-        struct_update_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structdelete".to_string(),
-        struct_delete_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structkeyexists".to_string(),
-        struct_key_exists_bif as BxNativeFunction,
-    );
-    bifs.insert("structget".to_string(), struct_get_bif as BxNativeFunction);
-    bifs.insert(
-        "structkeyarray".to_string(),
-        struct_key_array_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structclear".to_string(),
-        struct_clear_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structfind".to_string(),
-        struct_find_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structisempty".to_string(),
-        struct_is_empty_bif as BxNativeFunction,
-    );
-    bifs.insert("structcount".to_string(), len as BxNativeFunction);
-    bifs.insert(
-        "structiscasesensitive".to_string(),
-        struct_is_case_sensitive_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structisordered".to_string(),
-        struct_is_ordered_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structequals".to_string(),
-        struct_equals_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structgetmetadata".to_string(),
-        struct_get_metadata_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structtoquerystring".to_string(),
-        struct_to_query_string_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structtosorted".to_string(),
-        struct_to_sorted_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structkeytranslate".to_string(),
-        struct_key_translate_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "structfindkey".to_string(),
-        struct_find_key_bif as BxNativeFunction,
-    );
+    bifs.insert("structnew".to_string(), NativeBif { func: struct_new, params: params!["type" = Str("default"), "sorttype", "sortorder" = Str("asc"), "localesensitive" = Bool(false), "callback"] });
+    bifs.insert("structinsert".to_string(), NativeBif { func: struct_insert_bif, params: params!["struct", "key", "value", "overwrite" = Bool(false)] });
+    bifs.insert("structupdate".to_string(), NativeBif { func: struct_update_bif, params: params!["struct", "key", "value"] });
+    bifs.insert("structdelete".to_string(), NativeBif { func: struct_delete_bif, params: params!["struct", "key"] });
+    bifs.insert("structkeyexists".to_string(), NativeBif { func: struct_key_exists_bif, params: params!["struct", "key"] });
+    bifs.insert("structget".to_string(), NativeBif { func: struct_get_bif, params: params!["path"] });
+    bifs.insert("structkeyarray".to_string(), NativeBif { func: struct_key_array_bif, params: params!["structure"] });
+    bifs.insert("structclear".to_string(), NativeBif { func: struct_clear_bif, params: params!["structure"] });
+    bifs.insert("structfind".to_string(), NativeBif { func: struct_find_bif, params: params!["struct", "key", "defaultvalue"] });
+    bifs.insert("structisempty".to_string(), NativeBif { func: struct_is_empty_bif, params: params!["value"] });
+    bifs.insert("structcount".to_string(), NativeBif { func: len, params: params!["value"] });
+    bifs.insert("structiscasesensitive".to_string(), NativeBif { func: struct_is_case_sensitive_bif, params: params!["struct"] });
+    bifs.insert("structisordered".to_string(), NativeBif { func: struct_is_ordered_bif, params: params!["struct"] });
+    bifs.insert("structequals".to_string(), NativeBif { func: struct_equals_bif, params: params!["struct1", "struct2"] });
+    bifs.insert("structgetmetadata".to_string(), NativeBif { func: struct_get_metadata_bif, params: params!["struct"] });
+    bifs.insert("structtoquerystring".to_string(), NativeBif { func: struct_to_query_string_bif, params: params!["struct", "delimiter" = Str("&")] });
+    bifs.insert("structtosorted".to_string(), NativeBif { func: struct_to_sorted_bif, params: params!["struct", "sorttype" = Str("text"), "sortorder" = Str("asc"), "localesensitive" = Bool(false), "callback"] });
+    bifs.insert("structkeytranslate".to_string(), NativeBif { func: struct_key_translate_bif, params: params!["struct", "deep" = Bool(false), "retainkeys" = Bool(false)] });
+    bifs.insert("structfindkey".to_string(), NativeBif { func: struct_find_key_bif, params: params!["struct", "key", "scope" = Str("one")] });
 
     // StringBuilder BIFs
-    bifs.insert("stringbuildernew".to_string(), string_builder_new_bif as BxNativeFunction);
-    bifs.insert("isstringbuilder".to_string(), is_string_builder_bif as BxNativeFunction);
-    bifs.insert("stringbuilderappend".to_string(), string_builder_append_bif as BxNativeFunction);
-    bifs.insert("stringbuilderclear".to_string(), string_builder_clear_bif as BxNativeFunction);
-    bifs.insert("stringbuildercontains".to_string(), string_builder_contains_bif as BxNativeFunction);
-    bifs.insert("stringbuilderdelete".to_string(), string_builder_delete_bif as BxNativeFunction);
-    bifs.insert("stringbuilderendswith".to_string(), string_builder_ends_with_bif as BxNativeFunction);
-    bifs.insert("stringbuilderfind".to_string(), string_builder_find_bif as BxNativeFunction);
-    bifs.insert("stringbuilderinsert".to_string(), string_builder_insert_bif as BxNativeFunction);
-    bifs.insert("stringbuilderleft".to_string(), string_builder_left_bif as BxNativeFunction);
-    bifs.insert("stringbuildermid".to_string(), string_builder_mid_bif as BxNativeFunction);
-    bifs.insert("stringbuilderprepend".to_string(), string_builder_prepend_bif as BxNativeFunction);
-    bifs.insert("stringbuilderreplace".to_string(), string_builder_replace_bif as BxNativeFunction);
-    bifs.insert("stringbuilderreverse".to_string(), string_builder_reverse_bif as BxNativeFunction);
-    bifs.insert("stringbuilderright".to_string(), string_builder_right_bif as BxNativeFunction);
-    bifs.insert("stringbuilderstartswith".to_string(), string_builder_starts_with_bif as BxNativeFunction);
-    bifs.insert("stringbuildertrim".to_string(), string_builder_trim_bif as BxNativeFunction);
+    bifs.insert("stringbuildernew".to_string(), NativeBif { func: string_builder_new_bif, params: params!["value", "capacity" = Int(0)] });
+    bifs.insert("isstringbuilder".to_string(), NativeBif { func: is_string_builder_bif, params: params!["value"] });
+    bifs.insert("stringbuilderappend".to_string(), NativeBif { func: string_builder_append_bif, params: params!["stringbuilder", "value"] });
+    bifs.insert("stringbuilderclear".to_string(), NativeBif { func: string_builder_clear_bif, params: params!["stringbuilder"] });
+    bifs.insert("stringbuildercontains".to_string(), NativeBif { func: string_builder_contains_bif, params: params!["stringbuilder", "substring"] });
+    bifs.insert("stringbuilderdelete".to_string(), NativeBif { func: string_builder_delete_bif, params: params!["stringbuilder", "start", "end"] });
+    bifs.insert("stringbuilderendswith".to_string(), NativeBif { func: string_builder_ends_with_bif, params: params!["stringbuilder", "substring"] });
+    bifs.insert("stringbuilderfind".to_string(), NativeBif { func: string_builder_find_bif, params: params!["stringbuilder", "substring", "start" = Int(1)] });
+    bifs.insert("stringbuilderinsert".to_string(), NativeBif { func: string_builder_insert_bif, params: params!["stringbuilder", "position", "value"] });
+    bifs.insert("stringbuilderleft".to_string(), NativeBif { func: string_builder_left_bif, params: params!["stringbuilder", "count"] });
+    bifs.insert("stringbuildermid".to_string(), NativeBif { func: string_builder_mid_bif, params: params!["stringbuilder", "start", "count"] });
+    bifs.insert("stringbuilderprepend".to_string(), NativeBif { func: string_builder_prepend_bif, params: params!["stringbuilder", "value"] });
+    bifs.insert("stringbuilderreplace".to_string(), NativeBif { func: string_builder_replace_bif, params: params!["stringbuilder", "start", "end", "value"] });
+    bifs.insert("stringbuilderreverse".to_string(), NativeBif { func: string_builder_reverse_bif, params: params!["stringbuilder"] });
+    bifs.insert("stringbuilderright".to_string(), NativeBif { func: string_builder_right_bif, params: params!["stringbuilder", "count"] });
+    bifs.insert("stringbuilderstartswith".to_string(), NativeBif { func: string_builder_starts_with_bif, params: params!["stringbuilder", "substring"] });
+    bifs.insert("stringbuildertrim".to_string(), NativeBif { func: string_builder_trim_bif, params: params!["stringbuilder"] });
 
     // Core BIFs
-    bifs.insert("len".to_string(), len as BxNativeFunction);
-    bifs.insert("getmetadata".to_string(), get_metadata_bif as BxNativeFunction);
-    bifs.insert(
-        "writeoutput".to_string(),
-        write_output_bif as BxNativeFunction,
-    );
-    bifs.insert("echo".to_string(), write_output_bif as BxNativeFunction);
-    bifs.insert(
-        "preservesinglequotes".to_string(),
-        preserve_single_quotes_bif as BxNativeFunction,
-    );
-    bifs.insert("duplicate".to_string(), duplicate_bif as BxNativeFunction);
-    bifs.insert(
-        "createobject".to_string(),
-        create_object as BxNativeFunction,
-    );
-    bifs.insert("__mb_construct_box_class".into(), construct_box_class as BxNativeFunction);
-    bifs.insert("__mb_resolve_class".into(), resolve_class as BxNativeFunction);
-    bifs.insert("isnull".to_string(), is_null_bif as BxNativeFunction);
-    bifs.insert("nullvalue".to_string(), null_value_bif as BxNativeFunction);
-    bifs.insert("isnumeric".to_string(), is_numeric_bif as BxNativeFunction);
-    bifs.insert("lsisnumeric".to_string(), is_numeric_bif as BxNativeFunction);
-    bifs.insert("isarray".to_string(), is_array_bif as BxNativeFunction);
-    bifs.insert("isstruct".to_string(), is_struct_bif as BxNativeFunction);
-    bifs.insert("isboolean".to_string(), is_boolean_bif as BxNativeFunction);
-    bifs.insert("isstring".to_string(), is_string_bif as BxNativeFunction);
-    bifs.insert("isdate".to_string(), is_date_bif as BxNativeFunction);
-    bifs.insert("isnumericdate".to_string(), is_date_bif as BxNativeFunction);
-    bifs.insert(
-        "issimplevalue".to_string(),
-        is_simple_value_bif as BxNativeFunction,
-    );
-    bifs.insert("isobject".to_string(), is_object_bif as BxNativeFunction);
-    bifs.insert(
-        "isinstanceof".to_string(),
-        is_instance_of_bif as BxNativeFunction,
-    );
-    bifs.insert("ucase".to_string(), ucase as BxNativeFunction);
-    bifs.insert("lcase".to_string(), lcase as BxNativeFunction);
-    bifs.insert("trim".to_string(), trim_bif as BxNativeFunction);
-    bifs.insert("ltrim".to_string(), ltrim_bif as BxNativeFunction);
-    bifs.insert("rtrim".to_string(), rtrim_bif as BxNativeFunction);
-    bifs.insert("compare".to_string(), compare_bif as BxNativeFunction);
-    bifs.insert(
-        "comparenocase".to_string(),
-        compare_no_case_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "removechars".to_string(),
-        remove_chars_bif as BxNativeFunction,
-    );
-    bifs.insert("stripcr".to_string(), strip_cr_bif as BxNativeFunction);
-    bifs.insert("ucfirst".to_string(), uc_first_bif as BxNativeFunction);
-    bifs.insert(
-        "replacenocase".to_string(),
-        replace_no_case_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "stringendswithnocase".to_string(),
-        string_ends_with_no_case_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "stringstartswithnocase".to_string(),
-        string_starts_with_no_case_bif as BxNativeFunction,
-    );
-    bifs.insert("ascii".to_string(), ascii_bif as BxNativeFunction);
-    bifs.insert("findoneof".to_string(), find_one_of_bif as BxNativeFunction);
-    bifs.insert("insert".to_string(), insert_bif as BxNativeFunction);
-    bifs.insert("reescape".to_string(), re_escape_bif as BxNativeFunction);
-    bifs.insert(
-        "yesnoformat".to_string(),
-        yes_no_format_bif as BxNativeFunction,
-    );
-    bifs.insert("snakecase".to_string(), snake_case_bif as BxNativeFunction);
-    bifs.insert("kebabcase".to_string(), kebab_case_bif as BxNativeFunction);
-    bifs.insert("camelcase".to_string(), camel_case_bif as BxNativeFunction);
-    bifs.insert(
-        "pascalcase".to_string(),
-        pascal_case_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "replacelist".to_string(),
-        replace_list_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "repeatstring".to_string(),
-        repeat_string as BxNativeFunction,
-    );
-    bifs.insert("find".to_string(), find_bif as BxNativeFunction);
-    bifs.insert(
-        "findnocase".to_string(),
-        find_no_case_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "stringfind".to_string(),
-        string_find_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "stringfindnocase".to_string(),
-        string_find_no_case_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "stringendswith".to_string(),
-        string_ends_with_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "stringstartswith".to_string(),
-        string_starts_with_bif as BxNativeFunction,
-    );
-    bifs.insert("val".to_string(), val_bif as BxNativeFunction);
-    bifs.insert("left".to_string(), left_bif as BxNativeFunction);
-    bifs.insert("right".to_string(), right_bif as BxNativeFunction);
-    bifs.insert("reverse".to_string(), reverse_bif as BxNativeFunction);
-    bifs.insert(
-        "spanexcluding".to_string(),
-        span_excluding_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "spanincluding".to_string(),
-        span_including_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "jsstringformat".to_string(),
-        js_string_format_bif as BxNativeFunction,
-    );
-    bifs.insert("ljustify".to_string(), l_justify_bif as BxNativeFunction);
-    bifs.insert("rjustify".to_string(), r_justify_bif as BxNativeFunction);
-    bifs.insert(
-        "paragraphformat".to_string(),
-        paragraph_format_bif as BxNativeFunction,
-    );
-    bifs.insert("slugify".to_string(), slugify_bif as BxNativeFunction);
-    bifs.insert("wrap".to_string(), wrap_bif as BxNativeFunction);
-    bifs.insert(
-        "stringbind".to_string(),
-        string_bind_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "querystringtostruct".to_string(),
-        query_string_to_struct_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "charsetdecode".to_string(),
-        charset_decode_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "charsetencode".to_string(),
-        charset_encode_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "sqlprettify".to_string(),
-        sql_prettify_bif as BxNativeFunction,
-    );
-    bifs.insert("tostring".to_string(), to_string_bif as BxNativeFunction);
-    bifs.insert("stringlen".to_string(), len as BxNativeFunction);
-    bifs.insert("cast".to_string(), cast_bif as BxNativeFunction);
-    bifs.insert("now".to_string(), now as BxNativeFunction);
-    bifs.insert("createdate".to_string(), create_date_time as BxNativeFunction);
-    bifs.insert(
-        "createdatetime".to_string(),
-        create_date_time as BxNativeFunction,
-    );
-    bifs.insert("dateadd".to_string(), date_add as BxNativeFunction);
-    bifs.insert("datediff".to_string(), date_diff as BxNativeFunction);
-    bifs.insert("toepochmillis".to_string(), to_epoch_millis as BxNativeFunction);
-    bifs.insert("timeformat".to_string(), time_format_bif as BxNativeFunction);
-    bifs.insert("offset".to_string(), offset_bif as BxNativeFunction);
-    bifs.insert("gettimezone".to_string(), get_timezone_bif as BxNativeFunction);
-    bifs.insert("getnumericdate".to_string(), get_numeric_date_bif as BxNativeFunction);
-    bifs.insert("gettime".to_string(), get_time_bif as BxNativeFunction);
-    bifs.insert(
-        "dateformat".to_string(),
-        date_format_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "datetimeformat".to_string(),
-        date_time_format_bif as BxNativeFunction,
-    );
-    bifs.insert(
-        "parsedatetime".to_string(),
-        parse_date_time_bif as BxNativeFunction,
-    );
-    bifs.insert("listtoarray".to_string(), list_to_array as BxNativeFunction);
-    bifs.insert("listlen".to_string(), list_len as BxNativeFunction);
-    bifs.insert("listgetat".to_string(), list_get_at as BxNativeFunction);
-    bifs.insert("listappend".to_string(), list_append as BxNativeFunction);
-    bifs.insert("listfirst".to_string(), list_first as BxNativeFunction);
-    bifs.insert("listlast".to_string(), list_last as BxNativeFunction);
-    bifs.insert("listrest".to_string(), list_rest as BxNativeFunction);
-    bifs.insert(
-        "listdeleteat".to_string(),
-        list_delete_at as BxNativeFunction,
-    );
-    bifs.insert("listfind".to_string(), list_find as BxNativeFunction);
-    bifs.insert(
-        "listfindnocase".to_string(),
-        list_find_no_case as BxNativeFunction,
-    );
-    bifs.insert("listsort".to_string(), list_sort as BxNativeFunction);
-    bifs.insert("indexof".to_string(), index_of as BxNativeFunction);
-    bifs.insert("rematch".to_string(), re_match as BxNativeFunction);
-    bifs.insert("mid".to_string(), mid_bif as BxNativeFunction);
-    bifs.insert("replace".to_string(), replace_bif as BxNativeFunction);
-    bifs.insert("chr".to_string(), chr_bif as BxNativeFunction);
-    bifs.insert("char".to_string(), chr_bif as BxNativeFunction);
-    bifs.insert(
-        "futureonerror".to_string(),
-        future_on_error as BxNativeFunction,
-    );
-    bifs.insert("rematch".to_string(), re_match as BxNativeFunction);
-    bifs.insert(
-        "rematchnocase".to_string(),
-        re_match_no_case as BxNativeFunction,
-    );
-    bifs.insert("refind".to_string(), re_find as BxNativeFunction);
-    bifs.insert(
-        "refindnocase".to_string(),
-        re_find_no_case as BxNativeFunction,
-    );
-    bifs.insert("rereplace".to_string(), re_replace as BxNativeFunction);
-    bifs.insert(
-        "rereplacenocase".to_string(),
-        re_replace_no_case as BxNativeFunction,
-    );
+    bifs.insert("len".to_string(), NativeBif { func: len, params: params!["value"] });
+    bifs.insert("getmetadata".to_string(), NativeBif { func: get_metadata_bif, params: params!["value"] });
+    bifs.insert("writeoutput".to_string(), NativeBif { func: write_output_bif, params: params!["message"] });
+    bifs.insert("echo".to_string(), NativeBif { func: write_output_bif, params: params!["message"] });
+    bifs.insert("preservesinglequotes".to_string(), NativeBif { func: preserve_single_quotes_bif, params: params!["variable"] });
+    bifs.insert("duplicate".to_string(), NativeBif { func: duplicate_bif, params: params!["object", "deep" = Bool(true)] });
+    bifs.insert("createobject".to_string(), NativeBif { func: create_object, params: params!["type" = Str("class"), "classname", "properties", "externalonly", "classloader"] });
+    bifs.insert("__mb_construct_box_class".into(), NativeBif::positional(construct_box_class));
+    bifs.insert("__mb_resolve_class".into(), NativeBif::positional(resolve_class));
+    bifs.insert("isnull".to_string(), NativeBif { func: is_null_bif, params: params!["object"] });
+    bifs.insert("nullvalue".to_string(), NativeBif { func: null_value_bif, params: params![] });
+    bifs.insert("isnumeric".to_string(), NativeBif { func: is_numeric_bif, params: params!["string", "locale"] });
+    bifs.insert("lsisnumeric".to_string(), NativeBif { func: is_numeric_bif, params: params!["string", "locale"] });
+    bifs.insert("isarray".to_string(), NativeBif { func: is_array_bif, params: params!["value", "number"] });
+    bifs.insert("isstruct".to_string(), NativeBif { func: is_struct_bif, params: params!["variable"] });
+    bifs.insert("isboolean".to_string(), NativeBif { func: is_boolean_bif, params: params!["object"] });
+    bifs.insert("isstring".to_string(), NativeBif::positional(is_string_bif));
+    bifs.insert("isdate".to_string(), NativeBif { func: is_date_bif, params: params!["date", "locale", "timezone"] });
+    bifs.insert("isnumericdate".to_string(), NativeBif { func: is_date_bif, params: params!["date", "locale", "timezone"] });
+    bifs.insert("issimplevalue".to_string(), NativeBif { func: is_simple_value_bif, params: params!["value"] });
+    bifs.insert("isobject".to_string(), NativeBif { func: is_object_bif, params: params!["value"] });
+    bifs.insert("isinstanceof".to_string(), NativeBif { func: is_instance_of_bif, params: params!["object", "typename"] });
+    bifs.insert("ucase".to_string(), NativeBif { func: ucase, params: params!["string"] });
+    bifs.insert("lcase".to_string(), NativeBif { func: lcase, params: params!["string"] });
+    bifs.insert("trim".to_string(), NativeBif { func: trim_bif, params: params!["string", "chars"] });
+    bifs.insert("ltrim".to_string(), NativeBif { func: ltrim_bif, params: params!["string", "chars"] });
+    bifs.insert("rtrim".to_string(), NativeBif { func: rtrim_bif, params: params!["string", "chars"] });
+    bifs.insert("compare".to_string(), NativeBif { func: compare_bif, params: params!["string1", "string2"] });
+    bifs.insert("comparenocase".to_string(), NativeBif { func: compare_no_case_bif, params: params!["string1", "string2"] });
+    bifs.insert("removechars".to_string(), NativeBif { func: remove_chars_bif, params: params!["string", "start", "count"] });
+    bifs.insert("stripcr".to_string(), NativeBif { func: strip_cr_bif, params: params!["string"] });
+    bifs.insert("ucfirst".to_string(), NativeBif { func: uc_first_bif, params: params!["string", "doall" = Bool(false), "dolowerifalluppercase" = Bool(false)] });
+    bifs.insert("replacenocase".to_string(), NativeBif { func: replace_no_case_bif, params: params!["string" = Str(""), "substring1", "obj", "scope" = Str("one"), "start" = Int(1)] });
+    bifs.insert("stringendswithnocase".to_string(), NativeBif { func: string_ends_with_no_case_bif, params: params!["string", "substring"] });
+    bifs.insert("stringstartswithnocase".to_string(), NativeBif { func: string_starts_with_no_case_bif, params: params!["string", "substring"] });
+    bifs.insert("ascii".to_string(), NativeBif { func: ascii_bif, params: params!["string"] });
+    bifs.insert("findoneof".to_string(), NativeBif { func: find_one_of_bif, params: params!["set", "string", "start" = Int(1)] });
+    bifs.insert("insert".to_string(), NativeBif { func: insert_bif, params: params!["substring", "string", "position"] });
+    bifs.insert("reescape".to_string(), NativeBif { func: re_escape_bif, params: params!["string"] });
+    bifs.insert("yesnoformat".to_string(), NativeBif { func: yes_no_format_bif, params: params!["value"] });
+    bifs.insert("snakecase".to_string(), NativeBif { func: snake_case_bif, params: params!["string"] });
+    bifs.insert("kebabcase".to_string(), NativeBif { func: kebab_case_bif, params: params!["string"] });
+    bifs.insert("camelcase".to_string(), NativeBif { func: camel_case_bif, params: params!["string"] });
+    bifs.insert("pascalcase".to_string(), NativeBif { func: pascal_case_bif, params: params!["string"] });
+    bifs.insert("replacelist".to_string(), NativeBif { func: replace_list_bif, params: params!["string", "list1", "list2", "delimiter_list1" = Str(","), "delimiter_list2" = Str(","), "includeemptyfields" = Bool(false)] });
+    bifs.insert("repeatstring".to_string(), NativeBif { func: repeat_string, params: params!["string", "count"] });
+    bifs.insert("find".to_string(), NativeBif { func: find_bif, params: params!["substring", "string", "start" = Int(1)] });
+    bifs.insert("findnocase".to_string(), NativeBif { func: find_no_case_bif, params: params!["substring", "string", "start" = Int(1)] });
+    bifs.insert("stringfind".to_string(), NativeBif::positional(string_find_bif));
+    bifs.insert("stringfindnocase".to_string(), NativeBif::positional(string_find_no_case_bif));
+    bifs.insert("stringendswith".to_string(), NativeBif { func: string_ends_with_bif, params: params!["string", "substring"] });
+    bifs.insert("stringstartswith".to_string(), NativeBif { func: string_starts_with_bif, params: params!["string", "substring"] });
+    bifs.insert("val".to_string(), NativeBif { func: val_bif, params: params!["string"] });
+    bifs.insert("left".to_string(), NativeBif { func: left_bif, params: params!["string", "count"] });
+    bifs.insert("right".to_string(), NativeBif { func: right_bif, params: params!["string", "count"] });
+    bifs.insert("reverse".to_string(), NativeBif { func: reverse_bif, params: params!["string"] });
+    bifs.insert("spanexcluding".to_string(), NativeBif { func: span_excluding_bif, params: params!["string", "set"] });
+    bifs.insert("spanincluding".to_string(), NativeBif { func: span_including_bif, params: params!["string", "set"] });
+    bifs.insert("jsstringformat".to_string(), NativeBif { func: js_string_format_bif, params: params!["string"] });
+    bifs.insert("ljustify".to_string(), NativeBif { func: l_justify_bif, params: params!["string", "length"] });
+    bifs.insert("rjustify".to_string(), NativeBif { func: r_justify_bif, params: params!["string", "length"] });
+    bifs.insert("paragraphformat".to_string(), NativeBif { func: paragraph_format_bif, params: params!["string"] });
+    bifs.insert("slugify".to_string(), NativeBif { func: slugify_bif, params: params!["string", "maxlength" = Int(0), "allow" = Str("")] });
+    bifs.insert("wrap".to_string(), NativeBif { func: wrap_bif, params: params!["string", "limit", "strip" = Bool(false)] });
+    bifs.insert("stringbind".to_string(), NativeBif { func: string_bind_bif, params: params!["string", "placeholders"] });
+    bifs.insert("querystringtostruct".to_string(), NativeBif { func: query_string_to_struct_bif, params: params!["target", "delimiter" = Str("&")] });
+    bifs.insert("charsetdecode".to_string(), NativeBif { func: charset_decode_bif, params: params!["encoded_binary", "encoding" = Str("utf-8")] });
+    bifs.insert("charsetencode".to_string(), NativeBif { func: charset_encode_bif, params: params!["binary", "encoding" = Str("utf-8")] });
+    bifs.insert("sqlprettify".to_string(), NativeBif { func: sql_prettify_bif, params: params!["sql"] });
+    bifs.insert("tostring".to_string(), NativeBif { func: to_string_bif, params: params!["value", "encoding"] });
+    bifs.insert("stringlen".to_string(), NativeBif { func: len, params: params!["value"] });
+    bifs.insert("cast".to_string(), NativeBif::positional(cast_bif));
+    bifs.insert("now".to_string(), NativeBif { func: now, params: params!["timezone"] });
+    bifs.insert("createdate".to_string(), NativeBif { func: create_date_time, params: params!["year" = Int(0), "month" = Int(1), "day" = Int(1), "hour" = Int(0), "minute" = Int(0), "second" = Int(0), "millisecond" = Int(0), "timezone"] });
+    bifs.insert("createdatetime".to_string(), NativeBif { func: create_date_time, params: params!["year" = Int(0), "month" = Int(1), "day" = Int(1), "hour" = Int(0), "minute" = Int(0), "second" = Int(0), "millisecond" = Int(0), "timezone"] });
+    bifs.insert("dateadd".to_string(), NativeBif { func: date_add, params: params!["datepart", "number", "date"] });
+    bifs.insert("datediff".to_string(), NativeBif { func: date_diff, params: params!["datepart", "date1", "date2"] });
+    bifs.insert("toepochmillis".to_string(), NativeBif::positional(to_epoch_millis));
+    bifs.insert("timeformat".to_string(), NativeBif { func: time_format_bif, params: params!["date", "mask", "timezone", "locale"] });
+    bifs.insert("offset".to_string(), NativeBif { func: offset_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("gettimezone".to_string(), NativeBif { func: get_timezone_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("getnumericdate".to_string(), NativeBif { func: get_numeric_date_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("gettime".to_string(), NativeBif { func: get_time_bif, params: params!["date", "timezone", "locale"] });
+    bifs.insert("dateformat".to_string(), NativeBif { func: date_format_bif, params: params!["date", "mask", "timezone", "locale"] });
+    bifs.insert("datetimeformat".to_string(), NativeBif { func: date_time_format_bif, params: params!["date", "mask", "timezone", "locale"] });
+    bifs.insert("parsedatetime".to_string(), NativeBif { func: parse_date_time_bif, params: params!["date", "format", "timezone", "locale"] });
+    bifs.insert("listtoarray".to_string(), NativeBif { func: list_to_array, params: params!["list", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listlen".to_string(), NativeBif { func: list_len, params: params!["list", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listgetat".to_string(), NativeBif { func: list_get_at, params: params!["list", "position", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listappend".to_string(), NativeBif { func: list_append, params: params!["list", "value", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listfirst".to_string(), NativeBif { func: list_first, params: params!["list", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listlast".to_string(), NativeBif { func: list_last, params: params!["list", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listrest".to_string(), NativeBif { func: list_rest, params: params!["list", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "offset" = Int(1)] });
+    bifs.insert("listdeleteat".to_string(), NativeBif { func: list_delete_at, params: params!["list", "position", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listfind".to_string(), NativeBif { func: list_find, params: params!["list", "value", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listfindnocase".to_string(), NativeBif { func: list_find_no_case, params: params!["list", "value", "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false)] });
+    bifs.insert("listsort".to_string(), NativeBif { func: list_sort, params: params!["list", "sorttype", "sortorder" = Str("asc"), "delimiter" = Str(","), "includeemptyfields" = Bool(false), "multicharacterdelimiter" = Bool(false), "localesensitive" = Bool(false), "callback"] });
+    bifs.insert("indexof".to_string(), NativeBif::positional(index_of));
+    bifs.insert("rematch".to_string(), NativeBif { func: re_match, params: params!["reg_expression", "string"] });
+    bifs.insert("mid".to_string(), NativeBif { func: mid_bif, params: params!["string", "start", "count"] });
+    bifs.insert("replace".to_string(), NativeBif { func: replace_bif, params: params!["string", "substring1", "obj", "scope" = Str("one")] });
+    bifs.insert("chr".to_string(), NativeBif { func: chr_bif, params: params!["number"] });
+    bifs.insert("char".to_string(), NativeBif { func: chr_bif, params: params!["number"] });
+    bifs.insert("futureonerror".to_string(), NativeBif::positional(future_on_error));
+    bifs.insert("rematch".to_string(), NativeBif { func: re_match, params: params!["reg_expression", "string"] });
+    bifs.insert("rematchnocase".to_string(), NativeBif { func: re_match_no_case, params: params!["reg_expression", "string"] });
+    bifs.insert("refind".to_string(), NativeBif { func: re_find, params: params!["reg_expression", "string", "start" = Int(1), "returnsubexpressions" = Bool(false), "scope" = Str("one")] });
+    bifs.insert("refindnocase".to_string(), NativeBif { func: re_find_no_case, params: params!["reg_expression", "string", "start" = Int(1), "returnsubexpressions" = Bool(false), "scope" = Str("one")] });
+    bifs.insert("rereplace".to_string(), NativeBif { func: re_replace, params: params!["string", "regex", "substring", "scope" = Str("one")] });
+    bifs.insert("rereplacenocase".to_string(), NativeBif { func: re_replace_no_case, params: params!["string", "regex", "substring", "scope" = Str("one")] });
 
     // Crypto BIFs
     #[cfg(feature = "bif-crypto")]
     {
-        bifs.insert("hash".to_string(), crypto::hash_bif as BxNativeFunction);
-        bifs.insert("hash40".to_string(), crypto::hash40_bif as BxNativeFunction);
-        bifs.insert("hmac".to_string(), crypto::hmac_bif as BxNativeFunction);
-        bifs.insert(
-            "generatesecretkey".to_string(),
-            crypto::generate_secret_key as BxNativeFunction,
-        );
-        bifs.insert(
-            "generatepbkdfkey".to_string(),
-            crypto::generate_pbkdf_key as BxNativeFunction,
-        );
-        bifs.insert(
-            "encrypt".to_string(),
-            crypto::encrypt_bif as BxNativeFunction,
-        );
-        bifs.insert(
-            "decrypt".to_string(),
-            crypto::decrypt_bif as BxNativeFunction,
-        );
+        bifs.insert("hash".to_string(), NativeBif { func: crypto::hash_bif, params: params!["input", "algorithm" = Str("MD5"), "encoding" = Str("utf-8"), "numiterations" = Int(1)] });
+        bifs.insert("hash40".to_string(), NativeBif { func: crypto::hash40_bif, params: params!["input", "algorithm" = Str("MD5"), "encoding" = Str("utf-8"), "numiterations" = Int(1)] });
+        bifs.insert("hmac".to_string(), NativeBif { func: crypto::hmac_bif, params: params!["input", "key", "algorithm" = Str("HmacMD5"), "encoding" = Str("utf-8"), "numiterations" = Int(1)] });
+        bifs.insert("generatesecretkey".to_string(), NativeBif { func: crypto::generate_secret_key, params: params!["algorithm" = Str("AES"), "keysize"] });
+        bifs.insert("generatepbkdfkey".to_string(), NativeBif { func: crypto::generate_pbkdf_key, params: params!["algorithm" = Str("AES"), "passphrase", "salt", "iterations", "keysize"] });
+        bifs.insert("encrypt".to_string(), NativeBif { func: crypto::encrypt_bif, params: params!["object", "key", "algorithm", "encoding" = Str("UU"), "ivorsalt", "iterations", "precise" = Bool(true)] });
+        bifs.insert("decrypt".to_string(), NativeBif { func: crypto::decrypt_bif, params: params!["string", "key", "algorithm", "encoding" = Str("UU"), "ivorsalt", "iterations", "precise" = Bool(false)] });
     }
 
     // System BIFs
-    bifs.insert("createuuid".to_string(), create_uuid as BxNativeFunction);
-    bifs.insert("createguid".to_string(), create_guid as BxNativeFunction);
-    bifs.insert(
-        "getsystemsetting".to_string(),
-        get_system_setting as BxNativeFunction,
-    );
+    bifs.insert("createuuid".to_string(), NativeBif { func: create_uuid, params: params![] });
+    bifs.insert("createguid".to_string(), NativeBif { func: create_guid, params: params![] });
+    bifs.insert("getsystemsetting".to_string(), NativeBif { func: get_system_setting, params: params!["key", "defaultvalue"] });
 
     // Date/Time BIFs
-    bifs.insert("now".to_string(), now as BxNativeFunction);
-    bifs.insert(
-        "gettickcount".to_string(),
-        get_tick_count as BxNativeFunction,
-    );
-    bifs.insert("sleep".to_string(), sleep as BxNativeFunction);
-    bifs.insert("yield".to_string(), bx_yield as BxNativeFunction);
+    bifs.insert("now".to_string(), NativeBif { func: now, params: params!["timezone"] });
+    bifs.insert("gettickcount".to_string(), NativeBif { func: get_tick_count, params: params!["unit" = Str("milli")] });
+    bifs.insert("sleep".to_string(), NativeBif { func: sleep, params: params!["duration"] });
+    bifs.insert("yield".to_string(), NativeBif::positional(bx_yield));
 
     // Extra Math & Date/Time BIFs
     math_datetime::register_math_datetime_bifs(&mut bifs);
@@ -671,396 +473,141 @@ pub fn register_all() -> HashMap<String, BxNativeFunction> {
     // CLI BIFs
     #[cfg(feature = "bif-cli")]
     {
-        bifs.insert("cliclear".to_string(), cli::cli_clear as BxNativeFunction);
-        bifs.insert("cliexit".to_string(), cli::cli_exit as BxNativeFunction);
-        bifs.insert("exit".to_string(), cli::cli_exit as BxNativeFunction);
-        bifs.insert(
-            "cligetargs".to_string(),
-            cli::cli_get_args as BxNativeFunction,
-        );
-        bifs.insert(
-            "__bxrunclassmain".to_string(),
-            cli::run_class_main as BxNativeFunction,
-        );
-        bifs.insert("__bxappnew".to_string(), cli::app_new as BxNativeFunction);
-        bifs.insert("__bxapphook".to_string(), cli::app_hook as BxNativeFunction);
-        bifs.insert("cliread".to_string(), cli::cli_read as BxNativeFunction);
-        bifs.insert(
-            "cliisterminal".to_string(),
-            cli::cli_is_terminal as BxNativeFunction,
-        );
-        bifs.insert(
-            "clireadkey".to_string(),
-            cli::cli_read_key as BxNativeFunction,
-        );
-        bifs.insert(
-            "clireadpassword".to_string(),
-            cli::cli_read_password as BxNativeFunction,
-        );
-        bifs.insert(
-            "cliconfirm".to_string(),
-            cli::cli_confirm as BxNativeFunction,
-        );
+        bifs.insert("cliclear".to_string(), NativeBif { func: cli::cli_clear, params: params![] });
+        bifs.insert("cliexit".to_string(), NativeBif { func: cli::cli_exit, params: params!["exitcode" = Int(0)] });
+        bifs.insert("exit".to_string(), NativeBif::positional(cli::cli_exit));
+        bifs.insert("cligetargs".to_string(), NativeBif { func: cli::cli_get_args, params: params![] });
+        bifs.insert("__bxrunclassmain".to_string(), NativeBif::positional(cli::run_class_main));
+        bifs.insert("__bxappnew".to_string(), NativeBif::positional(cli::app_new));
+        bifs.insert("__bxapphook".to_string(), NativeBif::positional(cli::app_hook));
+        bifs.insert("cliread".to_string(), NativeBif { func: cli::cli_read, params: params!["prompt"] });
+        bifs.insert("cliisterminal".to_string(), NativeBif::positional(cli::cli_is_terminal));
+        bifs.insert("clireadkey".to_string(), NativeBif::positional(cli::cli_read_key));
+        bifs.insert("clireadpassword".to_string(), NativeBif::positional(cli::cli_read_password));
+        bifs.insert("cliconfirm".to_string(), NativeBif::positional(cli::cli_confirm));
         #[cfg(feature = "bif-cli")]
-        bifs.insert("cliselect".to_string(), cli::cli_select as BxNativeFunction);
+        bifs.insert("cliselect".to_string(), NativeBif::positional(cli::cli_select));
     }
 
     // Async BIFs
-    bifs.insert("runasync".to_string(), run_async as BxNativeFunction);
+    bifs.insert("runasync".to_string(), NativeBif { func: run_async, params: params!["callback", "executor"] });
     async_runtime::register_async_bifs(&mut bifs);
 
     // IO BIFs
     #[cfg(feature = "bif-io")]
     {
-        bifs.insert(
-            "directoryexists".to_string(),
-            fs::directory_exists as BxNativeFunction,
-        );
-        bifs.insert(
-            "directorycreate".to_string(),
-            fs::directory_create as BxNativeFunction,
-        );
-        bifs.insert(
-            "directorydelete".to_string(),
-            fs::directory_delete as BxNativeFunction,
-        );
-        bifs.insert(
-            "directorylist".to_string(),
-            fs::directory_list as BxNativeFunction,
-        );
-        bifs.insert(
-            "fileexists".to_string(),
-            fs::file_exists as BxNativeFunction,
-        );
-        bifs.insert(
-            "filedelete".to_string(),
-            fs::file_delete as BxNativeFunction,
-        );
-        bifs.insert("filemove".to_string(), fs::file_move as BxNativeFunction);
-        bifs.insert(
-            "filepublishexclusive".to_string(),
-            fs::file_publish_exclusive as BxNativeFunction,
-        );
-        bifs.insert("filecopy".to_string(), fs::file_copy as BxNativeFunction);
-        bifs.insert("fileinfo".to_string(), fs::file_info as BxNativeFunction);
-        bifs.insert("getfileinfo".to_string(), fs::file_info as BxNativeFunction);
-        bifs.insert(
-            "filecreatesymlink".to_string(),
-            fs::file_create_symlink as BxNativeFunction,
-        );
-        bifs.insert(
-            "filesetexecutable".to_string(),
-            fs::file_set_executable as BxNativeFunction,
-        );
-        bifs.insert("fileread".to_string(), fs::file_read as BxNativeFunction);
-        bifs.insert("filereadbinary".to_string(), fs::file_read_binary as BxNativeFunction);
-        bifs.insert("filewrite".to_string(), fs::file_write as BxNativeFunction);
-        bifs.insert(
-            "filewriteexclusive".to_string(),
-            fs::file_write_exclusive as BxNativeFunction,
-        );
-        bifs.insert(
-            "fileappend".to_string(),
-            fs::file_append as BxNativeFunction,
-        );
-        bifs.insert(
-            "contractpath".to_string(),
-            fs::contract_path as BxNativeFunction,
-        );
-        bifs.insert(
-            "createtempdirectory".to_string(),
-            fs::create_temp_directory as BxNativeFunction,
-        );
-        bifs.insert(
-            "gettempdirectory".to_string(),
-            fs::get_temp_directory as BxNativeFunction,
-        );
-        bifs.insert(
-            "createtempfile".to_string(),
-            fs::create_temp_file as BxNativeFunction,
-        );
-        bifs.insert("gettempfile".to_string(), fs::create_temp_file as BxNativeFunction);
-        bifs.insert(
-            "directorycopy".to_string(),
-            fs::directory_copy as BxNativeFunction,
-        );
-        bifs.insert(
-            "directorymove".to_string(),
-            fs::directory_move as BxNativeFunction,
-        );
-        bifs.insert(
-            "directoryrename".to_string(),
-            fs::directory_move as BxNativeFunction,
-        );
-        bifs.insert(
-            "expandpath".to_string(),
-            fs::expand_path as BxNativeFunction,
-        );
-        bifs.insert("fileclose".to_string(), fs::file_close as BxNativeFunction);
-        bifs.insert(
-            "filegetmimetype".to_string(),
-            fs::file_get_mime_type as BxNativeFunction,
-        );
-        bifs.insert("fileiseof".to_string(), fs::file_is_eof as BxNativeFunction);
-        bifs.insert("fileopen".to_string(), fs::file_open as BxNativeFunction);
-        bifs.insert(
-            "filereadline".to_string(),
-            fs::file_read_line as BxNativeFunction,
-        );
-        bifs.insert("fileseek".to_string(), fs::file_seek as BxNativeFunction);
-        bifs.insert("fileskipbytes".to_string(), fs::file_seek as BxNativeFunction);
-        bifs.insert(
-            "filesetaccessmode".to_string(),
-            fs::file_set_access_mode as BxNativeFunction,
-        );
-        bifs.insert(
-            "filesetattribute".to_string(),
-            fs::file_set_attribute as BxNativeFunction,
-        );
-        bifs.insert(
-            "filesetlastmodified".to_string(),
-            fs::file_set_last_modified as BxNativeFunction,
-        );
-        bifs.insert(
-            "filewriteline".to_string(),
-            fs::file_write_line as BxNativeFunction,
-        );
-        bifs.insert(
-            "getcanonicalpath".to_string(),
-            fs::get_canonical_path as BxNativeFunction,
-        );
-        bifs.insert(
-            "getdirectoryfrompath".to_string(),
-            fs::get_directory_from_path as BxNativeFunction,
-        );
-        bifs.insert(
-            "propertyfile".to_string(),
-            fs::property_file as BxNativeFunction,
-        );
+        bifs.insert("directoryexists".to_string(), NativeBif { func: fs::directory_exists, params: params!["path", "allowrealpath" = Bool(true)] });
+        bifs.insert("directorycreate".to_string(), NativeBif { func: fs::directory_create, params: params!["path", "createpath" = Bool(true), "ignoreexists" = Bool(false), "mode"] });
+        bifs.insert("directorydelete".to_string(), NativeBif { func: fs::directory_delete, params: params!["path", "recursive" = Bool(false), "followlinks" = Bool(false)] });
+        bifs.insert("directorylist".to_string(), NativeBif { func: fs::directory_list, params: params!["path", "recurse" = Bool(false), "listinfo" = Str("path"), "filter", "sort" = Str("name"), "type" = Str("all"), "followlinks" = Bool(false)] });
+        bifs.insert("fileexists".to_string(), NativeBif { func: fs::file_exists, params: params!["source", "allowrealpath" = Bool(true)] });
+        bifs.insert("filedelete".to_string(), NativeBif { func: fs::file_delete, params: params!["file"] });
+        bifs.insert("filemove".to_string(), NativeBif { func: fs::file_move, params: params!["source", "destination", "overwrite" = Bool(true), "accept"] });
+        bifs.insert("filepublishexclusive".to_string(), NativeBif::positional(fs::file_publish_exclusive));
+        bifs.insert("filecopy".to_string(), NativeBif { func: fs::file_copy, params: params!["source", "destination", "createpath" = Bool(true), "overwrite" = Bool(true), "accept"] });
+        bifs.insert("fileinfo".to_string(), NativeBif { func: fs::file_info, params: params!["file"] });
+        bifs.insert("getfileinfo".to_string(), NativeBif { func: fs::file_info, params: params!["file"] });
+        bifs.insert("filecreatesymlink".to_string(), NativeBif { func: fs::file_create_symlink, params: params!["link", "target", "overwrite" = Bool(false)] });
+        bifs.insert("filesetexecutable".to_string(), NativeBif::positional(fs::file_set_executable));
+        bifs.insert("fileread".to_string(), NativeBif { func: fs::file_read, params: params!["filepath", "charsetorbuffersize", "buffersize"] });
+        bifs.insert("filereadbinary".to_string(), NativeBif { func: fs::file_read_binary, params: params!["filepath", "charsetorbuffersize", "buffersize"] });
+        bifs.insert("filewrite".to_string(), NativeBif { func: fs::file_write, params: params!["file", "data", "charset" = Str("UTF-8"), "createpath" = Bool(false)] });
+        bifs.insert("filewriteexclusive".to_string(), NativeBif::positional(fs::file_write_exclusive));
+        bifs.insert("fileappend".to_string(), NativeBif { func: fs::file_append, params: params!["file", "data", "charset" = Str("utf-8"), "addnewline" = Bool(false)] });
+        bifs.insert("contractpath".to_string(), NativeBif { func: fs::contract_path, params: params!["path"] });
+        bifs.insert("createtempdirectory".to_string(), NativeBif { func: fs::create_temp_directory, params: params!["directory", "prefix" = Str("")] });
+        bifs.insert("gettempdirectory".to_string(), NativeBif { func: fs::get_temp_directory, params: params![] });
+        bifs.insert("createtempfile".to_string(), NativeBif { func: fs::create_temp_file, params: params!["directory", "prefix" = Str(""), "suffix" = Str("")] });
+        bifs.insert("gettempfile".to_string(), NativeBif { func: fs::create_temp_file, params: params!["directory", "prefix" = Str(""), "suffix" = Str("")] });
+        bifs.insert("directorycopy".to_string(), NativeBif { func: fs::directory_copy, params: params!["source", "destination", "recurse" = Bool(false), "filter" = Str("*"), "createpath" = Bool(true), "overwrite" = Bool(false), "followlinks" = Bool(false)] });
+        bifs.insert("directorymove".to_string(), NativeBif { func: fs::directory_move, params: params!["oldpath", "newpath", "createpath" = Bool(true)] });
+        bifs.insert("directoryrename".to_string(), NativeBif { func: fs::directory_move, params: params!["oldpath", "newpath", "createpath" = Bool(true)] });
+        bifs.insert("expandpath".to_string(), NativeBif { func: fs::expand_path, params: params!["path"] });
+        bifs.insert("fileclose".to_string(), NativeBif { func: fs::file_close, params: params!["file"] });
+        bifs.insert("filegetmimetype".to_string(), NativeBif { func: fs::file_get_mime_type, params: params!["file", "strict" = Bool(true)] });
+        bifs.insert("fileiseof".to_string(), NativeBif { func: fs::file_is_eof, params: params!["file"] });
+        bifs.insert("fileopen".to_string(), NativeBif { func: fs::file_open, params: params!["file", "mode" = Str("read"), "charset" = Str("utf-8"), "seekable"] });
+        bifs.insert("filereadline".to_string(), NativeBif { func: fs::file_read_line, params: params!["file"] });
+        bifs.insert("fileseek".to_string(), NativeBif { func: fs::file_seek, params: params!["file", "position"] });
+        bifs.insert("fileskipbytes".to_string(), NativeBif { func: fs::file_seek, params: params!["file", "position"] });
+        bifs.insert("filesetaccessmode".to_string(), NativeBif { func: fs::file_set_access_mode, params: params!["file", "mode"] });
+        bifs.insert("filesetattribute".to_string(), NativeBif { func: fs::file_set_attribute, params: params!["file", "attribute"] });
+        bifs.insert("filesetlastmodified".to_string(), NativeBif { func: fs::file_set_last_modified, params: params!["file", "date"] });
+        bifs.insert("filewriteline".to_string(), NativeBif { func: fs::file_write_line, params: params!["file", "data"] });
+        bifs.insert("getcanonicalpath".to_string(), NativeBif { func: fs::get_canonical_path, params: params!["path"] });
+        bifs.insert("getdirectoryfrompath".to_string(), NativeBif { func: fs::get_directory_from_path, params: params!["path"] });
+        bifs.insert("propertyfile".to_string(), NativeBif { func: fs::property_file, params: params!["path"] });
     }
 
     // HTTP BIFs
     #[cfg(feature = "bif-http")]
-    bifs.insert("http".to_string(), http::http_bif as BxNativeFunction);
+    bifs.insert("http".to_string(), NativeBif { func: http::http_bif, params: params!["url", "connectiontimeout" = Int(15), "redirect" = Bool(true), "httpversion" = Str("HTTP/2"), "proxyserver", "proxyport", "proxyuser", "proxypassword", "clientcert", "clientcertpassword"] });
 
     // ZIP BIFs
     #[cfg(feature = "bif-zip")]
     {
-        bifs.insert("extract".to_string(), zip::zip_extract as BxNativeFunction);
-        bifs.insert(
-            "compress".to_string(),
-            zip::zip_compress as BxNativeFunction,
-        );
-        bifs.insert(
-            "iszipfile".to_string(),
-            zip::zip_is_zip_file as BxNativeFunction,
-        );
+        bifs.insert("extract".to_string(), NativeBif { func: zip::zip_extract, params: params!["format", "source", "destination", "overwrite" = Bool(false), "recurse" = Bool(true), "filter", "entrypaths"] });
+        bifs.insert("compress".to_string(), NativeBif { func: zip::zip_compress, params: params!["format", "source", "destination", "includebasefolder" = Bool(true), "overwrite" = Bool(false), "prefix", "filter", "recurse" = Bool(true), "compressionlevel" = Int(6)] });
+        bifs.insert("iszipfile".to_string(), NativeBif { func: zip::zip_is_zip_file, params: params!["path"] });
     }
 
     // JSON BIFs
-    bifs.insert(
-        "deserializejson".to_string(),
-        json::json_deserialize as BxNativeFunction,
-    );
-    bifs.insert(
-        "deserializeyaml".to_string(),
-        yaml::yaml_deserialize as BxNativeFunction,
-    );
-    bifs.insert(
-        "deserializetoml".to_string(),
-        toml::toml_deserialize as BxNativeFunction,
-    );
-    bifs.insert(
-        "jsondeserialize".to_string(),
-        json::json_deserialize as BxNativeFunction,
-    );
-    bifs.insert(
-        "serializejson".to_string(),
-        json::json_serialize as BxNativeFunction,
-    );
-    bifs.insert(
-        "jsonserialize".to_string(),
-        json::json_serialize as BxNativeFunction,
-    );
-    bifs.insert("isjson".to_string(), json::is_json as BxNativeFunction);
-    bifs.insert(
-        "loadproperties".to_string(),
-        json::load_properties as BxNativeFunction,
-    );
+    bifs.insert("deserializejson".to_string(), NativeBif { func: json::json_deserialize, params: params!["json", "strictmapping" = Bool(true), "usecustomserializer"] });
+    bifs.insert("deserializeyaml".to_string(), NativeBif::positional(yaml::yaml_deserialize));
+    bifs.insert("deserializetoml".to_string(), NativeBif::positional(toml::toml_deserialize));
+    bifs.insert("jsondeserialize".to_string(), NativeBif { func: json::json_deserialize, params: params!["json", "strictmapping" = Bool(true), "usecustomserializer"] });
+    bifs.insert("serializejson".to_string(), NativeBif { func: json::json_serialize, params: params!["data", "queryformat", "usesecurejsonprefix" = Bool(false), "usecustomserializer", "pretty" = Bool(false)] });
+    bifs.insert("jsonserialize".to_string(), NativeBif { func: json::json_serialize, params: params!["data", "queryformat", "usesecurejsonprefix" = Bool(false), "usecustomserializer", "pretty" = Bool(false)] });
+    bifs.insert("isjson".to_string(), NativeBif { func: json::is_json, params: params!["var"] });
+    bifs.insert("loadproperties".to_string(), NativeBif::positional(json::load_properties));
 
     // Conversion BIFs
-    bifs.insert(
-        "datanavigate".to_string(),
-        conversion::data_navigate as BxNativeFunction,
-    );
-    bifs.insert(
-        "jsonprettify".to_string(),
-        conversion::json_prettify as BxNativeFunction,
-    );
-    bifs.insert(
-        "parsenumber".to_string(),
-        conversion::parse_number as BxNativeFunction,
-    );
-    bifs.insert(
-        "tobase64".to_string(),
-        conversion::to_base64 as BxNativeFunction,
-    );
-    bifs.insert(
-        "tobinary".to_string(),
-        conversion::to_binary as BxNativeFunction,
-    );
-    bifs.insert(
-        "tomodifiable".to_string(),
-        conversion::to_modifiable as BxNativeFunction,
-    );
-    bifs.insert(
-        "tonumeric".to_string(),
-        conversion::to_numeric as BxNativeFunction,
-    );
-    bifs.insert(
-        "toscript".to_string(),
-        conversion::to_script as BxNativeFunction,
-    );
-    bifs.insert(
-        "tounmodifiable".to_string(),
-        conversion::to_unmodifiable as BxNativeFunction,
-    );
+    bifs.insert("datanavigate".to_string(), NativeBif { func: conversion::data_navigate, params: params!["data", "path"] });
+    bifs.insert("jsonprettify".to_string(), NativeBif { func: conversion::json_prettify, params: params!["var"] });
+    bifs.insert("parsenumber".to_string(), NativeBif { func: conversion::parse_number, params: params!["number", "locale", "radix"] });
+    bifs.insert("tobase64".to_string(), NativeBif { func: conversion::to_base64, params: params!["string_or_object", "encoding" = Str("UTF-8")] });
+    bifs.insert("tobinary".to_string(), NativeBif { func: conversion::to_binary, params: params!["base64_or_object"] });
+    bifs.insert("tomodifiable".to_string(), NativeBif { func: conversion::to_modifiable, params: params!["value"] });
+    bifs.insert("tonumeric".to_string(), NativeBif { func: conversion::to_numeric, params: params!["value", "radix"] });
+    bifs.insert("toscript".to_string(), NativeBif { func: conversion::to_script, params: params!["cfvar", "javascriptvar"] });
+    bifs.insert("tounmodifiable".to_string(), NativeBif { func: conversion::to_unmodifiable, params: params!["value"] });
 
     // Datasource BIFs
     #[cfg(feature = "bif-datasource")]
     {
-        bifs.insert(
-            "datasourceregister".to_string(),
-            datasource::datasource_register as BxNativeFunction,
-        );
-        bifs.insert(
-            "datasourceunregister".to_string(),
-            datasource::datasource_unregister as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryexecute".to_string(),
-            datasource::query_execute as BxNativeFunction,
-        );
-        bifs.insert(
-            "querynew".to_string(),
-            datasource::query_new as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryaddrow".to_string(),
-            datasource::query_add_row as BxNativeFunction,
-        );
-        bifs.insert(
-            "querycolumndata".to_string(),
-            datasource::query_column_data as BxNativeFunction,
-        );
-        bifs.insert(
-            "querycolumnlist".to_string(),
-            datasource::query_column_list as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryclear".to_string(),
-            datasource::query_clear as BxNativeFunction,
-        );
-        bifs.insert(
-            "querycolumnarray".to_string(),
-            datasource::query_column_array as BxNativeFunction,
-        );
-        bifs.insert(
-            "querycolumncount".to_string(),
-            datasource::query_column_count as BxNativeFunction,
-        );
-        bifs.insert(
-            "querycolumnexists".to_string(),
-            datasource::query_column_exists as BxNativeFunction,
-        );
-        bifs.insert(
-            "querykeyexists".to_string(),
-            datasource::query_key_exists as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryrecordcount".to_string(),
-            datasource::query_record_count as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryrowdata".to_string(),
-            datasource::query_row_data as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryreverse".to_string(),
-            datasource::query_reverse as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryrowswap".to_string(),
-            datasource::query_row_swap as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryslice".to_string(),
-            datasource::query_slice as BxNativeFunction,
-        );
-        bifs.insert(
-            "querydeletecolumn".to_string(),
-            datasource::query_delete_column as BxNativeFunction,
-        );
-        bifs.insert(
-            "querydeleterow".to_string(),
-            datasource::query_delete_row as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryaddcolumn".to_string(),
-            datasource::query_add_column as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryappend".to_string(),
-            datasource::query_append as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryprepend".to_string(),
-            datasource::query_prepend as BxNativeFunction,
-        );
-        bifs.insert(
-            "querygetcell".to_string(),
-            datasource::query_get_cell as BxNativeFunction,
-        );
-        bifs.insert(
-            "querysetcell".to_string(),
-            datasource::query_set_cell as BxNativeFunction,
-        );
-        bifs.insert(
-            "queryinsertat".to_string(),
-            datasource::query_insert_at as BxNativeFunction,
-        );
-        bifs.insert(
-            "querysetrow".to_string(),
-            datasource::query_set_row as BxNativeFunction,
-        );
-        bifs.insert(
-            "querycurrentrow".to_string(),
-            datasource::query_current_row as BxNativeFunction,
-        );
-        bifs.insert(
-            "querygetresult".to_string(),
-            datasource::query_get_result as BxNativeFunction,
-        );
-        bifs.insert(
-            "transactionbegin".to_string(),
-            datasource::transaction_begin as BxNativeFunction,
-        );
-        bifs.insert(
-            "transactioncommit".to_string(),
-            datasource::transaction_commit as BxNativeFunction,
-        );
-        bifs.insert(
-            "transactionrollback".to_string(),
-            datasource::transaction_rollback as BxNativeFunction,
-        );
-        bifs.insert(
-            "iswithintransaction".to_string(),
-            datasource::is_within_transaction as BxNativeFunction,
-        );
-        bifs.insert(
-            "isintransaction".to_string(),
-            datasource::is_in_transaction as BxNativeFunction,
-        );
+        bifs.insert("datasourceregister".to_string(), NativeBif::positional(datasource::datasource_register));
+        bifs.insert("datasourceunregister".to_string(), NativeBif::positional(datasource::datasource_unregister));
+        bifs.insert("queryexecute".to_string(), NativeBif { func: datasource::query_execute, params: params!["sql", "params", "options"] });
+        bifs.insert("querynew".to_string(), NativeBif { func: datasource::query_new, params: params!["columnlist", "columntypelist" = Str(""), "rowdata"] });
+        bifs.insert("queryaddrow".to_string(), NativeBif { func: datasource::query_add_row, params: params!["query", "rowdata"] });
+        bifs.insert("querycolumndata".to_string(), NativeBif { func: datasource::query_column_data, params: params!["query", "columnname"] });
+        bifs.insert("querycolumnlist".to_string(), NativeBif { func: datasource::query_column_list, params: params!["query"] });
+        bifs.insert("queryclear".to_string(), NativeBif { func: datasource::query_clear, params: params!["query"] });
+        bifs.insert("querycolumnarray".to_string(), NativeBif { func: datasource::query_column_array, params: params!["query"] });
+        bifs.insert("querycolumncount".to_string(), NativeBif { func: datasource::query_column_count, params: params!["query"] });
+        bifs.insert("querycolumnexists".to_string(), NativeBif { func: datasource::query_column_exists, params: params!["query", "column"] });
+        bifs.insert("querykeyexists".to_string(), NativeBif { func: datasource::query_key_exists, params: params!["query", "key"] });
+        bifs.insert("queryrecordcount".to_string(), NativeBif { func: datasource::query_record_count, params: params!["value"] });
+        bifs.insert("queryrowdata".to_string(), NativeBif { func: datasource::query_row_data, params: params!["query", "rownumber"] });
+        bifs.insert("queryreverse".to_string(), NativeBif { func: datasource::query_reverse, params: params!["query"] });
+        bifs.insert("queryrowswap".to_string(), NativeBif { func: datasource::query_row_swap, params: params!["query", "source", "destination"] });
+        bifs.insert("queryslice".to_string(), NativeBif { func: datasource::query_slice, params: params!["query", "offset", "length" = Int(0)] });
+        bifs.insert("querydeletecolumn".to_string(), NativeBif { func: datasource::query_delete_column, params: params!["query", "column"] });
+        bifs.insert("querydeleterow".to_string(), NativeBif { func: datasource::query_delete_row, params: params!["query", "row"] });
+        bifs.insert("queryaddcolumn".to_string(), NativeBif { func: datasource::query_add_column, params: params!["query", "columnname", "datatype" = Str("object"), "array"] });
+        bifs.insert("queryappend".to_string(), NativeBif { func: datasource::query_append, params: params!["query1", "query2"] });
+        bifs.insert("queryprepend".to_string(), NativeBif { func: datasource::query_prepend, params: params!["query1", "query2"] });
+        bifs.insert("querygetcell".to_string(), NativeBif { func: datasource::query_get_cell, params: params!["query", "column_name", "row_number"] });
+        bifs.insert("querysetcell".to_string(), NativeBif { func: datasource::query_set_cell, params: params!["query", "column", "value", "row"] });
+        bifs.insert("queryinsertat".to_string(), NativeBif { func: datasource::query_insert_at, params: params!["query", "value", "position"] });
+        bifs.insert("querysetrow".to_string(), NativeBif { func: datasource::query_set_row, params: params!["query", "rownumber" = Int(0), "rowdata"] });
+        bifs.insert("querycurrentrow".to_string(), NativeBif { func: datasource::query_current_row, params: params!["query"] });
+        bifs.insert("querygetresult".to_string(), NativeBif { func: datasource::query_get_result, params: params!["query"] });
+        bifs.insert("transactionbegin".to_string(), NativeBif::positional(datasource::transaction_begin));
+        bifs.insert("transactioncommit".to_string(), NativeBif { func: datasource::transaction_commit, params: params![] });
+        bifs.insert("transactionrollback".to_string(), NativeBif { func: datasource::transaction_rollback, params: params!["savepoint"] });
+        bifs.insert("iswithintransaction".to_string(), NativeBif { func: datasource::is_within_transaction, params: params![] });
+        bifs.insert("isintransaction".to_string(), NativeBif { func: datasource::is_in_transaction, params: params![] });
     }
 
     // Extra module registrations
